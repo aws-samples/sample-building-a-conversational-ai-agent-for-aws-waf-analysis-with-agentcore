@@ -9,4 +9,5 @@ build/
 *.egg-info/
 .cache/
 design/
+HANDOFF.md
 *.html
