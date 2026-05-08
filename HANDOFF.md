@@ -6,84 +6,93 @@ You are continuing development of `~/Documents/gitlab/waf-agent/` — an AWS WAF
 
 ## What's Done
 
-- **DESIGN.md**: Complete design document (read it first — it's the source of truth)
-- **README.md**: Project overview
-- **.gitignore**: Standard Python gitignore
+- **agent.py**: Entry point + system prompt with full investigation logic (~1200 tokens)
+- **tools/waf_config.py**: `list_webacls`, `get_waf_config` (auto-discovers logging, populates session state)
+- **tools/waf_metrics.py**: `get_waf_metrics` (GetMetricData + SEARCH, auto region from session state)
+- **tools/waf_logs.py**: `run_logs_query` — **template-based** (12 query types, LLM only picks type + params)
+- **tools/ja4.py**: `lookup_ja4` (TLS fingerprint → client identification, graceful offline fallback)
+- **tools/report.py**: `generate_weekly_report` (HTML + Chart.js, verified end-to-end against real WebACL)
+- **tools/session_state.py**: Cross-tool state (WebACL scope/region auto-detection)
+- **tools/aws_session.py**: Shared boto3 session management
+- **deploy/template.yaml**: CloudFormation (Cognito + API GW + Lambda bridge + IAM for AgentCore)
+- **design/DESIGN.md**: Complete design document (gitignored)
 
-## Key Decisions (already confirmed with user)
+## Key Decisions (confirmed with user)
 
 | Decision | Value |
 |----------|-------|
 | Framework | Strands Agents SDK + AgentCore Runtime |
+| Deployment model | Customer self-deploys (single-tenant), NOT SaaS |
 | Agent deploy region | us-west-2 |
-| Model (default) | Claude Sonnet 4.6 (cross-region inference profile) |
-| Model (strong reasoning) | Claude Opus 4.6 (Investigation pivot decisions) |
-| Model (weekly report) | Claude Haiku 4.5 (only generates executive summary text, doesn't need strong reasoning) |
-| Output format | HTML with Chart.js charts (no PDF, no email/Slack integration) |
+| Model (default) | Claude Sonnet 4.6 (`us.anthropic.claude-sonnet-4-6-20250514-v1:0`) |
+| Model (strong reasoning) | Claude Opus 4.6 |
+| Model (weekly report) | Claude Haiku 4.5 (executive summary only) |
+| Output format | HTML with Chart.js charts (no PDF, no email/Slack) |
 | Scheduled execution | Not doing — on-demand only |
 | Report language | Same as user's prompt language |
 | Auth (dev/test) | User's own AWS profile `primary` |
-| Auth (production) | Cognito User Pool + API Gateway Authorizer (customer self-deploys in their own account) |
-| WebACL discovery | Agent auto-discovers via ListWebACLs + GetLoggingConfiguration (same account) |
-| Log source | Auto-detect: CW Logs or S3/Athena (with temp table creation) |
-| Code reuse from | `~/Documents/gitlab/waf-analysis-report/` (query logic, HTML template) and `~/Documents/github/aws-waf-rules-reviewer/` (WAF domain knowledge, rule review checklist) |
-| Testing | User will prepare EC2 + generate traffic when tools are ready |
-| New repo | `~/Documents/gitlab/waf-agent/` (this repo) |
+| Auth (production) | Cognito User Pool + API Gateway + Lambda → AgentCore |
+| IAM trust principal | `bedrock-agentcore.amazonaws.com` (NOT bedrock.amazonaws.com) |
+| WebACL discovery | Auto via ListWebACLs + GetLoggingConfiguration (same account) |
+| Log queries | Template-based — LLM picks query_type, script builds CWL query |
+| IP threat intel | Removed (no AbuseIPDB/ET). Use WAF labels + log behavior instead |
+| JA4 fingerprint | Kept. DB bundled in image, graceful fallback if unavailable |
+| Distribution | Open source: `github.com/aws-samples/`, image on ECR Public |
+| Testing | User prepares EC2 + generates traffic when tools are ready |
 
-## Implementation Priority
-
-1. **Weekly Report (Scenario 4)** — customer leadership already requested this. Mostly CloudWatch Metrics (zero log cost). HTML output with charts.
-2. **COUNT Rule Evaluation (Scenario 1)** — most common investigation scenario.
-3. **Attack Source Investigation (Scenario 2)** — pivot chain with Anchor Discovery.
-
-## Architecture Summary
+## Architecture
 
 ```
-Strands Agent (WAF Investigator)
-├── @tool: list_webacls()              → wafv2:ListWebACLs (REGIONAL + CLOUDFRONT)
-├── @tool: get_waf_config()            → wafv2:GetWebACL + GetLoggingConfiguration
-├── @tool: get_waf_metrics()           → cloudwatch:GetMetricData / ListMetrics / SEARCH expressions
-├── @tool: run_logs_query()            → logs:StartQuery + GetQueryResults (CW Logs Insights)
-├── @tool: run_athena_query()          → athena:StartQueryExecution (S3 logs, with temp table support)
-├── @tool: lookup_ja4()                → JA4 fingerprint → known client identification
-├── @tool: record_finding()            → session state (evidence chain)
-└── @tool: ask_user()                  → interactive clarification
+Customer AWS Account
+├── Cognito User Pool (employee auth)
+├── API Gateway HTTP API (JWT authorizer)
+│   └── POST /invoke → Lambda → AgentCore Runtime
+├── AgentCore Runtime (microVM, session-isolated)
+│   └── Strands Agent with tools:
+│       ├── list_webacls()
+│       ├── get_waf_config()       → also sets session_state
+│       ├── get_waf_metrics()      → auto region from session_state
+│       ├── run_logs_query()       → template-based, 12 query types
+│       ├── lookup_ja4()           → offline-capable
+│       └── generate_weekly_report()
+└── IAM Execution Role (bedrock-agentcore.amazonaws.com)
 ```
 
-## Critical WAF Domain Knowledge (Agent must understand)
+## Design Principles
 
-- Rate-based rules have 20-30s kick-in delay — ALLOW requests before BLOCK is normal
-- Anti-DDoS AMR: 5s snapshot, 5-10s kick-in, volumetric-index can miss highly distributed attacks
-- Bot Control Common: only detects self-identifying bots (UA-based), browser-UA bots invisible
-- Challenge/CAPTCHA: only works on browser GET text/html; POST/API/native = effectively Block
-- Match detail: only SQLi_Body and XSS_Body provide terminatingRuleMatchDetails; all other rules don't
-- WAF token is unforgeable (AWS cryptographic signature)
-- CloudFront WAF metrics: no Region dimension, always us-east-1
+1. **Deterministic work → scripts, reasoning → LLM**: Query construction, API calls, formatting, validation are all in tool code. LLM only does scheduling and analysis.
+2. **Session state over LLM memory**: Region, log destination, WebACL context stored in module-level state, not relying on LLM to remember.
+3. **Metrics before Logs**: Always try CloudWatch Metrics first (free, fast). Only query logs when per-request detail is needed.
+4. **Multi-dimensional cross-validation**: Never conclude attack/FP from a single signal. Check rule type prior + at least 3 dimensions.
 
-## CloudWatch Metrics Discovery (verified via API)
+## What's NOT Done Yet
 
-WAF publishes rich metrics with 9 dimension patterns. Key insight: **Weekly Report can be generated entirely from Metrics without querying logs.** Use `SEARCH` expressions for dynamic label discovery. See DESIGN.md "Data Sources" section for full taxonomy.
-
-## Files to Reference
-
-- `~/Documents/github/aws-waf-rules-reviewer/references/` — WAF behavior docs (antiddos-amr.md, bot-control.md, rate-based.md, challenge-captcha.md, checklist.md, common-patterns.md, crawler-seo.md, ip-reputation.md)
-- `~/Documents/github/cloudwatch-log-insights-query-samples-for-waf/cwt-query-samples-cloudformation-template.json` — Verified CWL query syntax
-- `~/Documents/gitlab/waf-analysis-report/scripts/waf-runner.py` — CW Logs query execution logic to reuse
-- `~/Documents/gitlab/waf-analysis-report/scripts/waf-runner-athena.py` — Athena query + temp table logic to reuse
-- `~/Documents/gitlab/waf-analysis-report/scripts/waf-enrich.py` — HTML generation logic to reuse
-- `~/Documents/gitlab/waf-analysis-report/assets/report-template.html` — HTML report template with Chart.js
+| Item | Blocked on |
+|------|-----------|
+| `run_athena_query` tool | Need S3 log test environment |
+| End-to-end investigation test | Need WAF logs (user will generate traffic on EC2) |
+| AgentCore deployment | Need to build + push image, run `agentcore launch` |
+| `record_finding` tool | Implement when testing investigation flow |
+| `ask_user` tool | Depends on AgentCore session/interrupt mechanism |
+| Weekly Report enrichment | Need more data (bot control, anti-ddos labels) |
 
 ## User's AWS Environment
 
 - Profile: `primary`
-- WAF WebACL: `shield-sample-webacl` (CloudFront, us-east-1)
+- WAF WebACLs: 6 total (CloudFront scope, us-east-1), primary test target: `shield-sample-webacl`
 - Bedrock: all models available (no access request needed)
-- AgentCore: available in us-west-2
+- AgentCore: us-west-2
+
+## Files to Reference (external repos)
+
+- `~/Documents/github/aws-waf-rules-reviewer/references/` — WAF behavior docs
+- `~/Documents/github/cloudwatch-log-insights-query-samples-for-waf/` — Verified CWL query syntax
+- `~/Documents/gitlab/waf-analysis-report/scripts/waf-runner-athena.py` — Athena temp table logic to reuse
 
 ## Next Steps
 
-1. Read DESIGN.md thoroughly
-2. Set up project structure (src/, tools/, tests/, etc.)
-3. Implement Weekly Report tools first (get_waf_metrics with SEARCH expressions)
-4. Build HTML report generation (reuse template from waf-analysis-report)
-5. Test against `shield-sample-webacl` using profile `primary`
+1. Prepare test environment (EC2 + traffic generation → WAF logs)
+2. End-to-end test investigation flow with real logs
+3. Implement `run_athena_query` if customer uses S3 logs
+4. Build + deploy to AgentCore, verify Lambda bridge works
+5. Enrich Weekly Report (bot control, anti-ddos sections) once data exists
