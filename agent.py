@@ -42,17 +42,16 @@ Step 1: Get context
 - get_waf_metrics() to see the rule's hit volume and trend
 
 Step 2: Query logs for the COUNT rule hits
-- run_logs_query(): filter @message like '{rule_name}' and action = 'COUNT' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit 25
+- run_logs_query(query_type="count_rule_top_ips", rule_name="...")
 - This gives IP distribution of who's triggering the rule
 
 Step 3: Cross-validate top IPs (pick top 3-5 IPs)
-- For each top IP, run cross-query:
-  filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc
+- run_logs_query(query_type="ip_cross_query", ip="...")
 - This reveals: does this IP also trigger other rules? What's its allow/block ratio?
 
 Step 4: Check URI and UA patterns
-- filter nonTerminatingMatchingRules like '{rule_name}' | stats count(*) by httpRequest.uri | sort cnt desc
-- filter nonTerminatingMatchingRules like '{rule_name}' | stats count(*) by httpRequest.headers.0.value | sort cnt desc
+- run_logs_query(query_type="count_rule_top_uris", rule_name="...")
+- run_logs_query(query_type="count_rule_top_uas", rule_name="...")
 
 Step 5: Synthesize conclusion using the evaluation logic below, then give recommendation.
 
