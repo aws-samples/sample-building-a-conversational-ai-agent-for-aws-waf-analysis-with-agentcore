@@ -1,0 +1,237 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: WAF Analysis Agent — one-click deployment (Cognito + API Gateway + Lambda + IAM)
+
+Parameters:
+  AgentImageUri:
+    Type: String
+    Description: ECR Public image URI for the WAF Agent
+    Default: public.ecr.aws/PLACEHOLDER/waf-agent:latest
+  AgentRuntimeEndpoint:
+    Type: String
+    Description: AgentCore Runtime invoke endpoint (fill after deploying runtime with agentcore CLI)
+    Default: PLACEHOLDER_FILL_AFTER_DEPLOY
+
+Resources:
+  # --- Cognito ---
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      AutoVerifiedAttributes: [email]
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub ${AWS::StackName}-client
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders: [COGNITO]
+
+  # --- Lambda (bridge between API GW and AgentCore) ---
+  InvokeLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: InvokeAgentCore
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock-agentcore:InvokeAgentRuntime
+                Resource: '*'
+
+  InvokeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-invoke
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt InvokeLambdaRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          AGENT_RUNTIME_ENDPOINT: !Ref AgentRuntimeEndpoint
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          client = boto3.client('bedrock-agentcore')
+
+          def handler(event, context):
+              body = json.loads(event.get('body', '{}'))
+              prompt = body.get('prompt', '')
+
+              response = client.invoke_agent_runtime(
+                  agentRuntimeEndpoint=os.environ['AGENT_RUNTIME_ENDPOINT'],
+                  payload=json.dumps({'prompt': prompt}),
+              )
+
+              result = json.loads(response['body'].read())
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps(result),
+              }
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref InvokeLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  # --- API Gateway ---
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-api
+      ProtocolType: HTTP
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: CognitoAuth
+      IdentitySource: $request.header.Authorization
+      JwtConfiguration:
+        Audience:
+          - !Ref UserPoolClient
+        Issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+
+  InvokeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: POST /invoke
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+      Target: !Sub integrations/${AgentIntegration}
+
+  AgentIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt InvokeLambda.Arn
+      PayloadFormatVersion: '2.0'
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  # --- IAM Role for AgentCore Runtime ---
+  AgentExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock-agentcore.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: WAFReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WAF
+                Effect: Allow
+                Action:
+                  - wafv2:GetWebACL
+                  - wafv2:ListWebACLs
+                  - wafv2:GetLoggingConfiguration
+                  - wafv2:ListResourcesForWebACL
+                Resource: '*'
+              - Sid: CloudWatchMetrics
+                Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricData
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                Resource: '*'
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                  - logs:DescribeLogGroups
+                Resource: '*'
+              - Sid: Athena
+                Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                Resource: '*'
+              - Sid: S3Read
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: '*'
+              - Sid: Glue
+                Effect: Allow
+                Action:
+                  - glue:GetTable
+                  - glue:GetDatabase
+                  - glue:CreateTable
+                  - glue:DeleteTable
+                  - glue:CreateDatabase
+                Resource: '*'
+              - Sid: Bedrock
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+
+Outputs:
+  ApiEndpoint:
+    Value: !GetAtt HttpApi.ApiEndpoint
+    Description: API Gateway endpoint — POST /invoke with Cognito JWT
+  UserPoolId:
+    Value: !Ref UserPool
+    Description: Cognito User Pool ID (add users here)
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+    Description: Cognito App Client ID (for authentication)
+  ExecutionRoleArn:
+    Value: !GetAtt AgentExecutionRole.Arn
+    Description: IAM Role ARN — use when deploying AgentCore Runtime
+  DeployCommand:
+    Value: !Sub |
+      agentcore launch --image ${AgentImageUri} --role ${AgentExecutionRole.Arn}
+    Description: Run this after stack creation to deploy AgentCore Runtime, then update AGENT_RUNTIME_ENDPOINT

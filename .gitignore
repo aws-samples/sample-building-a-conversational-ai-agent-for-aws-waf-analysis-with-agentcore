@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.cache/
+design/
+*.html

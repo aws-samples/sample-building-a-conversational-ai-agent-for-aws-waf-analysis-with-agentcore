@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "waf-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "strands-agents>=1.15.0",
+    "strands-agents-tools>=0.1.0",
+    "bedrock-agentcore>=1.0.6",
+    "boto3>=1.40.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "bedrock-agentcore-starter-toolkit>=0.2.0",
+    "pytest>=9.0",
+]
