@@ -23,7 +23,7 @@ TEMPLATES = {
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
-        "query": "filter @message like '{rule_name}' | stats count(*) as cnt by httpRequest.headers.0.value | sort cnt desc | limit {limit}",
+        "query": "parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | filter @message like '{rule_name}' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
     },
@@ -68,7 +68,7 @@ TEMPLATES = {
         "description": "Top IPs matching a specific WAF label",
     },
     "action_timeline": {
-        "query": "filter action = '{action}' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
+        "query": "filter action = '{action}' | stats count(*) as cnt by bin(5m) | sort @timestamp asc | limit {limit}",
         "params": ["action"],
         "description": "Timeline of a specific action (5-min buckets)",
     },
@@ -76,11 +76,13 @@ TEMPLATES = {
 
 
 def _validate_ip(ip: str) -> bool:
-    """Basic IP format validation."""
-    parts = ip.split(".")
-    if len(parts) != 4:
+    """Validate IP format (IPv4 and IPv6)."""
+    import ipaddress
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
         return False
-    return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
 def _sanitize_param(value: str) -> str:
