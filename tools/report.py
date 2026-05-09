@@ -209,10 +209,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     blocked_change, blocked_change_class = fmt_change(this_week["blocked"], last_week["blocked"])
     block_rate = f"{(this_week['blocked'] / total_this * 100):.1f}" if total_this > 0 else "0"
 
-    # Anti-DDoS AMR events — query label metrics
+    # Anti-DDoS AMR events — query logs for event-detected + ddos-request
     antiddos_section = ""
     ddos_events = 0
-    if challenge_total > 0:  # Only check if we have log access
+    if challenge_total > 0:
         try:
             from tools.session_state import get_log_destination as _get_log_dest
             log_dest = _get_log_dest()
@@ -222,6 +222,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 _logs = get_client("logs", region_name=region)
                 _log_end = int(end.timestamp())
                 _log_start = int(start_this_week.timestamp())
+                # Event detection count + time range
                 resp = _logs.start_query(
                     logGroupName=_log_group, startTime=_log_start, endTime=_log_end,
                     queryString="filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
@@ -229,18 +230,47 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 )
                 _time.sleep(8)
                 result = _logs.get_query_results(queryId=resp["queryId"])
+                event_cnt = 0
+                event_first = "N/A"
+                event_last = "N/A"
                 for row in result.get("results", []):
                     d = {f["field"]: f["value"] for f in row}
-                    ddos_events = int(d.get("cnt", 0))
-                    if ddos_events > 0:
-                        antiddos_section = (
-                            f'<h2>Anti-DDoS Events</h2>'
-                            f'<div class="grid">'
-                            f'<div class="roi-box"><div class="label">DDoS Events Detected</div><div class="value">{ddos_events:,}</div></div>'
-                            f'<div class="card"><div class="label">First Detected</div><div class="value">{d.get("first", "N/A")}</div></div>'
-                            f'<div class="card"><div class="label">Last Detected</div><div class="value">{d.get("last", "N/A")}</div></div>'
-                            f'</div>'
-                        )
+                    event_cnt = int(d.get("cnt", 0))
+                    event_first = d.get("first", "N/A")
+                    event_last = d.get("last", "N/A")
+
+                # DDoS request count (actual malicious requests identified)
+                ddos_request_cnt = 0
+                resp = _logs.start_query(
+                    logGroupName=_log_group, startTime=_log_start, endTime=_log_end,
+                    queryString="filter @message like 'anti-ddos:ddos-request' | stats count(*) as total, sum(@message like 'high-suspicion') as high, sum(@message like 'medium-suspicion') as medium, sum(@message like 'low-suspicion') as low",
+                    limit=1,
+                )
+                _time.sleep(8)
+                result = _logs.get_query_results(queryId=resp["queryId"])
+                ddos_total = 0
+                ddos_high = 0
+                ddos_medium = 0
+                ddos_low = 0
+                for row in result.get("results", []):
+                    d = {f["field"]: f["value"] for f in row}
+                    ddos_total = int(float(d.get("total", 0)))
+                    ddos_high = int(float(d.get("high", 0)))
+                    ddos_medium = int(float(d.get("medium", 0)))
+                    ddos_low = int(float(d.get("low", 0)))
+
+                if event_cnt > 0:
+                    antiddos_section = (
+                        f'<h2>Anti-DDoS Protection</h2>'
+                        f'<div class="grid">'
+                        f'<div class="roi-box"><div class="label">DDoS Event Detected</div><div class="value">Yes</div><div class="change">{event_first} — {event_last}</div></div>'
+                        f'<div class="card"><div class="label">DDoS Requests Identified</div><div class="value">{ddos_total:,}</div></div>'
+                        f'<div class="card"><div class="label">High Suspicion</div><div class="value">{ddos_high:,}</div></div>'
+                        f'<div class="card"><div class="label">Medium Suspicion</div><div class="value">{ddos_medium:,}</div></div>'
+                        f'<div class="card"><div class="label">Low Suspicion</div><div class="value">{ddos_low:,}</div></div>'
+                        f'<div class="card"><div class="label">Total Requests During Event</div><div class="value">{event_cnt:,}</div></div>'
+                        f'</div>'
+                    )
         except Exception:
             pass
 
