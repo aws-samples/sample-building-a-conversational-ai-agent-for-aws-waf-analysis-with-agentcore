@@ -110,7 +110,8 @@ canvas {{ max-height: 300px; }}
   <div class="card"><div class="label">Total Requests</div><div class="value">{total_requests}</div><div class="change {total_change_class}">{total_change}</div></div>
   <div class="card"><div class="label">Allowed</div><div class="value">{allowed_requests}</div></div>
   <div class="card"><div class="label">Blocked</div><div class="value">{blocked_requests}</div><div class="change {blocked_change_class}">{blocked_change}</div></div>
-  <div class="card"><div class="label">Challenged</div><div class="value">{challenge_total}</div></div>
+  <div class="card"><div class="label">Challenged</div><div class="value">{challenge_count}</div></div>
+  <div class="card"><div class="label">CAPTCHA</div><div class="value">{captcha_count}</div></div>
 </div>
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
@@ -284,11 +285,11 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         except Exception:
             pass
     log_group = log_dest.split(":log-group:")[-1].rstrip(":*") if log_dest and ":log-group:" in log_dest else None
+    logs_client = get_client("logs", region_name=region) if log_group else None
+    log_end = int(end.timestamp()) if log_group else 0
+    log_start = int(start_this_week.timestamp()) if log_group else 0
     if caps.get("anti_ddos_amr") and log_group:
         try:
-            logs_client = get_client("logs", region_name=region)
-            log_end = int(end.timestamp())
-            log_start = int(start_this_week.timestamp())
 
             # Event time range + total requests during event
             event_cnt = _poll_log_query(logs_client, log_group, log_start, log_end,
@@ -564,89 +565,92 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
             if common_rows or targeted_rows:
                 bot_section = '<h2>Bot Control</h2>'
 
-                # Legitimate bot traffic (categories)
-                if bot_categories:
-                    _CAT_FRIENDLY = {"http_library": "HTTP Libraries", "monitoring": "Monitoring/Health Checks",
-                                     "search_engine": "Search Engines", "seo": "SEO Crawlers", "advertising": "Advertising",
-                                     "social_media": "Social Media", "ai": "AI Crawlers", "content_fetcher": "Content Fetchers",
-                                     "scraping_framework": "Scraping Frameworks", "security": "Security Scanners",
-                                     "archiver": "Web Archivers", "link_checker": "Link Checkers", "miscellaneous": "Miscellaneous"}
-                    cat_rows = ""
-                    for cat, count in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True):
-                        friendly = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title())
-                        cat_rows += f"<tr><td>{friendly}</td><td>{count:,}</td></tr>\n"
-                    # Bot names detail with action status
-                    # Query verified/unverified totals
-                    verified_total = 0
-                    unverified_total = 0
+                # Query verified/unverified totals from metrics
+                verified_total = 0
+                unverified_total = 0
+                try:
+                    vu_resp = cw.get_metric_data(
+                        MetricDataQueries=[
+                            {"Id": "vf", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                                {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
+                                {"Name": "LabelName", "Value": "verified"},
+                                {"Name": "WebACL", "Value": webacl_name},
+                            ]}, "Period": 604800, "Stat": "Sum"}},
+                            {"Id": "uv", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                                {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
+                                {"Name": "LabelName", "Value": "unverified"},
+                                {"Name": "WebACL", "Value": webacl_name},
+                            ]}, "Period": 604800, "Stat": "Sum"}},
+                        ],
+                        StartTime=start_this_week, EndTime=end,
+                    )
+                    for r in vu_resp.get("MetricDataResults", []):
+                        val = int(sum(r.get("Values", [])))
+                        if r["Id"] == "vf":
+                            verified_total = val
+                        elif r["Id"] == "uv":
+                            unverified_total = val
+                except Exception:
+                    pass
+
+                # Query per-bot-name verification status from logs
+                bot_verification = {}  # {name: "verified"/"unverified"}
+                if log_group:
                     try:
-                        vu_resp = cw.get_metric_data(
-                            MetricDataQueries=[
-                                {"Id": "vf", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
-                                    {"Name": "LabelName", "Value": "verified"},
-                                    {"Name": "WebACL", "Value": webacl_name},
-                                ]}, "Period": 604800, "Stat": "Sum"}},
-                                {"Id": "uv", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
-                                    {"Name": "LabelName", "Value": "unverified"},
-                                    {"Name": "WebACL", "Value": webacl_name},
-                                ]}, "Period": 604800, "Stat": "Sum"}},
-                            ],
-                            StartTime=start_this_week, EndTime=end,
-                        )
-                        for r in vu_resp.get("MetricDataResults", []):
-                            val = int(sum(r.get("Values", [])))
-                            if r["Id"] == "vf":
-                                verified_total = val
-                            elif r["Id"] == "uv":
-                                unverified_total = val
+                        bot_ver_result = _poll_log_query(logs_client, log_group, log_start, log_end,
+                            'filter @message like "bot-control:bot:name:" | filter @message like "bot:verified" or @message like "bot:unverified" | parse @message /bot:name:(?<botName>[a-z0-9_]+)/ | parse @message /bot:(?<verificationStatus>verified|unverified)/ | stats count(*) as cnt by botName, verificationStatus | sort cnt desc',
+                            return_rows=True)
+                        for row in bot_ver_result or []:
+                            d = {f["field"]: f["value"] for f in row}
+                            bn = d.get("botName", "")
+                            vs = d.get("verificationStatus", "")
+                            if bn and vs:
+                                bot_verification[bn] = vs
                     except Exception:
                         pass
 
+                # Summary cards
+                bot_section += (
+                    f'<div class="grid">'
+                    f'<div class="card"><div class="label">Verified Bots (legitimate)</div><div class="value">{verified_total:,}</div></div>'
+                    f'<div class="card"><div class="label">Unverified Bots</div><div class="value">{unverified_total:,}</div></div>'
+                    f'<div class="card"><div class="label">Illegitimate Bots Blocked</div><div class="value">{common_total_blocked:,}</div></div>'
+                    f'</div>'
+                )
+
+                # Individual bots table (single unified table with verification status)
+                if bot_names_detail:
                     name_rows = ""
-                    for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:10]:
+                    for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:15]:
                         total = d["allowed"] + d["blocked"] + d["challenged"]
-                        # Show what actually happened to this bot
-                        if d["blocked"] > 0 and d["allowed"] == 0:
-                            status = "🚫 Blocked"
-                        elif d["blocked"] > 0 and d["allowed"] > 0:
-                            status = f"🚫 {d['blocked']:,} blocked, ✅ {d['allowed']:,} allowed"
-                        elif d["challenged"] > 0 and d["allowed"] > 0:
-                            status = f"⚡ {d['challenged']:,} challenged, ✅ {d['allowed']:,} allowed"
-                        elif d["allowed"] > 0:
-                            status = "✅ Allowed"
-                        else:
-                            status = "⚡ Challenged"
                         display = bn.replace("_", " ").title()
-                        name_rows += f"<tr><td>{display}</td><td>{total:,}</td><td>{status}</td></tr>\n"
-
+                        # Verification status from log query
+                        vs = bot_verification.get(bn, "")
+                        if vs == "verified":
+                            vs_badge = "✅ Verified"
+                        elif vs == "unverified":
+                            vs_badge = "⚠️ Unverified"
+                        else:
+                            vs_badge = "—"
+                        # Action taken
+                        if d["blocked"] > 0 and d["allowed"] == 0:
+                            action = "🚫 Blocked"
+                        elif d["blocked"] > 0 and d["allowed"] > 0:
+                            action = f"🚫 {d['blocked']:,} blocked, ✅ {d['allowed']:,} allowed"
+                        elif d["challenged"] > 0:
+                            action = f"⚡ Challenged"
+                        else:
+                            action = "✅ Allowed"
+                        name_rows += f"<tr><td>{display}</td><td>{vs_badge}</td><td>{total:,}</td><td>{action}</td></tr>\n"
                     bot_section += (
-                        f'<div class="grid">'
-                        f'<div class="card"><div class="label">Verified Bots (legitimate)</div><div class="value">{verified_total:,}</div></div>'
-                        f'<div class="card"><div class="label">Unverified Bots</div><div class="value">{unverified_total:,}</div></div>'
-                        f'</div>'
-                        f'<h3>Bot Traffic by Category</h3>'
-                        f'<table><tr><th>Category</th><th>Requests</th></tr>{cat_rows}</table>'
+                        f'<h3>Individual Bots</h3>'
+                        f'<table><tr><th>Bot Name</th><th>Verification</th><th>Requests</th><th>Action</th></tr>{name_rows}</table>'
                     )
-                    if name_rows:
-                        bot_section += (
-                            f'<h3>Top Individual Bots</h3>'
-                            f'<table><tr><th>Bot Name</th><th>Requests</th><th>Action Taken</th></tr>{name_rows}</table>'
-                        )
 
-                if common_rows:
-                    bot_section += (
-                        f'<h3>Common Bots (self-declared)</h3>'
-                        f'<div class="grid">'
-                        f'<div class="card"><div class="label">Illegitimate Bots Blocked</div><div class="value">{common_total_blocked:,}</div></div>'
-                        f'<div class="card"><div class="label">Legitimate/Monitored Bots</div><div class="value">{common_total_allowed:,}</div></div>'
-                        f'</div>'
-                        f'<table><tr><th>Bot Category/Signal</th><th>Requests</th><th>Action</th></tr>{common_rows}</table>'
-                    )
+                # Targeted detection rules
                 if targeted_rows:
                     bot_section += (
-                        f'<h3>Targeted Bots (advanced/evasive)</h3>'
+                        f'<h3>Targeted Detection (behavioral analysis)</h3>'
                         f'<div class="grid">'
                         f'<div class="card"><div class="label">Advanced Bots Blocked/Challenged</div><div class="value">{targeted_total_blocked:,}</div></div>'
                         f'<div class="card"><div class="label">Suspicious (Counted)</div><div class="value">{targeted_total_counted:,}</div></div>'
@@ -699,6 +703,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         block_rate=block_rate,
         threats_mitigated=f"{threats_mitigated:,}",
         challenge_total=f"{challenge_total:,}",
+        challenge_count=f"{this_week['challenge']:,}",
+        captcha_count=f"{this_week['captcha']:,}",
         challenge_effectiveness=f"Solved: {challenge_solved:,}" if challenge_solved > 0 else "All blocked (automation)",
         antiddos_section=antiddos_section,
         bot_section=bot_section,
