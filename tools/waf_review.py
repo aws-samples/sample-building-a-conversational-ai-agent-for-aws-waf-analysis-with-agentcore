@@ -2,7 +2,7 @@
 
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_capabilities
+from tools.session_state import get_capabilities, get_host_profiles
 
 # Recommended priority order (lower index = should be earlier)
 PRIORITY_ORDER = [
@@ -308,19 +308,24 @@ def _check_bot_control(rules, findings):
         overrides = {o["Name"]: list(o.get("ActionToUse", {}).keys())[0] for o in mrg.get("RuleActionOverrides", [])}
 
         # Check SignalNonBrowserUserAgent and CategoryHttpLibrary
-        if "SignalNonBrowserUserAgent" not in overrides:
+        # Only flag if WebACL likely has non-browser traffic (API/native app)
+        # If pure frontend, blocking non-browser UA is correct behavior
+        host_profiles = get_host_profiles() if get_host_profiles else {}
+        has_backend = any("BACKEND" in str(v) or "MIXED" in str(v) for v in host_profiles.values()) if host_profiles else True  # default to flagging if unknown
+
+        if has_backend and "SignalNonBrowserUserAgent" not in overrides:
             _add(findings, "Low",
                  "SignalNonBrowserUserAgent not overridden to Count",
                  f"{rule['Name']} (priority {rule['Priority']})",
-                 "Default Block will block legitimate non-browser clients (native apps, API clients, monitoring tools).",
-                 "Override SignalNonBrowserUserAgent to Count.")
+                 "Default Block will block legitimate non-browser clients (native apps, API clients, monitoring tools). Only relevant if WebACL protects API/native app traffic.",
+                 "Override SignalNonBrowserUserAgent to Count if WebACL has non-browser traffic.")
 
-        if "CategoryHttpLibrary" not in overrides:
+        if has_backend and "CategoryHttpLibrary" not in overrides:
             _add(findings, "Low",
                  "CategoryHttpLibrary not overridden to Count",
                  f"{rule['Name']} (priority {rule['Priority']})",
-                 "Default Block will block legitimate HTTP libraries used by native apps and API clients.",
-                 "Override CategoryHttpLibrary to Count.")
+                 "Default Block will block legitimate HTTP libraries used by native apps and API clients. Only relevant if WebACL has non-browser traffic.",
+                 "Override CategoryHttpLibrary to Count if WebACL has non-browser traffic.")
 
         # Check TGT_TokenAbsent override — Count is the DEFAULT and correct
         # Only flag if overridden to Allow (which would suppress the label)
@@ -503,7 +508,7 @@ def _check_priority_order(rules, findings):
 
         if group_name in MANAGED_GROUPS:
             cat = MANAGED_GROUPS[group_name]
-        elif action == "Allow" and "whitelist" in name_lower or "allow" in name_lower:
+        elif action == "Allow" and ("whitelist" in name_lower or "allow" in name_lower):
             cat = "ip_whitelist"
         elif action == "Block" and ("blacklist" in name_lower or "ban" in name_lower):
             cat = "ip_blacklist"
@@ -527,6 +532,7 @@ def _check_priority_order(rules, findings):
         rule_categories.append((rule, cat))
 
     # Check for ordering violations
+    reported = 0
     for i in range(len(rule_categories)):
         for j in range(i + 1, len(rule_categories)):
             rule_i, cat_i = rule_categories[i]
@@ -541,7 +547,10 @@ def _check_priority_order(rules, findings):
                      f"{rule_i['Name']} (P{rule_i['Priority']}) before {rule_j['Name']} (P{rule_j['Priority']})",
                      f"'{rule_i['Name']}' ({cat_i}) is before '{rule_j['Name']}' ({cat_j}), but recommended order is reversed.",
                      "Reorder rules according to best practice: label producers → AMR → IP reputation → rate-based → Challenge → CRS → Bot Control (last).")
-                return  # Only report first significant ordering issue
+                reported += 1
+                if reported >= 3:
+                    return
+                break  # next i
 
 
 def _check_managed_versions(rules, findings):
