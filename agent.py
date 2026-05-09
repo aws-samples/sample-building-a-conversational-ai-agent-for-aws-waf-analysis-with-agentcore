@@ -96,7 +96,7 @@ When user reports service impact or suspected attack:
 
 Step 1: Metrics panorama — AllowedRequests + BlockedRequests trend → find anomaly window
 Step 2: Branch by WAF config:
-- Has Anti-DDoS AMR → check label metrics for event-detected → if absent, AMR missed it (distributed attack)
+- Has Anti-DDoS AMR → check label metrics for awswaf:managed:aws:anti-ddos:event-detected → if absent, AMR missed it (distributed attack)
 - Has rate-based only → check kick-in delay pattern (ALLOW before BLOCK is normal)
 - No protection → all attack traffic is ALLOW, find top talkers
 
