@@ -55,6 +55,8 @@ REPORT_TEMPLATE = """\
 <meta charset="UTF-8">
 <title>WAF Weekly Report — {webacl_name}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
 <style>
 :root.dark {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; --chart-text: #e6edf3; }}
 :root.light {{ --bg: #ffffff; --fg: #1f2328; --card: #f6f8fa; --border: #d0d7de; --accent: #0969da; --green: #1a7f37; --red: #cf222e; --muted: #656d76; --chart-text: #1f2328; }}
@@ -115,7 +117,7 @@ canvas {{ max-height: 300px; }}
 </div>
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
-<p style="color:var(--muted);font-size:.8rem;text-align:center;">5-minute sum</p>
+<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum</p>
 
 <h2>Top Attack Sources (Countries)</h2>
 <table>
@@ -159,6 +161,9 @@ new Chart(document.getElementById('dailyChart'), {{
     scales: {{
       x: {{ ticks: {{ color: chartTextColor, maxTicksLimit: 14 }} }},
       y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
+    }},
+    plugins: {{
+      zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }}
     }}
   }}
 }});
@@ -362,9 +367,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     import json as _json
                     ddos_chart_resp = cw.get_metric_data(
                         MetricDataQueries=[
-                            {"Id": "total", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"AllowedRequests\" OR \"BlockedRequests\" OR \"ChallengeRequests\")', 'Sum', 300),0))"},
-                            {"Id": "evtdet", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 300),0))"},
-                            {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 300),0))"},
+                            {"Id": "total", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"AllowedRequests\" OR \"BlockedRequests\" OR \"ChallengeRequests\")', 'Sum', 600),0))"},
+                            {"Id": "evtdet", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 600),0))"},
+                            {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 600),0))"},
                         ],
                         StartTime=start_this_week, EndTime=end, ScanBy="TimestampAscending",
                     )
@@ -380,7 +385,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     if ddos_chart_data["labels"]:
                         antiddos_section += (
                             f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
-                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">5-minute sum</p>'
+                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum</p>'
                             f'<script>'
                             f'(function(){{'
                             f'const ddosData = {_json.dumps(ddos_chart_data)};'
@@ -389,10 +394,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             f'  type: "line",'
                             f'  data: {{ labels: ddosData.labels, datasets: ['
                             f'    {{ label: "Total Requests", data: ddosData.total, borderColor: "#58a6ff", fill: false, tension: 0.2, pointRadius: 0 }},'
-                            f'    {{ label: "Event Detected", data: ddosData.event, borderColor: "#d29922", fill: true, backgroundColor: "rgba(210,153,34,0.1)", tension: 0.2, pointRadius: 0 }},'
-                            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", fill: true, backgroundColor: "rgba(248,81,73,0.2)", tension: 0.2, pointRadius: 0 }},'
+                            f'    {{ label: "Event Detected", data: ddosData.event, borderColor: "#d29922", fill: true, backgroundColor: "rgba(210,153,34,0.15)", tension: 0.2, pointRadius: 0 }},'
+                            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", fill: true, backgroundColor: "rgba(248,81,73,0.25)", tension: 0.2, pointRadius: 0 }},'
                             f'  ] }},'
-                            f'  options: {{ responsive: true, plugins: {{ title: {{ display: true, text: "Anti-DDoS Detection (full week)", color: c }}, legend: {{ labels: {{ color: c }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ ticks: {{ color: c }} }} }} }}'
+                            f'  options: {{ responsive: true, plugins: {{ title: {{ display: true, text: "Anti-DDoS Detection (full week)", color: c }}, legend: {{ labels: {{ color: c }} }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ type: "logarithmic", ticks: {{ color: c }} }} }} }}'
                             f'}});'
                             f'}})();'
                             f'</script>'
@@ -897,10 +902,10 @@ def _get_5min_traffic(cw, webacl_name: str, start, end) -> list:
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"AllowedRequests\"', 'Sum', 300),0))"},
-                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"BlockedRequests\"', 'Sum', 300),0))"},
-                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"ChallengeRequests\"', 'Sum', 300),0))"},
-                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"CaptchaRequests\"', 'Sum', 300),0))"},
+                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"AllowedRequests\"', 'Sum', 600),0))"},
+                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"BlockedRequests\"', 'Sum', 600),0))"},
+                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"ChallengeRequests\"', 'Sum', 600),0))"},
+                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"CaptchaRequests\"', 'Sum', 600),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
