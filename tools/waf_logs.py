@@ -8,7 +8,8 @@ from tools.session_state import get_logs_region, get_log_destination
 
 MAX_RESULTS = 25
 POLL_INTERVAL = 2
-MAX_POLL = 300
+MAX_POLL = 600
+MAX_HOURS = 168  # 7 days max per query — use Athena for longer ranges
 
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
@@ -212,6 +213,9 @@ def run_logs_query(
     # Execute
     region = get_logs_region()
     client = get_client("logs", region_name=region)
+
+    if hours_ago > MAX_HOURS:
+        return f"Error: max time range is {MAX_HOURS} hours (7 days). For longer ranges, use Athena. Requested: {hours_ago}h"
 
     end_time = int(time.time())
     start_time = end_time - (hours_ago * 3600)
