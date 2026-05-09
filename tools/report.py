@@ -275,6 +275,12 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
     # Bot Control section — query label metrics for bot classification
     bot_section = ""
+    bot_data = {}
+    bot_orgs = {}
+    common_total_blocked = 0
+    common_total_allowed = 0
+    targeted_total_blocked = 0
+    targeted_total_counted = 0
     if caps.get("bot_control") != "none":
         try:
             # Query main bot-control namespace (has multiple LabelNames → SEARCH label = "{LabelName} {MetricName}")
