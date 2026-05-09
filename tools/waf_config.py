@@ -178,8 +178,4 @@ def _detect_capabilities(rules: list) -> dict:
                 caps["anti_ddos_amr"] = True
                 caps["has_challenge"] = True  # Anti-DDoS AMR uses Challenge
 
-        # Anti-DDoS AMR (legacy Shield mitigation — deprecated but may still exist)
-        if "ShieldMitigation" in name:
-            caps["anti_ddos_amr"] = True
-
     return caps
