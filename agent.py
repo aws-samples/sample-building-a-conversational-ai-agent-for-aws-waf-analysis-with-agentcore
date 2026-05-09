@@ -130,7 +130,8 @@ Step 3: Cross-validate (don't rely on frequency alone)
 - run_logs_query(query_type="ip_uri_breakdown", ip="...") → are URIs diverse or repetitive?
 - run_logs_query(query_type="ip_ja4_fingerprints", ip="...") → headless browser fingerprint?
 - Check if IP triggered ANY count rules (even non-blocking ones indicate suspicion)
-- Check token reuse patterns (same token from multiple IPs = token sharing/replay)
+- Token reuse: first check if TGT_TokenReuseIP label exists in metrics (low/medium/high).
+  If yes → WAF already detects it, recommend COUNT→BLOCK. If no → run token_reuse_ips query.
 
 Step 4: Conclusion
 - "Sophisticated bot (browser automation)" = high frequency + real browser + diverse URIs + no rule hits
@@ -138,6 +139,9 @@ Step 4: Conclusion
 - "Residential proxy / IP rotation" = many IPs, each moderate frequency, same behavior pattern
   → Recommend: Targeted Bot Control (behavioral analysis), rate-based won't work
 - "Token reuse attack" = valid tokens being replayed across IPs
+  → First check: does label 'token_reuse' exist in metrics? (TGT_TokenReuseIP rule)
+    - If yes: query label_top_ips with label="token_reuse" — WAF already detected it, just need to change action from COUNT to BLOCK
+    - If no: run token_reuse_ips query to detect manually (approximate)
   → Recommend: TGT_TokenReuseIP to BLOCK (not Challenge — they can solve challenges)
 
 **Critical**: When analyzing a single IP, ALWAYS compute frequency first:
