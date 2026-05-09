@@ -45,3 +45,13 @@ def get_webacl_name() -> str | None:
 
 def get_scope() -> str:
     return _state.get("scope", "CLOUDFRONT")
+
+
+def set_host_profiles(profiles: dict):
+    """Store host traffic profiles (frontend/backend/mixed classification)."""
+    _state["host_profiles"] = profiles
+
+
+def get_host_profiles() -> dict:
+    """Get host traffic profiles."""
+    return _state.get("host_profiles", {})

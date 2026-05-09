@@ -160,6 +160,17 @@ Step 4: Conclusion
 If any of these are superhuman (>100 unique pages/hour, >10 req/sec sustained),
 conclude automation REGARDLESS of how "normal" the request content looks.
 
+## Host Profiling (Frontend vs Backend Detection)
+
+Before giving Challenge-related recommendations, determine if WebACL protects mixed traffic:
+- run_logs_query(query_type="host_traffic_profile") → shows all hosts with request counts and write ratios
+- Classification (deterministic):
+  - Mostly GET + HTML page URIs + static resources = FRONTEND (Challenge applicable)
+  - High POST/PUT/DELETE + /api/ URIs + no static resources = BACKEND (Challenge = Block)
+  - Mixed = recommend splitting into separate WebACLs or using scope-down by host
+- If mixed: Bot Control and Challenge rules should scope-down to frontend hosts only
+- Backend hosts: disable ChallengeAllDuringEvent, raise Block sensitivity instead
+
 ## Rule Recommendations
 
 | Finding | Recommendation |

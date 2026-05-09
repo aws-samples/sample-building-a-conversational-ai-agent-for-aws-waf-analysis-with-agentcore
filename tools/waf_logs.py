@@ -97,6 +97,21 @@ TEMPLATES = {
         "params": [],
         "description": "Detect token reuse — same session cookie used from multiple IPs (approximate)",
     },
+    "host_traffic_profile": {
+        "query": "parse @message '\"name\":\"host\",\"value\":\"*\"' as host | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
+        "params": [],
+        "description": "Traffic profile per Host header — identify frontend vs backend/API domains",
+    },
+    "host_uri_pattern": {
+        "query": "parse @message '\"name\":\"host\",\"value\":\"*\"' as host | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "params": ["host"],
+        "description": "Top URIs for a specific host — determine if frontend (HTML pages) or backend (API endpoints)",
+    },
+    "host_method_distribution": {
+        "query": "parse @message '\"name\":\"host\",\"value\":\"*\"' as host | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
+        "params": ["host"],
+        "description": "HTTP method distribution for a host — high POST/PUT = API, mostly GET = frontend",
+    },
 }
 
 
@@ -124,6 +139,7 @@ def run_logs_query(
     ip: str = "",
     label: str = "",
     action: str = "",
+    host: str = "",
     hours_ago: int = 24,
     limit: int = 25,
 ) -> str:
@@ -147,11 +163,15 @@ def run_logs_query(
             - label_top_ips: Top IPs for a WAF label (needs label)
             - action_timeline: Timeline of an action (needs action)
             - token_reuse_ips: Detect token reuse across multiple IPs
+            - host_traffic_profile: Traffic profile per Host — identify frontend vs backend domains
+            - host_uri_pattern: Top URIs for a specific host (needs host param)
+            - host_method_distribution: HTTP method distribution for a host (needs host param)
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
         label: WAF label name (for label_top_ips).
         action: Action value — BLOCK, ALLOW, COUNT (for action_timeline).
+        host: Hostname (for host_uri_pattern, host_method_distribution).
         hours_ago: How far back to query (default 24 hours).
         limit: Max results (default 25, max 25).
 
