@@ -298,44 +298,34 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         bot_data[rule_name] = {}
                     bot_data[rule_name][action] = bot_data[rule_name].get(action, 0) + total
 
-            # Classify into Common vs Targeted
-            common_rules = ["CategoryHttpLibrary", "SignalNonBrowserUserAgent", "SignalKnownBotDataCenter",
-                           "CategorySearchEngine", "CategorySeo", "CategoryAdvertising", "CategoryArchiver",
-                           "CategoryContentFetcher", "CategorySocialMedia"]
-            targeted_rules = ["TGT_TokenAbsent", "TGT_VolumetricIpTokenAbsent", "TGT_VolumetricSession",
-                            "TGT_TokenReuseIp", "TGT_SignalBrowserAutomation"]
-
+            # Classify by prefix: Category*/Signal* = Common, TGT_* = Targeted
             common_rows = ""
             common_total_blocked = 0
             common_total_allowed = 0
-            for rule in common_rules:
-                if rule in bot_data:
-                    d = bot_data[rule]
-                    blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
-                    counted = d.get("Count", 0)
-                    allowed = d.get("Allowed", 0)
-                    common_total_blocked += blocked
-                    common_total_allowed += allowed + counted
-                    action_str = "🚫 Blocked" if blocked > 0 else "🏷️ Labeled"
-                    total_hits = blocked + counted + allowed
-                    if total_hits > 0:
-                        common_rows += f"<tr><td>{rule}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
-
             targeted_rows = ""
             targeted_total_blocked = 0
             targeted_total_counted = 0
-            for rule in targeted_rules:
-                if rule in bot_data:
-                    d = bot_data[rule]
-                    blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
-                    counted = d.get("Count", 0)
-                    allowed = d.get("Allowed", 0)
+
+            for rule_name, d in sorted(bot_data.items(), key=lambda x: sum(x[1].values()), reverse=True):
+                blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
+                counted = d.get("Count", 0)
+                allowed = d.get("Allowed", 0)
+                total_hits = blocked + counted + allowed
+                if total_hits == 0:
+                    continue
+
+                if rule_name.startswith("TGT_"):
+                    # Targeted level
                     targeted_total_blocked += blocked
                     targeted_total_counted += counted
-                    total_hits = blocked + counted + allowed
-                    if total_hits > 0:
-                        action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"🏷️ {counted:,} counted"
-                        targeted_rows += f"<tr><td>{rule}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+                    action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"🏷️ {counted:,} counted"
+                    targeted_rows += f"<tr><td>{rule_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+                elif rule_name.startswith("Category") or rule_name.startswith("Signal"):
+                    # Common level
+                    common_total_blocked += blocked
+                    common_total_allowed += allowed + counted
+                    action_str = "🚫 Blocked" if blocked > 0 else "🏷️ Labeled"
+                    common_rows += f"<tr><td>{rule_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
 
             if common_rows or targeted_rows:
                 bot_section = '<h2>Bot Control</h2>'
