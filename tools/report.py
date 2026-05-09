@@ -575,26 +575,21 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     for cat, count in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True):
                         friendly = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title())
                         cat_rows += f"<tr><td>{friendly}</td><td>{count:,}</td></tr>\n"
-                    # Bot names detail with verification status
+                    # Bot names detail with action status
                     name_rows = ""
                     for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:10]:
                         total = d["allowed"] + d["blocked"] + d["challenged"]
-                        # Determine status: only allowed + no blocked/challenged = verified
-                        if d["blocked"] == 0 and d["challenged"] == 0 and d["allowed"] > 0:
-                            status = "✅ Verified"
-                        elif d["blocked"] > 0:
-                            status = "🚫 Unverified (blocked)"
+                        # Show what actually happened to this bot
+                        if d["blocked"] > 0 and d["allowed"] == 0:
+                            status = "🚫 Blocked"
+                        elif d["blocked"] > 0 and d["allowed"] > 0:
+                            status = f"🚫 {d['blocked']:,} blocked, ✅ {d['allowed']:,} allowed"
                         elif d["challenged"] > 0 and d["allowed"] > 0:
-                            status = "⚠️ Unverified (allowed by override)"
+                            status = f"⚡ {d['challenged']:,} challenged, ✅ {d['allowed']:,} allowed"
+                        elif d["allowed"] > 0:
+                            status = "✅ Allowed"
                         else:
-                            status = "⚠️ Unverified"
-                        # If category rule is overridden to Count, mark as allowed-by-override
-                        if d["allowed"] > 0 and d["blocked"] == 0 and d["challenged"] == 0 and overridden_bots:
-                            # Could be verified OR allowed-by-override. Check if it's in monitoring category
-                            if bn in ("route53_health_check",):
-                                status = "✅ Verified"
-                            elif any("Http" in ob or "NonBrowser" in ob for ob in overridden_bots):
-                                status = "⚠️ Allowed (rule override)"
+                            status = "⚡ Challenged"
                         display = bn.replace("_", " ").title()
                         name_rows += f"<tr><td>{display}</td><td>{total:,}</td><td>{status}</td></tr>\n"
 
@@ -605,7 +600,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     if name_rows:
                         bot_section += (
                             f'<h3>Top Individual Bots</h3>'
-                            f'<table><tr><th>Bot Name</th><th>Requests</th><th>Status</th></tr>{name_rows}</table>'
+                            f'<table><tr><th>Bot Name</th><th>Requests</th><th>Action Taken</th></tr>{name_rows}</table>'
                         )
 
                 if common_rows:
