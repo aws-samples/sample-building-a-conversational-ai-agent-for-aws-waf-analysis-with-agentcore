@@ -78,9 +78,9 @@ TEMPLATES = {
         "description": "Per-minute request rate for a specific IP (detect automation)",
     },
     "ip_unique_uris": {
-        "query": "filter httpRequest.clientIp = '{ip}' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
+        "query": "filter httpRequest.clientIp = '{ip}' and not httpRequest.uri like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
         "params": ["ip"],
-        "description": "Unique URI count and time span for an IP (frequency anomaly detection)",
+        "description": "Unique non-static URI count and time span for an IP (excludes JS/CSS/images)",
     },
     "ip_diversity": {
         "query": "filter httpRequest.clientIp = '{ip}' | parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
@@ -88,9 +88,9 @@ TEMPLATES = {
         "description": "UA and JA4 diversity for an IP — high diversity = NAT/shared IP, low = single bot",
     },
     "top_allowed_by_volume": {
-        "query": "filter action = 'ALLOW' | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter action = 'ALLOW' and not httpRequest.uri like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "params": [],
-        "description": "Top ALLOW IPs with unique URI count (find high-volume bypasses)",
+        "description": "Top ALLOW IPs with unique non-static URI count (find high-volume bypasses)",
     },
     "token_reuse_ips": {
         "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",

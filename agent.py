@@ -117,12 +117,18 @@ Step 1: Find high-volume ALLOW IPs
 - run_logs_query(query_type="ip_request_rate", ip="...") → requests per minute for top IPs
 
 Step 2: Frequency anomaly detection (SCRIPT computes, LLM interprets)
-- Human browsing: 1-5 pages/min, with pauses. Max ~50 unique pages/hour.
-- Automation: 10+ pages/min sustained, no pauses. 200+ unique pages/hour.
-- Key metric: unique URIs per hour per IP. >100 is almost certainly automation.
+- Human browsing: 1-5 page loads/min (each page = 10-30 sub-requests for JS/CSS/images/APIs)
+- Automation: sustained high req/min with no pauses
+- Key metrics (use BOTH, not just one):
+  a) Requests per minute (peak and average): sustained >200 req/min from single IP is suspicious
+  b) Unique non-static URIs per hour: filter out .js/.css/.png/.jpg/.gif/.woff/.svg/.ico
+     Human max ~50 unique non-static URIs/hour. >200 is almost certainly automation.
 - Also: requests per minute consistency (humans have variance, bots are steady)
+- NOTE: JA4 fingerprint CAN be spoofed (curl-impersonate, Scrapling, Playwright).
+  JA4 is a supporting signal only, not definitive. Only WAF token is unforgeable.
 - BUT FIRST: run ip_diversity to check if high-volume IP is a NAT/shared IP
-  - Multiple distinct UAs + multiple distinct JA4s = NAT gateway (many real users behind one IP)
+  - Multiple distinct UAs + multiple distinct JA4s (>3) = NAT gateway (many real users behind one IP)
+  - Multiple UAs + single JA4 = SUSPICIOUS (one tool faking different UAs)
   - Single UA + single JA4 + high volume = single bot
   - Do NOT flag NAT IPs as bots
 
