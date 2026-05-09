@@ -114,7 +114,6 @@ canvas {{ max-height: 300px; }}
 </div>
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
-
 <h2>Top Attack Sources (Countries)</h2>
 <table>
 <tr><th>Country</th><th>Blocked Requests</th><th>% of Total Blocked</th></tr>
@@ -565,6 +564,11 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     data_lines.append("2. What did WAF protect against? (specific threat types with numbers)")
     data_lines.append("3. Anything to worry about? (new attack sources, risks)")
     data_lines.append("4. Is the money well spent? (ROI conclusion)")
+    data_lines.append("")
+    data_lines.append("## Domain knowledge (use when writing about DDoS/Bot)")
+    data_lines.append("- Anti-DDoS AMR DDoSRequests rule blocks ANY high-frequency IP (including JS-capable browser automation like Playwright) as long as per-IP volume deviates significantly from baseline.")
+    data_lines.append("- Only highly distributed attacks (tens of thousands of IPs, each sending low volume indistinguishable from baseline) can evade Anti-DDoS AMR. ONLY in that scenario is Targeted Bot Control needed as a complement.")
+    data_lines.append("- Do NOT suggest 'attackers upgrading to browser automation' as a risk if Anti-DDoS AMR is deployed — AMR handles high-volume automation regardless of JS capability.")
     data_lines.append("")
     data_lines.append(f"Then call set_report_summary(path='{output_path}', summary='your summary here')")
 
