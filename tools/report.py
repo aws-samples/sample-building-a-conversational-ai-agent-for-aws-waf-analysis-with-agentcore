@@ -576,6 +576,34 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         friendly = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title())
                         cat_rows += f"<tr><td>{friendly}</td><td>{count:,}</td></tr>\n"
                     # Bot names detail with action status
+                    # Query verified/unverified totals
+                    verified_total = 0
+                    unverified_total = 0
+                    try:
+                        vu_resp = cw.get_metric_data(
+                            MetricDataQueries=[
+                                {"Id": "vf", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
+                                    {"Name": "LabelName", "Value": "verified"},
+                                    {"Name": "WebACL", "Value": webacl_name},
+                                ]}, "Period": 604800, "Stat": "Sum"}},
+                                {"Id": "uv", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
+                                    {"Name": "LabelName", "Value": "unverified"},
+                                    {"Name": "WebACL", "Value": webacl_name},
+                                ]}, "Period": 604800, "Stat": "Sum"}},
+                            ],
+                            StartTime=start_this_week, EndTime=end,
+                        )
+                        for r in vu_resp.get("MetricDataResults", []):
+                            val = int(sum(r.get("Values", [])))
+                            if r["Id"] == "vf":
+                                verified_total = val
+                            elif r["Id"] == "uv":
+                                unverified_total = val
+                    except Exception:
+                        pass
+
                     name_rows = ""
                     for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:10]:
                         total = d["allowed"] + d["blocked"] + d["challenged"]
@@ -594,6 +622,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         name_rows += f"<tr><td>{display}</td><td>{total:,}</td><td>{status}</td></tr>\n"
 
                     bot_section += (
+                        f'<div class="grid">'
+                        f'<div class="card"><div class="label">Verified Bots (legitimate)</div><div class="value">{verified_total:,}</div></div>'
+                        f'<div class="card"><div class="label">Unverified Bots</div><div class="value">{unverified_total:,}</div></div>'
+                        f'</div>'
                         f'<h3>Bot Traffic by Category</h3>'
                         f'<table><tr><th>Category</th><th>Requests</th></tr>{cat_rows}</table>'
                     )
@@ -704,6 +736,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         common_labels = [name for name in bot_data if name.startswith("Category") or name.startswith("Signal")]
         targeted_labels = [name for name in bot_data if name.startswith("TGT_")]
         data_lines.append(f"- Bot Control Common: {len(common_labels)} categories detected, {common_total_blocked:,} blocked, {common_total_allowed:,} monitored/allowed")
+        data_lines.append(f"- Bot verification: {verified_total:,} verified (legitimate, allowed by design), {unverified_total:,} unverified")
         data_lines.append(f"- Bot Control Targeted: {len(targeted_labels)} rules triggered, {targeted_total_blocked:,} blocked/challenged, {targeted_total_counted:,} counted")
         if bot_orgs:
             data_lines.append(f"- Bot organizations: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:5])}")
