@@ -9,9 +9,19 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["webacl_name"] = name
     _state["webacl_arn"] = arn
     _state["scope"] = scope
-    _state["waf_region"] = region  # us-east-1 for CLOUDFRONT, actual region for REGIONAL
+    _state["waf_region"] = region
     _state["metrics_region"] = "us-east-1" if scope == "CLOUDFRONT" else region
     _state["log_destination"] = log_destination
+
+
+def set_capabilities(capabilities: dict):
+    """Store detected WAF capabilities."""
+    _state["capabilities"] = capabilities
+
+
+def get_capabilities() -> dict:
+    """Get detected WAF capabilities."""
+    return _state.get("capabilities", {})
 
 
 def get_metrics_region() -> str:
