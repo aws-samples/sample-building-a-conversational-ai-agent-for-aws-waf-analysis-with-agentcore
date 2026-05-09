@@ -89,7 +89,7 @@ canvas {{ max-height: 300px; }}
 </head>
 <body>
 <button class="theme-toggle" onclick="toggleTheme()">🌓 Toggle Theme</button>
-<h1>WAF Weekly Report</h1>
+<h1>WAF Weekly Business Report</h1>
 <p class="subtitle">{webacl_name} — {date_range}</p>
 
 <h2>Executive Summary</h2>
@@ -117,7 +117,7 @@ canvas {{ max-height: 300px; }}
 </div>
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
-<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum</p>
+<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum · Scroll to zoom, drag to pan</p>
 
 <h2>Top Attack Sources (Countries)</h2>
 <table>
@@ -153,17 +153,16 @@ new Chart(document.getElementById('dailyChart'), {{
   }},
   options: {{
     responsive: true,
+    interaction: {{ mode: 'index', intersect: false }},
     plugins: {{
       title: {{ display: true, text: 'Traffic Overview (solid = this week, dashed = last week)', color: chartTextColor }},
       legend: {{ labels: {{ color: chartTextColor }} }},
-      tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }}
+      tooltip: {{ mode: 'index', intersect: false, callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }},
+      zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }}
     }},
     scales: {{
       x: {{ ticks: {{ color: chartTextColor, maxTicksLimit: 14 }} }},
       y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
-    }},
-    plugins: {{
-      zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }}
     }}
   }}
 }});
@@ -385,7 +384,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     if ddos_chart_data["labels"]:
                         antiddos_section += (
                             f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
-                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum</p>'
+                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum · Scroll to zoom, drag to pan</p>'
                             f'<script>'
                             f'(function(){{'
                             f'const ddosData = {_json.dumps(ddos_chart_data)};'
@@ -393,11 +392,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             f'new Chart(document.getElementById("ddosChart"), {{'
                             f'  type: "line",'
                             f'  data: {{ labels: ddosData.labels, datasets: ['
-                            f'    {{ label: "Total Requests", data: ddosData.total, borderColor: "#58a6ff", fill: false, tension: 0.2, pointRadius: 0 }},'
-                            f'    {{ label: "Event Detected", data: ddosData.event, borderColor: "#d29922", fill: true, backgroundColor: "rgba(210,153,34,0.15)", tension: 0.2, pointRadius: 0 }},'
                             f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", fill: true, backgroundColor: "rgba(248,81,73,0.25)", tension: 0.2, pointRadius: 0 }},'
                             f'  ] }},'
-                            f'  options: {{ responsive: true, plugins: {{ title: {{ display: true, text: "Anti-DDoS Detection (full week)", color: c }}, legend: {{ labels: {{ color: c }} }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ type: "logarithmic", ticks: {{ color: c }} }} }} }}'
+                            f'  options: {{ responsive: true, interaction: {{ mode: "index", intersect: false }}, plugins: {{ title: {{ display: true, text: "Anti-DDoS: DDoS Requests Identified (full week)", color: c }}, legend: {{ labels: {{ color: c }} }}, tooltip: {{ mode: "index", intersect: false }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ type: "logarithmic", ticks: {{ color: c }} }} }} }}'
                             f'}});'
                             f'}})();'
                             f'</script>'
