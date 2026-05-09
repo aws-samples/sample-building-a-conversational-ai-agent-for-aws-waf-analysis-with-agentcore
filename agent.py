@@ -121,6 +121,10 @@ Step 2: Frequency anomaly detection (SCRIPT computes, LLM interprets)
 - Automation: 10+ pages/min sustained, no pauses. 200+ unique pages/hour.
 - Key metric: unique URIs per hour per IP. >100 is almost certainly automation.
 - Also: requests per minute consistency (humans have variance, bots are steady)
+- BUT FIRST: run ip_diversity to check if high-volume IP is a NAT/shared IP
+  - Multiple distinct UAs + multiple distinct JA4s = NAT gateway (many real users behind one IP)
+  - Single UA + single JA4 + high volume = single bot
+  - Do NOT flag NAT IPs as bots
 
 Step 3: Cross-validate (don't rely on frequency alone)
 - run_logs_query(query_type="ip_uri_breakdown", ip="...") → are URIs diverse or repetitive?

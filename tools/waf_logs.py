@@ -82,6 +82,11 @@ TEMPLATES = {
         "params": ["ip"],
         "description": "Unique URI count and time span for an IP (frequency anomaly detection)",
     },
+    "ip_diversity": {
+        "query": "parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | filter httpRequest.clientIp = '{ip}' | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
+        "params": ["ip"],
+        "description": "UA and JA4 diversity for an IP — high diversity = NAT/shared IP, low = single bot",
+    },
     "top_allowed_by_volume": {
         "query": "filter action = 'ALLOW' | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "params": [],
