@@ -275,28 +275,38 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     bot_section = ""
     if caps.get("bot_control") != "none":
         try:
-            # Query all bot-control labels
-            bot_label_resp = cw.get_metric_data(
-                MetricDataQueries=[{
-                    "Id": "bclabels",
-                    "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)",
-                }],
-                StartTime=start_this_week, EndTime=end,
-            )
+            # Query multiple bot-control label namespaces
+            bot_queries = [
+                {"Id": "bc_rules", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+                {"Id": "bc_org", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control:bot:organization\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+                {"Id": "bc_csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            ]
+            bot_label_resp = cw.get_metric_data(MetricDataQueries=bot_queries, StartTime=start_this_week, EndTime=end)
+
             # Parse into {label: {action: count}}
             bot_data = {}
+            bot_orgs = {}
+            bot_csps = {}
             for r in bot_label_resp.get("MetricDataResults", []):
                 total = int(sum(r.get("Values", [])))
                 if total <= 0:
                     continue
                 label = r.get("Label", "")
                 parts = label.split()
-                if len(parts) >= 2:
-                    rule_name = parts[0]
-                    action = parts[-1].replace("Requests", "").replace("RuleMatch", "")
-                    if rule_name not in bot_data:
-                        bot_data[rule_name] = {}
-                    bot_data[rule_name][action] = bot_data[rule_name].get(action, 0) + total
+                if len(parts) < 2:
+                    continue
+                name = parts[0]
+                namespace = parts[1] if len(parts) > 1 else ""
+                action = parts[-1].replace("Requests", "").replace("RuleMatch", "") if len(parts) > 2 else ""
+
+                if "bot:organization" in namespace:
+                    bot_orgs[name] = bot_orgs.get(name, 0) + total
+                elif "signal:cloud_service_provider" in namespace:
+                    bot_csps[name] = bot_csps.get(name, 0) + total
+                else:
+                    if name not in bot_data:
+                        bot_data[name] = {}
+                    bot_data[name][action] = bot_data[name].get(action, 0) + total
 
             # Classify by prefix: Category*/Signal* = Common, TGT_* = Targeted
             common_rows = ""
@@ -315,17 +325,20 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     continue
 
                 if rule_name.startswith("TGT_"):
-                    # Targeted level
                     targeted_total_blocked += blocked
                     targeted_total_counted += counted
                     action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"🏷️ {counted:,} counted"
                     targeted_rows += f"<tr><td>{rule_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
                 elif rule_name.startswith("Category") or rule_name.startswith("Signal"):
-                    # Common level
                     common_total_blocked += blocked
                     common_total_allowed += allowed + counted
                     action_str = "🚫 Blocked" if blocked > 0 else "🏷️ Labeled"
                     common_rows += f"<tr><td>{rule_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+
+            # Bot organizations detected
+            org_rows = ""
+            for org, count in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:10]:
+                org_rows += f"<tr><td>{org}</td><td>{count:,}</td></tr>\n"
 
             if common_rows or targeted_rows:
                 bot_section = '<h2>Bot Control</h2>'
@@ -336,7 +349,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         f'<div class="card"><div class="label">Illegitimate Bots Blocked</div><div class="value">{common_total_blocked:,}</div></div>'
                         f'<div class="card"><div class="label">Legitimate Bots Allowed</div><div class="value">{common_total_allowed:,}</div></div>'
                         f'</div>'
-                        f'<table><tr><th>Bot Category</th><th>Requests</th><th>Action</th></tr>{common_rows}</table>'
+                        f'<table><tr><th>Bot Category/Signal</th><th>Requests</th><th>Action</th></tr>{common_rows}</table>'
                     )
                 if targeted_rows:
                     bot_section += (
@@ -346,6 +359,11 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         f'<div class="card"><div class="label">Suspicious (Counted)</div><div class="value">{targeted_total_counted:,}</div></div>'
                         f'</div>'
                         f'<table><tr><th>Detection Rule</th><th>Requests</th><th>Action</th></tr>{targeted_rows}</table>'
+                    )
+                if org_rows:
+                    bot_section += (
+                        f'<h3>Top Bot Organizations</h3>'
+                        f'<table><tr><th>Organization</th><th>Requests</th></tr>{org_rows}</table>'
                     )
         except Exception:
             pass
