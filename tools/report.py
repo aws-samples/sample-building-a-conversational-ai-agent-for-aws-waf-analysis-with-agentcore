@@ -132,33 +132,32 @@ canvas {{ max-height: 300px; }}
 const thisWeek = {daily_data_json};
 const lastWeek = {daily_data_last_week_json};
 const chartTextColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-text').trim() || '#e6edf3';
-const labels = thisWeek.map((d, i) => d.date);
 
 new Chart(document.getElementById('dailyChart'), {{
-  type: 'bar',
+  type: 'line',
   data: {{
-    labels: labels,
+    labels: thisWeek.map(d => d.date),
     datasets: [
-      {{ label: 'Allowed (this week)', data: thisWeek.map(d => d.allowed || 0), backgroundColor: '#3fb950', stack: 'thisWeek' }},
-      {{ label: 'Blocked (this week)', data: thisWeek.map(d => d.blocked || 0), backgroundColor: '#f85149', stack: 'thisWeek' }},
-      {{ label: 'Challenged (this week)', data: thisWeek.map(d => d.challenged || 0), backgroundColor: '#d29922', stack: 'thisWeek' }},
-      {{ label: 'CAPTCHA (this week)', data: thisWeek.map(d => d.captcha || 0), backgroundColor: '#a371f7', stack: 'thisWeek' }},
-      {{ label: 'Allowed (last week)', data: lastWeek.map(d => d.allowed || 0), backgroundColor: 'rgba(63,185,80,0.3)', stack: 'lastWeek' }},
-      {{ label: 'Blocked (last week)', data: lastWeek.map(d => d.blocked || 0), backgroundColor: 'rgba(248,81,73,0.3)', stack: 'lastWeek' }},
-      {{ label: 'Challenged (last week)', data: lastWeek.map(d => d.challenged || 0), backgroundColor: 'rgba(210,153,34,0.3)', stack: 'lastWeek' }},
-      {{ label: 'CAPTCHA (last week)', data: lastWeek.map(d => d.captcha || 0), backgroundColor: 'rgba(163,113,247,0.3)', stack: 'lastWeek' }},
+      {{ label: 'Allowed', data: thisWeek.map(d => d.allowed || 0), borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.1)', fill: true, tension: 0.3 }},
+      {{ label: 'Blocked', data: thisWeek.map(d => d.blocked || 0), borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)', fill: true, tension: 0.3 }},
+      {{ label: 'Challenged', data: thisWeek.map(d => d.challenged || 0), borderColor: '#d29922', backgroundColor: 'rgba(210,153,34,0.1)', fill: true, tension: 0.3 }},
+      {{ label: 'CAPTCHA', data: thisWeek.map(d => d.captcha || 0), borderColor: '#a371f7', backgroundColor: 'rgba(163,113,247,0.1)', fill: true, tension: 0.3 }},
+      {{ label: 'Allowed (last week)', data: lastWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderDash: [5,5], pointStyle: false, tension: 0.3 }},
+      {{ label: 'Blocked (last week)', data: lastWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderDash: [5,5], pointStyle: false, tension: 0.3 }},
+      {{ label: 'Challenged (last week)', data: lastWeek.map(d => d.challenged || 0), borderColor: '#d29922', borderDash: [5,5], pointStyle: false, tension: 0.3 }},
+      {{ label: 'CAPTCHA (last week)', data: lastWeek.map(d => d.captcha || 0), borderColor: '#a371f7', borderDash: [5,5], pointStyle: false, tension: 0.3 }},
     ]
   }},
   options: {{
     responsive: true,
     plugins: {{
-      title: {{ display: true, text: 'Daily Traffic: This Week vs Last Week (stacked)', color: chartTextColor }},
+      title: {{ display: true, text: 'Daily Traffic (solid = this week, dashed = last week)', color: chartTextColor }},
       legend: {{ labels: {{ color: chartTextColor }} }},
       tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }}
     }},
     scales: {{
       x: {{ ticks: {{ color: chartTextColor }} }},
-      y: {{ type: 'logarithmic', stacked: true, ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
+      y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
     }}
   }}
 }});
@@ -593,19 +592,18 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 except Exception:
                     pass
 
-                # Query per-bot-name verification status from logs
-                bot_verification = {}  # {name: "verified"/"unverified"}
+                # Query per-bot-name verification + category from logs
+                bot_verification = {}  # {name: {"vs": ..., "category": ...}}
                 if log_group:
                     try:
                         bot_ver_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                            'filter @message like "bot-control:bot:name:" | filter @message like "bot:verified" or @message like "bot:unverified" | parse @message /bot:name:(?<botName>[a-z0-9_]+)/ | parse @message /bot:(?<verificationStatus>verified|unverified)/ | stats count(*) as cnt by botName, verificationStatus | sort cnt desc',
+                            'filter @message like "bot-control:bot:name:" | parse @message /bot:name:(?<botName>[a-z0-9_]+)/ | parse @message /bot:(?<vs>verified|unverified)/ | parse @message /bot:category:(?<category>[a-z_]+)/ | stats count(*) as cnt by botName, vs, category | sort cnt desc',
                             return_rows=True)
                         for row in bot_ver_result or []:
                             d = {f["field"]: f["value"] for f in row}
                             bn = d.get("botName", "")
-                            vs = d.get("verificationStatus", "")
-                            if bn and vs:
-                                bot_verification[bn] = vs
+                            if bn:
+                                bot_verification[bn] = {"vs": d.get("vs", ""), "category": d.get("category", "")}
                     except Exception:
                         pass
 
@@ -618,33 +616,44 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     f'</div>'
                 )
 
-                # Individual bots table (single unified table with verification status)
+                # Build unified bot table: Name / Category / Verification / Requests / Action
+                _CAT_FRIENDLY = {"http_library": "HTTP Library", "monitoring": "Monitoring",
+                                 "search_engine": "Search Engine", "seo": "SEO", "advertising": "Advertising",
+                                 "social_media": "Social Media", "ai": "AI Crawler", "content_fetcher": "Content Fetcher",
+                                 "scraping_framework": "Scraper", "security": "Security Scanner",
+                                 "archiver": "Archiver", "link_checker": "Link Checker", "miscellaneous": "Misc"}
+                name_rows = ""
                 if bot_names_detail:
-                    name_rows = ""
                     for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:15]:
                         total = d["allowed"] + d["blocked"] + d["challenged"]
                         display = bn.replace("_", " ").title()
-                        # Verification status from log query
-                        vs = bot_verification.get(bn, "")
-                        if vs == "verified":
-                            vs_badge = "✅ Verified"
-                        elif vs == "unverified":
-                            vs_badge = "⚠️ Unverified"
-                        else:
-                            vs_badge = "—"
-                        # Action taken
+                        info = bot_verification.get(bn, {})
+                        vs = info.get("vs", "")
+                        cat = info.get("category", "")
+                        vs_badge = "✅ Verified" if vs == "verified" else ("⚠️ Unverified" if vs == "unverified" else "—")
+                        cat_display = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title()) if cat else "—"
                         if d["blocked"] > 0 and d["allowed"] == 0:
                             action = "🚫 Blocked"
                         elif d["blocked"] > 0 and d["allowed"] > 0:
                             action = f"🚫 {d['blocked']:,} blocked, ✅ {d['allowed']:,} allowed"
                         elif d["challenged"] > 0:
-                            action = f"⚡ Challenged"
+                            action = "⚡ Challenged"
                         else:
                             action = "✅ Allowed"
-                        name_rows += f"<tr><td>{display}</td><td>{vs_badge}</td><td>{total:,}</td><td>{action}</td></tr>\n"
+                        name_rows += f"<tr><td>{display}</td><td>{cat_display}</td><td>{vs_badge}</td><td>{total:,}</td><td>{action}</td></tr>\n"
+
+                # Add NonBrowserUA without bot:name as "Unknown Non-Browser UA"
+                nonbrowser_data = bot_data.get("SignalNonBrowserUserAgent", {})
+                named_total = sum(sum(d.values()) for d in bot_names_detail.values())
+                nonbrowser_total = sum(nonbrowser_data.values())
+                nonbrowser_unnamed = max(0, nonbrowser_total - named_total)
+                if nonbrowser_unnamed > 0:
+                    name_rows += f'<tr><td><em>Unknown Non-Browser UA</em></td><td>Non-Browser</td><td>— (neither)</td><td>{nonbrowser_unnamed:,}</td><td>👁️ Monitored</td></tr>\n'
+
+                if name_rows:
                     bot_section += (
                         f'<h3>Individual Bots</h3>'
-                        f'<table><tr><th>Bot Name</th><th>Verification</th><th>Requests</th><th>Action</th></tr>{name_rows}</table>'
+                        f'<table><tr><th>Bot Name</th><th>Category</th><th>Verification</th><th>Requests</th><th>Action</th></tr>{name_rows}</table>'
                     )
 
                 # Targeted detection rules
@@ -656,12 +665,6 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         f'<div class="card"><div class="label">Suspicious (Counted)</div><div class="value">{targeted_total_counted:,}</div></div>'
                         f'</div>'
                         f'<table><tr><th>Detection Rule</th><th>Requests</th><th>Action</th></tr>{targeted_rows}</table>'
-                    )
-                if org_rows:
-                    bot_section += (
-                        f'<h3>Top Bot Organizations</h3>'
-                        f'<table><tr><th>Organization</th><th>Requests</th></tr>{org_rows}</table>'
-                        f'<p style="color:var(--muted);font-size:.85rem;">Organizations identified by reverse DNS. "amazon" includes AWS infrastructure services and verified AWS bots.</p>'
                     )
         except Exception:
             pass
