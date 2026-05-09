@@ -8,7 +8,7 @@ from tools.session_state import get_logs_region, get_log_destination
 
 MAX_RESULTS = 25
 POLL_INTERVAL = 2
-MAX_POLL = 60
+MAX_POLL = 300
 
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
