@@ -6,6 +6,48 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 
+# Human-readable names for WAF rule labels (management-friendly)
+_FRIENDLY_NAMES = {
+    "CategoryHttpLibrary": "HTTP Libraries (curl, python-requests)",
+    "CategorySearchEngine": "Search Engines (Google, Bing)",
+    "CategorySeo": "SEO Crawlers",
+    "CategorySocialMedia": "Social Media Bots",
+    "CategoryAdvertising": "Advertising Bots",
+    "CategoryArchiver": "Web Archivers",
+    "CategoryContentFetcher": "Content Fetchers",
+    "CategoryScrapingFramework": "Scraping Frameworks",
+    "CategoryMonitoring": "Monitoring Services",
+    "CategorySecurity": "Security Scanners",
+    "CategoryAI": "AI Crawlers",
+    "CategoryMiscellaneous": "Miscellaneous Bots",
+    "CategoryEmailClient": "Email Clients",
+    "CategoryPagePreview": "Page Preview Bots",
+    "CategoryLinkChecker": "Link Checkers",
+    "CategoryWebhooks": "Webhook Services",
+    "SignalNonBrowserUserAgent": "Non-Browser User Agents",
+    "SignalAutomatedBrowser": "Automated Browsers",
+    "SignalKnownBotDataCenter": "Known Bot Data Centers",
+    "TGT_VolumetricIpTokenAbsent": "High-Volume Requests Without Token",
+    "TGT_TokenAbsent": "Requests Missing Security Token",
+    "TGT_VolumetricSession": "Abnormal Session Volume",
+    "TGT_VolumetricSessionMaximum": "Session Volume Exceeded Maximum",
+    "TGT_SignalAutomatedBrowser": "Browser Automation Detected",
+    "TGT_SignalBrowserInconsistency": "Browser Fingerprint Mismatch",
+    "TGT_SignalBrowserAutomationExtension": "Automation Extension Detected",
+    "TGT_TokenReuseIpHigh": "Token Reused Across IPs (High)",
+    "TGT_TokenReuseIpMedium": "Token Reused Across IPs (Medium)",
+    "TGT_TokenReuseIpLow": "Token Reused Across IPs (Low)",
+    "TGT_TokenReuseAsnHigh": "Token Reused Across Networks (High)",
+    "TGT_TokenReuseAsnMedium": "Token Reused Across Networks (Medium)",
+    "TGT_TokenReuseAsnLow": "Token Reused Across Networks (Low)",
+    "TGT_TokenReuseCountryHigh": "Token Reused Across Countries (High)",
+    "TGT_TokenReuseCountryMedium": "Token Reused Across Countries (Medium)",
+    "TGT_TokenReuseCountryLow": "Token Reused Across Countries (Low)",
+    "TGT_ML_CoordinatedActivityHigh": "Coordinated Bot Activity (High)",
+    "TGT_ML_CoordinatedActivityMedium": "Coordinated Bot Activity (Medium)",
+    "TGT_ML_CoordinatedActivityLow": "Coordinated Bot Activity (Low)",
+}
+
 REPORT_TEMPLATE = """\
 <!DOCTYPE html>
 <html lang="en">
@@ -76,6 +118,7 @@ canvas {{ max-height: 300px; }}
   <div class="card"><div class="label">Challenge Solved</div><div class="value">{challenge_solved}</div></div>
   <div class="card"><div class="label">CAPTCHA Solved</div><div class="value">{captcha_solved}</div></div>
 </div>
+{challenge_note}
 
 {antiddos_section}
 
@@ -201,6 +244,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         if previous == 0:
             return "N/A (no data last week)", "neutral"
         pct = ((current - previous) / previous) * 100
+        if abs(pct) > 1000:
+            return f"{previous:,} → {current:,}", "up" if pct > 0 else "down"
         arrow = "↑" if pct > 0 else "↓"
         cls = "up" if pct > 0 else "down"
         return f"{arrow} {abs(pct):.1f}% vs last week", cls
@@ -208,6 +253,11 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     total_change, total_change_class = fmt_change(total_this, total_last)
     blocked_change, blocked_change_class = fmt_change(this_week["blocked"], last_week["blocked"])
     block_rate = f"{(this_week['blocked'] / total_this * 100):.1f}" if total_this > 0 else "0"
+
+    # Challenge note when solved = 0
+    challenge_note = ""
+    if challenge_total > 0 and challenge_solved == 0:
+        challenge_note = '<p style="color:var(--muted);font-size:.9rem;margin-top:.5rem;">✅ All challenged requests failed to solve — confirms they were automation tools unable to execute JavaScript.</p>'
 
     # Anti-DDoS AMR events — only if AMR is deployed
     antiddos_section = ""
@@ -259,14 +309,25 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 ddos_medium = int(float(ddos_result.get("medium", 0))) if ddos_result else 0
                 ddos_low = int(float(ddos_result.get("low", 0))) if ddos_result else 0
 
+                # Build suspicion breakdown — only show distinct levels
+                suspicion_cards = ""
+                if ddos_high == ddos_medium == ddos_low and ddos_high > 0:
+                    # All same = AMR classified all as high (high ⊃ medium ⊃ low)
+                    suspicion_cards = f'<div class="card"><div class="label">Suspicion Level</div><div class="value">All High</div></div>'
+                else:
+                    if ddos_high > 0:
+                        suspicion_cards += f'<div class="card"><div class="label">High Suspicion</div><div class="value">{ddos_high:,}</div></div>'
+                    if ddos_medium > ddos_high:
+                        suspicion_cards += f'<div class="card"><div class="label">Medium Suspicion</div><div class="value">{ddos_medium - ddos_high:,}</div></div>'
+                    if ddos_low > ddos_medium:
+                        suspicion_cards += f'<div class="card"><div class="label">Low Suspicion</div><div class="value">{ddos_low - ddos_medium:,}</div></div>'
+
                 antiddos_section = (
                     f'<h2>Anti-DDoS Protection</h2>'
                     f'<div class="grid">'
                     f'<div class="roi-box"><div class="label">DDoS Events This Week</div><div class="value">{num_events}</div><div class="change">{event_first} — {event_last}</div></div>'
                     f'<div class="card"><div class="label">DDoS Requests Identified</div><div class="value">{ddos_total:,}</div></div>'
-                    f'<div class="card"><div class="label">High Suspicion</div><div class="value">{ddos_high:,}</div></div>'
-                    f'<div class="card"><div class="label">Medium Suspicion</div><div class="value">{ddos_medium:,}</div></div>'
-                    f'<div class="card"><div class="label">Low Suspicion</div><div class="value">{ddos_low:,}</div></div>'
+                    f'{suspicion_cards}'
                     f'<div class="card"><div class="label">Total Requests During Events</div><div class="value">{total_during_event:,}</div></div>'
                     f'</div>'
                 )
@@ -348,6 +409,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             if total > 0:
                                 bot_orgs[org_name] = total
 
+            # Human-readable names for bot rules
             # Classify by prefix: Category*/Signal* = Common, TGT_* = Targeted
             common_rows = ""
             common_total_blocked = 0
@@ -363,17 +425,18 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 total_hits = blocked + counted + allowed
                 if total_hits == 0:
                     continue
+                display_name = _FRIENDLY_NAMES.get(rule_name, rule_name)
 
                 if rule_name.startswith("TGT_"):
                     targeted_total_blocked += blocked
                     targeted_total_counted += counted
-                    action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"🏷️ {counted:,} counted"
-                    targeted_rows += f"<tr><td>{rule_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+                    action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"👁️ {counted:,} monitored"
+                    targeted_rows += f"<tr><td>{display_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
                 elif rule_name.startswith("Category") or rule_name.startswith("Signal"):
                     common_total_blocked += blocked
                     common_total_allowed += allowed + counted
-                    action_str = "🚫 Blocked" if blocked > 0 else "🏷️ Labeled"
-                    common_rows += f"<tr><td>{rule_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+                    action_str = "🚫 Blocked" if blocked > 0 else "👁️ Monitored"
+                    common_rows += f"<tr><td>{display_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
 
             # Bot organizations detected
             org_rows = ""
@@ -423,7 +486,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     for r in challenge_rules[:5]:
         rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>⚡ Challenge</td></tr>\n"
     for r in count_rules[:5]:
-        rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>🏷️ Labeled</td></tr>\n"
+        name = _FRIENDLY_NAMES.get(r["rule"], r["rule"])
+        rule_rows += f"<tr><td>{name}</td><td>{r['count']:,}</td><td>👁️ Monitored</td></tr>\n"
 
     executive_summary = "{{EXECUTIVE_SUMMARY}}"
 
@@ -448,6 +512,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         captcha_count=f"{this_week['captcha']:,}",
         challenge_solved=f"{challenge_solved:,}",
         captcha_solved=f"{captcha_solved:,}",
+        challenge_note=challenge_note,
         antiddos_section=antiddos_section,
         bot_section=bot_section,
         bot_requests=f"{bot_requests:,}",
@@ -490,7 +555,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     data_lines.append(f"- Bot/suspicious requests: {bot_requests:,} ({bot_pct}% of traffic)")
     data_lines.append("")
     data_lines.append("## Instructions")
-    data_lines.append("Write an executive summary for management (3-5 paragraphs). Use DOUBLE NEWLINES (\\n\\n) between paragraphs — this is critical for formatting.")
+    data_lines.append("Write an executive summary for management (3-5 paragraphs). Use **bold** for key numbers. Do NOT use bullet lists (- or *) — use flowing prose paragraphs only.")
     data_lines.append("Answer these 4 questions:")
     data_lines.append("1. What happened this week? (traffic trends, anomalies, spikes)")
     data_lines.append("2. What did WAF protect against? (specific threat types with numbers)")
