@@ -83,6 +83,8 @@ canvas {{ max-height: 300px; }}
 {country_rows}
 </table>
 
+{bot_section}
+
 <h2>Protection Breakdown (Rules)</h2>
 <table>
 <tr><th>Rule</th><th>Requests Handled</th><th>Action</th></tr>
@@ -269,6 +271,95 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         except Exception:
             pass
 
+    # Bot Control section — query label metrics for bot classification
+    bot_section = ""
+    if caps.get("bot_control") != "none":
+        try:
+            # Query all bot-control labels
+            bot_label_resp = cw.get_metric_data(
+                MetricDataQueries=[{
+                    "Id": "bclabels",
+                    "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)",
+                }],
+                StartTime=start_this_week, EndTime=end,
+            )
+            # Parse into {label: {action: count}}
+            bot_data = {}
+            for r in bot_label_resp.get("MetricDataResults", []):
+                total = int(sum(r.get("Values", [])))
+                if total <= 0:
+                    continue
+                label = r.get("Label", "")
+                parts = label.split()
+                if len(parts) >= 2:
+                    rule_name = parts[0]
+                    action = parts[-1].replace("Requests", "").replace("RuleMatch", "")
+                    if rule_name not in bot_data:
+                        bot_data[rule_name] = {}
+                    bot_data[rule_name][action] = bot_data[rule_name].get(action, 0) + total
+
+            # Classify into Common vs Targeted
+            common_rules = ["CategoryHttpLibrary", "SignalNonBrowserUserAgent", "SignalKnownBotDataCenter",
+                           "CategorySearchEngine", "CategorySeo", "CategoryAdvertising", "CategoryArchiver",
+                           "CategoryContentFetcher", "CategorySocialMedia"]
+            targeted_rules = ["TGT_TokenAbsent", "TGT_VolumetricIpTokenAbsent", "TGT_VolumetricSession",
+                            "TGT_TokenReuseIp", "TGT_SignalBrowserAutomation"]
+
+            common_rows = ""
+            common_total_blocked = 0
+            common_total_allowed = 0
+            for rule in common_rules:
+                if rule in bot_data:
+                    d = bot_data[rule]
+                    blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
+                    counted = d.get("Count", 0)
+                    allowed = d.get("Allowed", 0)
+                    common_total_blocked += blocked
+                    common_total_allowed += allowed + counted
+                    action_str = "🚫 Blocked" if blocked > 0 else "🏷️ Labeled"
+                    total_hits = blocked + counted + allowed
+                    if total_hits > 0:
+                        common_rows += f"<tr><td>{rule}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+
+            targeted_rows = ""
+            targeted_total_blocked = 0
+            targeted_total_counted = 0
+            for rule in targeted_rules:
+                if rule in bot_data:
+                    d = bot_data[rule]
+                    blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
+                    counted = d.get("Count", 0)
+                    allowed = d.get("Allowed", 0)
+                    targeted_total_blocked += blocked
+                    targeted_total_counted += counted
+                    total_hits = blocked + counted + allowed
+                    if total_hits > 0:
+                        action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"🏷️ {counted:,} counted"
+                        targeted_rows += f"<tr><td>{rule}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
+
+            if common_rows or targeted_rows:
+                bot_section = '<h2>Bot Control</h2>'
+                if common_rows:
+                    bot_section += (
+                        f'<h3>Common Bots (self-declared)</h3>'
+                        f'<div class="grid">'
+                        f'<div class="card"><div class="label">Illegitimate Bots Blocked</div><div class="value">{common_total_blocked:,}</div></div>'
+                        f'<div class="card"><div class="label">Legitimate Bots Allowed</div><div class="value">{common_total_allowed:,}</div></div>'
+                        f'</div>'
+                        f'<table><tr><th>Bot Category</th><th>Requests</th><th>Action</th></tr>{common_rows}</table>'
+                    )
+                if targeted_rows:
+                    bot_section += (
+                        f'<h3>Targeted Bots (advanced/evasive)</h3>'
+                        f'<div class="grid">'
+                        f'<div class="card"><div class="label">Advanced Bots Blocked/Challenged</div><div class="value">{targeted_total_blocked:,}</div></div>'
+                        f'<div class="card"><div class="label">Suspicious (Counted)</div><div class="value">{targeted_total_counted:,}</div></div>'
+                        f'</div>'
+                        f'<table><tr><th>Detection Rule</th><th>Requests</th><th>Action</th></tr>{targeted_rows}</table>'
+                    )
+        except Exception:
+            pass
+
     country_rows = ""
     for c in countries[:10]:
         pct = f"{c['count'] / max(this_week['blocked'], 1) * 100:.1f}"
@@ -310,6 +401,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         challenge_solved=f"{challenge_solved:,}",
         captcha_solved=f"{captcha_solved:,}",
         antiddos_section=antiddos_section,
+        bot_section=bot_section,
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
         country_rows=country_rows,
@@ -513,6 +605,8 @@ def set_report_summary(path: str, summary: str) -> str:
     try:
         with open(path, "r") as f:
             html = f.read()
+        # Convert paragraph breaks to HTML
+        summary = summary.replace("\n\n", "</p><p>")
         html = html.replace("{{EXECUTIVE_SUMMARY}}", summary)
         with open(path, "w") as f:
             f.write(html)
