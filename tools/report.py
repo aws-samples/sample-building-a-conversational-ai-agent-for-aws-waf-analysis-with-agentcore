@@ -136,7 +136,7 @@ const thisWeek = {daily_data_json};
 const lastWeek = {daily_data_last_week_json};
 const chartTextColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-text').trim() || '#e6edf3';
 
-new Chart(document.getElementById('dailyChart'), {{
+const trafficChart = new Chart(document.getElementById('dailyChart'), {{
   type: 'line',
   data: {{
     labels: thisWeek.map(d => d.date),
@@ -171,6 +171,15 @@ function toggleTheme() {{
   const root = document.documentElement;
   root.classList.toggle('dark');
   root.classList.toggle('light');
+  const c = getComputedStyle(root).getPropertyValue('--chart-text').trim() || '#1f2328';
+  Chart.helpers.each(Chart.instances, function(chart) {{
+    chart.options.plugins.title.color = c;
+    chart.options.plugins.legend.labels.color = c;
+    chart.options.scales.x.ticks.color = c;
+    chart.options.scales.y.ticks.color = c;
+    if (chart.options.scales.y.title) chart.options.scales.y.title.color = c;
+    chart.update();
+  }});
 }}
 document.documentElement.classList.add('{default_theme}');
 </script>
