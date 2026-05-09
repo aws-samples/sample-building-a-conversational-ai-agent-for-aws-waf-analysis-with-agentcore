@@ -276,6 +276,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     ddos_total = 0
     ddos_event_first = ""
     ddos_event_last = ""
+    ddos_duration_min = 0
     caps = get_capabilities()
     log_dest = get_log_destination()
     # Auto-discover log destination if not already set
@@ -354,7 +355,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 antiddos_section = (
                     f'<h2>Anti-DDoS Protection</h2>'
                     f'<div class="grid">'
-                    f'<div class="roi-box"><div class="label">DDoS Events This Week</div><div class="value">{num_events}</div><div class="change">{event_first} — {event_last}</div></div>'
+                    f'<div class="roi-box"><div class="label">DDoS Events This Week</div><div class="value">{num_events}</div></div>'
                     f'<div class="card"><div class="label">DDoS Requests Identified</div><div class="value">{ddos_total:,}</div></div>'
                     f'{suspicion_cards}'
                     f'<div class="card"><div class="label">Total Requests During Events</div><div class="value">{total_during_event:,}</div></div>'
@@ -404,6 +405,12 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 ddos_num_events = num_events
                 ddos_event_first = event_first
                 ddos_event_last = event_last
+                try:
+                    t1 = datetime.fromisoformat(event_first.replace(" ", "T"))
+                    t2 = datetime.fromisoformat(event_last.replace(" ", "T"))
+                    ddos_duration_min = max(1, int((t2 - t1).total_seconds() / 60))
+                except Exception:
+                    ddos_duration_min = 0
         except Exception:
             pass
 
@@ -796,7 +803,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
     # Anti-DDoS data
     if antiddos_section:
-        data_lines.append(f"- Anti-DDoS: {ddos_num_events} event(s) detected, {ddos_total:,} DDoS requests identified, time range: {ddos_event_first} — {ddos_event_last}")
+        data_lines.append(f"- Anti-DDoS: {ddos_num_events} event(s) detected, {ddos_total:,} DDoS requests identified, duration: ~{ddos_duration_min} minutes")
 
     # Bot Control data
     if bot_section:
