@@ -17,6 +17,7 @@ from tools.waf_logs import run_logs_query
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review import review_waf_rules
+from tools.finding import record_finding
 
 # Configurable via environment variables
 import os
@@ -209,7 +210,7 @@ def get_agent() -> Agent:
         _agent = Agent(
             model=model,
             system_prompt=SYSTEM_PROMPT,
-            tools=[list_webacls, get_waf_config, get_waf_metrics, run_logs_query, lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules],
+            tools=[list_webacls, get_waf_config, get_waf_metrics, run_logs_query, lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules, record_finding],
         )
     return _agent
 

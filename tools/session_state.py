@@ -55,3 +55,22 @@ def set_host_profiles(profiles: dict):
 def get_host_profiles() -> dict:
     """Get host traffic profiles."""
     return _state.get("host_profiles", {})
+
+
+# Investigation findings accumulator
+_findings: list = []
+
+
+def add_finding(finding: dict):
+    """Append a finding to the session."""
+    _findings.append(finding)
+
+
+def get_findings() -> list:
+    """Get all findings recorded in this session."""
+    return _findings
+
+
+def clear_findings():
+    """Reset findings (for new investigation)."""
+    _findings.clear()
