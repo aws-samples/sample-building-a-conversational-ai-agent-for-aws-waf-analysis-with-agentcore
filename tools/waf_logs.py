@@ -72,6 +72,26 @@ TEMPLATES = {
         "params": ["action"],
         "description": "Timeline of a specific action (5-min buckets)",
     },
+    "ip_request_rate": {
+        "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by bin(1m) | sort @timestamp asc | limit {limit}",
+        "params": ["ip"],
+        "description": "Per-minute request rate for a specific IP (detect automation)",
+    },
+    "ip_unique_uris": {
+        "query": "filter httpRequest.clientIp = '{ip}' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
+        "params": ["ip"],
+        "description": "Unique URI count and time span for an IP (frequency anomaly detection)",
+    },
+    "top_allowed_by_volume": {
+        "query": "filter action = 'ALLOW' | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "params": [],
+        "description": "Top ALLOW IPs with unique URI count (find high-volume bypasses)",
+    },
+    "token_reuse_ips": {
+        "query": "filter @message like 'token:accepted' | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by httpRequest.headers.0.value | sort ip_count desc | limit {limit}",
+        "params": [],
+        "description": "Detect token reuse — same token used from multiple IPs",
+    },
 }
 
 
@@ -112,12 +132,16 @@ def run_logs_query(
             - ip_cross_query: All actions/rules for an IP (needs ip)
             - ip_uri_breakdown: URI breakdown for an IP (needs ip)
             - ip_ja4_fingerprints: JA4 fingerprints for an IP (needs ip)
+            - ip_request_rate: Per-minute request rate for an IP (needs ip) — detect automation
+            - ip_unique_uris: Unique URI count + time span for an IP (needs ip) — frequency anomaly
             - top_blocked_ips: Top blocked IPs
             - top_blocked_rules: Top blocking rules
             - top_allowed_ips: Top allowed IPs
+            - top_allowed_by_volume: Top ALLOW IPs with unique URI count — find bypasses
             - top_countries_blocked: Top blocked countries
             - label_top_ips: Top IPs for a WAF label (needs label)
             - action_timeline: Timeline of an action (needs action)
+            - token_reuse_ips: Detect token reuse across multiple IPs
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).

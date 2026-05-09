@@ -17,6 +17,11 @@ from tools.waf_logs import run_logs_query
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report
 
+# Configurable via environment variables
+import os
+MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "us.anthropic.claude-sonnet-4-6-20250514-v1:0")
+MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "us-west-2")
+
 SYSTEM_PROMPT = """\
 You are a WAF Analysis Agent. You help security engineers investigate WAF log issues \
 and generate weekly security reports for management.
@@ -99,6 +104,46 @@ Step 3: Anchor = first anomaly (top IP / spiking rule / unusual country)
 Step 4: Pivot from anchor — cross-query the anchor value in other dimensions
 Step 5: Converge when no new anomalies found → output attack profile + rule recommendation
 
+## Bypass/Evasion Detection (漏杀)
+
+When user suspects traffic is bypassing WAF (all rules pass, default ALLOW):
+
+**Key insight**: These attackers look "normal" on a per-request basis (real browser UA, valid cookies,
+JS execution, GA events). The ONLY reliable signal is **frequency and behavioral pattern**.
+Do NOT judge by request content alone — always compute frequency metrics FIRST.
+
+Step 1: Find high-volume ALLOW IPs
+- run_logs_query(query_type="top_allowed_ips") → find IPs with most ALLOW requests
+- run_logs_query(query_type="ip_request_rate", ip="...") → requests per minute for top IPs
+
+Step 2: Frequency anomaly detection (SCRIPT computes, LLM interprets)
+- Human browsing: 1-5 pages/min, with pauses. Max ~50 unique pages/hour.
+- Automation: 10+ pages/min sustained, no pauses. 200+ unique pages/hour.
+- Key metric: unique URIs per hour per IP. >100 is almost certainly automation.
+- Also: requests per minute consistency (humans have variance, bots are steady)
+
+Step 3: Cross-validate (don't rely on frequency alone)
+- run_logs_query(query_type="ip_uri_breakdown", ip="...") → are URIs diverse or repetitive?
+- run_logs_query(query_type="ip_ja4_fingerprints", ip="...") → headless browser fingerprint?
+- Check if IP triggered ANY count rules (even non-blocking ones indicate suspicion)
+- Check token reuse patterns (same token from multiple IPs = token sharing/replay)
+
+Step 4: Conclusion
+- "Sophisticated bot (browser automation)" = high frequency + real browser + diverse URIs + no rule hits
+  → Recommend: Targeted Bot Control, or TGT_VolumetricSession COUNT→CAPTCHA
+- "Residential proxy / IP rotation" = many IPs, each moderate frequency, same behavior pattern
+  → Recommend: Targeted Bot Control (behavioral analysis), rate-based won't work
+- "Token reuse attack" = valid tokens being replayed across IPs
+  → Recommend: TGT_TokenReuseIP to BLOCK (not Challenge — they can solve challenges)
+
+**Critical**: When analyzing a single IP, ALWAYS compute frequency first:
+- Total requests in time window
+- Unique URIs accessed
+- Requests per minute (peak and average)
+- Time span of activity
+If any of these are superhuman (>100 unique pages/hour, >10 req/sec sustained),
+conclude automation REGARDLESS of how "normal" the request content looks.
+
 ## Rule Recommendations
 
 | Finding | Recommendation |
@@ -110,6 +155,10 @@ Step 5: Converge when no new anomalies found → output attack profile + rule re
 | COUNT confirmed attack | Switch to BLOCK |
 | COUNT confirmed FP | Add scope-down exclusion (URI/IP/UA based — NOT payload based) |
 | Allow rule on forgeable condition | Change to unforgeable (IP set / WAF token / ASN) |
+| Sophisticated bot (browser automation) | Targeted Bot Control + TGT_VolumetricSession to CAPTCHA |
+| Residential proxy / IP rotation | Targeted Bot Control (behavioral), rate-based won't work |
+| Token reuse attack | TGT_TokenReuseIP to BLOCK (not Challenge — they solve challenges) |
+| High-volume scraping, no rule hits | Targeted Bot Control; if not available, custom rate-based on URI pattern |
 
 Always state match-detail limitation: except SQLi/XSS, cannot tell user what content triggered the rule.
 """
@@ -121,8 +170,8 @@ def get_agent() -> Agent:
     global _agent
     if _agent is None:
         model = BedrockModel(
-            model_id="us.anthropic.claude-sonnet-4-6-20250514-v1:0",
-            region_name="us-west-2",
+            model_id=MODEL_ID,
+            region_name=MODEL_REGION,
             max_tokens=4096,
             temperature=0.0,
         )
