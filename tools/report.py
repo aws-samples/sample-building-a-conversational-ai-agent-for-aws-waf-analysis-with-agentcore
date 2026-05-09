@@ -667,6 +667,20 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
             data_lines.append(f"- Bot categories visiting site: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True))}")
         if bot_names:
             data_lines.append(f"- Individual bots identified: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_names.items(), key=lambda x: x[1], reverse=True)[:10])}")
+        # Identify bots that are allowed but should normally be blocked (rule overridden to Count)
+        overridden_bots = []
+        for name, d in bot_data.items():
+            if not (name.startswith("Category") or name.startswith("Signal")):
+                continue
+            allowed = d.get("Allowed", 0) + d.get("Count", 0)
+            blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
+            if allowed > 0 and blocked == 0:
+                overridden_bots.append(name)
+            elif allowed > blocked * 5:
+                overridden_bots.append(name)
+        if overridden_bots:
+            friendly = [_FRIENDLY_NAMES.get(b, b) for b in overridden_bots]
+            data_lines.append(f"- ⚠️ IMPORTANT: These bot rules are set to Count/Allow (NOT blocking): {', '.join(friendly)}. Bots matching these rules (curl, python-requests, okhttp, etc.) are being ALLOWED through. This is either intentional or a misconfiguration — do NOT describe this as 'correctly handled'.")
 
     data_lines.append(f"- Bot/suspicious requests: {bot_requests:,} ({bot_pct}% of traffic)")
     data_lines.append("")
