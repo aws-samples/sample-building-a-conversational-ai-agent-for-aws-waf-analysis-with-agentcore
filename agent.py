@@ -18,6 +18,7 @@ from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review import review_waf_rules
 from tools.finding import record_finding
+from tools.ask_user import ask_user
 
 # Configurable via environment variables
 import os
@@ -114,34 +115,45 @@ Step 5: Converge when no new anomalies found → output attack profile + rule re
 
 When user suspects traffic is bypassing WAF (all rules pass, default ALLOW):
 
-**Key insight**: These attackers look "normal" on a per-request basis (real browser UA, valid cookies,
-JS execution, GA events). The ONLY reliable signal is **frequency and behavioral pattern**.
-Do NOT judge by request content alone — always compute frequency metrics FIRST.
+**CRITICAL: Do NOT immediately query logs. Follow this sequence strictly.**
 
-Step 1: Find high-volume ALLOW IPs
-- run_logs_query(query_type="top_allowed_ips") → find IPs with most ALLOW requests
-- run_logs_query(query_type="ip_request_rate", ip="...") → requests per minute for top IPs
+Step 0: Gather context (MANDATORY before any log query)
+- If user did not provide a specific time range, call ask_user() to ask:
+  "请问您怀疑漏杀发生在什么时间段？（例如：昨天下午2点到4点）如果不确定，我可以先查看流量趋势帮您定位。"
+- If user says "不确定" or gives a vague range (>6 hours), proceed to Step 1 (metrics first).
+- If user gives a specific range (≤6 hours), skip to Step 2 with that range.
 
-Step 2: Frequency anomaly detection (SCRIPT computes, LLM interprets)
-- Human browsing: 1-5 page loads/min (each page = 10-30 sub-requests for JS/CSS/images/APIs)
-- Automation: sustained high req/min with no pauses
-- Key metrics (use BOTH, not just one):
-  a) Requests per minute (peak and average): sustained >200 req/min from single IP is suspicious
-  b) Unique non-static URIs per hour: filter out .js/.css/.png/.jpg/.gif/.woff/.svg/.ico
-     Human max ~50 unique non-static URIs/hour. >200 is almost certainly automation.
-- Also: requests per minute consistency (humans have variance, bots are steady)
-- NOTE: JA4 fingerprint CAN be spoofed (curl-impersonate, Scrapling, Playwright).
-  JA4 is a supporting signal only, not definitive. Only WAF token is unforgeable.
-- BUT FIRST: run ip_diversity to check if high-volume IP is a NAT/shared IP
-  - Multiple distinct UAs + multiple distinct JA4s (>3) = NAT gateway (many real users behind one IP)
-  - Multiple UAs + single JA4 = SUSPICIOUS (one tool faking different UAs)
+Step 1: Use METRICS to find the peak window (zero log cost, fast)
+- get_waf_metrics(metric_name="AllowedRequests", use_search=True) → find which time period has the most ALLOW traffic
+- Identify the peak 1-2 hour window from the metrics data
+- Use ONLY that narrow window for log queries (set hours_ago accordingly, or use a specific time range)
+- Tell the user: "我发现 [时间] 有一个流量峰值，先分析这个时间段。"
+
+Step 2: Query logs for the NARROW time window only (≤6 hours)
+- run_logs_query(query_type="top_allowed_by_volume", hours_ago=N) where N ≤ 6
+- Pick top 3 IPs only (not all IPs)
+
+Step 3: For each suspicious IP (max 3), do frequency check
+- run_logs_query(query_type="ip_request_rate", ip="...") → requests per minute
+- run_logs_query(query_type="ip_diversity", ip="...") → NAT check (MUST do before concluding)
+  - Multiple UAs + multiple JA4s (>3) = NAT (skip this IP)
+  - Multiple UAs + single JA4 = SUSPICIOUS
   - Single UA + single JA4 + high volume = single bot
-  - Do NOT flag NAT IPs as bots
 
-Step 3: Cross-validate (don't rely on frequency alone)
-- run_logs_query(query_type="ip_uri_breakdown", ip="...") → are URIs diverse or repetitive?
-- run_logs_query(query_type="ip_ja4_fingerprints", ip="...") → headless browser fingerprint?
-- Check if IP triggered ANY count rules (even non-blocking ones indicate suspicion)
+Step 4: Cross-validate ONLY the most suspicious IP (not all 3)
+- run_logs_query(query_type="ip_unique_uris", ip="...") → unique non-static URIs
+- run_logs_query(query_type="ip_ja4_fingerprints", ip="...") → fingerprint check
+- Human threshold: >200 unique non-static URIs/hour OR sustained >200 req/min = automation
+
+Step 5: Conclude and ask user
+- If found bypass: record_finding() + present evidence + ask user if they want to check more IPs
+- If not found: tell user "在 [时间段] 没有发现明显的漏杀迹象" + ask if they want to check another time period
+
+**Key constraints**:
+- NEVER query logs without a specific time window (≤6 hours)
+- NEVER analyze more than 3 IPs in one round
+- ALWAYS check metrics first to find the right time window
+- ALWAYS ask user before expanding scope
 - Token reuse: ONLY applicable if WebACL has Challenge/Bot Control rules (otherwise no tokens exist).
   If applicable: first check if TGT_TokenReuseIP label exists in metrics (low/medium/high).
   If yes → WAF already detects it, recommend COUNT→BLOCK. If no → run token_reuse_ips query.
@@ -215,7 +227,7 @@ def get_agent() -> Agent:
         _agent = Agent(
             model=model,
             system_prompt=SYSTEM_PROMPT,
-            tools=[list_webacls, get_waf_config, get_waf_metrics, run_logs_query, lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules, record_finding],
+            tools=[list_webacls, get_waf_config, get_waf_metrics, run_logs_query, lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules, record_finding, ask_user],
         )
     return _agent
 
