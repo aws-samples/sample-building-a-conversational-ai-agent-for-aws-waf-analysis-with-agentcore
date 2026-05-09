@@ -322,13 +322,14 @@ def _check_bot_control(rules, findings):
                  "Default Block will block legitimate HTTP libraries used by native apps and API clients.",
                  "Override CategoryHttpLibrary to Count.")
 
-        # Check TGT_TokenAbsent override
-        if "TGT_TokenAbsent" in overrides and overrides["TGT_TokenAbsent"] == "Count":
+        # Check TGT_TokenAbsent override — Count is the DEFAULT and correct
+        # Only flag if overridden to Allow (which would suppress the label)
+        if "TGT_TokenAbsent" in overrides and overrides["TGT_TokenAbsent"] == "Allow":
             _add(findings, "Critical",
-                 "TGT_TokenAbsent overridden to Count",
+                 "TGT_TokenAbsent overridden to Allow",
                  f"{rule['Name']} (priority {rule['Priority']})",
-                 "TokenAbsent Count means requests without WAF token are not challenged. Bots can bypass by simply not sending a token.",
-                 "NEVER override TGT_TokenAbsent to Count. Use Challenge or Block.")
+                 "Allow override suppresses the TGT_TokenAbsent label. Downstream rules and VolumetricIpTokenAbsent lose visibility.",
+                 "Use Count (default) or Challenge. Never Allow.")
 
         # Check Allow overrides on category rules
         for name in ("CategorySearchEngine", "CategorySeo"):
