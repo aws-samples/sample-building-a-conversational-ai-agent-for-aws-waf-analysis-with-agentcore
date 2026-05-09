@@ -551,8 +551,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     data_lines = [
         f"Report generated: {output_path}\n",
         "## Data for Executive Summary\n",
-        f"- Total requests: {total_this:,}",
-        f"- Threats mitigated: {threats_mitigated:,} (blocked {this_week['blocked']:,} + challenged {challenge_total:,})",
+        f"- Total requests: {total_this:,} (allowed {this_week['allowed']:,}, blocked {this_week['blocked']:,}, challenged {challenge_total:,})",
+        f"- Threats mitigated: {threats_mitigated:,} ({(threats_mitigated/total_this*100):.1f}% of traffic)" if total_this > 0 else f"- Threats mitigated: {threats_mitigated:,}",
         f"- Week-over-week change: {total_change}",
         f"- Top attack sources (countries): {', '.join(c['country'] + '=' + str(c['count']) for c in countries[:5])}",
         f"- Top blocking rules: {', '.join(r['rule'] + '=' + str(r['count']) for r in [r for r in rules if r['action']=='BLOCK'][:5])}",
