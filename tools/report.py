@@ -261,8 +261,26 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
     # Anti-DDoS AMR events — only if AMR is deployed
     antiddos_section = ""
+    ddos_num_events = 0
+    ddos_total = 0
+    ddos_event_first = ""
+    ddos_event_last = ""
     caps = get_capabilities()
     log_dest = get_log_destination()
+    # Auto-discover log destination if not already set
+    if not log_dest:
+        try:
+            waf_client = get_client("wafv2", region_name=region)
+            waf_scope = "CLOUDFRONT" if scope == "CLOUDFRONT" else "REGIONAL"
+            acls = waf_client.list_web_acls(Scope=waf_scope)["WebACLs"]
+            acl = next((a for a in acls if a["Name"] == webacl_name), None)
+            if acl:
+                log_resp = waf_client.get_logging_configuration(ResourceArn=acl["ARN"])
+                dests = log_resp["LoggingConfiguration"]["LogDestinationConfigs"]
+                if dests:
+                    log_dest = dests[0]
+        except Exception:
+            pass
     log_group = log_dest.split(":log-group:")[-1].rstrip(":*") if log_dest and ":log-group:" in log_dest else None
     if caps.get("anti_ddos_amr") and log_group:
         try:
@@ -331,6 +349,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     f'<div class="card"><div class="label">Total Requests During Events</div><div class="value">{total_during_event:,}</div></div>'
                     f'</div>'
                 )
+                ddos_num_events = num_events
+                ddos_event_first = event_first
+                ddos_event_last = event_last
         except Exception:
             pass
 
@@ -541,7 +562,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
     # Anti-DDoS data
     if antiddos_section:
-        data_lines.append(f"- Anti-DDoS: events detected, DDoS requests identified in logs (see report for breakdown)")
+        data_lines.append(f"- Anti-DDoS: {ddos_num_events} event(s) detected, {ddos_total:,} DDoS requests identified, time range: {ddos_event_first} — {ddos_event_last}")
 
     # Bot Control data
     if bot_section:
