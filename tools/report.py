@@ -71,7 +71,8 @@ canvas {{ max-height: 300px; }}
 <div class="grid">
   <div class="card"><div class="label">Challenge Issued</div><div class="value">{challenge_count}</div></div>
   <div class="card"><div class="label">CAPTCHA Issued</div><div class="value">{captcha_count}</div></div>
-  <div class="card"><div class="label">Requests with Valid Token</div><div class="value">{valid_token_count}</div></div>
+  <div class="card"><div class="label">Challenge Solved</div><div class="value">{challenge_solved}</div></div>
+  <div class="card"><div class="label">CAPTCHA Solved</div><div class="value">{captcha_solved}</div></div>
 </div>
 
 {antiddos_section}
@@ -156,21 +157,28 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     # Challenge total
     challenge_total = this_week["challenge"] + this_week["captcha"]
 
-    # Requests with valid token — query logs
-    valid_token_count = 0
-    log_dest = get_log_destination()
-    log_group = None
-    if log_dest and ":log-group:" in log_dest:
-        log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
-
-    if log_group:
-        import time
-        logs_client = get_client("logs", region_name=region)
-        log_end = int(end.timestamp())
-        log_start = int(start_this_week.timestamp())
+    # Challenge/CAPTCHA solved — use dedicated CloudWatch metrics
+    challenge_solved = 0
+    captcha_solved = 0
+    for metric_id, metric_name in [("cs", "ChallengesSolved"), ("cas", "CaptchasSolved")]:
         try:
-            valid_token_count = _poll_log_query(logs_client, log_group, log_start, log_end,
-                "filter @message like 'token:accepted' | stats count(*) as cnt")
+            resp = cw.get_metric_data(
+                MetricDataQueries=[{
+                    "Id": metric_id,
+                    "MetricStat": {
+                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric_name,
+                                   "Dimensions": [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]},
+                        "Period": 604800, "Stat": "Sum",
+                    },
+                }],
+                StartTime=start_this_week, EndTime=end,
+            )
+            for r in resp.get("MetricDataResults", []):
+                val = int(sum(r.get("Values", [0])))
+                if metric_id == "cs":
+                    challenge_solved = val
+                else:
+                    captcha_solved = val
         except Exception:
             pass
 
@@ -200,6 +208,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     # Anti-DDoS AMR events — only if AMR is deployed
     antiddos_section = ""
     caps = get_capabilities()
+    log_dest = get_log_destination()
+    log_group = log_dest.split(":log-group:")[-1].rstrip(":*") if log_dest and ":log-group:" in log_dest else None
     if caps.get("anti_ddos_amr") and log_group:
         try:
             logs_client = get_client("logs", region_name=region)
@@ -291,7 +301,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         challenge_total=f"{challenge_total:,}",
         challenge_count=f"{this_week['challenge']:,}",
         captcha_count=f"{this_week['captcha']:,}",
-        valid_token_count=f"{valid_token_count:,}",
+        challenge_solved=f"{challenge_solved:,}",
+        captcha_solved=f"{captcha_solved:,}",
         antiddos_section=antiddos_section,
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
