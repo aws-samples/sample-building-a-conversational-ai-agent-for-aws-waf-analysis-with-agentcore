@@ -10,4 +10,5 @@ build/
 .cache/
 design/
 HANDOFF.md
+test/
 *.html
