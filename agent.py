@@ -20,7 +20,7 @@ from tools.waf_review import review_waf_rules
 
 # Configurable via environment variables
 import os
-MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "us.anthropic.claude-sonnet-4-6-20250514-v1:0")
+MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "us-west-2")
 
 SYSTEM_PROMPT = """\
