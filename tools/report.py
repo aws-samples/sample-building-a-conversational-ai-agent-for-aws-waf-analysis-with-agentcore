@@ -96,10 +96,14 @@ canvas {{ max-height: 300px; }}
 <h2>Protection Value (ROI)</h2>
 <div class="grid">
   <div class="roi-box"><div class="label">Threats Mitigated</div><div class="value">{threats_mitigated}</div><div class="change">Blocked + Challenged</div></div>
-  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">Challenge {challenge_count} + CAPTCHA {captcha_count}</div></div>
+  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">{challenge_effectiveness}</div></div>
   <div class="card"><div class="label">Bot Requests Identified</div><div class="value">{bot_requests}</div><div class="change">{bot_pct}% of total traffic</div></div>
   <div class="card"><div class="label">Attack Requests Blocked</div><div class="value">{blocked_requests}</div><div class="change">{block_rate}% block rate</div></div>
 </div>
+
+{antiddos_section}
+
+{bot_section}
 
 <h2>Traffic Overview</h2>
 <div class="grid">
@@ -111,24 +115,11 @@ canvas {{ max-height: 300px; }}
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
 
-<h2>Challenge / CAPTCHA</h2>
-<div class="grid">
-  <div class="card"><div class="label">Challenge Issued</div><div class="value">{challenge_count}</div></div>
-  <div class="card"><div class="label">CAPTCHA Issued</div><div class="value">{captcha_count}</div></div>
-  <div class="card"><div class="label">Challenge Solved</div><div class="value">{challenge_solved}</div></div>
-  <div class="card"><div class="label">CAPTCHA Solved</div><div class="value">{captcha_solved}</div></div>
-</div>
-{challenge_note}
-
-{antiddos_section}
-
 <h2>Top Attack Sources (Countries)</h2>
 <table>
 <tr><th>Country</th><th>Blocked Requests</th><th>% of Total Blocked</th></tr>
 {country_rows}
 </table>
-
-{bot_section}
 
 <h2>Protection Breakdown (Rules)</h2>
 <table>
@@ -253,11 +244,6 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     total_change, total_change_class = fmt_change(total_this, total_last)
     blocked_change, blocked_change_class = fmt_change(this_week["blocked"], last_week["blocked"])
     block_rate = f"{(this_week['blocked'] / total_this * 100):.1f}" if total_this > 0 else "0"
-
-    # Challenge note when solved = 0
-    challenge_note = ""
-    if challenge_total > 0 and challenge_solved == 0:
-        challenge_note = '<p style="color:var(--muted);font-size:.9rem;margin-top:.5rem;">✅ All challenged requests failed to solve — confirms they were automation tools unable to execute JavaScript.</p>'
 
     # Anti-DDoS AMR events — only if AMR is deployed
     antiddos_section = ""
@@ -488,6 +474,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     bot_section += (
                         f'<h3>Top Bot Organizations</h3>'
                         f'<table><tr><th>Organization</th><th>Requests</th></tr>{org_rows}</table>'
+                        f'<p style="color:var(--muted);font-size:.85rem;">Organizations identified by reverse DNS. "amazon" includes AWS infrastructure services and verified AWS bots.</p>'
                     )
         except Exception:
             pass
@@ -529,11 +516,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         block_rate=block_rate,
         threats_mitigated=f"{threats_mitigated:,}",
         challenge_total=f"{challenge_total:,}",
-        challenge_count=f"{this_week['challenge']:,}",
-        captcha_count=f"{this_week['captcha']:,}",
-        challenge_solved=f"{challenge_solved:,}",
-        captcha_solved=f"{captcha_solved:,}",
-        challenge_note=challenge_note,
+        challenge_effectiveness=f"Solved: {challenge_solved:,}" if challenge_solved > 0 else "All blocked (automation)",
         antiddos_section=antiddos_section,
         bot_section=bot_section,
         bot_requests=f"{bot_requests:,}",
