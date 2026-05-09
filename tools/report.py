@@ -453,20 +453,45 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     with open(output_path, "w") as f:
         f.write(html)
 
-    return (
-        f"Report generated: {output_path}\n\n"
-        f"## Data for Executive Summary (write this, then call set_report_summary)\n"
-        f"- Total requests: {total_this:,}\n"
-        f"- Threats mitigated: {threats_mitigated:,} (blocked {this_week['blocked']:,} + challenged {challenge_total:,})\n"
-        f"- Bot/suspicious requests identified: {bot_requests:,} ({bot_pct}% of traffic)\n"
-        f"- Top attack sources: {', '.join(c['country'] for c in countries[:3])}\n"
-        f"- Top blocking rules: {', '.join(r['rule'] + '=' + str(r['count']) for r in [r for r in rules if r['action']=='BLOCK'][:3])}\n"
-        f"- Week-over-week: {total_change}\n"
-        f"- Challenge issued: {challenge_total:,}\n"
-        f"- Daily trend: {'spike on ' + max(daily, key=lambda d: d['blocked']+d['challenged'])['date'] if daily else 'steady'}\n\n"
-        f"Write a compelling executive summary (2-3 sentences) answering: What happened? What did WAF protect? Is the money well spent? "
-        f"Then call set_report_summary(path='{output_path}', summary='your summary here') to finalize the report."
-    )
+    # Build rich data summary for Agent to write executive summary
+    data_lines = [
+        f"Report generated: {output_path}\n",
+        "## Data for Executive Summary\n",
+        f"- Total requests: {total_this:,}",
+        f"- Threats mitigated: {threats_mitigated:,} (blocked {this_week['blocked']:,} + challenged {challenge_total:,})",
+        f"- Week-over-week change: {total_change}",
+        f"- Top attack sources (countries): {', '.join(c['country'] + '=' + str(c['count']) for c in countries[:5])}",
+        f"- Top blocking rules: {', '.join(r['rule'] + '=' + str(r['count']) for r in [r for r in rules if r['action']=='BLOCK'][:5])}",
+        f"- Challenge issued: {challenge_total:,}, Challenge solved: {challenge_solved:,}, CAPTCHA solved: {captcha_solved:,}",
+        f"- Daily trend: {'spike on ' + max(daily, key=lambda d: d['blocked']+d['challenged'])['date'] if daily else 'steady'}",
+    ]
+
+    # Anti-DDoS data
+    if antiddos_section:
+        data_lines.append(f"- Anti-DDoS: events detected, DDoS requests identified in logs (see report for breakdown)")
+
+    # Bot Control data
+    if bot_section:
+        common_labels = [name for name in bot_data if name.startswith("Category") or name.startswith("Signal")]
+        targeted_labels = [name for name in bot_data if name.startswith("TGT_")]
+        data_lines.append(f"- Bot Control Common: {len(common_labels)} categories detected, {common_total_blocked:,} blocked, {common_total_allowed:,} monitored/allowed")
+        data_lines.append(f"- Bot Control Targeted: {len(targeted_labels)} rules triggered, {targeted_total_blocked:,} blocked/challenged, {targeted_total_counted:,} counted")
+        if bot_orgs:
+            data_lines.append(f"- Bot organizations: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:5])}")
+
+    data_lines.append(f"- Bot/suspicious requests: {bot_requests:,} ({bot_pct}% of traffic)")
+    data_lines.append("")
+    data_lines.append("## Instructions")
+    data_lines.append("Write an executive summary for management (3-5 paragraphs). Use DOUBLE NEWLINES (\\n\\n) between paragraphs — this is critical for formatting.")
+    data_lines.append("Answer these 4 questions:")
+    data_lines.append("1. What happened this week? (traffic trends, anomalies, spikes)")
+    data_lines.append("2. What did WAF protect against? (specific threat types with numbers)")
+    data_lines.append("3. Anything to worry about? (new attack sources, risks)")
+    data_lines.append("4. Is the money well spent? (ROI conclusion)")
+    data_lines.append("")
+    data_lines.append(f"Then call set_report_summary(path='{output_path}', summary='your summary here')")
+
+    return "\n".join(data_lines)
 
 
 
@@ -637,7 +662,7 @@ def set_report_summary(path: str, summary: str) -> str:
 
     Args:
         path: Path to the HTML report file (returned by generate_weekly_report).
-        summary: Executive summary text (HTML allowed for emphasis, 2-4 sentences).
+        summary: Executive summary text. Use double newlines between paragraphs for formatting.
 
     Returns:
         Confirmation message.
@@ -645,9 +670,14 @@ def set_report_summary(path: str, summary: str) -> str:
     try:
         with open(path, "r") as f:
             html = f.read()
-        # Convert paragraph breaks to HTML
-        summary = summary.replace("\n\n", "</p><p>")
-        html = html.replace("{{EXECUTIVE_SUMMARY}}", summary)
+        # Convert paragraph breaks to HTML (handle both real newlines and escaped)
+        summary = summary.replace("\\n\\n", "\n\n")  # handle escaped newlines from LLM
+        paragraphs = [p.strip() for p in summary.split("\n\n") if p.strip()]
+        if len(paragraphs) > 1:
+            summary_html = "</p><p>".join(paragraphs)
+        else:
+            summary_html = summary
+        html = html.replace("{{EXECUTIVE_SUMMARY}}", summary_html)
         with open(path, "w") as f:
             f.write(html)
         return f"Report finalized: {path}"
