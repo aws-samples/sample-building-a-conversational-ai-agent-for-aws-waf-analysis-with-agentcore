@@ -236,10 +236,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     d = {f["field"]: f["value"] for f in row}
                     ts_str = d.get("bin(5m)", "")
                     if ts_str and prev_ts:
-                        from datetime import datetime as _dt
                         try:
-                            cur = _dt.fromisoformat(ts_str.replace(" ", "T").rstrip("Z"))
-                            prev = _dt.fromisoformat(prev_ts.replace(" ", "T").rstrip("Z"))
+                            cur = datetime.fromisoformat(ts_str.replace(" ", "T").rstrip("Z"))
+                            prev = datetime.fromisoformat(prev_ts.replace(" ", "T").rstrip("Z"))
                             if (cur - prev).total_seconds() > 600:
                                 num_events += 1
                         except (ValueError, TypeError):
