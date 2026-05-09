@@ -52,7 +52,7 @@ canvas {{ max-height: 300px; }}
 <h2>Protection Value (ROI)</h2>
 <div class="grid">
   <div class="roi-box"><div class="label">Threats Mitigated</div><div class="value">{threats_mitigated}</div><div class="change">Blocked + Challenged</div></div>
-  <div class="roi-box"><div class="label">Challenge Success Rate</div><div class="value">{challenge_success_rate}%</div><div class="change">{challenge_solved} solved / {challenge_total} total</div></div>
+  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">Non-browser requests intercepted</div></div>
   <div class="card"><div class="label">Bot Requests Identified</div><div class="value">{bot_requests}</div><div class="change">{bot_pct}% of total traffic</div></div>
   <div class="card"><div class="label">Attack Requests Blocked</div><div class="value">{blocked_requests}</div><div class="change">{block_rate}% block rate</div></div>
 </div>
@@ -67,14 +67,10 @@ canvas {{ max-height: 300px; }}
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
 
-<h2>Challenge / CAPTCHA Effectiveness</h2>
-<table>
-<tr><th>Metric</th><th>This Week</th></tr>
-<tr><td>Challenge Issued</td><td>{challenge_total}</td></tr>
-<tr><td>Challenge Solved (token acquired)</td><td>{challenge_solved}</td></tr>
-<tr><td>Challenge Failed (bot blocked)</td><td>{challenge_failed}</td></tr>
-<tr><td>Success Rate</td><td>{challenge_success_rate}%</td></tr>
-</table>
+<h2>Challenge / CAPTCHA</h2>
+<div class="grid">
+  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">Non-browser requests intercepted</div></div>
+</div>
 
 <h2>Top Attack Sources (Countries)</h2>
 <table>
@@ -136,7 +132,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     Returns:
         Path to the generated HTML file, or error message.
     """
-    region = "us-east-1" if scope == "CLOUDFRONT" else "us-east-1"
+    region = "us-east-1" if scope == "CLOUDFRONT" else region
+    from tools.session_state import get_metrics_region
+    if scope != "CLOUDFRONT":
+        region = get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
 
     end = datetime.now(timezone.utc)
@@ -152,18 +151,14 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     total_this = this_week["allowed"] + this_week["blocked"] + this_week["challenge"]
     total_last = last_week["allowed"] + last_week["blocked"] + last_week["challenge"]
 
-    # Challenge effectiveness — use ChallengeRequests as issued, cannot determine solved from metrics alone
+    # Challenge total
     challenge_total = this_week["challenge"] + this_week["captcha"]
-    # Approximate: if allowed > last week's allowed, some challenges were solved
-    # But we can't precisely measure this from metrics — show issued vs blocked
-    challenge_solved = max(0, this_week["allowed"] - last_week["allowed"]) if last_week["allowed"] > 0 else 0
-    # Simpler: just show challenge issued count, don't claim solved rate without data
-    challenge_failed = 0  # Can't determine from metrics
-    challenge_success_rate = "N/A"
 
-    # Bot requests — use the single highest bot-related COUNT rule as proxy (avoid double-counting)
-    bot_rules = [r for r in rules if any(k in r["rule"] for k in ("Category", "Signal", "TGT_", "Bot")) and r["action"] == "COUNT"]
-    # The highest single bot rule gives a lower bound of bot requests
+    # Bot requests — narrow matching to avoid false matches (e.g., VulnerabilityCategory)
+    bot_keywords = ("CategoryHttpLibrary", "CategoryBot", "CategorySocialMedia", "CategorySearchEngine",
+                    "CategorySeo", "CategoryAdvertising", "CategoryArchiver", "CategoryContentFetcher",
+                    "SignalNonBrowserUserAgent", "SignalAutomatedBrowser", "TGT_")
+    bot_rules = [r for r in rules if any(k in r["rule"] for k in bot_keywords) and r["action"] == "COUNT"]
     bot_requests = bot_rules[0]["count"] if bot_rules else 0
     bot_pct = f"{(bot_requests / total_this * 100):.1f}" if total_this > 0 else "0"
 
@@ -215,9 +210,6 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         block_rate=block_rate,
         threats_mitigated=f"{threats_mitigated:,}",
         challenge_total=f"{challenge_total:,}",
-        challenge_solved=f"{challenge_solved:,}",
-        challenge_failed=f"{challenge_failed:,}",
-        challenge_success_rate=challenge_success_rate,
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
         country_rows=country_rows,
@@ -246,7 +238,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
 
 def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
-    """Get total allowed/blocked/challenge/captcha + challenge solved for a time range."""
+    """Get total allowed/blocked/challenge/captcha for a time range."""
     queries = []
     metrics = ["AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests"]
     for i, metric in enumerate(metrics):
@@ -265,22 +257,6 @@ def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
                 "Stat": "Sum",
             },
         })
-    # Challenge solved = RequestsWithValidChallengeToken (approximate)
-    queries.append({
-        "Id": "m4",
-        "MetricStat": {
-            "Metric": {
-                "Namespace": "AWS/WAFV2",
-                "MetricName": "AllowedRequests",
-                "Dimensions": [
-                    {"Name": "WebACL", "Value": webacl_name},
-                    {"Name": "Rule", "Value": "ALL"},
-                ],
-            },
-            "Period": 604800,
-            "Stat": "Sum",
-        },
-    })
 
     resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
     results = {r["Id"]: sum(r.get("Values", [0])) for r in resp["MetricDataResults"]}
@@ -289,7 +265,6 @@ def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
         "blocked": int(results.get("m1", 0)),
         "challenge": int(results.get("m2", 0)),
         "captcha": int(results.get("m3", 0)),
-        "challenge_solved": int(results.get("m4", 0)),  # approximate via allowed with token
     }
 
 
