@@ -310,7 +310,7 @@ def _check_bot_control(rules, findings):
         # Check SignalNonBrowserUserAgent and CategoryHttpLibrary
         # Only flag if WebACL likely has non-browser traffic (API/native app)
         # If pure frontend, blocking non-browser UA is correct behavior
-        host_profiles = get_host_profiles() if get_host_profiles else {}
+        host_profiles = get_host_profiles()
         has_backend = any("BACKEND" in str(v) or "MIXED" in str(v) for v in host_profiles.values()) if host_profiles else True  # default to flagging if unknown
 
         if has_backend and "SignalNonBrowserUserAgent" not in overrides:
