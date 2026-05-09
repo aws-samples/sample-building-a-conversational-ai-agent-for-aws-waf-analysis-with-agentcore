@@ -380,7 +380,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         antiddos_section += (
                             f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
                             f'<script>'
+                            f'(function(){{'
                             f'const ddosData = {_json.dumps(ddos_chart_data)};'
+                            f'const c = getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#e6edf3";'
                             f'new Chart(document.getElementById("ddosChart"), {{'
                             f'  type: "line",'
                             f'  data: {{ labels: ddosData.labels, datasets: ['
@@ -388,8 +390,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             f'    {{ label: "Event Detected", data: ddosData.event, borderColor: "#d29922", fill: true, backgroundColor: "rgba(210,153,34,0.1)", tension: 0.2 }},'
                             f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", fill: true, backgroundColor: "rgba(248,81,73,0.2)", tension: 0.2 }},'
                             f'  ] }},'
-                            f'  options: {{ responsive: true, plugins: {{ title: {{ display: true, text: "DDoS Event Timeline (1-min resolution)", color: chartTextColor }}, legend: {{ labels: {{ color: chartTextColor }} }} }}, scales: {{ x: {{ ticks: {{ color: chartTextColor }} }}, y: {{ ticks: {{ color: chartTextColor }} }} }} }}'
+                            f'  options: {{ responsive: true, plugins: {{ title: {{ display: true, text: "DDoS Event Timeline (1-min resolution)", color: c }}, legend: {{ labels: {{ color: c }} }} }}, scales: {{ x: {{ ticks: {{ color: c }} }}, y: {{ ticks: {{ color: c }} }} }} }}'
                             f'}});'
+                            f'}})();'
                             f'</script>'
                         )
                 except Exception:
