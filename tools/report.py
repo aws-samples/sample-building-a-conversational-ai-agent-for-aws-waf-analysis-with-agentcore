@@ -351,6 +351,49 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     f'<div class="card"><div class="label">Total Requests During Events</div><div class="value">{total_during_event:,}</div></div>'
                     f'</div>'
                 )
+
+                # DDoS timeline mini-chart (60s period, event window ± 30min)
+                try:
+                    import json as _json
+                    evt_start = datetime.fromisoformat(event_first.replace(" ", "T"))
+                    evt_end = datetime.fromisoformat(event_last.replace(" ", "T"))
+                    chart_start = evt_start - timedelta(minutes=30)
+                    chart_end = evt_end + timedelta(minutes=30)
+                    ddos_chart_resp = cw.get_metric_data(
+                        MetricDataQueries=[
+                            {"Id": "total", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"AllowedRequests\" OR \"BlockedRequests\" OR \"ChallengeRequests\")', 'Sum', 60),0))"},
+                            {"Id": "evtdet", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 60),0))"},
+                            {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 60),0))"},
+                        ],
+                        StartTime=chart_start, EndTime=chart_end, ScanBy="TimestampAscending",
+                    )
+                    ddos_chart_data = {"labels": [], "total": [], "event": [], "ddos": []}
+                    for r in ddos_chart_resp.get("MetricDataResults", []):
+                        if r["Id"] == "total":
+                            ddos_chart_data["labels"] = [t.strftime("%H:%M") for t in r.get("Timestamps", [])]
+                            ddos_chart_data["total"] = [int(v) for v in r.get("Values", [])]
+                        elif r["Id"] == "evtdet":
+                            ddos_chart_data["event"] = [int(v) for v in r.get("Values", [])]
+                        elif r["Id"] == "ddosreq":
+                            ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
+                    if ddos_chart_data["labels"]:
+                        antiddos_section += (
+                            f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
+                            f'<script>'
+                            f'const ddosData = {_json.dumps(ddos_chart_data)};'
+                            f'new Chart(document.getElementById("ddosChart"), {{'
+                            f'  type: "line",'
+                            f'  data: {{ labels: ddosData.labels, datasets: ['
+                            f'    {{ label: "Total Requests/min", data: ddosData.total, borderColor: "#58a6ff", fill: false, tension: 0.2 }},'
+                            f'    {{ label: "Event Detected", data: ddosData.event, borderColor: "#d29922", fill: true, backgroundColor: "rgba(210,153,34,0.1)", tension: 0.2 }},'
+                            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", fill: true, backgroundColor: "rgba(248,81,73,0.2)", tension: 0.2 }},'
+                            f'  ] }},'
+                            f'  options: {{ responsive: true, plugins: {{ title: {{ display: true, text: "DDoS Event Timeline (1-min resolution)", color: chartTextColor }}, legend: {{ labels: {{ color: chartTextColor }} }} }}, scales: {{ x: {{ ticks: {{ color: chartTextColor }} }}, y: {{ ticks: {{ color: chartTextColor }} }} }} }}'
+                            f'}});'
+                            f'</script>'
+                        )
+                except Exception:
+                    pass
                 ddos_num_events = num_events
                 ddos_event_first = event_first
                 ddos_event_last = event_last
@@ -642,11 +685,19 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             action = "✅ Allowed"
                         name_rows += f"<tr><td>{display}</td><td>{cat_display}</td><td>{vs_badge}</td><td>{total:,}</td><td>{action}</td></tr>\n"
 
-                # Add NonBrowserUA without bot:name as "Unknown Non-Browser UA"
-                nonbrowser_data = bot_data.get("SignalNonBrowserUserAgent", {})
-                named_total = sum(sum(d.values()) for d in bot_names_detail.values())
-                nonbrowser_total = sum(nonbrowser_data.values())
-                nonbrowser_unnamed = max(0, nonbrowser_total - named_total)
+                # Add NonBrowserUA without bot:name (the "neither" case — fake bot UAs)
+                if log_group:
+                    try:
+                        nb_result = _poll_log_query(logs_client, log_group, log_start, log_end,
+                            'filter @message like "SignalNonBrowserUserAgent" | parse @message /bot:name:(?<bn>[a-z0-9_]+)/ | stats count(*) as total, sum(strlen(bn) > 0) as named',
+                            return_full=True)
+                        nb_total_log = int(float(nb_result.get("total", 0))) if nb_result else 0
+                        nb_named = int(float(nb_result.get("named", 0))) if nb_result else 0
+                        nonbrowser_unnamed = nb_total_log - nb_named
+                    except Exception:
+                        nonbrowser_unnamed = 0
+                else:
+                    nonbrowser_unnamed = 0
                 if nonbrowser_unnamed > 0:
                     name_rows += f'<tr><td><em>Unknown Non-Browser UA</em></td><td>Non-Browser</td><td>— (neither)</td><td>{nonbrowser_unnamed:,}</td><td>👁️ Monitored</td></tr>\n'
 
