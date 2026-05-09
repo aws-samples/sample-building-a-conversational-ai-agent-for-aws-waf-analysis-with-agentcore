@@ -52,7 +52,7 @@ canvas {{ max-height: 300px; }}
 <h2>Protection Value (ROI)</h2>
 <div class="grid">
   <div class="roi-box"><div class="label">Threats Mitigated</div><div class="value">{threats_mitigated}</div><div class="change">Blocked + Challenged</div></div>
-  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">Non-browser requests intercepted</div></div>
+  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">Challenge {challenge_count} + CAPTCHA {captcha_count}</div></div>
   <div class="card"><div class="label">Bot Requests Identified</div><div class="value">{bot_requests}</div><div class="change">{bot_pct}% of total traffic</div></div>
   <div class="card"><div class="label">Attack Requests Blocked</div><div class="value">{blocked_requests}</div><div class="change">{block_rate}% block rate</div></div>
 </div>
@@ -69,7 +69,8 @@ canvas {{ max-height: 300px; }}
 
 <h2>Challenge / CAPTCHA</h2>
 <div class="grid">
-  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">Non-browser requests intercepted</div></div>
+  <div class="card"><div class="label">Challenge Issued</div><div class="value">{challenge_count}</div></div>
+  <div class="card"><div class="label">CAPTCHA Issued</div><div class="value">{captcha_count}</div></div>
 </div>
 
 <h2>Top Attack Sources (Countries)</h2>
@@ -210,6 +211,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         block_rate=block_rate,
         threats_mitigated=f"{threats_mitigated:,}",
         challenge_total=f"{challenge_total:,}",
+        challenge_count=f"{this_week['challenge']:,}",
+        captcha_count=f"{this_week['captcha']:,}",
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
         country_rows=country_rows,
