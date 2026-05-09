@@ -141,14 +141,14 @@ new Chart(document.getElementById('dailyChart'), {{
   data: {{
     labels: thisWeek.map(d => d.date),
     datasets: [
-      {{ label: 'Allowed', data: thisWeek.map(d => d.allowed || 0), borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'Blocked', data: thisWeek.map(d => d.blocked || 0), borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'Challenged', data: thisWeek.map(d => d.challenged || 0), borderColor: '#d29922', backgroundColor: 'rgba(210,153,34,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'CAPTCHA', data: thisWeek.map(d => d.captcha || 0), borderColor: '#a371f7', backgroundColor: 'rgba(163,113,247,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'Allowed (last week)', data: lastWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
-      {{ label: 'Blocked (last week)', data: lastWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
-      {{ label: 'Challenged (last week)', data: lastWeek.map(d => d.challenged || 0), borderColor: '#d29922', borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
-      {{ label: 'CAPTCHA (last week)', data: lastWeek.map(d => d.captcha || 0), borderColor: '#a371f7', borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
+      {{ label: 'Allowed', data: thisWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderWidth: 1.5, backgroundColor: 'rgba(63,185,80,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+      {{ label: 'Blocked', data: thisWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderWidth: 1.5, backgroundColor: 'rgba(248,81,73,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+      {{ label: 'Challenged', data: thisWeek.map(d => d.challenged || 0), borderColor: '#d29922', borderWidth: 1.5, backgroundColor: 'rgba(210,153,34,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+      {{ label: 'CAPTCHA', data: thisWeek.map(d => d.captcha || 0), borderColor: '#a371f7', borderWidth: 1.5, backgroundColor: 'rgba(163,113,247,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+      {{ label: 'Allowed (last week)', data: lastWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
+      {{ label: 'Blocked (last week)', data: lastWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
+      {{ label: 'Challenged (last week)', data: lastWeek.map(d => d.challenged || 0), borderColor: '#d29922', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
+      {{ label: 'CAPTCHA (last week)', data: lastWeek.map(d => d.captcha || 0), borderColor: '#a371f7', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
     ]
   }},
   options: {{
@@ -392,9 +392,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             f'new Chart(document.getElementById("ddosChart"), {{'
                             f'  type: "line",'
                             f'  data: {{ labels: ddosData.labels, datasets: ['
-                            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", fill: true, backgroundColor: "rgba(248,81,73,0.25)", tension: 0.2, pointRadius: 0 }},'
+                            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", borderWidth: 1.5, fill: true, backgroundColor: "rgba(248,81,73,0.25)", tension: 0.2, pointRadius: 0 }},'
                             f'  ] }},'
-                            f'  options: {{ responsive: true, interaction: {{ mode: "index", intersect: false }}, plugins: {{ title: {{ display: true, text: "Anti-DDoS: DDoS Requests Identified (full week)", color: c }}, legend: {{ labels: {{ color: c }} }}, tooltip: {{ mode: "index", intersect: false }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ type: "logarithmic", ticks: {{ color: c }} }} }} }}'
+                            f'  options: {{ responsive: true, interaction: {{ mode: "index", intersect: false }}, plugins: {{ title: {{ display: true, text: "Anti-DDoS: DDoS Requests Identified (full week)", color: c }}, legend: {{ labels: {{ color: c }} }}, tooltip: {{ mode: "index", intersect: false }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ beginAtZero: true, ticks: {{ color: c }} }} }} }}'
                             f'}});'
                             f'}})();'
                             f'</script>'
