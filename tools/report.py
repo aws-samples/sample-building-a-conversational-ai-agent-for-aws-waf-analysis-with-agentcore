@@ -93,7 +93,7 @@ canvas {{ max-height: 300px; }}
 <h2>Executive Summary</h2>
 <div class="summary">{executive_summary}</div>
 
-<h2>Protection Value (ROI)</h2>
+<h2>Weekly Highlights</h2>
 <div class="grid">
   <div class="roi-box"><div class="label">Threats Mitigated</div><div class="value">{threats_mitigated}</div><div class="change">Blocked + Challenged</div></div>
   <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">{challenge_effectiveness}</div></div>
@@ -114,6 +114,7 @@ canvas {{ max-height: 300px; }}
 </div>
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
+
 <h2>Top Attack Sources (Countries)</h2>
 <table>
 <tr><th>Country</th><th>Blocked Requests</th><th>% of Total Blocked</th></tr>
@@ -127,22 +128,37 @@ canvas {{ max-height: 300px; }}
 </table>
 
 <script>
-const dailyData = {daily_data_json};
+const thisWeek = {daily_data_json};
+const lastWeek = {daily_data_last_week_json};
 const chartTextColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-text').trim() || '#e6edf3';
+const dayLabels = ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7'];
+const thisWeekTotals = thisWeek.map(d => (d.allowed || 0) + (d.blocked || 0) + (d.challenged || 0));
+const lastWeekTotals = lastWeek.map(d => (d.allowed || 0) + (d.blocked || 0) + (d.challenged || 0));
+const thisWeekBlocked = thisWeek.map(d => d.blocked || 0);
+const lastWeekBlocked = lastWeek.map(d => d.blocked || 0);
+
 new Chart(document.getElementById('dailyChart'), {{
   type: 'bar',
   data: {{
-    labels: dailyData.map(d => d.date),
+    labels: thisWeek.map((d, i) => d.date + (lastWeek[i] ? '\\nvs ' + lastWeek[i].date : '')),
     datasets: [
-      {{ label: 'Allowed', data: dailyData.map(d => d.allowed), backgroundColor: '#3fb950' }},
-      {{ label: 'Blocked', data: dailyData.map(d => d.blocked), backgroundColor: '#cf222e' }},
-      {{ label: 'Challenged', data: dailyData.map(d => d.challenged), backgroundColor: '#d29922' }},
+      {{ label: 'This Week (Total)', data: thisWeekTotals, backgroundColor: '#58a6ff', borderRadius: 3 }},
+      {{ label: 'Last Week (Total)', data: lastWeekTotals, backgroundColor: 'rgba(88,166,255,0.25)', borderRadius: 3 }},
+      {{ label: 'This Week (Blocked)', data: thisWeekBlocked, backgroundColor: '#f85149', borderRadius: 3 }},
+      {{ label: 'Last Week (Blocked)', data: lastWeekBlocked, backgroundColor: 'rgba(248,81,73,0.25)', borderRadius: 3 }},
     ]
   }},
   options: {{
     responsive: true,
-    plugins: {{ title: {{ display: true, text: 'Daily Request Volume by Action', color: chartTextColor }}, legend: {{ labels: {{ color: chartTextColor }} }} }},
-    scales: {{ x: {{ stacked: true, ticks: {{ color: chartTextColor }} }}, y: {{ stacked: true, ticks: {{ color: chartTextColor }} }} }}
+    plugins: {{
+      title: {{ display: true, text: 'Daily Traffic: This Week vs Last Week', color: chartTextColor }},
+      legend: {{ labels: {{ color: chartTextColor }} }},
+      tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }}
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: chartTextColor, font: {{ size: 10 }} }} }},
+      y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
+    }}
   }}
 }});
 
@@ -185,6 +201,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end)
     last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week)
     daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end)
+    daily_last_week = _get_daily_breakdown(cw, webacl_name, start_last_week, start_this_week)
     countries = _get_top_countries(cw, webacl_name, start_this_week, end)
     rules = _get_top_rules(cw, webacl_name, start_this_week, end)
 
@@ -523,6 +540,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         country_rows=country_rows,
         rule_rows=rule_rows,
         daily_data_json=json.dumps(daily),
+        daily_data_last_week_json=json.dumps(daily_last_week),
     )
 
     output_path = f"waf-weekly-report-{webacl_name}-{end.strftime('%Y%m%d')}.html"
