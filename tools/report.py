@@ -71,7 +71,7 @@ canvas {{ max-height: 300px; }}
 <div class="grid">
   <div class="card"><div class="label">Challenge Issued</div><div class="value">{challenge_count}</div></div>
   <div class="card"><div class="label">CAPTCHA Issued</div><div class="value">{captcha_count}</div></div>
-  <div class="card"><div class="label">Challenge Solved (token acquired)</div><div class="value">{challenge_solved}</div></div>
+  <div class="card"><div class="label">Requests with Valid Token</div><div class="value">{valid_token_count}</div></div>
 </div>
 
 {antiddos_section}
@@ -136,10 +136,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     Returns:
         Path to the generated HTML file, or error message.
     """
-    region = "us-east-1" if scope == "CLOUDFRONT" else region
-    from tools.session_state import get_metrics_region
-    if scope != "CLOUDFRONT":
-        region = get_metrics_region()
+    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
+    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
 
     end = datetime.now(timezone.utc)
@@ -158,33 +156,23 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     # Challenge total
     challenge_total = this_week["challenge"] + this_week["captcha"]
 
-    # Challenge/CAPTCHA solved — query logs for token:accepted after challenge
-    challenge_solved = 0
-    captcha_solved = 0
-    if challenge_total > 0:
-        log_dest = None
-        from tools.session_state import get_log_destination
-        log_dest = get_log_destination()
-        if log_dest and ":log-group:" in log_dest:
-            import time
-            log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
-            logs_client = get_client("logs", region_name=region)
-            log_end = int(end.timestamp())
-            log_start = int(start_this_week.timestamp())
-            # Count requests with valid challenge token (= solved challenge)
-            try:
-                resp = logs_client.start_query(
-                    logGroupName=log_group, startTime=log_start, endTime=log_end,
-                    queryString="filter @message like 'token:accepted' | stats count(*) as cnt",
-                    limit=1,
-                )
-                time.sleep(8)
-                result = logs_client.get_query_results(queryId=resp["queryId"])
-                for row in result.get("results", []):
-                    d = {f["field"]: f["value"] for f in row}
-                    challenge_solved = int(d.get("cnt", 0))
-            except Exception:
-                pass
+    # Requests with valid token — query logs
+    valid_token_count = 0
+    log_dest = get_log_destination()
+    log_group = None
+    if log_dest and ":log-group:" in log_dest:
+        log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+
+    if log_group:
+        import time
+        logs_client = get_client("logs", region_name=region)
+        log_end = int(end.timestamp())
+        log_start = int(start_this_week.timestamp())
+        try:
+            valid_token_count = _poll_log_query(logs_client, log_group, log_start, log_end,
+                "filter @message like 'token:accepted' | stats count(*) as cnt")
+        except Exception:
+            pass
 
     # Bot requests — narrow matching to avoid false matches (e.g., VulnerabilityCategory)
     bot_keywords = ("CategoryHttpLibrary", "CategoryBot", "CategorySocialMedia", "CategorySearchEngine",
@@ -209,68 +197,59 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     blocked_change, blocked_change_class = fmt_change(this_week["blocked"], last_week["blocked"])
     block_rate = f"{(this_week['blocked'] / total_this * 100):.1f}" if total_this > 0 else "0"
 
-    # Anti-DDoS AMR events — query logs for event-detected + ddos-request
+    # Anti-DDoS AMR events — only if AMR is deployed
     antiddos_section = ""
-    ddos_events = 0
-    if challenge_total > 0:
+    caps = get_capabilities()
+    if caps.get("anti_ddos_amr") and log_group:
         try:
-            from tools.session_state import get_log_destination as _get_log_dest
-            log_dest = _get_log_dest()
-            if log_dest and ":log-group:" in log_dest:
-                import time as _time
-                _log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
-                _logs = get_client("logs", region_name=region)
-                _log_end = int(end.timestamp())
-                _log_start = int(start_this_week.timestamp())
-                # Event detection count + time range
-                resp = _logs.start_query(
-                    logGroupName=_log_group, startTime=_log_start, endTime=_log_end,
-                    queryString="filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
-                    limit=1,
-                )
-                _time.sleep(8)
-                result = _logs.get_query_results(queryId=resp["queryId"])
-                event_cnt = 0
-                event_first = "N/A"
-                event_last = "N/A"
-                for row in result.get("results", []):
-                    d = {f["field"]: f["value"] for f in row}
-                    event_cnt = int(d.get("cnt", 0))
-                    event_first = d.get("first", "N/A")
-                    event_last = d.get("last", "N/A")
+            logs_client = get_client("logs", region_name=region)
+            log_end = int(end.timestamp())
+            log_start = int(start_this_week.timestamp())
 
-                # DDoS request count (actual malicious requests identified)
-                ddos_request_cnt = 0
-                resp = _logs.start_query(
-                    logGroupName=_log_group, startTime=_log_start, endTime=_log_end,
-                    queryString="filter @message like 'anti-ddos:ddos-request' | stats count(*) as total, sum(@message like 'high-suspicion') as high, sum(@message like 'medium-suspicion') as medium, sum(@message like 'low-suspicion') as low",
-                    limit=1,
-                )
-                _time.sleep(8)
-                result = _logs.get_query_results(queryId=resp["queryId"])
-                ddos_total = 0
-                ddos_high = 0
-                ddos_medium = 0
-                ddos_low = 0
-                for row in result.get("results", []):
-                    d = {f["field"]: f["value"] for f in row}
-                    ddos_total = int(float(d.get("total", 0)))
-                    ddos_high = int(float(d.get("high", 0)))
-                    ddos_medium = int(float(d.get("medium", 0)))
-                    ddos_low = int(float(d.get("low", 0)))
+            # Event time range + total requests during event
+            event_cnt = _poll_log_query(logs_client, log_group, log_start, log_end,
+                "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
+                return_full=True)
 
-                if event_cnt > 0:
-                    antiddos_section = (
-                        f'<h2>Anti-DDoS Protection</h2>'
-                        f'<div class="grid">'
-                        f'<div class="roi-box"><div class="label">DDoS Event Detected</div><div class="value">Yes</div><div class="change">{event_first} — {event_last}</div></div>'
-                        f'<div class="card"><div class="label">DDoS Requests Identified</div><div class="value">{ddos_total:,}</div></div>'
-                        f'<div class="card"><div class="label">High Suspicion</div><div class="value">{ddos_high:,}</div></div>'
-                        f'<div class="card"><div class="label">Medium Suspicion</div><div class="value">{ddos_medium:,}</div></div>'
-                        f'<div class="card"><div class="label">Low Suspicion</div><div class="value">{ddos_low:,}</div></div>'
-                        f'<div class="card"><div class="label">Total Requests During Event</div><div class="value">{event_cnt:,}</div></div>'
-                        f'</div>'
-                    )
+            if event_cnt and int(event_cnt.get("cnt", 0)) > 0:
+                event_first = event_cnt.get("first", "N/A")
+                event_last = event_cnt.get("last", "N/A")
+                total_during_event = int(event_cnt["cnt"])
+
+                # Count distinct events by looking for gaps > 5 min in event-detected timeline
+                event_count_result = _poll_log_query(logs_client, log_group, log_start, log_end,
+                    "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
+                    return_rows=True)
+                # Count events: a gap (bin with 0 hits) between non-zero bins = separate event
+                num_events = 1 if event_count_result else 0
+                prev_had_hits = False
+                for row in event_count_result or []:
+                    d = {f["field"]: f["value"] for f in row}
+                    has_hits = int(d.get("cnt", 0)) > 0
+                    if has_hits and not prev_had_hits and prev_had_hits is not False:
+                        num_events += 1
+                    prev_had_hits = has_hits
+
+                # DDoS request breakdown by suspicion level
+                ddos_result = _poll_log_query(logs_client, log_group, log_start, log_end,
+                    "filter @message like 'anti-ddos:ddos-request' | stats count(*) as total, sum(strcontains(@message, 'high-suspicion')) as high, sum(strcontains(@message, 'medium-suspicion')) as medium, sum(strcontains(@message, 'low-suspicion')) as low",
+                    return_full=True)
+                ddos_total = int(float(ddos_result.get("total", 0))) if ddos_result else 0
+                ddos_high = int(float(ddos_result.get("high", 0))) if ddos_result else 0
+                ddos_medium = int(float(ddos_result.get("medium", 0))) if ddos_result else 0
+                ddos_low = int(float(ddos_result.get("low", 0))) if ddos_result else 0
+
+                antiddos_section = (
+                    f'<h2>Anti-DDoS Protection</h2>'
+                    f'<div class="grid">'
+                    f'<div class="roi-box"><div class="label">DDoS Events This Week</div><div class="value">{num_events}</div><div class="change">{event_first} — {event_last}</div></div>'
+                    f'<div class="card"><div class="label">DDoS Requests Identified</div><div class="value">{ddos_total:,}</div></div>'
+                    f'<div class="card"><div class="label">High Suspicion</div><div class="value">{ddos_high:,}</div></div>'
+                    f'<div class="card"><div class="label">Medium Suspicion</div><div class="value">{ddos_medium:,}</div></div>'
+                    f'<div class="card"><div class="label">Low Suspicion</div><div class="value">{ddos_low:,}</div></div>'
+                    f'<div class="card"><div class="label">Total Requests During Events</div><div class="value">{total_during_event:,}</div></div>'
+                    f'</div>'
+                )
         except Exception:
             pass
 
@@ -312,7 +291,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         challenge_total=f"{challenge_total:,}",
         challenge_count=f"{this_week['challenge']:,}",
         captcha_count=f"{this_week['captcha']:,}",
-        challenge_solved=f"{challenge_solved:,}",
+        valid_token_count=f"{valid_token_count:,}",
         antiddos_section=antiddos_section,
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
@@ -340,6 +319,33 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         f"Then call set_report_summary(path='{output_path}', summary='your summary here') to finalize the report."
     )
 
+
+
+def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False, max_wait=30):
+    """Run a CWL query with polling. Returns count (int), full row (dict), or all rows (list)."""
+    import time
+    resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=1000)
+    query_id = resp["queryId"]
+    elapsed = 0
+    while elapsed < max_wait:
+        time.sleep(2)
+        elapsed += 2
+        result = logs_client.get_query_results(queryId=query_id)
+        if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
+            break
+    results = result.get("results", [])
+    if not results:
+        if return_full:
+            return {}
+        if return_rows:
+            return []
+        return 0
+    if return_rows:
+        return results
+    row = {f["field"]: f["value"] for f in results[0]}
+    if return_full:
+        return row
+    return int(float(row.get("cnt", 0)))
 
 def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
     """Get total allowed/blocked/challenge/captcha for a time range."""
