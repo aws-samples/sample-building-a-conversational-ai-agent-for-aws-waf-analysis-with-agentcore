@@ -65,6 +65,10 @@ Step 5: Synthesize conclusion using the evaluation logic below, then give recomm
 - Rate-based rules have 20-30s kick-in delay — ALLOW before BLOCK is normal behavior
 - Anti-DDoS AMR: 5s snapshot, volumetric-index can miss highly distributed attacks
 - Bot Control Common: only detects self-identifying bots (UA-based)
+  - bot:verified (real bot, reverse DNS verified) → allowed, skips Targeted
+  - bot:unverified (claims to be bot but can't verify) → rule action (Block)
+  - Neither (fake bot UA not matching any Category, or browser UA) → falls to SignalNonBrowserUserAgent or undetected
+  - Common does NOT block all bots — only unverified self-declared ones. Browser-UA bots need Targeted.
 - Challenge/CAPTCHA: only works on browser GET text/html; POST/API/native = effectively Block
 - Match detail: only SQLi_Body and XSS_Body provide terminatingRuleMatchDetails
 - WAF token is unforgeable (AWS cryptographic signature)
