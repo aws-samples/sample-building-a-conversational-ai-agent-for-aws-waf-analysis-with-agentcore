@@ -36,6 +36,8 @@ td {{ padding: .5rem .8rem; border-top: 1px solid var(--border); }}
 .chart-container {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1rem 0; }}
 canvas {{ max-height: 300px; }}
 .highlight {{ background: var(--accent); color: #fff; padding: .1rem .4rem; border-radius: 3px; font-weight: 600; }}
+.summary p {{ margin-bottom: 1rem; line-height: 1.8; }}
+.summary strong {{ color: var(--accent); }}
 .roi-box {{ background: var(--card); border: 2px solid var(--green); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; text-align: center; }}
 .roi-box .value {{ font-size: 2.5rem; font-weight: 700; color: var(--green); }}
 @media print {{ .theme-toggle {{ display: none; }} }}
@@ -47,7 +49,7 @@ canvas {{ max-height: 300px; }}
 <p class="subtitle">{webacl_name} — {date_range}</p>
 
 <h2>Executive Summary</h2>
-<p>{executive_summary}</p>
+<div class="summary">{executive_summary}</div>
 
 <h2>Protection Value (ROI)</h2>
 <div class="grid">
@@ -662,21 +664,17 @@ def set_report_summary(path: str, summary: str) -> str:
 
     Args:
         path: Path to the HTML report file (returned by generate_weekly_report).
-        summary: Executive summary text. Use double newlines between paragraphs for formatting.
+        summary: Executive summary in Markdown format. Use **bold** for emphasis, paragraphs separated by blank lines.
 
     Returns:
         Confirmation message.
     """
     try:
+        import markdown
         with open(path, "r") as f:
             html = f.read()
-        # Convert paragraph breaks to HTML (handle both real newlines and escaped)
-        summary = summary.replace("\\n\\n", "\n\n")  # handle escaped newlines from LLM
-        paragraphs = [p.strip() for p in summary.split("\n\n") if p.strip()]
-        if len(paragraphs) > 1:
-            summary_html = "</p><p>".join(paragraphs)
-        else:
-            summary_html = summary
+        # Convert Markdown to HTML
+        summary_html = markdown.markdown(summary, extensions=["smarty"])
         html = html.replace("{{EXECUTIVE_SUMMARY}}", summary_html)
         with open(path, "w") as f:
             f.write(html)

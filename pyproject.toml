@@ -11,6 +11,7 @@ dependencies = [
     "strands-agents-tools>=0.1.0",
     "bedrock-agentcore>=1.0.6",
     "boto3>=1.40.0",
+    "markdown>=3.6",
 ]
 
 [project.optional-dependencies]
