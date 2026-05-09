@@ -130,7 +130,8 @@ Step 3: Cross-validate (don't rely on frequency alone)
 - run_logs_query(query_type="ip_uri_breakdown", ip="...") → are URIs diverse or repetitive?
 - run_logs_query(query_type="ip_ja4_fingerprints", ip="...") → headless browser fingerprint?
 - Check if IP triggered ANY count rules (even non-blocking ones indicate suspicion)
-- Token reuse: first check if TGT_TokenReuseIP label exists in metrics (low/medium/high).
+- Token reuse: ONLY applicable if WebACL has Challenge/Bot Control rules (otherwise no tokens exist).
+  If applicable: first check if TGT_TokenReuseIP label exists in metrics (low/medium/high).
   If yes → WAF already detects it, recommend COUNT→BLOCK. If no → run token_reuse_ips query.
 
 Step 4: Conclusion
