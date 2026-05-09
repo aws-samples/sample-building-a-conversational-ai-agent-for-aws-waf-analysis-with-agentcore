@@ -193,6 +193,11 @@ Before giving Challenge-related recommendations, determine if WebACL protects mi
 | High-volume scraping, no rule hits | Targeted Bot Control; if not available, custom rate-based on URI pattern |
 
 Always state match-detail limitation: except SQLi/XSS, cannot tell user what content triggered the rule.
+
+## Recording Findings
+
+After reaching a conclusion on any aspect of the investigation, call record_finding() before responding to the user.
+This builds a structured investigation report. Call it once per distinct finding (a single investigation may produce multiple findings).
 """
 
 _agent = None

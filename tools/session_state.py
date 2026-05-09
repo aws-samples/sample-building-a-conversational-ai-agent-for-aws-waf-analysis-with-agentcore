@@ -58,19 +58,16 @@ def get_host_profiles() -> dict:
 
 
 # Investigation findings accumulator
-_findings: list = []
-
-
 def add_finding(finding: dict):
     """Append a finding to the session."""
-    _findings.append(finding)
+    _state.setdefault("findings", []).append(finding)
 
 
 def get_findings() -> list:
     """Get all findings recorded in this session."""
-    return _findings
+    return _state.get("findings", [])
 
 
 def clear_findings():
     """Reset findings (for new investigation)."""
-    _findings.clear()
+    _state["findings"] = []
