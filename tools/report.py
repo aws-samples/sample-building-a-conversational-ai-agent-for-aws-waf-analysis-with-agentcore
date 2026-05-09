@@ -275,18 +275,14 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     bot_section = ""
     if caps.get("bot_control") != "none":
         try:
-            # Query multiple bot-control label namespaces
-            bot_queries = [
-                {"Id": "bc_rules", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-                {"Id": "bc_org", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control:bot:organization\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-                {"Id": "bc_csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-            ]
-            bot_label_resp = cw.get_metric_data(MetricDataQueries=bot_queries, StartTime=start_this_week, EndTime=end)
+            # Query main bot-control namespace (has multiple LabelNames → SEARCH label = "{LabelName} {MetricName}")
+            bot_label_resp = cw.get_metric_data(
+                MetricDataQueries=[{"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"}],
+                StartTime=start_this_week, EndTime=end,
+            )
 
-            # Parse into {label: {action: count}}
+            # Parse: label format is "{LabelName} {MetricName}" e.g. "CategoryHttpLibrary AllowedRequests"
             bot_data = {}
-            bot_orgs = {}
-            bot_csps = {}
             for r in bot_label_resp.get("MetricDataResults", []):
                 total = int(sum(r.get("Values", [])))
                 if total <= 0:
@@ -296,17 +292,53 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 if len(parts) < 2:
                     continue
                 name = parts[0]
-                namespace = parts[1] if len(parts) > 1 else ""
-                action = parts[-1].replace("Requests", "").replace("RuleMatch", "") if len(parts) > 2 else ""
-
-                if "bot:organization" in namespace:
-                    bot_orgs[name] = bot_orgs.get(name, 0) + total
-                elif "signal:cloud_service_provider" in namespace:
-                    bot_csps[name] = bot_csps.get(name, 0) + total
+                metric = parts[1]  # e.g. AllowedRequests, BlockedRequests, BlockRuleMatch, ChallengeRequests, CountRuleMatch
+                # Normalize metric to action
+                if "Block" in metric:
+                    action = "Blocked"
+                elif "Challenge" in metric:
+                    action = "Challenge"
+                elif "Count" in metric:
+                    action = "Count"
                 else:
-                    if name not in bot_data:
-                        bot_data[name] = {}
-                    bot_data[name][action] = bot_data[name].get(action, 0) + total
+                    action = "Allowed"
+                if name not in bot_data:
+                    bot_data[name] = {}
+                bot_data[name][action] = bot_data[name].get(action, 0) + total
+
+            # Discover bot organizations via list_metrics (SEARCH unreliable for single-LabelName namespaces)
+            bot_orgs = {}
+            org_metrics = cw.list_metrics(
+                Namespace="AWS/WAFV2",
+                Dimensions=[
+                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:organization"},
+                    {"Name": "WebACL", "Value": webacl_name},
+                ],
+            ).get("Metrics", [])
+            # Get unique org names
+            org_names = set()
+            for m in org_metrics:
+                for d in m["Dimensions"]:
+                    if d["Name"] == "LabelName":
+                        org_names.add(d["Value"])
+            # Query each org's total
+            if org_names:
+                org_queries = []
+                for i, org_name in enumerate(list(org_names)[:10]):
+                    org_queries.append({"Id": f"org{i}", "MetricStat": {
+                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                            {"Name": "LabelName", "Value": org_name},
+                            {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:organization"},
+                            {"Name": "WebACL", "Value": webacl_name},
+                        ]}, "Period": 604800, "Stat": "Sum",
+                    }})
+                org_resp = cw.get_metric_data(MetricDataQueries=org_queries, StartTime=start_this_week, EndTime=end)
+                for i, org_name in enumerate(list(org_names)[:10]):
+                    for r in org_resp.get("MetricDataResults", []):
+                        if r.get("Id") == f"org{i}":
+                            total = int(sum(r.get("Values", [])))
+                            if total > 0:
+                                bot_orgs[org_name] = total
 
             # Classify by prefix: Category*/Signal* = Common, TGT_* = Targeted
             common_rows = ""
@@ -347,7 +379,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         f'<h3>Common Bots (self-declared)</h3>'
                         f'<div class="grid">'
                         f'<div class="card"><div class="label">Illegitimate Bots Blocked</div><div class="value">{common_total_blocked:,}</div></div>'
-                        f'<div class="card"><div class="label">Legitimate Bots Allowed</div><div class="value">{common_total_allowed:,}</div></div>'
+                        f'<div class="card"><div class="label">Legitimate/Monitored Bots</div><div class="value">{common_total_allowed:,}</div></div>'
                         f'</div>'
                         f'<table><tr><th>Bot Category/Signal</th><th>Requests</th><th>Action</th></tr>{common_rows}</table>'
                     )
