@@ -196,14 +196,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     for r in count_rules[:10]:
         rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>🏷️ Labeled</td></tr>\n"
 
-    executive_summary = (
-        f"This week WAF processed {total_this:,} requests. "
-        f"<span class='highlight'>{threats_mitigated:,}</span> threats were mitigated "
-        f"({this_week['blocked']:,} blocked + {challenge_total:,} challenged). "
-        f"Bot Control identified {bot_requests:,} bot/suspicious requests ({bot_pct}% of traffic). "
-        f"Challenge success rate: {challenge_success_rate}% — "
-        f"{'most challenged requests were bots that failed verification.' if int(challenge_success_rate) < 50 else 'most challenged requests completed verification successfully.'}"
-    )
+    executive_summary = "{{EXECUTIVE_SUMMARY}}"
 
     date_range = f"{start_this_week.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
 
@@ -236,7 +229,20 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     with open(output_path, "w") as f:
         f.write(html)
 
-    return f"Report generated: {output_path}\n\nSummary: {threats_mitigated:,} threats mitigated, {challenge_success_rate}% challenge success rate, {bot_requests:,} bot requests identified."
+    return (
+        f"Report generated: {output_path}\n\n"
+        f"## Data for Executive Summary (write this, then call set_report_summary)\n"
+        f"- Total requests: {total_this:,}\n"
+        f"- Threats mitigated: {threats_mitigated:,} (blocked {this_week['blocked']:,} + challenged {challenge_total:,})\n"
+        f"- Bot/suspicious requests identified: {bot_requests:,} ({bot_pct}% of traffic)\n"
+        f"- Top attack sources: {', '.join(c['country'] for c in countries[:3])}\n"
+        f"- Top blocking rules: {', '.join(r['rule'] + '=' + str(r['count']) for r in [r for r in rules if r['action']=='BLOCK'][:3])}\n"
+        f"- Week-over-week: {total_change}\n"
+        f"- Challenge issued: {challenge_total:,}\n"
+        f"- Daily trend: {'spike on ' + max(daily, key=lambda d: d['blocked']+d['challenged'])['date'] if daily else 'steady'}\n\n"
+        f"Write a compelling executive summary (2-3 sentences) answering: What happened? What did WAF protect? Is the money well spent? "
+        f"Then call set_report_summary(path='{output_path}', summary='your summary here') to finalize the report."
+    )
 
 
 def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
@@ -386,3 +392,28 @@ def _extract_dimension_from_label(label: str, dimension: str) -> str:
         if part.startswith(f"{dimension}="):
             return part.split("=", 1)[1]
     return ""
+
+
+@tool
+def set_report_summary(path: str, summary: str) -> str:
+    """Finalize a weekly report by injecting the executive summary.
+
+    Call this after generate_weekly_report, with a compelling executive summary
+    that answers: What happened this week? What did WAF protect? Is the investment worth it?
+
+    Args:
+        path: Path to the HTML report file (returned by generate_weekly_report).
+        summary: Executive summary text (HTML allowed for emphasis, 2-4 sentences).
+
+    Returns:
+        Confirmation message.
+    """
+    try:
+        with open(path, "r") as f:
+            html = f.read()
+        html = html.replace("{{EXECUTIVE_SUMMARY}}", summary)
+        with open(path, "w") as f:
+            f.write(html)
+        return f"Report finalized: {path}"
+    except FileNotFoundError:
+        return f"Error: Report file not found at {path}"
