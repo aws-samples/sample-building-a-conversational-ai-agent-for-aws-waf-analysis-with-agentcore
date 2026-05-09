@@ -83,7 +83,7 @@ TEMPLATES = {
         "description": "Unique URI count and time span for an IP (frequency anomaly detection)",
     },
     "ip_diversity": {
-        "query": "parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | filter httpRequest.clientIp = '{ip}' | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
+        "query": "filter httpRequest.clientIp = '{ip}' | parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
         "params": ["ip"],
         "description": "UA and JA4 diversity for an IP — high diversity = NAT/shared IP, low = single bot",
     },
@@ -93,9 +93,9 @@ TEMPLATES = {
         "description": "Top ALLOW IPs with unique URI count (find high-volume bypasses)",
     },
     "token_reuse_ips": {
-        "query": "filter @message like 'token:accepted' | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by httpRequest.headers.0.value | sort ip_count desc | limit {limit}",
+        "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
         "params": [],
-        "description": "Detect token reuse — same token used from multiple IPs",
+        "description": "Detect token reuse — same session cookie used from multiple IPs (approximate)",
     },
 }
 
