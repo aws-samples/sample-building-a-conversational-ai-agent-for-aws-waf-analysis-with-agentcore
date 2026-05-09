@@ -71,7 +71,10 @@ canvas {{ max-height: 300px; }}
 <div class="grid">
   <div class="card"><div class="label">Challenge Issued</div><div class="value">{challenge_count}</div></div>
   <div class="card"><div class="label">CAPTCHA Issued</div><div class="value">{captcha_count}</div></div>
+  <div class="card"><div class="label">Challenge Solved (token acquired)</div><div class="value">{challenge_solved}</div></div>
 </div>
+
+{antiddos_section}
 
 <h2>Top Attack Sources (Countries)</h2>
 <table>
@@ -155,6 +158,34 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     # Challenge total
     challenge_total = this_week["challenge"] + this_week["captcha"]
 
+    # Challenge/CAPTCHA solved — query logs for token:accepted after challenge
+    challenge_solved = 0
+    captcha_solved = 0
+    if challenge_total > 0:
+        log_dest = None
+        from tools.session_state import get_log_destination
+        log_dest = get_log_destination()
+        if log_dest and ":log-group:" in log_dest:
+            import time
+            log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+            logs_client = get_client("logs", region_name=region)
+            log_end = int(end.timestamp())
+            log_start = int(start_this_week.timestamp())
+            # Count requests with valid challenge token (= solved challenge)
+            try:
+                resp = logs_client.start_query(
+                    logGroupName=log_group, startTime=log_start, endTime=log_end,
+                    queryString="filter @message like 'token:accepted' | stats count(*) as cnt",
+                    limit=1,
+                )
+                time.sleep(8)
+                result = logs_client.get_query_results(queryId=resp["queryId"])
+                for row in result.get("results", []):
+                    d = {f["field"]: f["value"] for f in row}
+                    challenge_solved = int(d.get("cnt", 0))
+            except Exception:
+                pass
+
     # Bot requests — narrow matching to avoid false matches (e.g., VulnerabilityCategory)
     bot_keywords = ("CategoryHttpLibrary", "CategoryBot", "CategorySocialMedia", "CategorySearchEngine",
                     "CategorySeo", "CategoryAdvertising", "CategoryArchiver", "CategoryContentFetcher",
@@ -178,6 +209,41 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     blocked_change, blocked_change_class = fmt_change(this_week["blocked"], last_week["blocked"])
     block_rate = f"{(this_week['blocked'] / total_this * 100):.1f}" if total_this > 0 else "0"
 
+    # Anti-DDoS AMR events — query label metrics
+    antiddos_section = ""
+    ddos_events = 0
+    if challenge_total > 0:  # Only check if we have log access
+        try:
+            from tools.session_state import get_log_destination as _get_log_dest
+            log_dest = _get_log_dest()
+            if log_dest and ":log-group:" in log_dest:
+                import time as _time
+                _log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+                _logs = get_client("logs", region_name=region)
+                _log_end = int(end.timestamp())
+                _log_start = int(start_this_week.timestamp())
+                resp = _logs.start_query(
+                    logGroupName=_log_group, startTime=_log_start, endTime=_log_end,
+                    queryString="filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
+                    limit=1,
+                )
+                _time.sleep(8)
+                result = _logs.get_query_results(queryId=resp["queryId"])
+                for row in result.get("results", []):
+                    d = {f["field"]: f["value"] for f in row}
+                    ddos_events = int(d.get("cnt", 0))
+                    if ddos_events > 0:
+                        antiddos_section = (
+                            f'<h2>Anti-DDoS Events</h2>'
+                            f'<div class="grid">'
+                            f'<div class="roi-box"><div class="label">DDoS Events Detected</div><div class="value">{ddos_events:,}</div></div>'
+                            f'<div class="card"><div class="label">First Detected</div><div class="value">{d.get("first", "N/A")}</div></div>'
+                            f'<div class="card"><div class="label">Last Detected</div><div class="value">{d.get("last", "N/A")}</div></div>'
+                            f'</div>'
+                        )
+        except Exception:
+            pass
+
     country_rows = ""
     for c in countries[:10]:
         pct = f"{c['count'] / max(this_week['blocked'], 1) * 100:.1f}"
@@ -187,9 +253,12 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     rule_rows = ""
     block_rules = [r for r in rules if r["action"] == "BLOCK"]
     count_rules = [r for r in rules if r["action"] == "COUNT"]
+    challenge_rules = [r for r in rules if r["action"] == "CHALLENGE"]
     for r in block_rules[:5]:
         rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>🚫 Block</td></tr>\n"
-    for r in count_rules[:10]:
+    for r in challenge_rules[:5]:
+        rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>⚡ Challenge</td></tr>\n"
+    for r in count_rules[:5]:
         rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>🏷️ Labeled</td></tr>\n"
 
     executive_summary = "{{EXECUTIVE_SUMMARY}}"
@@ -213,6 +282,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         challenge_total=f"{challenge_total:,}",
         challenge_count=f"{this_week['challenge']:,}",
         captcha_count=f"{this_week['captcha']:,}",
+        challenge_solved=f"{challenge_solved:,}",
+        antiddos_section=antiddos_section,
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
         country_rows=country_rows,
