@@ -226,19 +226,26 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                 event_last = event_cnt.get("last", "N/A")
                 total_during_event = int(event_cnt["cnt"])
 
-                # Count distinct events by looking for gaps > 5 min in event-detected timeline
+                # Count distinct events by looking for time gaps > 10 min between bins
                 event_count_result = _poll_log_query(logs_client, log_group, log_start, log_end,
                     "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
                     return_rows=True)
-                # Count events: a gap (bin with 0 hits) between non-zero bins = separate event
                 num_events = 1 if event_count_result else 0
-                prev_had_hits = False
+                prev_ts = None
                 for row in event_count_result or []:
                     d = {f["field"]: f["value"] for f in row}
-                    has_hits = int(d.get("cnt", 0)) > 0
-                    if has_hits and not prev_had_hits and prev_had_hits is not False:
-                        num_events += 1
-                    prev_had_hits = has_hits
+                    ts_str = d.get("bin(5m)", "")
+                    if ts_str and prev_ts:
+                        from datetime import datetime as _dt
+                        try:
+                            cur = _dt.fromisoformat(ts_str.replace(" ", "T").rstrip("Z"))
+                            prev = _dt.fromisoformat(prev_ts.replace(" ", "T").rstrip("Z"))
+                            if (cur - prev).total_seconds() > 600:
+                                num_events += 1
+                        except (ValueError, TypeError):
+                            pass
+                    if ts_str:
+                        prev_ts = ts_str
 
                 # DDoS request breakdown by suspicion level
                 ddos_result = _poll_log_query(logs_client, log_group, log_start, log_end,
