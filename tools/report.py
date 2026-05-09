@@ -361,6 +361,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     bot_section = ""
     bot_data = {}
     bot_orgs = {}
+    bot_categories = {}
+    bot_names = {}
+    bot_names_detail = {}
+    overridden_bots = []
     common_total_blocked = 0
     common_total_allowed = 0
     targeted_total_blocked = 0
@@ -433,6 +437,18 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                                 bot_orgs[org_name] = total
 
             # Human-readable names for bot rules
+            # Detect overridden bot rules (set to Count instead of Block)
+            overridden_bots = []
+            for name, d in bot_data.items():
+                if not (name.startswith("Category") or name.startswith("Signal")):
+                    continue
+                allowed = d.get("Allowed", 0) + d.get("Count", 0)
+                blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
+                if allowed > 0 and blocked == 0:
+                    overridden_bots.append(name)
+                elif allowed > blocked * 5:
+                    overridden_bots.append(name)
+
             # Classify by prefix: Category*/Signal* = Common, TGT_* = Targeted
             common_rows = ""
             common_total_blocked = 0
@@ -499,7 +515,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                                 bot_categories[cat_name] = total
 
             # Discover bot names via list_metrics (bot:name namespace)
-            bot_names = {}
+            bot_names_detail = {}  # {name: {allowed: N, blocked: N, challenged: N}}
             name_metrics = cw.list_metrics(
                 Namespace="AWS/WAFV2",
                 Dimensions=[
@@ -507,28 +523,43 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     {"Name": "WebACL", "Value": webacl_name},
                 ],
             ).get("Metrics", [])
-            name_set = set()
+            # Group by bot name and metric
+            name_metric_map = {}  # {(name, metric): True}
             for m in name_metrics:
-                for d in m["Dimensions"]:
-                    if d["Name"] == "LabelName":
-                        name_set.add(d["Value"])
-            if name_set:
-                name_queries = []
-                for i, bot_name in enumerate(list(name_set)[:20]):
-                    name_queries.append({"Id": f"bn{i}", "MetricStat": {
-                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                            {"Name": "LabelName", "Value": bot_name},
-                            {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
-                            {"Name": "WebACL", "Value": webacl_name},
-                        ]}, "Period": 604800, "Stat": "Sum",
-                    }})
+                dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+                bn = dims.get("LabelName", "")
+                if bn:
+                    name_metric_map[(bn, m["MetricName"])] = True
+            # Query all
+            name_queries = []
+            name_query_keys = []
+            for (bn, metric), _ in list(name_metric_map.items())[:30]:
+                qid = f"bn{len(name_queries)}"
+                name_queries.append({"Id": qid, "MetricStat": {
+                    "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric, "Dimensions": [
+                        {"Name": "LabelName", "Value": bn},
+                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
+                        {"Name": "WebACL", "Value": webacl_name},
+                    ]}, "Period": 604800, "Stat": "Sum",
+                }})
+                name_query_keys.append((qid, bn, metric))
+            if name_queries:
                 name_resp = cw.get_metric_data(MetricDataQueries=name_queries, StartTime=start_this_week, EndTime=end)
-                for i, bot_name in enumerate(list(name_set)[:20]):
-                    for r in name_resp.get("MetricDataResults", []):
-                        if r.get("Id") == f"bn{i}":
+                for r in name_resp.get("MetricDataResults", []):
+                    for qid, bn, metric in name_query_keys:
+                        if r.get("Id") == qid:
                             total = int(sum(r.get("Values", [])))
                             if total > 0:
-                                bot_names[bot_name] = total
+                                if bn not in bot_names_detail:
+                                    bot_names_detail[bn] = {"allowed": 0, "blocked": 0, "challenged": 0}
+                                if "Allowed" in metric:
+                                    bot_names_detail[bn]["allowed"] += total
+                                elif "Blocked" in metric:
+                                    bot_names_detail[bn]["blocked"] += total
+                                elif "Challenge" in metric:
+                                    bot_names_detail[bn]["challenged"] += total
+            # For backward compat (data_lines uses bot_names)
+            bot_names = {bn: sum(d.values()) for bn, d in bot_names_detail.items()}
 
             if common_rows or targeted_rows:
                 bot_section = '<h2>Bot Control</h2>'
@@ -544,10 +575,28 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     for cat, count in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True):
                         friendly = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title())
                         cat_rows += f"<tr><td>{friendly}</td><td>{count:,}</td></tr>\n"
-                    # Bot names detail
+                    # Bot names detail with verification status
                     name_rows = ""
-                    for bn, count in sorted(bot_names.items(), key=lambda x: x[1], reverse=True)[:10]:
-                        name_rows += f"<tr><td>{bn.replace('_', ' ').title()}</td><td>{count:,}</td></tr>\n"
+                    for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:10]:
+                        total = d["allowed"] + d["blocked"] + d["challenged"]
+                        # Determine status: only allowed + no blocked/challenged = verified
+                        if d["blocked"] == 0 and d["challenged"] == 0 and d["allowed"] > 0:
+                            status = "✅ Verified"
+                        elif d["blocked"] > 0:
+                            status = "🚫 Unverified (blocked)"
+                        elif d["challenged"] > 0 and d["allowed"] > 0:
+                            status = "⚠️ Unverified (allowed by override)"
+                        else:
+                            status = "⚠️ Unverified"
+                        # If category rule is overridden to Count, mark as allowed-by-override
+                        if d["allowed"] > 0 and d["blocked"] == 0 and d["challenged"] == 0 and overridden_bots:
+                            # Could be verified OR allowed-by-override. Check if it's in monitoring category
+                            if bn in ("route53_health_check",):
+                                status = "✅ Verified"
+                            elif any("Http" in ob or "NonBrowser" in ob for ob in overridden_bots):
+                                status = "⚠️ Allowed (rule override)"
+                        display = bn.replace("_", " ").title()
+                        name_rows += f"<tr><td>{display}</td><td>{total:,}</td><td>{status}</td></tr>\n"
 
                     bot_section += (
                         f'<h3>Bot Traffic by Category</h3>'
@@ -556,7 +605,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     if name_rows:
                         bot_section += (
                             f'<h3>Top Individual Bots</h3>'
-                            f'<table><tr><th>Bot Name</th><th>Requests</th></tr>{name_rows}</table>'
+                            f'<table><tr><th>Bot Name</th><th>Requests</th><th>Status</th></tr>{name_rows}</table>'
                         )
 
                 if common_rows:
@@ -667,17 +716,6 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
             data_lines.append(f"- Bot categories visiting site: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True))}")
         if bot_names:
             data_lines.append(f"- Individual bots identified: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_names.items(), key=lambda x: x[1], reverse=True)[:10])}")
-        # Identify bots that are allowed but should normally be blocked (rule overridden to Count)
-        overridden_bots = []
-        for name, d in bot_data.items():
-            if not (name.startswith("Category") or name.startswith("Signal")):
-                continue
-            allowed = d.get("Allowed", 0) + d.get("Count", 0)
-            blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
-            if allowed > 0 and blocked == 0:
-                overridden_bots.append(name)
-            elif allowed > blocked * 5:
-                overridden_bots.append(name)
         if overridden_bots:
             friendly = [_FRIENDLY_NAMES.get(b, b) for b in overridden_bots]
             data_lines.append(f"- ⚠️ IMPORTANT: These bot rules are set to Count/Allow (NOT blocking): {', '.join(friendly)}. Bots matching these rules (curl, python-requests, okhttp, etc.) are being ALLOWED through. This is either intentional or a misconfiguration — do NOT describe this as 'correctly handled'.")
