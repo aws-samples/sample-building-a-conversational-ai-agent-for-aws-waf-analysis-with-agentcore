@@ -131,33 +131,33 @@ canvas {{ max-height: 300px; }}
 const thisWeek = {daily_data_json};
 const lastWeek = {daily_data_last_week_json};
 const chartTextColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-text').trim() || '#e6edf3';
-const dayLabels = ['Day 1', 'Day 2', 'Day 3', 'Day 4', 'Day 5', 'Day 6', 'Day 7'];
-const thisWeekTotals = thisWeek.map(d => (d.allowed || 0) + (d.blocked || 0) + (d.challenged || 0));
-const lastWeekTotals = lastWeek.map(d => (d.allowed || 0) + (d.blocked || 0) + (d.challenged || 0));
-const thisWeekBlocked = thisWeek.map(d => d.blocked || 0);
-const lastWeekBlocked = lastWeek.map(d => d.blocked || 0);
+const labels = thisWeek.map((d, i) => d.date);
 
 new Chart(document.getElementById('dailyChart'), {{
   type: 'bar',
   data: {{
-    labels: thisWeek.map((d, i) => d.date + (lastWeek[i] ? '\\nvs ' + lastWeek[i].date : '')),
+    labels: labels,
     datasets: [
-      {{ label: 'This Week (Total)', data: thisWeekTotals, backgroundColor: '#58a6ff', borderRadius: 3 }},
-      {{ label: 'Last Week (Total)', data: lastWeekTotals, backgroundColor: 'rgba(88,166,255,0.25)', borderRadius: 3 }},
-      {{ label: 'This Week (Blocked)', data: thisWeekBlocked, backgroundColor: '#f85149', borderRadius: 3 }},
-      {{ label: 'Last Week (Blocked)', data: lastWeekBlocked, backgroundColor: 'rgba(248,81,73,0.25)', borderRadius: 3 }},
+      {{ label: 'Allowed (this week)', data: thisWeek.map(d => d.allowed || 0), backgroundColor: '#3fb950', stack: 'thisWeek' }},
+      {{ label: 'Blocked (this week)', data: thisWeek.map(d => d.blocked || 0), backgroundColor: '#f85149', stack: 'thisWeek' }},
+      {{ label: 'Challenged (this week)', data: thisWeek.map(d => d.challenged || 0), backgroundColor: '#d29922', stack: 'thisWeek' }},
+      {{ label: 'CAPTCHA (this week)', data: thisWeek.map(d => d.captcha || 0), backgroundColor: '#a371f7', stack: 'thisWeek' }},
+      {{ label: 'Allowed (last week)', data: lastWeek.map(d => d.allowed || 0), backgroundColor: 'rgba(63,185,80,0.3)', stack: 'lastWeek' }},
+      {{ label: 'Blocked (last week)', data: lastWeek.map(d => d.blocked || 0), backgroundColor: 'rgba(248,81,73,0.3)', stack: 'lastWeek' }},
+      {{ label: 'Challenged (last week)', data: lastWeek.map(d => d.challenged || 0), backgroundColor: 'rgba(210,153,34,0.3)', stack: 'lastWeek' }},
+      {{ label: 'CAPTCHA (last week)', data: lastWeek.map(d => d.captcha || 0), backgroundColor: 'rgba(163,113,247,0.3)', stack: 'lastWeek' }},
     ]
   }},
   options: {{
     responsive: true,
     plugins: {{
-      title: {{ display: true, text: 'Daily Traffic: This Week vs Last Week', color: chartTextColor }},
+      title: {{ display: true, text: 'Daily Traffic: This Week vs Last Week (stacked)', color: chartTextColor }},
       legend: {{ labels: {{ color: chartTextColor }} }},
       tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }}
     }},
     scales: {{
-      x: {{ ticks: {{ color: chartTextColor, font: {{ size: 10 }} }} }},
-      y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
+      x: {{ ticks: {{ color: chartTextColor }} }},
+      y: {{ type: 'logarithmic', stacked: true, ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
     }}
   }}
 }});
@@ -466,8 +466,99 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
             for org, count in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:10]:
                 org_rows += f"<tr><td>{org}</td><td>{count:,}</td></tr>\n"
 
+            # Discover bot categories via list_metrics (bot:category namespace)
+            bot_categories = {}
+            cat_metrics = cw.list_metrics(
+                Namespace="AWS/WAFV2",
+                Dimensions=[
+                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
+                    {"Name": "WebACL", "Value": webacl_name},
+                ],
+            ).get("Metrics", [])
+            cat_names = set()
+            for m in cat_metrics:
+                for d in m["Dimensions"]:
+                    if d["Name"] == "LabelName":
+                        cat_names.add(d["Value"])
+            if cat_names:
+                cat_queries = []
+                for i, cat_name in enumerate(list(cat_names)[:20]):
+                    cat_queries.append({"Id": f"cat{i}", "MetricStat": {
+                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                            {"Name": "LabelName", "Value": cat_name},
+                            {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
+                            {"Name": "WebACL", "Value": webacl_name},
+                        ]}, "Period": 604800, "Stat": "Sum",
+                    }})
+                cat_resp = cw.get_metric_data(MetricDataQueries=cat_queries, StartTime=start_this_week, EndTime=end)
+                for i, cat_name in enumerate(list(cat_names)[:20]):
+                    for r in cat_resp.get("MetricDataResults", []):
+                        if r.get("Id") == f"cat{i}":
+                            total = int(sum(r.get("Values", [])))
+                            if total > 0:
+                                bot_categories[cat_name] = total
+
+            # Discover bot names via list_metrics (bot:name namespace)
+            bot_names = {}
+            name_metrics = cw.list_metrics(
+                Namespace="AWS/WAFV2",
+                Dimensions=[
+                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
+                    {"Name": "WebACL", "Value": webacl_name},
+                ],
+            ).get("Metrics", [])
+            name_set = set()
+            for m in name_metrics:
+                for d in m["Dimensions"]:
+                    if d["Name"] == "LabelName":
+                        name_set.add(d["Value"])
+            if name_set:
+                name_queries = []
+                for i, bot_name in enumerate(list(name_set)[:20]):
+                    name_queries.append({"Id": f"bn{i}", "MetricStat": {
+                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                            {"Name": "LabelName", "Value": bot_name},
+                            {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
+                            {"Name": "WebACL", "Value": webacl_name},
+                        ]}, "Period": 604800, "Stat": "Sum",
+                    }})
+                name_resp = cw.get_metric_data(MetricDataQueries=name_queries, StartTime=start_this_week, EndTime=end)
+                for i, bot_name in enumerate(list(name_set)[:20]):
+                    for r in name_resp.get("MetricDataResults", []):
+                        if r.get("Id") == f"bn{i}":
+                            total = int(sum(r.get("Values", [])))
+                            if total > 0:
+                                bot_names[bot_name] = total
+
             if common_rows or targeted_rows:
                 bot_section = '<h2>Bot Control</h2>'
+
+                # Legitimate bot traffic (categories)
+                if bot_categories:
+                    _CAT_FRIENDLY = {"http_library": "HTTP Libraries", "monitoring": "Monitoring/Health Checks",
+                                     "search_engine": "Search Engines", "seo": "SEO Crawlers", "advertising": "Advertising",
+                                     "social_media": "Social Media", "ai": "AI Crawlers", "content_fetcher": "Content Fetchers",
+                                     "scraping_framework": "Scraping Frameworks", "security": "Security Scanners",
+                                     "archiver": "Web Archivers", "link_checker": "Link Checkers", "miscellaneous": "Miscellaneous"}
+                    cat_rows = ""
+                    for cat, count in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True):
+                        friendly = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title())
+                        cat_rows += f"<tr><td>{friendly}</td><td>{count:,}</td></tr>\n"
+                    # Bot names detail
+                    name_rows = ""
+                    for bn, count in sorted(bot_names.items(), key=lambda x: x[1], reverse=True)[:10]:
+                        name_rows += f"<tr><td>{bn.replace('_', ' ').title()}</td><td>{count:,}</td></tr>\n"
+
+                    bot_section += (
+                        f'<h3>Bot Traffic by Category</h3>'
+                        f'<table><tr><th>Category</th><th>Requests</th></tr>{cat_rows}</table>'
+                    )
+                    if name_rows:
+                        bot_section += (
+                            f'<h3>Top Individual Bots</h3>'
+                            f'<table><tr><th>Bot Name</th><th>Requests</th></tr>{name_rows}</table>'
+                        )
+
                 if common_rows:
                     bot_section += (
                         f'<h3>Common Bots (self-declared)</h3>'
@@ -572,16 +663,21 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         data_lines.append(f"- Bot Control Targeted: {len(targeted_labels)} rules triggered, {targeted_total_blocked:,} blocked/challenged, {targeted_total_counted:,} counted")
         if bot_orgs:
             data_lines.append(f"- Bot organizations: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:5])}")
+        if bot_categories:
+            data_lines.append(f"- Bot categories visiting site: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True))}")
+        if bot_names:
+            data_lines.append(f"- Individual bots identified: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_names.items(), key=lambda x: x[1], reverse=True)[:10])}")
 
     data_lines.append(f"- Bot/suspicious requests: {bot_requests:,} ({bot_pct}% of traffic)")
     data_lines.append("")
     data_lines.append("## Instructions")
-    data_lines.append("Write an executive summary for management (3-5 paragraphs). Use **bold** for key numbers. Do NOT use bullet lists (- or *) — use flowing prose paragraphs only.")
-    data_lines.append("Answer these 4 questions:")
-    data_lines.append("1. What happened this week? (traffic trends, anomalies, spikes)")
-    data_lines.append("2. What did WAF protect against? (specific threat types with numbers)")
-    data_lines.append("3. Anything to worry about? (new attack sources, risks)")
-    data_lines.append("4. Is the money well spent? (ROI conclusion)")
+    data_lines.append("Write an executive summary for management (4-5 paragraphs). Use **bold** for key numbers. Do NOT use bullet lists (- or *) — use flowing prose paragraphs only.")
+    data_lines.append("Required paragraph structure:")
+    data_lines.append("1. Overview: What happened this week? (traffic volume, trends, anomalies)")
+    data_lines.append("2. DDoS/Attacks: What attacks were detected and blocked? (specific numbers)")
+    data_lines.append("3. Bot Traffic (MUST be a separate paragraph): What bots are visiting? Include both illegitimate bots blocked AND legitimate bots allowed (search engines, monitoring, AI crawlers). Management cares about WHO is crawling their site.")
+    data_lines.append("4. Risks/Recommendations: Anything to worry about?")
+    data_lines.append("5. ROI conclusion: Is the money well spent?")
     data_lines.append("")
     data_lines.append("## Domain knowledge (use when writing about DDoS/Bot)")
     data_lines.append("- Anti-DDoS AMR DDoSRequests rule blocks ANY high-frequency IP (including JS-capable browser automation like Playwright) as long as per-IP volume deviates significantly from baseline.")
@@ -652,9 +748,9 @@ def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
 
 
 def _get_daily_breakdown(cw, webacl_name: str, start, end) -> list:
-    """Get daily allowed/blocked/challenged counts."""
+    """Get daily allowed/blocked/challenged/captcha counts."""
     queries = []
-    for i, metric in enumerate(["AllowedRequests", "BlockedRequests", "ChallengeRequests"]):
+    for i, metric in enumerate(["AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests"]):
         queries.append({
             "Id": f"d{i}",
             "MetricStat": {
@@ -680,13 +776,15 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end) -> list:
         for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
             day = ts.strftime("%m/%d")
             if day not in data:
-                data[day] = {"date": day, "allowed": 0, "blocked": 0, "challenged": 0}
+                data[day] = {"date": day, "allowed": 0, "blocked": 0, "challenged": 0, "captcha": 0}
             if r["Id"] == "d0":
                 data[day]["allowed"] = int(val)
             elif r["Id"] == "d1":
                 data[day]["blocked"] = int(val)
             elif r["Id"] == "d2":
                 data[day]["challenged"] = int(val)
+            elif r["Id"] == "d3":
+                data[day]["captcha"] = int(val)
 
     return [data[d] for d in sorted(data.keys())]
 
