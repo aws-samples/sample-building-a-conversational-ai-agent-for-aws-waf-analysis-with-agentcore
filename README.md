@@ -1,5 +1,7 @@
 # WAF Agent
 
+English | [中文](README_zh.md)
+
 An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates weekly business reports. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
 
 ## What It Does

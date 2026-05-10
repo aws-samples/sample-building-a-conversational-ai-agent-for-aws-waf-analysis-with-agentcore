@@ -1,5 +1,7 @@
 # Deployment Guide
 
+English | [中文](deployment_zh.md)
+
 ## Overview
 
 WAF Agent deploys as two CloudFormation stacks:
