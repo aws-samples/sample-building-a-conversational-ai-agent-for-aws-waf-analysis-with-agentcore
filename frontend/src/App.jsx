@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { signIn, signOut, getToken, getCurrentUser, completeNewPassword } from './auth';
+import { signIn, signOut, getToken, getCurrentUser, completeNewPassword, confirmResetPassword } from './auth';
 import { invokeAgent } from './agent';
 
 function generateSessionId() {
@@ -13,6 +13,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [newPassForm, setNewPassForm] = useState(null); // { cognitoUser, newPassword }
+  const [resetForm, setResetForm] = useState(null); // { email, code, newPassword }
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
   const pendingResolve = useRef(null);
@@ -25,6 +26,8 @@ export default function App() {
       const result = await signIn(loginForm.email, loginForm.password);
       if (result.newPasswordRequired) {
         setNewPassForm({ cognitoUser: result.cognitoUser, newPassword: '' });
+      } else if (result.passwordResetRequired) {
+        setResetForm({ email: result.email, code: '', newPassword: '' });
       } else {
         setUser(getCurrentUser());
       }
@@ -39,6 +42,17 @@ export default function App() {
       await completeNewPassword(newPassForm.cognitoUser, newPassForm.newPassword);
       setNewPassForm(null);
       setUser(getCurrentUser());
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleResetPassword(e) {
+    e.preventDefault();
+    try {
+      await confirmResetPassword(resetForm.email, resetForm.code, resetForm.newPassword);
+      setResetForm(null);
+      alert('Password reset successful. Please sign in with your new password.');
     } catch (err) {
       alert(err.message);
     }
@@ -125,6 +139,19 @@ export default function App() {
   }
 
   if (!user) {
+    if (resetForm) {
+      return (
+        <div className="login">
+          <h1>Reset Password</h1>
+          <p style={{color:'#aaa',fontSize:'0.9rem',marginBottom:'0.5rem'}}>Enter the code sent to your email</p>
+          <form onSubmit={handleResetPassword}>
+            <input type="text" placeholder="Verification code" value={resetForm.code} onChange={e => setResetForm({ ...resetForm, code: e.target.value })} required />
+            <input type="password" placeholder="New password" value={resetForm.newPassword} onChange={e => setResetForm({ ...resetForm, newPassword: e.target.value })} required minLength={8} />
+            <button type="submit">Reset Password</button>
+          </form>
+        </div>
+      );
+    }
     if (newPassForm) {
       return (
         <div className="login">

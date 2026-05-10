@@ -31,10 +31,26 @@ export function signIn(email, password) {
     const auth = new AuthenticationDetails({ Username: email, Password: password });
     user.authenticateUser(auth, {
       onSuccess: (session) => resolve({ token: session.getAccessToken().getJwtToken() }),
-      onFailure: reject,
+      onFailure: (err) => {
+        if (err.code === 'PasswordResetRequiredException') {
+          resolve({ passwordResetRequired: true, email });
+        } else {
+          reject(err);
+        }
+      },
       newPasswordRequired: () => {
         resolve({ newPasswordRequired: true, cognitoUser: user });
       },
+    });
+  });
+}
+
+export function confirmResetPassword(email, code, newPassword) {
+  return new Promise((resolve, reject) => {
+    const user = new CognitoUser({ Username: email, Pool: userPool });
+    user.confirmPassword(code, newPassword, {
+      onSuccess: () => resolve(),
+      onFailure: reject,
     });
   });
 }
