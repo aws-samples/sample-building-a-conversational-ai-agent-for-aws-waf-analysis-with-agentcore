@@ -7,7 +7,7 @@ function generateSessionId() {
 }
 
 export default function App() {
-  const [user, setUser] = useState(isAuthenticated());
+  const [user, setUser] = useState(false); // always start with login screen
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -111,11 +111,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      if (err.status === 401 || err.message === 'Session expired') {
-        setUser(null);
-      } else {
-        setMessages(prev => [...prev, { role: 'error', content: err.message }]);
-      }
+      setMessages(prev => [...prev, { role: 'error', content: '[DEBUG] ' + err.message + ' | status=' + (err.status || 'none') }]);
     }
     setLoading(false);
   }

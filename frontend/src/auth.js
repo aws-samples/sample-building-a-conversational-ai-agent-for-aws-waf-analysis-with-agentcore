@@ -22,16 +22,20 @@ export function getToken() {
   return new Promise((resolve, reject) => {
     // Use in-memory reference first, fall back to localStorage reconstruction
     const user = _cognitoUser || userPool.getCurrentUser();
-    if (!user) return reject(new Error('Session expired'));
+    if (!user) return reject(new Error('No user found (not signed in)'));
 
     // getSession() auto-refreshes expired access tokens using the refresh token
     user.getSession((err, session) => {
-      if (err || !session || !session.isValid()) {
+      if (err) {
         _cognitoUser = null;
-        return reject(new Error('Session expired'));
+        return reject(new Error('getSession failed: ' + (err.message || JSON.stringify(err))));
+      }
+      if (!session || !session.isValid()) {
+        _cognitoUser = null;
+        return reject(new Error('Session invalid'));
       }
       _cognitoUser = user; // keep reference fresh
-      resolve(session.getAccessToken().getJwtToken());
+      resolve(session.getIdToken().getJwtToken());
     });
   });
 }
