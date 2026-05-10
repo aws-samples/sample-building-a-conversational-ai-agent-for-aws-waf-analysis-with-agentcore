@@ -63,8 +63,7 @@ graph TB
         Cognito["Cognito User Pool"]
         AC["AgentCore Runtime<br/>(microVM per session)"]
         subgraph Agent["Strands Agent"]
-            FastAPI["FastAPI + ag-ui-strands"]
-            Tools["Tools: waf_config · waf_metrics<br/>waf_logs · analyze_ip · report<br/>waf_review · ja4 · ask_user"]
+            FastAPI["FastAPI + ag-ui-strands<br/>12 tools"]
         end
         Bedrock["Bedrock<br/>Claude Sonnet 4.6"]
     end
@@ -80,11 +79,11 @@ graph TB
     SPA -->|"① Auth (SRP)"| Cognito
     Cognito -->|"② JWT Token"| SPA
     SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
-    AC --> FastAPI --> Tools
+    AC --> FastAPI
     FastAPI --> Bedrock
-    Tools --> WAFv2
-    Tools --> CW
-    Tools --> Athena
+    FastAPI --> WAFv2
+    FastAPI --> CW
+    FastAPI --> Athena
 ```
 
 </details>
