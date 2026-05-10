@@ -137,6 +137,8 @@ Resources:
       AuthorizerConfiguration:
         CustomJWTAuthorizer:
           DiscoveryUrl: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration
+          AllowedAudience:
+            - !Ref UserPoolClient
           AllowedClients:
             - !Ref UserPoolClient
 
