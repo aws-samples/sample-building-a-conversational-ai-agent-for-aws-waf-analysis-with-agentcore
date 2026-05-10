@@ -104,7 +104,7 @@ TEMPLATES = {
         "description": "Find IPs with high URI diversity (likely content crawlers) — excludes verified bots and static resources",
     },
     "top_allowed_repeaters": {
-        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 100 and unique_uris < 10 | sort total desc | limit {limit}",
+        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 500 and unique_uris < 10 | sort total desc | limit {limit}",
         "params": [],
         "description": "Find IPs hitting few URIs at high frequency (ticket scalpers, flash sale bots, quant trading) — excludes verified bots",
     },
