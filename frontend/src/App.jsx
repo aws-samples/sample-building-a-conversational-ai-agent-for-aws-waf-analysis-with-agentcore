@@ -6,6 +6,22 @@ function generateSessionId() {
   return crypto.randomUUID() + crypto.randomUUID().slice(0, 2); // 38 chars > 33
 }
 
+function ReportDownload({ html }) {
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const [showPreview, setShowPreview] = React.useState(false);
+  return (
+    <div className="content html-report">
+      <div className="report-actions">
+        <span>📊 Weekly Report</span>
+        <a href={url} download="waf-weekly-report.html" className="btn">⬇ Download</a>
+        <button onClick={() => setShowPreview(!showPreview)} className="btn">{showPreview ? '✕ Close' : '👁 Preview'}</button>
+      </div>
+      {showPreview && <iframe srcDoc={html} sandbox="allow-scripts" style={{width:'100%', height:'600px', border:'1px solid #333', borderRadius:'8px', marginTop:'0.5rem'}} />}
+    </div>
+  );
+}
+
 function MessageContent({ content }) {
   // Detect HTML report (starts with <!DOCTYPE or <html)
   const isHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(content);
@@ -112,7 +128,15 @@ export default function App() {
             }
             break;
           case 'TOOL_CALL_END':
+          case 'TOOL_CALL_RESULT':
             assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map((t, i) => i === assistantMsg.tools.length - 1 ? { ...t, status: 'done' } : t) };
+            // Capture HTML report from set_report_summary result
+            if (assistantMsg.tools.at(-1)?.name === 'set_report_summary' && event.content) {
+              const html = typeof event.content === 'string' ? event.content : JSON.stringify(event.content);
+              if (html.includes('<!DOCTYPE') || html.includes('<html')) {
+                assistantMsg = { ...assistantMsg, reportHtml: html };
+              }
+            }
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             // Handle ask_user completion
             if (assistantMsg.tools.at(-1)?.name === 'ask_user' && assistantMsg._argsBuffer) {
@@ -206,6 +230,7 @@ export default function App() {
                 ))}
               </div>
             )}
+            {msg.reportHtml && <ReportDownload html={msg.reportHtml} />}
             {msg.content && <MessageContent content={msg.content} />}
           </div>
         ))}
