@@ -130,8 +130,9 @@ Step 1: Use METRICS to find the peak window (zero log cost, fast)
 - Tell the user: "我发现 [时间] 有一个流量峰值，先分析这个时间段。"
 
 Step 2: Query logs for the NARROW time window only (≤6 hours)
-- run_logs_query(query_type="top_allowed_by_volume", hours_ago=N) where N ≤ 6
-- Pick top 3 IPs only (not all IPs)
+- run_logs_query(query_type="top_allowed_crawlers") → IPs with high URI diversity (content scrapers)
+- run_logs_query(query_type="top_allowed_repeaters") → IPs hitting few URIs at extreme frequency (scalpers, flash sale bots)
+- Pick top 3 suspicious IPs from either query
 
 Step 3: For each suspicious IP (max 3), do frequency check
 - run_logs_query(query_type="ip_request_rate", ip="...") → requests per minute

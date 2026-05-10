@@ -101,7 +101,12 @@ TEMPLATES = {
     "top_allowed_crawlers": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
         "params": [],
-        "description": "Find IPs with high URI diversity (likely crawlers) — excludes verified bots and static resources",
+        "description": "Find IPs with high URI diversity (likely content crawlers) — excludes verified bots and static resources",
+    },
+    "top_allowed_repeaters": {
+        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 100 and unique_uris < 10 | sort total desc | limit {limit}",
+        "params": [],
+        "description": "Find IPs hitting few URIs at high frequency (ticket scalpers, flash sale bots, quant trading) — excludes verified bots",
     },
     "token_reuse_ips": {
         "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
@@ -170,6 +175,8 @@ def run_logs_query(
             - top_blocked_rules: Top blocking rules
             - top_allowed_ips: Top allowed IPs
             - top_allowed_by_volume: Top ALLOW IPs with unique URI count — find bypasses
+            - top_allowed_crawlers: IPs with high URI diversity (content crawlers, scrapers)
+            - top_allowed_repeaters: IPs hitting few URIs at high frequency (scalpers, flash sale bots)
             - top_countries_blocked: Top blocked countries
             - label_top_ips: Top IPs for a WAF label (needs label)
             - action_timeline: Timeline of an action (needs action)
