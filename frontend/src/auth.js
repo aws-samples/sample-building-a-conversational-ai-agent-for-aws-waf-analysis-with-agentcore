@@ -30,15 +30,20 @@ export function signIn(email, password) {
     const user = new CognitoUser({ Username: email, Pool: userPool });
     const auth = new AuthenticationDetails({ Username: email, Password: password });
     user.authenticateUser(auth, {
+      onSuccess: (session) => resolve({ token: session.getAccessToken().getJwtToken() }),
+      onFailure: reject,
+      newPasswordRequired: () => {
+        resolve({ newPasswordRequired: true, cognitoUser: user });
+      },
+    });
+  });
+}
+
+export function completeNewPassword(cognitoUser, newPassword) {
+  return new Promise((resolve, reject) => {
+    cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
       onSuccess: (session) => resolve(session.getAccessToken().getJwtToken()),
       onFailure: reject,
-      newPasswordRequired: (attrs) => {
-        // First login — set same password
-        user.completeNewPasswordChallenge(password, {}, {
-          onSuccess: (session) => resolve(session.getAccessToken().getJwtToken()),
-          onFailure: reject,
-        });
-      },
     });
   });
 }

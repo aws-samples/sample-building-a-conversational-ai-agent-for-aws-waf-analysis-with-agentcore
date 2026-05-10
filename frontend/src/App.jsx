@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { signIn, signOut, getToken, getCurrentUser } from './auth';
+import { signIn, signOut, getToken, getCurrentUser, completeNewPassword } from './auth';
 import { invokeAgent } from './agent';
 
 function generateSessionId() {
@@ -12,6 +12,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [newPassForm, setNewPassForm] = useState(null); // { cognitoUser, newPassword }
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
   const pendingResolve = useRef(null);
@@ -21,7 +22,22 @@ export default function App() {
   async function handleLogin(e) {
     e.preventDefault();
     try {
-      await signIn(loginForm.email, loginForm.password);
+      const result = await signIn(loginForm.email, loginForm.password);
+      if (result.newPasswordRequired) {
+        setNewPassForm({ cognitoUser: result.cognitoUser, newPassword: '' });
+      } else {
+        setUser(getCurrentUser());
+      }
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
+  async function handleNewPassword(e) {
+    e.preventDefault();
+    try {
+      await completeNewPassword(newPassForm.cognitoUser, newPassForm.newPassword);
+      setNewPassForm(null);
       setUser(getCurrentUser());
     } catch (err) {
       alert(err.message);
@@ -109,6 +125,17 @@ export default function App() {
   }
 
   if (!user) {
+    if (newPassForm) {
+      return (
+        <div className="login">
+          <h1>Set New Password</h1>
+          <form onSubmit={handleNewPassword}>
+            <input type="password" placeholder="New password" value={newPassForm.newPassword} onChange={e => setNewPassForm({ ...newPassForm, newPassword: e.target.value })} required minLength={8} />
+            <button type="submit">Set Password</button>
+          </form>
+        </div>
+      );
+    }
     return (
       <div className="login">
         <h1>WAF Agent</h1>
