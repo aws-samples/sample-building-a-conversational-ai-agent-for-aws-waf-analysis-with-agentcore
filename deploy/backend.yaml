@@ -7,6 +7,11 @@ Parameters:
     Description: ECR image URI for the WAF Agent (ARM64)
     AllowedPattern: ^[0-9]+\.dkr\.ecr\..+\.amazonaws\.com/.+:.+$
     ConstraintDescription: Must be a valid ECR image URI
+  AgentRuntimeName:
+    Type: String
+    Default: waf_agent
+    Description: AgentCore runtime name (letters, digits, underscores only, max 48 chars)
+    AllowedPattern: ^[a-zA-Z][a-zA-Z0-9_]{0,47}$
 
 Resources:
   # --- Cognito ---
@@ -119,10 +124,10 @@ Resources:
 
   # --- AgentCore Runtime ---
   AgentRuntime:
-    Type: AWS::BedrockAgentCore::AgentRuntime
+    Type: AWS::BedrockAgentCore::Runtime
     DependsOn: AgentExecutionRole
     Properties:
-      AgentRuntimeName: !Sub ${AWS::StackName}
+      AgentRuntimeName: !Ref AgentRuntimeName
       AgentRuntimeArtifact:
         ContainerConfiguration:
           ContainerUri: !Ref AgentContainerUri
