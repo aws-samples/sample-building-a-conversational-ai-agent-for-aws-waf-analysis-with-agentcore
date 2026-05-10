@@ -4,6 +4,7 @@ __pycache__/
 .env
 .venv/
 venv/
+node_modules/
 dist/
 build/
 *.egg-info/
@@ -11,3 +12,4 @@ build/
 design/
 test/
 *.html
+!frontend/index.html
