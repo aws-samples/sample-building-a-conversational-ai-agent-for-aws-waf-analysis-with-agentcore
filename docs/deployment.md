@@ -60,17 +60,15 @@ aws ecr create-repository --repository-name waf-agent --region $REGION
 
 # Authenticate
 aws ecr get-login-password --region $REGION | \
-  finch login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
-
-# Generate lockfile (if not present)
-uv lock
+  docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
 # Build ARM64 image and push
-finch build --platform linux/arm64 -t $ECR_URI:latest .
-finch push $ECR_URI:latest
+docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 ```
 
 > **Note**: AgentCore requires ARM64 images. x86_64 images will fail with "incompatible binary" error.
+>
+> If you use **finch** instead of Docker, replace `docker` with `finch` in all commands above (they are interchangeable).
 
 ## Step 2: Deploy Backend
 
@@ -143,6 +141,8 @@ aws cognito-idp admin-create-user \
   --temporary-password 'TempPass123!' \
   --region $REGION
 ```
+
+> On first login, you'll be prompted to set a new password. The frontend handles this automatically.
 
 ## Step 6: Access
 

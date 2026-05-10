@@ -29,10 +29,7 @@ See [Deployment Guide](docs/deployment.md) for detailed instructions, region sel
 
 ## Architecture
 
-![Architecture](docs/architecture.png)
-
-<details>
-<summary>Mermaid (text version)</summary>
+<!-- Edit source: docs/architecture.drawio (open with diagrams.net) -->
 
 ```mermaid
 graph TB
@@ -74,14 +71,12 @@ graph TB
     Tools --> Athena
 ```
 
-</details>
-
 - **Frontend**: React SPA on CloudFront + S3, protected by WAF
 - **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed)
 - **Agent**: FastAPI + ag-ui-strands, streams tool calls and analysis in real-time
 - **Session**: Isolated microVM per user, max 8h lifetime
 
-See [Architecture](docs/architecture.md) for the full design.
+See [Deployment Guide](docs/deployment.md) for the full architecture and design decisions.
 
 ## Supported Regions
 
@@ -125,8 +120,6 @@ python agent.py "shield-sample-webacl 有没有流量绕过了 WAF？"
 ## Documentation
 
 - [Deployment Guide](docs/deployment.md) — step-by-step deployment with troubleshooting
-- [Architecture](docs/architecture.md) — system design and data flow
-- [Investigation Scenarios](docs/scenarios.md) — how the agent handles different use cases
 
 ## License
 
