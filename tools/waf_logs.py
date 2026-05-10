@@ -2,6 +2,8 @@
 
 import time
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_logs_region, get_log_destination
@@ -10,6 +12,9 @@ MAX_RESULTS = 25
 POLL_INTERVAL = 2
 MAX_POLL = 600
 MAX_HOURS = 168  # 7 days max per query — use Athena for longer ranges
+
+# Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
+_cwl_semaphore = threading.Semaphore(8)
 
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
@@ -89,9 +94,14 @@ TEMPLATES = {
         "description": "UA and JA4 diversity for an IP — high diversity = NAT/shared IP, low = single bot",
     },
     "top_allowed_by_volume": {
-        "query": "filter action = 'ALLOW' and not httpRequest.uri like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "params": [],
         "description": "Top ALLOW IPs with unique non-static URI count (find high-volume bypasses)",
+    },
+    "top_allowed_crawlers": {
+        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
+        "params": [],
+        "description": "Find IPs with high URI diversity (likely crawlers) — excludes verified bots and static resources",
     },
     "token_reuse_ips": {
         "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
@@ -259,5 +269,133 @@ def run_logs_query(
         row_dict = {f["field"]: f["value"] for f in row}
         values = [row_dict.get(col, "") for col in columns]
         lines.append("| " + " | ".join(values) + " |")
+
+    return "\n".join(lines)
+
+
+def _execute_query_internal(client, log_group: str, start_time: int, end_time: int, query: str, limit: int = 25) -> list:
+    """Internal: execute a CWL query with semaphore and polling. Returns list of row dicts or empty list."""
+    with _cwl_semaphore:
+        resp = client.start_query(
+            logGroupName=log_group, startTime=start_time, endTime=end_time,
+            queryString=query, limit=limit,
+        )
+        query_id = resp["queryId"]
+        elapsed = 0
+        while elapsed < MAX_POLL:
+            time.sleep(POLL_INTERVAL)
+            elapsed += POLL_INTERVAL
+            result = client.get_query_results(queryId=query_id)
+            if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
+                break
+        if result["status"] != "Complete":
+            return []
+        return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
+
+
+@tool
+def analyze_ip(ip: str, hours_ago: int = 6) -> str:
+    """Analyze a single IP address with parallel queries. Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
+
+    This is a composite tool that runs multiple queries in one call to minimize
+    LLM round-trips. Use this instead of calling run_logs_query multiple times for the same IP.
+
+    Args:
+        ip: IP address to analyze.
+        hours_ago: Time window (default 6 hours, auto-adjusted by agent based on traffic volume).
+
+    Returns:
+        Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
+    """
+    import ipaddress
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return f"Error: invalid IP address '{ip}'"
+
+    if hours_ago > MAX_HOURS:
+        hours_ago = MAX_HOURS
+
+    log_dest = get_log_destination()
+    if not log_dest or ":log-group:" not in log_dest:
+        return "Error: no CWL log group configured. Run get_waf_config first."
+    log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+
+    region = get_logs_region()
+    client = get_client("logs", region_name=region)
+    end_time = int(time.time())
+    start_time = end_time - (hours_ago * 3600)
+    safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
+
+    # Phase 1: Diversity check (NAT detection)
+    diversity_query = f'filter httpRequest.clientIp = "{safe_ip}" | stats count_distinct(httpRequest.headers.0.value) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
+    diversity = _execute_query_internal(client, log_group, start_time, end_time, diversity_query, 1)
+
+    if diversity:
+        d = diversity[0]
+        ua_count = int(d.get("ua_count", "0"))
+        ja4_count = int(d.get("ja4_count", "0"))
+        total = int(d.get("total", "0"))
+        if ua_count > 3 and ja4_count > 3:
+            return f"## {ip} — NAT/Shared IP (skipped)\n\nMultiple UAs ({ua_count}) + multiple JA4s ({ja4_count}) = shared IP (NAT gateway).\nTotal requests: {total}\n\nNo further analysis needed."
+    else:
+        return f"Error: diversity query returned no results for {ip}"
+
+    # Phase 2: Parallel queries (only if not NAT)
+    queries = {
+        "cross_query": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc | limit 15',
+        "request_rate": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as req_per_min by bin(1m) | stats avg(req_per_min) as avg_rpm, max(req_per_min) as peak_rpm, count(*) as active_minutes',
+        "ja4": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit 5',
+    }
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_execute_query_internal, client, log_group, start_time, end_time, q, 25): name
+            for name, q in queries.items()
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                results[name] = future.result()
+            except Exception:
+                results[name] = []
+
+    # Format output
+    lines = [f"## IP Analysis: {ip}", f"Time window: last {hours_ago} hours", ""]
+
+    # Diversity summary
+    lines.append(f"**Diversity**: {ua_count} UAs, {ja4_count} JA4 fingerprints, {total} total requests")
+    if ua_count > 1 and ja4_count == 1:
+        lines.append("⚠️ Multiple UAs but single JA4 = likely UA spoofing (same tool)")
+    elif ua_count == 1 and ja4_count == 1:
+        lines.append("Single UA + single JA4 = single client")
+    lines.append("")
+
+    # Action breakdown
+    lines.append("**Action breakdown**:")
+    for row in results.get("cross_query", [])[:10]:
+        lines.append(f"  {row.get('action', '?')} / {row.get('terminatingRuleId', 'default')} : {row.get('cnt', '0')}")
+    lines.append("")
+
+    # Request rate
+    rate = results.get("request_rate", [{}])
+    if rate:
+        r = rate[0]
+        avg_rpm = r.get("avg_rpm", "0")
+        peak_rpm = r.get("peak_rpm", "0")
+        active_min = r.get("active_minutes", "0")
+        lines.append(f"**Request rate**: avg {avg_rpm} req/min, peak {peak_rpm} req/min, active {active_min} minutes")
+        try:
+            if float(peak_rpm) > 200:
+                lines.append("🚨 Peak > 200 req/min — likely automation")
+        except (ValueError, TypeError):
+            pass
+    lines.append("")
+
+    # JA4 fingerprints
+    lines.append("**JA4 fingerprints**:")
+    for row in results.get("ja4", [])[:5]:
+        lines.append(f"  {row.get('ja4Fingerprint', 'N/A')} : {row.get('cnt', '0')} requests")
 
     return "\n".join(lines)
