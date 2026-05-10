@@ -73,6 +73,11 @@ TEMPLATES = {
         "params": ["label"],
         "description": "Top IPs matching a specific WAF label",
     },
+    "ip_labels": {
+        "query": "filter httpRequest.clientIp = '{ip}' | parse @message '\"labels\":[*]' as Labels | filter ispresent(Labels) | stats count(*) as cnt by Labels | sort cnt desc | limit {limit}",
+        "params": ["ip"],
+        "description": "All WAF labels applied to a specific IP — shows Bot Control, Anti-DDoS, and other managed rule detections",
+    },
     "action_timeline": {
         "query": "filter action = '{action}' | stats count(*) as cnt by bin(5m) | sort @timestamp asc | limit {limit}",
         "params": ["action"],
@@ -179,6 +184,7 @@ def run_logs_query(
             - top_allowed_repeaters: IPs hitting few URIs at high frequency (scalpers, flash sale bots)
             - top_countries_blocked: Top blocked countries
             - label_top_ips: Top IPs for a WAF label (needs label)
+            - ip_labels: All WAF labels on a specific IP — Bot Control, Anti-DDoS, signals (needs ip)
             - action_timeline: Timeline of an action (needs action)
             - token_reuse_ips: Detect token reuse across multiple IPs
             - host_traffic_profile: Traffic profile per Host — identify frontend vs backend domains

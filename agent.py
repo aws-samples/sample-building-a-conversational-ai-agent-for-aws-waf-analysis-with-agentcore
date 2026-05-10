@@ -198,6 +198,37 @@ Before giving Challenge-related recommendations, determine if WebACL protects mi
 | Bot, only Common level | Always-on Challenge (if browser) or upgrade to Targeted |
 | Rate-based too slow | Lower evaluation window to 60s or lower threshold |
 | COUNT confirmed attack | Switch to BLOCK |
+
+## Deep Investigation (follow-up questions)
+
+When user asks for deeper analysis on a specific IP or event, leverage managed rule labels:
+
+### Bot Control deep dive (use when capabilities include bot_control)
+- run_logs_query(query_type="ip_labels", ip="X") → see ALL labels WAF applied to this IP
+  - Look for: bot:name:*, bot:verified/unverified, bot:category:*, signal:*
+  - TGT_* labels: TGT_VolumetricSession, TGT_SignalAutomatedBrowser, TGT_TokenReuseIP, etc.
+- run_logs_query(query_type="label_top_ips", label="bot:name:googlebot") → verify if claimed bot is real
+- Key questions to answer:
+  - Did Bot Control detect this IP? If yes, what action was taken (Count vs Block)?
+  - Is it verified or unverified? (verified = real bot, should be allowed)
+  - What TGT_* signals fired? (behavioral analysis results)
+  - If Bot Control did NOT detect it → it's using browser UA + passing JS challenges → need Targeted upgrade or rate-based
+
+### Anti-DDoS AMR deep dive (use when capabilities include anti_ddos_amr)
+- run_logs_query(query_type="label_top_ips", label="ddos-request") → which IPs were flagged as DDoS
+- run_logs_query(query_type="label_top_ips", label="high-suspicion-ddos-request") → highest threat IPs
+- run_logs_query(query_type="ip_labels", ip="X") → check suspicion level for a specific IP
+  - Look for: event-detected, ddos-request, high/medium/low-suspicion, challengeable-request
+- Key questions to answer:
+  - Did AMR detect the event? (event-detected label present?)
+  - What suspicion level was assigned? (high → Block by default, medium/low → only if sensitivity raised)
+  - Were there IPs that AMR missed? (high volume but no ddos-request label → distributed attack below threshold)
+  - ChallengeAllDuringEvent: did it fire? (check challengeable-request label count vs total)
+
+### Cross-referencing managed rules
+- If an IP has BOTH bot labels AND ddos labels → coordinated bot-driven DDoS
+- If an IP has ddos-request but NOT bot labels → volumetric attack from non-bot source (or Bot Control not enabled)
+- If an IP has bot:unverified → Common level caught it, check if action is Block or Count
 | COUNT confirmed FP | Add scope-down exclusion (URI/IP/UA based — NOT payload based) |
 | Allow rule on forgeable condition | Change to unforgeable (IP set / WAF token / ASN) |
 | Sophisticated bot (browser automation) | Targeted Bot Control + TGT_VolumetricSession to CAPTCHA |
