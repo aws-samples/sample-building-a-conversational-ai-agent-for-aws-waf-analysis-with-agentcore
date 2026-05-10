@@ -1,0 +1,7 @@
+.git
+design/
+*.html
+__pycache__
+.pytest_cache
+.env
+.venv
