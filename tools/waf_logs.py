@@ -29,7 +29,7 @@ TEMPLATES = {
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
-        "query": "parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | filter @message like '{rule_name}' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}}/ | filter @message like '{rule_name}' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
     },
@@ -84,12 +84,12 @@ TEMPLATES = {
         "description": "Per-minute request rate for a specific IP (detect automation)",
     },
     "ip_unique_uris": {
-        "query": "filter httpRequest.clientIp = '{ip}' and not httpRequest.uri like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
+        "query": "filter httpRequest.clientIp = '{ip}' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
         "params": ["ip"],
         "description": "Unique non-static URI count and time span for an IP (excludes JS/CSS/images)",
     },
     "ip_diversity": {
-        "query": "filter httpRequest.clientIp = '{ip}' | parse @message '\"name\":\"user-agent\",\"value\":\"*\"' as ua | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
+        "query": "filter httpRequest.clientIp = '{ip}' | parse @message /(?i)\\{{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}}/ | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
         "params": ["ip"],
         "description": "UA and JA4 diversity for an IP — high diversity = NAT/shared IP, low = single bot",
     },
@@ -109,17 +109,17 @@ TEMPLATES = {
         "description": "Detect token reuse — same session cookie used from multiple IPs (approximate)",
     },
     "host_traffic_profile": {
-        "query": "parse @message '\"name\":\"host\",\"value\":\"*\"' as host | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
+        "query": "parse @message /\\{{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
         "params": [],
         "description": "Traffic profile per Host header — identify frontend vs backend/API domains",
     },
     "host_uri_pattern": {
-        "query": "parse @message '\"name\":\"host\",\"value\":\"*\"' as host | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "parse @message /\\{{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
         "params": ["host"],
         "description": "Top URIs for a specific host — determine if frontend (HTML pages) or backend (API endpoints)",
     },
     "host_method_distribution": {
-        "query": "parse @message '\"name\":\"host\",\"value\":\"*\"' as host | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
+        "query": "parse @message /\\{{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
         "params": ["host"],
         "description": "HTTP method distribution for a host — high POST/PUT = API, mostly GET = frontend",
     },
