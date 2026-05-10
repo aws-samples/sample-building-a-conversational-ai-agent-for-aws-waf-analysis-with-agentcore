@@ -34,14 +34,44 @@ See [Deployment Guide](docs/deployment.md) for detailed instructions, region sel
 
 ## Architecture
 
-```
-Browser (React SPA)
-    │ SSE (AG-UI protocol)
-    ▼
-AgentCore Runtime (microVM per session)
-    │ Strands Agent + Claude Sonnet 4.6
-    ▼
-AWS Services (WAFv2, CloudWatch, Athena, Bedrock)
+```mermaid
+graph TB
+    subgraph User["User Browser"]
+        SPA["React SPA<br/>(AG-UI Client)"]
+    end
+
+    subgraph CF["us-east-1"]
+        CloudFront["CloudFront Distribution"]
+        WAF_FE["WAF WebACL<br/>Anti-DDoS · IP Rep · Rate-limit"]
+        S3["S3 Bucket<br/>(Static Assets)"]
+    end
+
+    subgraph Backend["ap-northeast-1 (or your region)"]
+        Cognito["Cognito User Pool"]
+        AC["AgentCore Runtime<br/>(microVM per session)"]
+        subgraph Agent["Strands Agent"]
+            FastAPI["FastAPI + ag-ui-strands"]
+            Tools["Tools: waf_config · waf_metrics<br/>waf_logs · analyze_ip · report<br/>waf_review · ja4 · ask_user"]
+        end
+        Bedrock["Bedrock<br/>Claude Sonnet 4.6"]
+    end
+
+    subgraph AWS["Customer AWS Resources"]
+        WAFv2["WAFv2 API"]
+        CW["CloudWatch<br/>Metrics + Logs"]
+        Athena["Athena<br/>(S3 logs)"]
+    end
+
+    SPA -->|"HTTPS GET"| CloudFront
+    CloudFront --> WAF_FE --> S3
+    SPA -->|"① Auth (SRP)"| Cognito
+    Cognito -->|"② JWT Token"| SPA
+    SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
+    AC --> FastAPI --> Tools
+    FastAPI --> Bedrock
+    Tools --> WAFv2
+    Tools --> CW
+    Tools --> Athena
 ```
 
 - **Frontend**: React SPA on CloudFront + S3, protected by WAF
