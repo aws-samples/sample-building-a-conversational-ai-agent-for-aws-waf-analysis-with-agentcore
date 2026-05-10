@@ -116,6 +116,24 @@ Resources:
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
 
+  # --- AgentCore Runtime ---
+  AgentRuntime:
+    Type: AWS::BedrockAgentCore::AgentRuntime
+    DependsOn: AgentExecutionRole
+    Properties:
+      AgentRuntimeName: !Sub ${AWS::StackName}
+      AgentRuntimeArtifact:
+        ContainerConfiguration:
+          ContainerUri: !Ref AgentContainerUri
+      RoleArn: !GetAtt AgentExecutionRole.Arn
+      NetworkConfiguration:
+        NetworkMode: PUBLIC
+      AuthorizerConfiguration:
+        CustomJWTAuthorizer:
+          DiscoveryUrl: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration
+          AllowedClients:
+            - !Ref UserPoolClient
+
   # --- S3 + CloudFront for React SPA ---
   FrontendBucket:
     Type: AWS::S3::Bucket
@@ -182,31 +200,15 @@ Outputs:
     Value: !Ref UserPool
   UserPoolClientId:
     Value: !Ref UserPoolClient
-  DiscoveryUrl:
-    Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration
-    Description: Use this as discoveryUrl when creating AgentCore Runtime with customJWTAuthorizer
+  AgentRuntimeArn:
+    Value: !GetAtt AgentRuntime.AgentRuntimeArn
+    Description: AgentCore Runtime ARN — use in frontend config
+  AgentRuntimeEndpoint:
+    Value: !Sub https://bedrock-agentcore.${AWS::Region}.amazonaws.com/runtimes/${AgentRuntime.AgentRuntimeArn}/invocations
+    Description: Invoke endpoint for the frontend (POST with Bearer JWT)
   ExecutionRoleArn:
     Value: !GetAtt AgentExecutionRole.Arn
   FrontendBucket:
     Value: !Ref FrontendBucket
   CloudFrontDomain:
     Value: !GetAtt CloudFrontDistribution.DomainName
-  DeployAgentCommand:
-    Value: !Sub |
-      # After stack creation, deploy AgentCore Runtime:
-      # Option A: agentcore CLI
-      agentcore deploy
-
-      # Option B: boto3
-      import boto3
-      client = boto3.client('bedrock-agentcore-control')
-      client.create_agent_runtime(
-          agentRuntimeName='waf-agent',
-          agentRuntimeArtifact={'containerConfiguration': {'containerUri': '${AgentContainerUri}'}},
-          authorizerConfiguration={'customJWTAuthorizer': {
-              'discoveryUrl': 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration',
-              'allowedClients': ['${UserPoolClient}'],
-          }},
-          networkConfiguration={'networkMode': 'PUBLIC'},
-          roleArn='${AgentExecutionRole.Arn}',
-      )
