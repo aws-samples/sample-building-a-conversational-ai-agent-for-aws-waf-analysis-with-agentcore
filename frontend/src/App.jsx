@@ -1,60 +1,50 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { marked } from 'marked';
 import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword } from './auth';
 import { invokeAgent } from './agent';
 
 function generateSessionId() {
-  return crypto.randomUUID() + crypto.randomUUID().slice(0, 2); // 38 chars > 33
+  return crypto.randomUUID() + crypto.randomUUID().slice(0, 2);
 }
 
 function ReportDownload({ html }) {
   const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
-  const [showPreview, setShowPreview] = React.useState(false);
+  const [showPreview, setShowPreview] = useState(false);
   return (
-    <div className="content html-report">
+    <div className="report-card">
+      <div className="report-header">📊 WAF Weekly Business Report</div>
       <div className="report-actions">
-        <span>📊 Weekly Report</span>
-        <a href={url} download="waf-weekly-report.html" className="btn">⬇ Download</a>
-        <button onClick={() => setShowPreview(!showPreview)} className="btn">{showPreview ? '✕ Close' : '👁 Preview'}</button>
+        <a href={url} download="waf-weekly-report.html" className="btn btn-primary">⬇ Download HTML</a>
+        <button onClick={() => setShowPreview(!showPreview)} className="btn btn-secondary">{showPreview ? '✕ Close Preview' : '👁 Preview Report'}</button>
       </div>
-      {showPreview && <iframe srcDoc={html} sandbox="allow-scripts" style={{width:'100%', height:'600px', border:'1px solid #333', borderRadius:'8px', marginTop:'0.5rem'}} />}
+      {showPreview && <iframe srcDoc={html} sandbox="allow-scripts" className="report-iframe" />}
     </div>
   );
 }
 
 function MessageContent({ content }) {
-  // Detect HTML report (starts with <!DOCTYPE or <html)
   const isHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(content);
-  if (isHtml) {
-    const blob = new Blob([content], { type: 'text/html' });
-    const blobUrl = URL.createObjectURL(blob);
-    return (
-      <div className="content html-report">
-        <div className="report-actions">
-          <span>📊 Weekly Report generated</span>
-          <a href={blobUrl} download="waf-weekly-report.html" className="btn">⬇ Download HTML</a>
-          <button onClick={(e) => { e.target.closest('.html-report').querySelector('iframe').style.display = 'block'; }} className="btn">👁 Preview</button>
-        </div>
-        <iframe srcDoc={content} sandbox="allow-scripts" style={{display:'none', width:'100%', height:'600px', border:'1px solid #333', borderRadius:'8px', marginTop:'0.5rem'}} />
-      </div>
-    );
-  }
-  return <div className="content">{content}</div>;
+  if (isHtml) return <ReportDownload html={content} />;
+  const html = marked.parse(content, { breaks: true });
+  return <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 export default function App() {
-  const [user, setUser] = useState(false); // always start with login screen
+  const [user, setUser] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
-  const [newPassForm, setNewPassForm] = useState(null); // { cognitoUser, newPassword }
-  const [resetForm, setResetForm] = useState(null); // { email, code, newPassword }
+  const [newPassForm, setNewPassForm] = useState(null);
+  const [resetForm, setResetForm] = useState(null);
+  const [darkMode, setDarkMode] = useState(true);
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
   const pendingResolve = useRef(null);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
 
   async function handleLogin(e) {
     e.preventDefault();
@@ -97,7 +87,6 @@ export default function App() {
   async function handleSend(e) {
     e.preventDefault();
     if (!input.trim() || loading) return;
-
     const prompt = input.trim();
     setInput('');
     setMessages(prev => [...prev, { role: 'user', content: prompt }]);
@@ -114,7 +103,7 @@ export default function App() {
       for await (const event of invokeAgent(prompt, token, sessionId.current)) {
         switch (event.type) {
           case 'TEXT_MESSAGE_CONTENT':
-            assistantMsg = { ...assistantMsg, content: assistantMsg.content + event.delta };
+            assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'TOOL_CALL_START':
@@ -130,7 +119,6 @@ export default function App() {
           case 'TOOL_CALL_END':
           case 'TOOL_CALL_RESULT':
             assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map((t, i) => i === assistantMsg.tools.length - 1 ? { ...t, status: 'done' } : t) };
-            // Capture HTML report from set_report_summary result
             if (assistantMsg.tools.at(-1)?.name === 'set_report_summary' && event.content) {
               const html = typeof event.content === 'string' ? event.content : JSON.stringify(event.content);
               if (html.includes('<!DOCTYPE') || html.includes('<html')) {
@@ -138,7 +126,6 @@ export default function App() {
               }
             }
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            // Handle ask_user completion
             if (assistantMsg.tools.at(-1)?.name === 'ask_user' && assistantMsg._argsBuffer) {
               try {
                 const args = JSON.parse(assistantMsg._argsBuffer);
@@ -155,7 +142,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      setMessages(prev => [...prev, { role: 'error', content: '[DEBUG] ' + err.message + ' | status=' + (err.status || 'none') }]);
+      setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
     setLoading(false);
   }
@@ -182,7 +169,7 @@ export default function App() {
       return (
         <div className="login">
           <h1>Reset Password</h1>
-          <p style={{color:'#aaa',fontSize:'0.9rem',marginBottom:'0.5rem'}}>Enter the code sent to your email</p>
+          <p className="login-hint">Enter the code sent to your email</p>
           <form onSubmit={handleResetPassword}>
             <input type="text" placeholder="Verification code" value={resetForm.code} onChange={e => setResetForm({ ...resetForm, code: e.target.value })} required />
             <input type="password" placeholder="New password" value={resetForm.newPassword} onChange={e => setResetForm({ ...resetForm, newPassword: e.target.value })} required minLength={8} />
@@ -218,7 +205,10 @@ export default function App() {
     <div className="chat">
       <header>
         <h1>WAF Agent</h1>
-        <button onClick={() => { signOut(); setUser(null); }}>Sign Out</button>
+        <div className="header-actions">
+          <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️' : '🌙'}</button>
+          <button onClick={() => { signOut(); setUser(null); }}>Sign Out</button>
+        </div>
       </header>
       <div className="messages">
         {messages.map((msg, i) => (

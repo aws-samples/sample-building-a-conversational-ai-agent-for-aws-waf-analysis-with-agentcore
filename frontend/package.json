@@ -9,9 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "amazon-cognito-identity-js": "^6.3.0",
+    "marked": "^18.0.3",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "amazon-cognito-identity-js": "^6.3.0"
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.0",
