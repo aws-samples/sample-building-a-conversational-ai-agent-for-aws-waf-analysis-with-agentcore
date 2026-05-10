@@ -52,27 +52,30 @@ export default function App() {
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'TOOL_CALL_START':
-            assistantMsg = { ...assistantMsg, tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
+            assistantMsg = { ...assistantMsg, _argsBuffer: '', tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
+            break;
+          case 'TOOL_CALL_ARGS':
+            if (assistantMsg.tools.at(-1)?.name === 'ask_user') {
+              assistantMsg = { ...assistantMsg, _argsBuffer: (assistantMsg._argsBuffer || '') + (event.delta || '') };
+              setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
+            }
             break;
           case 'TOOL_CALL_END':
             assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map((t, i) => i === assistantMsg.tools.length - 1 ? { ...t, status: 'done' } : t) };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            break;
-          case 'TOOL_CALL_ARGS':
-            // Check if ask_user tool — prompt user for input
-            if (event.toolCallName === 'ask_user' || assistantMsg.tools.at(-1)?.name === 'ask_user') {
+            // Handle ask_user completion
+            if (assistantMsg.tools.at(-1)?.name === 'ask_user' && assistantMsg._argsBuffer) {
               try {
-                const args = JSON.parse(event.delta || event.args || '{}');
+                const args = JSON.parse(assistantMsg._argsBuffer);
                 if (args.question) {
                   setLoading(false);
                   const answer = await waitForUserInput(args.question);
                   setMessages(prev => [...prev, { role: 'user', content: answer }]);
-                  // Continue agent with user's answer
                   await runAgent(answer);
                   return;
                 }
-              } catch { /* not parseable yet, continue */ }
+              } catch { /* malformed args */ }
             }
             break;
         }
