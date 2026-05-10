@@ -17,17 +17,12 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 - [finch](https://github.com/runfinch/finch) or Docker (for building ARM64 images)
 - AWS CLI v2 configured with appropriate permissions
 
-### Deploy (3 commands)
+### Deploy (3 steps)
 
 ```bash
-# 1. Build and push the agent image
-./deploy.sh build --region ap-northeast-1
-
-# 2. Deploy backend (Cognito + AgentCore) — pick any supported region
-./deploy.sh backend --region ap-northeast-1
-
-# 3. Deploy frontend (CloudFront + WAF) — always us-east-1
-./deploy.sh frontend
+# 1. Build and push ARM64 image to ECR
+# 2. Deploy backend stack (Cognito + AgentCore)
+# 3. Deploy frontend stack (CloudFront + WAF)
 ```
 
 See [Deployment Guide](docs/deployment.md) for detailed instructions, region selection, and troubleshooting.
