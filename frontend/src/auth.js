@@ -10,21 +10,21 @@ const userPool = new CognitoUserPool({
   ClientId: config.clientId,
 });
 
+let _token = null;
+
 export function getCurrentUser() {
   return userPool.getCurrentUser();
 }
 
 export function getToken() {
+  if (_token) return Promise.resolve(_token);
   return new Promise((resolve, reject) => {
     const user = getCurrentUser();
-    if (!user) return reject(new Error('Not signed in'));
+    if (!user) return reject(new Error('Session expired'));
     user.getSession((err, session) => {
-      if (err) {
-        // Session expired/invalid — clear local state so user gets login screen
-        user.signOut();
-        return reject(new Error('Session expired'));
-      }
-      resolve(session.getAccessToken().getJwtToken());
+      if (err) return reject(new Error('Session expired'));
+      _token = session.getAccessToken().getJwtToken();
+      resolve(_token);
     });
   });
 }
@@ -34,7 +34,10 @@ export function signIn(email, password) {
     const user = new CognitoUser({ Username: email, Pool: userPool });
     const auth = new AuthenticationDetails({ Username: email, Password: password });
     user.authenticateUser(auth, {
-      onSuccess: (session) => resolve({ token: session.getAccessToken().getJwtToken() }),
+      onSuccess: (session) => {
+        _token = session.getAccessToken().getJwtToken();
+        resolve({ token: _token });
+      },
       onFailure: (err) => {
         if (err.code === 'PasswordResetRequiredException') {
           resolve({ passwordResetRequired: true, email });
@@ -62,13 +65,17 @@ export function confirmResetPassword(email, code, newPassword) {
 export function completeNewPassword(cognitoUser, newPassword) {
   return new Promise((resolve, reject) => {
     cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
-      onSuccess: (session) => resolve(session.getAccessToken().getJwtToken()),
+      onSuccess: (session) => {
+        _token = session.getAccessToken().getJwtToken();
+        resolve(_token);
+      },
       onFailure: reject,
     });
   });
 }
 
 export function signOut() {
+  _token = null;
   const user = getCurrentUser();
   if (user) user.signOut();
 }
