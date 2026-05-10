@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { signIn, signOut, getToken, getCurrentUser, completeNewPassword, confirmResetPassword } from './auth';
+import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword } from './auth';
 import { invokeAgent } from './agent';
 
 function generateSessionId() {
@@ -7,7 +7,7 @@ function generateSessionId() {
 }
 
 export default function App() {
-  const [user, setUser] = useState(getCurrentUser());
+  const [user, setUser] = useState(isAuthenticated());
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -29,7 +29,7 @@ export default function App() {
       } else if (result.passwordResetRequired) {
         setResetForm({ email: result.email, code: '', newPassword: '' });
       } else {
-        setUser(getCurrentUser());
+        setUser(true);
       }
     } catch (err) {
       alert(err.message);
@@ -41,7 +41,7 @@ export default function App() {
     try {
       await completeNewPassword(newPassForm.cognitoUser, newPassForm.newPassword);
       setNewPassForm(null);
-      setUser(getCurrentUser());
+      setUser(true);
     } catch (err) {
       alert(err.message);
     }

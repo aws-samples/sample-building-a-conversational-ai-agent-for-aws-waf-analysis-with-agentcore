@@ -10,21 +10,28 @@ const userPool = new CognitoUserPool({
   ClientId: config.clientId,
 });
 
-let _token = null;
+// In-memory reference to the authenticated CognitoUser object.
+// This is the KEY to making getSession() work reliably.
+let _cognitoUser = null;
 
-export function getCurrentUser() {
-  return userPool.getCurrentUser();
+export function isAuthenticated() {
+  return !!(_cognitoUser || userPool.getCurrentUser());
 }
 
 export function getToken() {
-  if (_token) return Promise.resolve(_token);
   return new Promise((resolve, reject) => {
-    const user = getCurrentUser();
+    // Use in-memory reference first, fall back to localStorage reconstruction
+    const user = _cognitoUser || userPool.getCurrentUser();
     if (!user) return reject(new Error('Session expired'));
+
+    // getSession() auto-refreshes expired access tokens using the refresh token
     user.getSession((err, session) => {
-      if (err) return reject(new Error('Session expired'));
-      _token = session.getAccessToken().getJwtToken();
-      resolve(_token);
+      if (err || !session || !session.isValid()) {
+        _cognitoUser = null;
+        return reject(new Error('Session expired'));
+      }
+      _cognitoUser = user; // keep reference fresh
+      resolve(session.getAccessToken().getJwtToken());
     });
   });
 }
@@ -35,8 +42,8 @@ export function signIn(email, password) {
     const auth = new AuthenticationDetails({ Username: email, Password: password });
     user.authenticateUser(auth, {
       onSuccess: (session) => {
-        _token = session.getAccessToken().getJwtToken();
-        resolve({ token: _token });
+        _cognitoUser = user; // save the SAME object that authenticated
+        resolve({ success: true });
       },
       onFailure: (err) => {
         if (err.code === 'PasswordResetRequiredException') {
@@ -52,6 +59,18 @@ export function signIn(email, password) {
   });
 }
 
+export function completeNewPassword(cognitoUser, newPassword) {
+  return new Promise((resolve, reject) => {
+    cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
+      onSuccess: (session) => {
+        _cognitoUser = cognitoUser; // save reference after password set
+        resolve();
+      },
+      onFailure: reject,
+    });
+  });
+}
+
 export function confirmResetPassword(email, code, newPassword) {
   return new Promise((resolve, reject) => {
     const user = new CognitoUser({ Username: email, Pool: userPool });
@@ -62,20 +81,8 @@ export function confirmResetPassword(email, code, newPassword) {
   });
 }
 
-export function completeNewPassword(cognitoUser, newPassword) {
-  return new Promise((resolve, reject) => {
-    cognitoUser.completeNewPasswordChallenge(newPassword, {}, {
-      onSuccess: (session) => {
-        _token = session.getAccessToken().getJwtToken();
-        resolve(_token);
-      },
-      onFailure: reject,
-    });
-  });
-}
-
 export function signOut() {
-  _token = null;
-  const user = getCurrentUser();
+  const user = _cognitoUser || userPool.getCurrentUser();
   if (user) user.signOut();
+  _cognitoUser = null;
 }
