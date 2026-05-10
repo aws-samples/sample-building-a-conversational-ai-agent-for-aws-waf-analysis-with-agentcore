@@ -2,40 +2,74 @@ import React, { useState, useRef, useEffect } from 'react';
 import { marked } from 'marked';
 import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword } from './auth';
 import { invokeAgent } from './agent';
+import { config } from './config';
 
 function generateSessionId() {
   return crypto.randomUUID() + crypto.randomUUID().slice(0, 2);
 }
 
-function ReportDownload({ html }) {
-  const blob = new Blob([html], { type: 'text/html' });
-  const url = URL.createObjectURL(blob);
+function ReportDownload({ sessionId }) {
+  const [html, setHtml] = useState(null);
+  const [error, setError] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
+  const fetched = useRef(false);
+
+  useEffect(() => {
+    if (fetched.current) return;
+    fetched.current = true;
+    fetchReport();
+  }, []);
+
+  async function fetchReport() {
+    setError(null);
+    try {
+      const token = await getToken();
+      const arn = encodeURIComponent(config.agentRuntimeArn);
+      const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          'Authorization': `Bearer ${token}`,
+          'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
+        },
+        body: JSON.stringify({ prompt: '__get_report__' }),
+      });
+      if (!res.ok) { setError(`HTTP ${res.status}`); return; }
+      const text = await res.text();
+      let content = '';
+      for (const line of text.split('\n')) {
+        if (line.startsWith('data: ')) {
+          try {
+            const evt = JSON.parse(line.slice(6));
+            if (evt.type === 'TEXT_MESSAGE_CONTENT') content += evt.delta || '';
+          } catch {}
+        }
+      }
+      if (!content) { setError('Empty report'); return; }
+      setHtml(content);
+      const blob = new Blob([content], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'waf-weekly-report.html'; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { setError(e.message); }
+  }
+
   return (
     <div className="report-card">
       <div className="report-header">📊 WAF Weekly Business Report</div>
+      {error && <div style={{color:'#f87171',fontSize:'0.85rem',marginBottom:'0.5rem'}}>⚠ {error}</div>}
       <div className="report-actions">
-        <a href={url} download="waf-weekly-report.html" className="btn btn-primary">⬇ Download HTML</a>
-        <button onClick={() => setShowPreview(!showPreview)} className="btn btn-secondary">{showPreview ? '✕ Close Preview' : '👁 Preview Report'}</button>
+        <button onClick={fetchReport} className="btn btn-primary">⬇ {html ? 'Download Again' : 'Download HTML'}</button>
+        {html && <button onClick={() => setShowPreview(!showPreview)} className="btn btn-secondary">{showPreview ? '✕ Close' : '👁 Preview'}</button>}
       </div>
-      {showPreview && <iframe srcDoc={html} sandbox="allow-scripts" className="report-iframe" />}
+      {showPreview && html && <iframe srcDoc={html} sandbox="allow-scripts" className="report-iframe" />}
     </div>
   );
 }
 
 function MessageContent({ content }) {
-  // Check if content contains an HTML report (may be mixed with text)
-  const htmlMatch = content.match(/(<!DOCTYPE html[\s\S]*<\/html>)/i) || content.match(/(<html[\s\S]*<\/html>)/i);
-  if (htmlMatch) {
-    const textBefore = content.slice(0, htmlMatch.index).trim();
-    const html = htmlMatch[1];
-    return (
-      <>
-        {textBefore && <div className="content markdown" dangerouslySetInnerHTML={{ __html: marked.parse(textBefore, { breaks: true }) }} />}
-        <ReportDownload html={html} />
-      </>
-    );
-  }
   const rendered = marked.parse(content, { breaks: true });
   return <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />;
 }
@@ -52,6 +86,9 @@ export default function App() {
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
   const pendingResolve = useRef(null);
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarLang, setSidebarLang] = useState('zh');
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
@@ -129,11 +166,8 @@ export default function App() {
           case 'TOOL_CALL_END':
           case 'TOOL_CALL_RESULT':
             assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map((t, i) => i === assistantMsg.tools.length - 1 ? { ...t, status: 'done' } : t) };
-            if (assistantMsg.tools.at(-1)?.name === 'set_report_summary' && event.content) {
-              const html = typeof event.content === 'string' ? event.content : JSON.stringify(event.content);
-              if (html.includes('<!DOCTYPE') || html.includes('<html')) {
-                assistantMsg = { ...assistantMsg, reportHtml: html };
-              }
+            if (assistantMsg.tools.at(-1)?.name === 'set_report_summary') {
+              assistantMsg = { ...assistantMsg, hasReport: true };
             }
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             if (assistantMsg.tools.at(-1)?.name === 'ask_user' && assistantMsg._argsBuffer) {
@@ -211,12 +245,49 @@ export default function App() {
     );
   }
 
+  const guideContent = {
+    zh: {
+      title: '使用指南',
+      quickStart: '⚡ 试试这样问',
+      items: ['"生成周报"', '"分析这个IP: 1.2.3.4"', '"检测绕过攻击"', '"检测爬虫"', '"你能做什么？"'],
+      notes: '⚠️ 注意事项',
+      noteItems: ['会话空闲 15 分钟后超时，请及时下载报告', '首次查询可能需要 ~30 秒（冷启动）', '周报生成约需 1–2 分钟'],
+    },
+    en: {
+      title: 'Guide',
+      quickStart: '⚡ Try asking',
+      items: ['"Generate weekly report"', '"Analyze IP: 1.2.3.4"', '"Detect bypass attacks"', '"Detect crawlers"', '"What can you do?"'],
+      notes: '⚠️ Notes',
+      noteItems: ['Session times out after 15 min idle — download reports promptly', 'First query may take ~30s (cold start)', 'Report generation takes 1–2 min'],
+    },
+  };
+  const guide = guideContent[sidebarLang];
+
   return (
-    <div className="chat">
-      <header>
+    <div className="app-layout">
+      {sidebarOpen && (
+        <aside className="sidebar">
+          <div className="sidebar-top">
+            <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
+            <button className="sidebar-lang" onClick={() => setSidebarLang(sidebarLang === 'zh' ? 'en' : 'zh')}>{sidebarLang === 'zh' ? 'Eng' : '中文'}</button>
+          </div>
+          <h2>{guide.title}</h2>
+          <section>
+            <h3>{guide.quickStart}</h3>
+            <ul>{guide.items.map((t, i) => <li key={i}><em>{t}</em></li>)}</ul>
+          </section>
+          <section>
+            <h3>{guide.notes}</h3>
+            <ul>{guide.noteItems.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          </section>
+        </aside>
+      )}
+      <div className="chat">
+        <header>
+          {!sidebarOpen && <button className="sidebar-open" onClick={() => setSidebarOpen(true)}>☰</button>}
         <h1>WAF Agent</h1>
         <div className="header-actions">
-          <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️' : '🌙'}</button>
+          <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
           <button onClick={() => { signOut(); setUser(null); }}>Sign Out</button>
         </div>
       </header>
@@ -230,16 +301,17 @@ export default function App() {
                 ))}
               </div>
             )}
-            {msg.reportHtml && <ReportDownload html={msg.reportHtml} />}
             {msg.content && <MessageContent content={msg.content} />}
+            {msg.hasReport && <ReportDownload sessionId={sessionId.current} />}
           </div>
         ))}
         <div ref={messagesEnd} />
       </div>
       <form className="input-bar" onSubmit={pendingResolve.current ? handleUserReply : handleSend}>
-        <input value={input} onChange={e => setInput(e.target.value)} placeholder="Ask about your WAF..." disabled={loading} autoFocus />
+        <textarea value={input} onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px'; }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } }} placeholder="Ask about your WAF... (Shift+Enter for new line)" disabled={loading} autoFocus rows={1} />
         <button type="submit" disabled={loading}>{loading ? '...' : '→'}</button>
       </form>
+    </div>
     </div>
   );
 }

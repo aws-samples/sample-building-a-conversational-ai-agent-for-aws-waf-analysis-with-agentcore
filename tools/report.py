@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 
+# Module-level storage for the latest report HTML (served via GET /report)
+_latest_report_html: str | None = None
+
 # Human-readable names for WAF rule labels (management-friendly)
 _FRIENDLY_NAMES = {
     "CategoryHttpLibrary": "HTTP Libraries (curl, python-requests)",
@@ -1060,6 +1063,9 @@ def set_report_summary(path: str, summary: str) -> str:
         html = html.replace("{{EXECUTIVE_SUMMARY}}", summary_html)
         with open(path, "w") as f:
             f.write(html)
-        return html
+        # Store in module-level variable for /report endpoint
+        global _latest_report_html
+        _latest_report_html = html
+        return "Report finalized successfully. User can download it via the report button."
     except FileNotFoundError:
         return f"Error: Report file not found at {path}"

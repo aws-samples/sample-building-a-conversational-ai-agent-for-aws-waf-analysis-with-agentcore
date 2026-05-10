@@ -302,7 +302,7 @@ def create_app():
     import json as _json
     import uuid as _uuid
     from fastapi import FastAPI, Request
-    from fastapi.responses import StreamingResponse, JSONResponse
+    from fastapi.responses import StreamingResponse, JSONResponse, Response
 
     app = FastAPI(title="waf-agent")
 
@@ -329,6 +329,18 @@ def create_app():
             # Simple {prompt} format — direct agent call with SSE streaming
             prompt = input_data.get("prompt", "")
 
+            # Special: return stored report HTML directly
+            if prompt == '__get_report__':
+                from tools.report import _latest_report_html
+                async def report_generator():
+                    run_id = str(_uuid.uuid4())
+                    yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': 'thread-1', 'runId': run_id})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': _latest_report_html or ''})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': 'thread-1', 'runId': run_id})}\n\n"
+                return StreamingResponse(report_generator(), media_type="text/event-stream")
+
             async def simple_generator():
                 import asyncio
                 loop = asyncio.get_event_loop()
@@ -346,6 +358,13 @@ def create_app():
     @app.get("/ping")
     async def ping():
         return JSONResponse({"status": "Healthy"})
+
+    @app.get("/report")
+    async def get_report():
+        from tools.report import _latest_report_html
+        if not _latest_report_html:
+            return JSONResponse({"error": "No report available"}, status_code=404)
+        return Response(content=_latest_report_html, media_type="text/html")
 
     return app
 
