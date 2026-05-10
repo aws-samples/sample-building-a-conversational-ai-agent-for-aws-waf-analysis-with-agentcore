@@ -74,8 +74,8 @@ graph TB
         Athena["Athena<br/>(S3 logs)"]
     end
 
-    SPA -->|"HTTPS GET"| CloudFront
-    CloudFront --> WAF_FE --> S3
+    SPA -->|"HTTPS GET"| WAF_FE
+    WAF_FE --> CloudFront --> S3
     SPA -->|"① Auth (SRP)"| Cognito
     Cognito -->|"② JWT Token"| SPA
     SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
