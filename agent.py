@@ -13,7 +13,7 @@ from tools.waf_review import review_waf_rules
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
-MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "anthropic.claude-sonnet-4-6")
+MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "jp.anthropic.claude-sonnet-4-6")
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "ap-northeast-1")
 
 SYSTEM_PROMPT = """\
