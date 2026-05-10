@@ -1,15 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: WAF Analysis Agent — one-click deployment (Cognito + API Gateway + Lambda + IAM)
+Description: WAF Analysis Agent — Cognito + AgentCore IAM Role + S3/CloudFront SPA
 
 Parameters:
-  AgentImageUri:
+  AgentContainerUri:
     Type: String
-    Description: ECR Public image URI for the WAF Agent
-    Default: public.ecr.aws/PLACEHOLDER/waf-agent:latest
-  AgentRuntimeEndpoint:
-    Type: String
-    Description: AgentCore Runtime invoke endpoint (fill after deploying runtime with agentcore CLI)
-    Default: PLACEHOLDER_FILL_AFTER_DEPLOY
+    Description: ECR image URI for the WAF Agent (ARM64)
+    Default: PLACEHOLDER
 
 Resources:
   # --- Cognito ---
@@ -37,115 +33,6 @@ Resources:
         - ALLOW_REFRESH_TOKEN_AUTH
       SupportedIdentityProviders: [COGNITO]
 
-  # --- Lambda (bridge between API GW and AgentCore) ---
-  InvokeLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub ${AWS::StackName}-lambda-role
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: InvokeAgentCore
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: bedrock-agentcore:InvokeAgentRuntime
-                Resource: '*'
-
-  InvokeLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: !Sub ${AWS::StackName}-invoke
-      Runtime: python3.12
-      Handler: index.handler
-      Role: !GetAtt InvokeLambdaRole.Arn
-      Timeout: 300
-      Environment:
-        Variables:
-          AGENT_RUNTIME_ENDPOINT: !Ref AgentRuntimeEndpoint
-      Code:
-        ZipFile: |
-          import json
-          import os
-          import boto3
-
-          client = boto3.client('bedrock-agentcore')
-
-          def handler(event, context):
-              body = json.loads(event.get('body', '{}'))
-              prompt = body.get('prompt', '')
-
-              response = client.invoke_agent_runtime(
-                  agentRuntimeEndpoint=os.environ['AGENT_RUNTIME_ENDPOINT'],
-                  payload=json.dumps({'prompt': prompt}),
-              )
-
-              result = json.loads(response['body'].read())
-              return {
-                  'statusCode': 200,
-                  'headers': {'Content-Type': 'application/json'},
-                  'body': json.dumps(result),
-              }
-
-  LambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref InvokeLambda
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
-
-  # --- API Gateway ---
-  HttpApi:
-    Type: AWS::ApiGatewayV2::Api
-    Properties:
-      Name: !Sub ${AWS::StackName}-api
-      ProtocolType: HTTP
-
-  CognitoAuthorizer:
-    Type: AWS::ApiGatewayV2::Authorizer
-    Properties:
-      ApiId: !Ref HttpApi
-      AuthorizerType: JWT
-      Name: CognitoAuth
-      IdentitySource: $request.header.Authorization
-      JwtConfiguration:
-        Audience:
-          - !Ref UserPoolClient
-        Issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
-
-  InvokeRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref HttpApi
-      RouteKey: POST /invoke
-      AuthorizationType: JWT
-      AuthorizerId: !Ref CognitoAuthorizer
-      Target: !Sub integrations/${AgentIntegration}
-
-  AgentIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref HttpApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !GetAtt InvokeLambda.Arn
-      PayloadFormatVersion: '2.0'
-
-  DefaultStage:
-    Type: AWS::ApiGatewayV2::Stage
-    Properties:
-      ApiId: !Ref HttpApi
-      StageName: $default
-      AutoDeploy: true
-
   # --- IAM Role for AgentCore Runtime ---
   AgentExecutionRole:
     Type: AWS::IAM::Role
@@ -161,11 +48,20 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:*
       Policies:
-        - PolicyName: WAFReadAccess
+        - PolicyName: AgentPermissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              - Sid: ECR
+                Effect: Allow
+                Action:
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
               - Sid: WAF
                 Effect: Allow
                 Action:
@@ -174,16 +70,11 @@ Resources:
                   - wafv2:GetLoggingConfiguration
                   - wafv2:ListResourcesForWebACL
                 Resource: '*'
-              - Sid: CloudWatchMetrics
+              - Sid: CloudWatch
                 Effect: Allow
                 Action:
                   - cloudwatch:GetMetricData
-                  - cloudwatch:GetMetricStatistics
                   - cloudwatch:ListMetrics
-                Resource: '*'
-              - Sid: CloudWatchLogs
-                Effect: Allow
-                Action:
                   - logs:StartQuery
                   - logs:GetQueryResults
                   - logs:StopQuery
@@ -217,21 +108,105 @@ Resources:
                   - bedrock:InvokeModel
                   - bedrock:InvokeModelWithResponseStream
                 Resource: '*'
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+
+  # --- S3 + CloudFront for React SPA ---
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-frontend-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref CloudFrontOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          Compress: true
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
 
 Outputs:
-  ApiEndpoint:
-    Value: !GetAtt HttpApi.ApiEndpoint
-    Description: API Gateway endpoint — POST /invoke with Cognito JWT
   UserPoolId:
     Value: !Ref UserPool
-    Description: Cognito User Pool ID (add users here)
   UserPoolClientId:
     Value: !Ref UserPoolClient
-    Description: Cognito App Client ID (for authentication)
+  DiscoveryUrl:
+    Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration
+    Description: Use this as discoveryUrl when creating AgentCore Runtime with customJWTAuthorizer
   ExecutionRoleArn:
     Value: !GetAtt AgentExecutionRole.Arn
-    Description: IAM Role ARN — use when deploying AgentCore Runtime
-  DeployCommand:
+  FrontendBucket:
+    Value: !Ref FrontendBucket
+  CloudFrontDomain:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  DeployAgentCommand:
     Value: !Sub |
-      agentcore launch --image ${AgentImageUri} --role ${AgentExecutionRole.Arn}
-    Description: Run this after stack creation to deploy AgentCore Runtime, then update AGENT_RUNTIME_ENDPOINT
+      # After stack creation, deploy AgentCore Runtime:
+      # Option A: agentcore CLI
+      agentcore deploy
+
+      # Option B: boto3
+      import boto3
+      client = boto3.client('bedrock-agentcore-control')
+      client.create_agent_runtime(
+          agentRuntimeName='waf-agent',
+          agentRuntimeArtifact={'containerConfiguration': {'containerUri': '${AgentContainerUri}'}},
+          authorizerConfiguration={'customJWTAuthorizer': {
+              'discoveryUrl': 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration',
+              'allowedClients': ['${UserPoolClient}'],
+          }},
+          networkConfiguration={'networkMode': 'PUBLIC'},
+          roleArn='${AgentExecutionRole.Arn}',
+      )
