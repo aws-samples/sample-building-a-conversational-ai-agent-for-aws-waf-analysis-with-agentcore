@@ -299,26 +299,49 @@ def invoke(payload: dict) -> dict:
 
 def create_app():
     """Create FastAPI app with AG-UI streaming endpoint."""
+    import json as _json
+    import uuid as _uuid
     from fastapi import FastAPI, Request
     from fastapi.responses import StreamingResponse, JSONResponse
-    from ag_ui_strands import StrandsAgent
-    from ag_ui.core import RunAgentInput
-    from ag_ui.encoder import EventEncoder
 
-    agui_agent = StrandsAgent(agent=get_agent(), name="waf-agent",
-                              description="AWS WAF Analysis Agent")
     app = FastAPI(title="waf-agent")
 
     @app.post("/invocations")
     async def invocations(request: Request):
         input_data = await request.json()
-        encoder = EventEncoder(accept=request.headers.get("accept"))
 
-        async def event_generator():
-            async for event in agui_agent.run(RunAgentInput(**input_data)):
-                yield encoder.encode(event)
+        # Detect payload format: AG-UI (has threadId) vs simple (has prompt)
+        if "threadId" in input_data:
+            # Full AG-UI protocol
+            from ag_ui_strands import StrandsAgent
+            from ag_ui.core import RunAgentInput
+            from ag_ui.encoder import EventEncoder
+            agui_agent = StrandsAgent(agent=get_agent(), name="waf-agent",
+                                      description="AWS WAF Analysis Agent")
+            encoder = EventEncoder(accept=request.headers.get("accept"))
 
-        return StreamingResponse(event_generator(), media_type=encoder.get_content_type())
+            async def agui_generator():
+                async for event in agui_agent.run(RunAgentInput(**input_data)):
+                    yield encoder.encode(event)
+
+            return StreamingResponse(agui_generator(), media_type=encoder.get_content_type())
+        else:
+            # Simple {prompt} format — direct agent call with SSE streaming
+            prompt = input_data.get("prompt", "")
+
+            async def simple_generator():
+                import asyncio
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, lambda: str(get_agent()(prompt)))
+                # Emit as simple SSE events
+                run_id = str(_uuid.uuid4())
+                yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': 'thread-1', 'runId': run_id})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': result})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
+                yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': 'thread-1', 'runId': run_id})}\n\n"
+
+            return StreamingResponse(simple_generator(), media_type="text/event-stream")
 
     @app.get("/ping")
     async def ping():
