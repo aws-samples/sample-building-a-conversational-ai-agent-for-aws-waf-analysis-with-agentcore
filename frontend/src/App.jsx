@@ -111,12 +111,12 @@ export default function App() {
         }
       }
     } catch (err) {
-      if (err.message?.includes('Not signed in') || err.message?.includes('401')) {
+      if (err.message?.includes('Not signed in') || err.status === 401) {
         signOut();
         setUser(null);
-        return;
+      } else {
+        setMessages(prev => [...prev, { role: 'error', content: err.message }]);
       }
-      setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
     setLoading(false);
   }

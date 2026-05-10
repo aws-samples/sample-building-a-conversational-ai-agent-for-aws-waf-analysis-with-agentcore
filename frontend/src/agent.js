@@ -20,7 +20,9 @@ export async function* invokeAgent(prompt, token, sessionId) {
   });
 
   if (!response.ok) {
-    throw new Error(`Agent error: ${response.status} ${response.statusText}`);
+    const err = new Error(`Agent error: ${response.status}`);
+    err.status = response.status;
+    throw err;
   }
 
   const reader = response.body.getReader();
