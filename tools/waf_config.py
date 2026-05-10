@@ -105,6 +105,15 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     lines.append(f"  Rate-based rules: {'Yes' if caps['has_rate_based'] else 'No'}")
     lines.append(f"  Token reuse detection: {'Yes' if caps['has_token_reuse_rule'] else 'No'}")
 
+    # Guide LLM on which log query tool to use
+    lines.append("\n## Log Query Tool")
+    if log_dest and ":log-group:" in log_dest:
+        lines.append("  Use: run_logs_query (CloudWatch Logs Insights)")
+    elif log_dest and (":s3:::" in log_dest or ":firehose:" in log_dest):
+        lines.append("  Use: run_athena_query (S3 logs via Athena)")
+    else:
+        lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
+
     return "\n".join(lines)
 
 

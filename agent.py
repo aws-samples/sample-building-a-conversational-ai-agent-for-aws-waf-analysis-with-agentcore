@@ -7,6 +7,7 @@ from strands.models import BedrockModel
 from tools.waf_config import list_webacls, get_waf_config
 from tools.waf_metrics import get_waf_metrics
 from tools.waf_logs import run_logs_query, analyze_ip
+from tools.waf_athena import run_athena_query
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review import review_waf_rules
@@ -272,8 +273,8 @@ This builds a structured investigation report. Call it once per distinct finding
 
 _agent = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
-          lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules,
-          record_finding, ask_user]
+          run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
+          review_waf_rules, record_finding, ask_user]
 
 
 def get_agent() -> Agent:
