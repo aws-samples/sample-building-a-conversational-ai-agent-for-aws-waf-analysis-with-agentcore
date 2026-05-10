@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { marked } from 'marked';
-import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword } from './auth';
+import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword, getUserProfile, changePassword } from './auth';
 import { invokeAgent } from './agent';
 import { config } from './config';
 
@@ -72,6 +72,55 @@ function ReportDownload({ sessionId }) {
 function MessageContent({ content }) {
   const rendered = marked.parse(content, { breaks: true });
   return <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />;
+}
+
+function UserMenu({ onSignOut }) {
+  const [open, setOpen] = useState(false);
+  const [profile, setProfile] = useState(null);
+  const [pwForm, setPwForm] = useState(null);
+  const [pwMsg, setPwMsg] = useState('');
+
+  useEffect(() => { getUserProfile().then(setProfile).catch(() => {}); }, []);
+
+  async function handleChangePw(e) {
+    e.preventDefault();
+    setPwMsg('');
+    if (pwForm.newPw !== pwForm.confirmPw) { setPwMsg('❌ Passwords do not match'); return; }
+    try {
+      await changePassword(pwForm.oldPw, pwForm.newPw);
+      setPwMsg('✅ Password changed');
+      setPwForm(null);
+    } catch (err) { setPwMsg('❌ ' + (err.message || err)); }
+  }
+
+  return (
+    <div className="user-menu">
+      <button className="user-avatar" onClick={() => setOpen(!open)}>👤</button>
+      {open && (
+        <div className="user-dropdown">
+          {profile && <div className="user-email-display">{profile.email}</div>}
+          <hr />
+          {!pwForm ? (
+            <button className="dropdown-btn" onClick={() => setPwForm({ oldPw: '', newPw: '', confirmPw: '' })}>Change Password</button>
+          ) : (
+            <form onSubmit={handleChangePw} className="pw-form">
+              <input type="password" placeholder="Current password" value={pwForm.oldPw} onChange={e => setPwForm({ ...pwForm, oldPw: e.target.value })} required />
+              <input type="password" placeholder="New password" value={pwForm.newPw} onChange={e => setPwForm({ ...pwForm, newPw: e.target.value })} required minLength={8} />
+              <input type="password" placeholder="Confirm new password" value={pwForm.confirmPw} onChange={e => setPwForm({ ...pwForm, confirmPw: e.target.value })} required minLength={8} />
+              <div className="pw-hint">Min 8 chars, uppercase, lowercase, number, special char</div>
+              <div className="pw-form-actions">
+                <button type="submit">Confirm</button>
+                <button type="button" onClick={() => { setPwForm(null); setPwMsg(''); }}>Cancel</button>
+              </div>
+            </form>
+          )}
+          {pwMsg && <div className="pw-msg">{pwMsg}</div>}
+          <hr />
+          <button className="dropdown-btn signout" onClick={onSignOut}>Sign Out</button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function App() {
@@ -288,7 +337,7 @@ export default function App() {
         <h1>WAF Agent</h1>
         <div className="header-actions">
           <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
-          <button onClick={() => { signOut(); setUser(null); }}>Sign Out</button>
+          <UserMenu onSignOut={() => { signOut(); setUser(null); }} />
         </div>
       </header>
       <div className="messages">

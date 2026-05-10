@@ -90,3 +90,29 @@ export function signOut() {
   if (user) user.signOut();
   _cognitoUser = null;
 }
+
+export function getUserProfile() {
+  return new Promise((resolve, reject) => {
+    const user = _cognitoUser || userPool.getCurrentUser();
+    if (!user) return reject(new Error('Not signed in'));
+    user.getSession((err, session) => {
+      if (err || !session?.isValid()) return reject(err || new Error('Invalid session'));
+      const payload = session.getIdToken().decodePayload();
+      resolve({ username: payload['cognito:username'] || payload['sub'], email: payload['email'] });
+    });
+  });
+}
+
+export function changePassword(oldPassword, newPassword) {
+  return new Promise((resolve, reject) => {
+    const user = _cognitoUser || userPool.getCurrentUser();
+    if (!user) return reject(new Error('Not signed in'));
+    user.getSession((err, session) => {
+      if (err || !session?.isValid()) return reject(err || new Error('Invalid session'));
+      user.changePassword(oldPassword, newPassword, (err, result) => {
+        if (err) return reject(err);
+        resolve(result);
+      });
+    });
+  });
+}

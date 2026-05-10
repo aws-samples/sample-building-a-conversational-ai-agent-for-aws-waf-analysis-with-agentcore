@@ -82,3 +82,23 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .sidebar-lang { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; color: var(--muted); cursor: pointer; font-size: 0.75rem; }
 .sidebar-lang:hover { color: var(--fg); }
 .sidebar-open { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; color: var(--fg); cursor: pointer; font-size: 1rem; margin-right: 0.75rem; }
+
+/* User menu */
+.user-menu { position: relative; }
+.user-avatar { background: none; border: 1px solid var(--border); border-radius: 50%; width: 2rem; height: 2rem; font-size: 1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--fg); }
+.user-avatar:hover { background: var(--border); }
+.user-dropdown { position: absolute; top: 2.5rem; right: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 0.85rem; min-width: 240px; z-index: 100; box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+.user-dropdown hr { border: none; border-top: 1px solid var(--border); margin: 0.6rem 0; }
+.user-email-display { font-size: 0.9rem; color: var(--fg); padding: 0.1rem 0; font-weight: 500; }
+.dropdown-btn { display: block; width: 100%; text-align: center; background: var(--bg); border: 1px solid var(--border); color: var(--fg); padding: 0.45rem 0; font-size: 0.85rem; cursor: pointer; border-radius: 6px; font-weight: 500; transition: background 0.15s; }
+.dropdown-btn:hover { background: var(--border); }
+.dropdown-btn.signout { color: #f87171; border-color: #f8717133; }
+.dropdown-btn.signout:hover { background: #f8717118; }
+.pw-form { display: flex; flex-direction: column; gap: 0.4rem; }
+.pw-form input { padding: 0.45rem 0.6rem; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); font-size: 0.82rem; }
+.pw-hint { font-size: 0.72rem; color: var(--muted); }
+.pw-form-actions { display: flex; gap: 0.4rem; }
+.pw-form-actions button { flex: 1; padding: 0.4rem; border-radius: 6px; border: none; font-size: 0.82rem; cursor: pointer; font-weight: 500; }
+.pw-form-actions button[type="submit"] { background: var(--accent); color: #fff; }
+.pw-form-actions button[type="button"] { background: var(--bg); border: 1px solid var(--border); color: var(--fg); }
+.pw-msg { font-size: 0.8rem; margin-top: 0.3rem; }

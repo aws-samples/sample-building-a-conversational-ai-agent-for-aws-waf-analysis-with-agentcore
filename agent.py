@@ -302,7 +302,7 @@ def create_app():
     import json as _json
     import uuid as _uuid
     from fastapi import FastAPI, Request
-    from fastapi.responses import StreamingResponse, JSONResponse, Response
+    from fastapi.responses import StreamingResponse, JSONResponse
 
     app = FastAPI(title="waf-agent")
 
@@ -326,7 +326,9 @@ def create_app():
 
             return StreamingResponse(agui_generator(), media_type=encoder.get_content_type())
         else:
-            # Simple {prompt} format — direct agent call with SSE streaming
+            # Simple {prompt} format — non-streaming fallback + __get_report__ endpoint.
+            # Frontend uses AG-UI mode (threadId branch) for real-time streaming.
+            # This path is used only for: (1) __get_report__ HTML retrieval, (2) CLI/curl testing.
             prompt = input_data.get("prompt", "")
 
             # Special: return stored report HTML directly
@@ -358,13 +360,6 @@ def create_app():
     @app.get("/ping")
     async def ping():
         return JSONResponse({"status": "Healthy"})
-
-    @app.get("/report")
-    async def get_report():
-        from tools.report import _latest_report_html
-        if not _latest_report_html:
-            return JSONResponse({"error": "No report available"}, status_code=404)
-        return Response(content=_latest_report_html, media_type="text/html")
 
     return app
 
