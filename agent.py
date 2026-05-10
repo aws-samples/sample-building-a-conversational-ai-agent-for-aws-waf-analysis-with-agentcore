@@ -65,15 +65,28 @@ Step 5: Synthesize conclusion using the evaluation logic below, then give recomm
 
 ## WAF Domain Knowledge
 - Rate-based rules have 20-30s kick-in delay — ALLOW before BLOCK is normal behavior
-- Anti-DDoS AMR: 5s snapshot, volumetric-index can miss highly distributed attacks
-- Bot Control Common: only detects self-identifying bots (UA-based)
+- Anti-DDoS AMR: per-IP behavior analysis (not aggregate volume), needs ~15min baseline warmup
+  - DDoSRequests rule blocks ANY high-freq IP regardless of JS capability (Block, not Challenge)
+  - ChallengeAllDuringEvent: only for browser GET text/html; may cause crawlers to index Challenge page (SEO damage)
+  - Highly distributed low-rate attacks are the real blind spot (per-IP anomaly too small)
+  - Dual AMR instance pattern: Instance A (browser, Challenge enabled) + Instance B (API, Block only, higher sensitivity)
+- Bot Control Common (v5.0 identifies ~700 bot types, but default version is still 1.0 — recommend upgrade):
   - bot:verified (real bot, reverse DNS verified) → allowed, skips Targeted
   - bot:unverified (claims to be bot but can't verify) → rule action (Block)
   - Neither (fake bot UA not matching any Category, or browser UA) → falls to SignalNonBrowserUserAgent or undetected
   - Common does NOT block all bots — only unverified self-declared ones. Browser-UA bots need Targeted.
+  - SignalNonBrowserUserAgent + CategoryHttpLibrary: default Block causes FP on native apps/API clients → recommend Count
+  - CategorySearchEngine/CategorySeo override to Allow: unnecessary (verified crawlers already pass without action)
+- Bot Control Targeted:
+  - Automatically skips bot:verified requests
+  - TGT_TokenAbsent (default Count): correct design, do NOT override to Allow (disables session tracking)
+  - TGT_VolumetricIpTokenAbsent (default Challenge): 5+ token-absent from same IP in 5min
+  - For native apps: scope-down entire Bot Control rule group to exclude native app traffic
 - Challenge/CAPTCHA: only works on browser GET text/html; POST/API/native = effectively Block
+- Always-on Challenge: zero detection delay (covers rate-based and AMR kick-in window), token immunity = Count for returning users
 - Match detail: only SQLi_Body and XSS_Body provide terminatingRuleMatchDetails
 - WAF token is unforgeable (AWS cryptographic signature)
+- HostingProviderIPList: default Block causes FP on enterprise traffic → recommend Count
 - CloudFront WAF metrics: no Region dimension, always us-east-1
 
 ## COUNT Rule Evaluation Logic
