@@ -24,10 +24,20 @@ function ReportDownload({ html }) {
 }
 
 function MessageContent({ content }) {
-  const isHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(content);
-  if (isHtml) return <ReportDownload html={content} />;
-  const html = marked.parse(content, { breaks: true });
-  return <div className="content markdown" dangerouslySetInnerHTML={{ __html: html }} />;
+  // Check if content contains an HTML report (may be mixed with text)
+  const htmlMatch = content.match(/(<!DOCTYPE html[\s\S]*<\/html>)/i) || content.match(/(<html[\s\S]*<\/html>)/i);
+  if (htmlMatch) {
+    const textBefore = content.slice(0, htmlMatch.index).trim();
+    const html = htmlMatch[1];
+    return (
+      <>
+        {textBefore && <div className="content markdown" dangerouslySetInnerHTML={{ __html: marked.parse(textBefore, { breaks: true }) }} />}
+        <ReportDownload html={html} />
+      </>
+    );
+  }
+  const rendered = marked.parse(content, { breaks: true });
+  return <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />;
 }
 
 export default function App() {
