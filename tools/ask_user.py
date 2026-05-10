@@ -1,5 +1,6 @@
 """Ask user tool — structured question to gather information."""
 
+import sys
 from strands import tool
 
 
@@ -21,12 +22,17 @@ def ask_user(question: str, context: str = "") -> str:
     Returns:
         The user's response.
     """
-    # In AgentCore AG-UI mode, this becomes a structured event that pauses the agent.
-    # In local CLI mode, we use input() for testing.
-    if context:
-        print(f"\n💬 Agent question ({context}):")
+    if sys.stdin and sys.stdin.isatty():
+        # CLI mode: interactive input
+        if context:
+            print(f"\n💬 Agent question ({context}):")
+        else:
+            print("\n💬 Agent question:")
+        print(f"   {question}")
+        return input("\n   Your answer: ")
     else:
-        print("\n💬 Agent question:")
-    print(f"   {question}")
-    response = input("\n   Your answer: ")
-    return response
+        # AG-UI mode: return question as tool result.
+        # The agent will present this to the user via TEXT_MESSAGE_CONTENT.
+        # Frontend detects ask_user in TOOL_CALL events and prompts user.
+        # User's reply comes as the next /invocations request (same session).
+        return f"[WAITING_FOR_USER] {question}"

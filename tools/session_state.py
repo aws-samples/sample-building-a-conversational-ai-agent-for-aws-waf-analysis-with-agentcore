@@ -12,6 +12,7 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["waf_region"] = region
     _state["metrics_region"] = "us-east-1" if scope == "CLOUDFRONT" else region
     _state["log_destination"] = log_destination
+    _state["findings"] = []
 
 
 def set_capabilities(capabilities: dict):

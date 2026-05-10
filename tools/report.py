@@ -853,7 +853,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
 
 
-def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False, max_wait=30):
+def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False, max_wait=120):
     """Run a CWL query with polling. Returns count (int), full row (dict), or all rows (list)."""
     import time
     resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=1000)

@@ -243,24 +243,25 @@ def run_logs_query(
     end_time = int(time.time())
     start_time = end_time - (hours_ago * 3600)
 
-    resp = client.start_query(
-        logGroupName=log_group,
-        startTime=start_time,
-        endTime=end_time,
-        queryString=query,
-        limit=params["limit"],
-    )
-    query_id = resp["queryId"]
+    with _cwl_semaphore:
+        resp = client.start_query(
+            logGroupName=log_group,
+            startTime=start_time,
+            endTime=end_time,
+            queryString=query,
+            limit=params["limit"],
+        )
+        query_id = resp["queryId"]
 
-    # Poll
-    elapsed = 0
-    while elapsed < MAX_POLL:
-        time.sleep(POLL_INTERVAL)
-        elapsed += POLL_INTERVAL
-        result = client.get_query_results(queryId=query_id)
-        status = result["status"]
-        if status in ("Complete", "Failed", "Cancelled", "Timeout"):
-            break
+        # Poll
+        elapsed = 0
+        while elapsed < MAX_POLL:
+            time.sleep(POLL_INTERVAL)
+            elapsed += POLL_INTERVAL
+            result = client.get_query_results(queryId=query_id)
+            status = result["status"]
+            if status in ("Complete", "Failed", "Cancelled", "Timeout"):
+                break
 
     if status != "Complete":
         return f"Query {status}. QueryId: {query_id}"
