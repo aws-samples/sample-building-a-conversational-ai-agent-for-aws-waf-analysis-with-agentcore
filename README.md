@@ -137,4 +137,4 @@ python agent.py "Any traffic bypassing shield-sample-webacl?"
 
 ## License
 
-Apache-2.0
+MIT
