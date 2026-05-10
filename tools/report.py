@@ -1060,6 +1060,6 @@ def set_report_summary(path: str, summary: str) -> str:
         html = html.replace("{{EXECUTIVE_SUMMARY}}", summary_html)
         with open(path, "w") as f:
             f.write(html)
-        return f"Report finalized: {path}"
+        return html
     except FileNotFoundError:
         return f"Error: Report file not found at {path}"
