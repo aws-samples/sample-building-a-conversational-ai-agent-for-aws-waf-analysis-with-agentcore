@@ -1,12 +1,30 @@
 import { config } from './config';
 
 /**
- * Invoke AgentCore with AG-UI streaming.
- * Yields parsed SSE events: { type, messageId, delta, toolCallId, toolCallName, content, ... }
+ * Invoke AgentCore with AG-UI protocol format.
+ * Yields parsed SSE events.
  */
 export async function* invokeAgent(prompt, token, sessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const url = `${config.agentEndpoint}/runtimes/${arn}/invocations`;
+
+  // AG-UI RunAgentInput format
+  const body = {
+    threadId: sessionId,
+    runId: crypto.randomUUID(),
+    state: {},
+    messages: [
+      {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: prompt,
+        createdAt: new Date().toISOString(),
+      },
+    ],
+    tools: [],
+    context: [],
+    forwardedProps: {},
+  };
 
   const response = await fetch(url, {
     method: 'POST',
@@ -16,7 +34,7 @@ export async function* invokeAgent(prompt, token, sessionId) {
       'Authorization': `Bearer ${token}`,
       'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
     },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -35,7 +53,7 @@ export async function* invokeAgent(prompt, token, sessionId) {
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n');
-    buffer = lines.pop(); // keep incomplete line
+    buffer = lines.pop();
 
     for (const line of lines) {
       if (line.startsWith('data: ')) {
