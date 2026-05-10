@@ -244,8 +244,8 @@ def _find_existing_table(s3_path: str, region: str) -> str | None:
             resp = glue.get_tables(DatabaseName=db_name, MaxResults=100)
             for tbl in resp.get("TableList", []):
                 location = tbl.get("StorageDescriptor", {}).get("Location", "").rstrip("/")
-                # Match if either contains the other (handles trailing slash differences)
-                if s3_normalized == location or s3_normalized.startswith(location) or location.startswith(s3_normalized):
+                # Match if table location covers our path (table is parent or exact match)
+                if s3_normalized == location or location.startswith(s3_normalized):
                     # Verify it has WAF log columns
                     cols = [c["Name"] for c in tbl["StorageDescriptor"].get("Columns", [])]
                     if "action" in cols and "httprequest" in cols:
@@ -577,10 +577,11 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')
             GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
 
-        "token_reuse_ips": f"""SELECT {_UA_EXPR} as cookie, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total
+        "token_reuse_ips": f"""SELECT httprequest.clientip as clientip, count(*) as total,
+            count(DISTINCT {_UA_EXPR}) as unique_uas, count(DISTINCT ja4fingerprint) as unique_ja4s
             FROM {table} WHERE {tf}
             AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%token:accepted%')
-            GROUP BY {_UA_EXPR} ORDER BY ip_count DESC LIMIT {limit}""",
+            GROUP BY httprequest.clientip ORDER BY total DESC LIMIT {limit}""",
     }
 
     if query_type not in templates:
@@ -665,8 +666,12 @@ def run_athena_query(
     return "\n".join(lines)
 
 
-# Cleanup hook
+# Cleanup hook — SIGTERM handler required for atexit to fire in AgentCore (15s grace period)
 import atexit
+import signal
+import sys
+
+signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
 
 def _cleanup():
     if _athena_state.get("temp_created") and _athena_state.get("table"):
