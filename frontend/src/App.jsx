@@ -14,6 +14,7 @@ export default function App() {
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
+  const pendingResolve = useRef(null);
 
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -34,8 +35,11 @@ export default function App() {
     const prompt = input.trim();
     setInput('');
     setMessages(prev => [...prev, { role: 'user', content: prompt }]);
-    setLoading(true);
+    await runAgent(prompt);
+  }
 
+  async function runAgent(prompt) {
+    setLoading(true);
     try {
       const token = await getToken();
       let assistantMsg = { role: 'assistant', content: '', tools: [] };
@@ -48,19 +52,57 @@ export default function App() {
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'TOOL_CALL_START':
-            assistantMsg = { ...assistantMsg, tools: [...assistantMsg.tools, { name: event.toolCallName, status: 'running' }] };
+            assistantMsg = { ...assistantMsg, tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'TOOL_CALL_END':
             assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map((t, i) => i === assistantMsg.tools.length - 1 ? { ...t, status: 'done' } : t) };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
+          case 'TOOL_CALL_ARGS':
+            // Check if ask_user tool — prompt user for input
+            if (event.toolCallName === 'ask_user' || assistantMsg.tools.at(-1)?.name === 'ask_user') {
+              try {
+                const args = JSON.parse(event.delta || event.args || '{}');
+                if (args.question) {
+                  setLoading(false);
+                  const answer = await waitForUserInput(args.question);
+                  setMessages(prev => [...prev, { role: 'user', content: answer }]);
+                  // Continue agent with user's answer
+                  await runAgent(answer);
+                  return;
+                }
+              } catch { /* not parseable yet, continue */ }
+            }
+            break;
         }
       }
     } catch (err) {
+      if (err.message?.includes('Not signed in') || err.message?.includes('401')) {
+        signOut();
+        setUser(null);
+        return;
+      }
       setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
     setLoading(false);
+  }
+
+  function waitForUserInput(question) {
+    return new Promise((resolve) => {
+      setMessages(prev => [...prev, { role: 'assistant', content: question, isQuestion: true }]);
+      setLoading(false);
+      pendingResolve.current = resolve;
+    });
+  }
+
+  function handleUserReply(e) {
+    e.preventDefault();
+    if (!input.trim() || !pendingResolve.current) return;
+    const answer = input.trim();
+    setInput('');
+    pendingResolve.current(answer);
+    pendingResolve.current = null;
   }
 
   if (!user) {
@@ -97,7 +139,7 @@ export default function App() {
         ))}
         <div ref={messagesEnd} />
       </div>
-      <form className="input-bar" onSubmit={handleSend}>
+      <form className="input-bar" onSubmit={pendingResolve.current ? handleUserReply : handleSend}>
         <input value={input} onChange={e => setInput(e.target.value)} placeholder="Ask about your WAF..." disabled={loading} autoFocus />
         <button type="submit" disabled={loading}>{loading ? '...' : '→'}</button>
       </form>
