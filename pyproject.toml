@@ -9,13 +9,15 @@ requires-python = ">=3.11"
 dependencies = [
     "strands-agents>=1.15.0",
     "strands-agents-tools>=0.1.0",
-    "bedrock-agentcore>=1.0.6",
+    "ag-ui-strands>=0.1.1",
+    "ag-ui-protocol>=0.1.13",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
     "boto3>=1.40.0",
     "markdown>=3.6",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "bedrock-agentcore-starter-toolkit>=0.2.0",
     "pytest>=9.0",
 ]

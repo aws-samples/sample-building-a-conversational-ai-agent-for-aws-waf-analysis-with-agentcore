@@ -1,13 +1,6 @@
-"""WAF Analysis Agent — main entry point."""
+"""WAF Analysis Agent — FastAPI + AG-UI + Strands."""
 
-try:
-    from bedrock_agentcore.runtime import BedrockAgentCoreApp
-    app = BedrockAgentCoreApp()
-    _has_agentcore = True
-except ImportError:
-    app = None
-    _has_agentcore = False
-
+import os
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -20,8 +13,6 @@ from tools.waf_review import review_waf_rules
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
-# Configurable via environment variables
-import os
 MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "us-west-2")
 
@@ -258,6 +249,9 @@ This builds a structured investigation report. Call it once per distinct finding
 """
 
 _agent = None
+_TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
+          lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules,
+          record_finding, ask_user]
 
 
 def get_agent() -> Agent:
@@ -269,29 +263,54 @@ def get_agent() -> Agent:
             max_tokens=4096,
             temperature=0.0,
         )
-        _agent = Agent(
-            model=model,
-            system_prompt=SYSTEM_PROMPT,
-            tools=[list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip, lookup_ja4, generate_weekly_report, set_report_summary, review_waf_rules, record_finding, ask_user],
-        )
+        _agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=_TOOLS)
     return _agent
 
 
 def invoke(payload: dict) -> dict:
-    """Handle AgentCore invocation."""
-    prompt = payload.get("prompt", "")
-    result = get_agent()(prompt)
+    """Synchronous invocation (local testing)."""
+    result = get_agent()(payload.get("prompt", ""))
     return {"answer": str(result)}
 
 
-if _has_agentcore and app is not None:
-    app.entrypoint(invoke)
+# --- AG-UI Server (FastAPI + ag-ui-strands) ---
+
+def create_app():
+    """Create FastAPI app with AG-UI streaming endpoint."""
+    from fastapi import FastAPI, Request
+    from fastapi.responses import StreamingResponse, JSONResponse
+    from ag_ui_strands import StrandsAgent
+    from ag_ui.core import RunAgentInput
+    from ag_ui.encoder import EventEncoder
+
+    agui_agent = StrandsAgent(agent=get_agent(), name="waf-agent",
+                              description="AWS WAF Analysis Agent")
+    app = FastAPI(title="waf-agent")
+
+    @app.post("/invocations")
+    async def invocations(request: Request):
+        input_data = await request.json()
+        encoder = EventEncoder(accept=request.headers.get("accept"))
+
+        async def event_generator():
+            async for event in agui_agent.run(RunAgentInput(**input_data)):
+                yield encoder.encode(event)
+
+        return StreamingResponse(event_generator(), media_type=encoder.get_content_type())
+
+    @app.get("/ping")
+    async def ping():
+        return JSONResponse({"status": "Healthy"})
+
+    return app
+
 
 if __name__ == "__main__":
-    if _has_agentcore and app is not None:
-        app.run()
+    import sys
+    if "--serve" in sys.argv:
+        import uvicorn
+        uvicorn.run(create_app(), host="0.0.0.0", port=8080)
     else:
-        # Local testing
-        import sys
-        prompt = sys.argv[1] if len(sys.argv) > 1 else "列出所有 WebACL"
-        print(invoke({"prompt": prompt}))
+        # Local CLI testing
+        prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "列出所有 WebACL"
+        print(invoke({"prompt": prompt})["answer"])
