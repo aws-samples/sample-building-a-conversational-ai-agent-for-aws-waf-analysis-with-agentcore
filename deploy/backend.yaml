@@ -12,6 +12,18 @@ Parameters:
     Default: waf_agent
     Description: AgentCore runtime name (letters, digits, underscores only, max 48 chars)
     AllowedPattern: ^[a-zA-Z][a-zA-Z0-9_]{0,47}$
+  ModelId:
+    Type: String
+    Default: ""
+    Description: "Bedrock model ID (e.g., anthropic.claude-sonnet-4-6, us.anthropic.claude-sonnet-4-6). Leave empty for region-based default."
+  ModelRegion:
+    Type: String
+    Default: ""
+    Description: "Region for Bedrock model invocation. Leave empty to use stack region."
+
+Conditions:
+  HasModelId: !Not [!Equals [!Ref ModelId, ""]]
+  HasModelRegion: !Not [!Equals [!Ref ModelRegion, ""]]
 
 Resources:
   # --- Cognito ---
@@ -131,6 +143,11 @@ Resources:
       AgentRuntimeArtifact:
         ContainerConfiguration:
           ContainerUri: !Ref AgentContainerUri
+      EnvironmentVariables: !If
+        - HasModelId
+        - WAF_AGENT_MODEL_ID: !Ref ModelId
+          WAF_AGENT_MODEL_REGION: !If [HasModelRegion, !Ref ModelRegion, !Ref "AWS::Region"]
+        - !Ref "AWS::NoValue"
       RoleArn: !GetAtt AgentExecutionRole.Arn
       NetworkConfiguration:
         NetworkMode: PUBLIC

@@ -81,6 +81,24 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
+### Custom Model (optional)
+
+By default, the agent uses a region-appropriate Claude Sonnet 4.6 model. To use a different Bedrock model:
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    ModelId=us.anthropic.claude-sonnet-4-6 \
+    ModelRegion=us-east-1 \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+Any model available on Amazon Bedrock works (Claude, GPT, Llama, etc.). The model must support tool use.
+
 Wait for `CREATE_COMPLETE`, then get outputs:
 
 ```bash
