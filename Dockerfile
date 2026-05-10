@@ -13,4 +13,4 @@ RUN uv run python -c "from tools.ja4 import _update_index; _update_index()" || t
 
 EXPOSE 8080
 
-CMD ["uv", "run", "python", "agent.py", "--serve"]
+CMD ["uv", "run", "--no-project", "python", "agent.py", "--serve"]
