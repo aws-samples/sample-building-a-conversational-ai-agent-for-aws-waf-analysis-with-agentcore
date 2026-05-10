@@ -216,3 +216,10 @@ aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 # Delete ECR repository
 aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
+
+## Usage Notes
+
+- **Session timeout**: Container idles out after 15 minutes. Download weekly reports promptly after generation.
+- **Cold start**: First query after idle takes ~30 seconds (container startup).
+- **Report generation**: Takes 1–2 minutes (multiple CloudWatch API calls).
+- **Report download**: Auto-triggers when report is ready. Click "Download Again" if needed.

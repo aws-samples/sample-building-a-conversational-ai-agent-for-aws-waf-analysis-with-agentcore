@@ -78,10 +78,10 @@ graph TB
 
 </details>
 
-- **Frontend**: React SPA on CloudFront + S3, protected by WAF
+- **Frontend**: React SPA on CloudFront + S3, protected by WAF. GitHub dark theme, collapsible guide sidebar (zh/en), auto-download reports.
 - **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed)
 - **Agent**: FastAPI + ag-ui-strands, streams tool calls and analysis in real-time
-- **Session**: Isolated microVM per user, max 8h lifetime
+- **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime
 
 See [Deployment Guide](docs/deployment.md) for the full architecture and design decisions.
 
