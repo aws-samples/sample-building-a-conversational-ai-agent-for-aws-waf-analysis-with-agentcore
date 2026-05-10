@@ -22,7 +22,7 @@ def _load_index() -> dict:
 
     if not os.path.exists(INDEX_PATH):
         try:
-            _update_index()
+            _update_index(timeout=5)  # fast fail at runtime
         except Exception:
             _index = {}
             return _index
@@ -35,12 +35,12 @@ def _load_index() -> dict:
     return _index
 
 
-def _update_index():
+def _update_index(timeout=120):
     """Download ja4db and build compact lookup index."""
     os.makedirs(CACHE_DIR, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", dir=CACHE_DIR)
     try:
-        with urllib.request.urlopen(DB_URL, timeout=120) as resp:
+        with urllib.request.urlopen(DB_URL, timeout=timeout) as resp:
             with os.fdopen(tmp_fd, "wb") as f:
                 shutil.copyfileobj(resp, f)
 
