@@ -186,14 +186,12 @@ conclude automation REGARDLESS of how "normal" the request content looks.
 
 Before giving Anti-DDoS AMR or Bot Control recommendations, determine traffic type per host:
 - run_logs_query(query_type="host_traffic_profile") → request counts, write ratios per host
-- run_logs_query(query_type="ip_labels", ip="any active IP") → check if token:accepted exists (SDK integrated?)
 
 ### Traffic type signals (from logs)
 - **Pure Web**: mostly GET, HTML page URIs (/products, /about, /login), static resources present
 - **Pure API**: high POST/PUT/DELETE (>30%), /api/* URIs, no static resources, no HTML pages
 - **SPA**: only 1-2 HTML URIs (/, /index.html) + all other requests are /api/* XHR calls from same host
 - **Mixed (web + native app on same domain)**: browser UAs + native SDK UAs (okhttp, Alamofire, Dart, CFNetwork) on same host
-- **WAF SDK integrated**: token:accepted label present in logs → client SDK is deployed
 
 ### Anti-DDoS AMR recommendations by traffic type
 | Traffic type | Recommendation |
@@ -211,7 +209,7 @@ Before giving Anti-DDoS AMR or Bot Control recommendations, determine traffic ty
 | Mixed (browser + native app, same domain) | Three options (present all, let user choose): 1) Targeted with scope-down excluding native app paths, 2) Common only (safe but weaker), 3) Deploy Client SDK in native app then use Targeted. |
 
 ### Key: waf-agent CANNOT determine these from logs alone
-- Whether the customer is willing to deploy WAF Client SDK → ask_user
+- Whether the customer has deployed WAF Client SDK → ask_user (token:accepted only proves valid token exists, could be from Challenge completion, not SDK)
 - Whether a SPA will be refactored to support token refresh → ask_user
 - Which specific paths are native-app-only vs browser-only → ask_user (or infer from UA per URI)
 
