@@ -202,10 +202,10 @@ Outputs:
     Value: !Ref UserPoolClient
   AgentRuntimeArn:
     Value: !GetAtt AgentRuntime.AgentRuntimeArn
-    Description: AgentCore Runtime ARN — use in frontend config
+    Description: AgentCore Runtime ARN — frontend must URL-encode this in the invoke path
   AgentRuntimeEndpoint:
-    Value: !Sub https://bedrock-agentcore.${AWS::Region}.amazonaws.com/runtimes/${AgentRuntime.AgentRuntimeArn}/invocations
-    Description: Invoke endpoint for the frontend (POST with Bearer JWT)
+    Value: !Sub https://bedrock-agentcore.${AWS::Region}.amazonaws.com
+    Description: Base endpoint. Full invoke URL = {endpoint}/runtimes/{encodeURIComponent(arn)}/invocations
   ExecutionRoleArn:
     Value: !GetAtt AgentExecutionRole.Arn
   FrontendBucket:
