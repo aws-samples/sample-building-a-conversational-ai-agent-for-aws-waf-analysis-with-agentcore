@@ -44,3 +44,9 @@ header button { padding: 0.4rem 0.8rem; border-radius: 4px; border: none; backgr
 .input-bar input:focus { outline: none; border-color: #0f3460; }
 .input-bar button { padding: 0.75rem 1.25rem; border-radius: 8px; border: none; background: #0f3460; color: #fff; font-size: 1.1rem; cursor: pointer; }
 .input-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Report actions */
+.report-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.report-actions span { font-size: 0.95rem; }
+.btn { padding: 0.4rem 0.8rem; border-radius: 6px; border: none; background: #0f3460; color: #fff; font-size: 0.85rem; cursor: pointer; text-decoration: none; }
+.btn:hover { background: #1a5276; }

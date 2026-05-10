@@ -6,6 +6,26 @@ function generateSessionId() {
   return crypto.randomUUID() + crypto.randomUUID().slice(0, 2); // 38 chars > 33
 }
 
+function MessageContent({ content }) {
+  // Detect HTML report (starts with <!DOCTYPE or <html)
+  const isHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(content);
+  if (isHtml) {
+    const blob = new Blob([content], { type: 'text/html' });
+    const blobUrl = URL.createObjectURL(blob);
+    return (
+      <div className="content html-report">
+        <div className="report-actions">
+          <span>📊 Weekly Report generated</span>
+          <a href={blobUrl} download="waf-weekly-report.html" className="btn">⬇ Download HTML</a>
+          <button onClick={(e) => { e.target.closest('.html-report').querySelector('iframe').style.display = 'block'; }} className="btn">👁 Preview</button>
+        </div>
+        <iframe srcDoc={content} sandbox="allow-scripts" style={{display:'none', width:'100%', height:'600px', border:'1px solid #333', borderRadius:'8px', marginTop:'0.5rem'}} />
+      </div>
+    );
+  }
+  return <div className="content">{content}</div>;
+}
+
 export default function App() {
   const [user, setUser] = useState(false); // always start with login screen
   const [messages, setMessages] = useState([]);
@@ -186,7 +206,7 @@ export default function App() {
                 ))}
               </div>
             )}
-            {msg.content && <div className="content">{msg.content}</div>}
+            {msg.content && <MessageContent content={msg.content} />}
           </div>
         ))}
         <div ref={messagesEnd} />
