@@ -12,7 +12,7 @@ WAF Agent deploys as two CloudFormation stacks:
 ## Prerequisites
 
 1. **AWS CLI v2** configured with admin-level permissions
-2. **finch** or **Docker** with buildx (for ARM64 images)
+2. **Docker** with buildx support (for ARM64 images). [finch](https://github.com/runfinch/finch) also works as a drop-in replacement.
 3. **Node.js 18+** (for building the frontend)
 4. An AWS account with WAF logging enabled (CloudWatch Logs or S3)
 
@@ -190,8 +190,7 @@ After code changes:
 
 ```bash
 # Rebuild and push
-finch build --platform linux/arm64 -t $ECR_URI:latest .
-finch push $ECR_URI:latest
+docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 
 # Update the stack (triggers runtime update)
 aws cloudformation deploy \
@@ -207,7 +206,7 @@ aws cloudformation deploy \
 ## Cleanup
 
 ```bash
-# Delete frontend
+# Delete frontend (CloudFront deletion takes 5-10 minutes)
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
 # Delete backend

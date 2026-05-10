@@ -14,18 +14,29 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 ### Prerequisites
 
 - AWS account with WAF configured and logging enabled
-- [finch](https://github.com/runfinch/finch) or Docker (for building ARM64 images)
+- [Docker](https://docs.docker.com/get-docker/) with buildx (for ARM64 images)
 - AWS CLI v2 configured with appropriate permissions
 
 ### Deploy (3 steps)
 
 ```bash
 # 1. Build and push ARM64 image to ECR
-# 2. Deploy backend stack (Cognito + AgentCore)
-# 3. Deploy frontend stack (CloudFront + WAF)
+aws ecr create-repository --repository-name waf-agent --region $REGION
+ECR_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/waf-agent
+aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
+docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+
+# 2. Deploy backend (Cognito + AgentCore)
+aws cloudformation deploy --template-file deploy/backend.yaml --stack-name waf-agent \
+  --region $REGION --parameter-overrides AgentContainerUri=$ECR_URI:latest \
+  --capabilities CAPABILITY_NAMED_IAM
+
+# 3. Deploy frontend (CloudFront + WAF) — must be us-east-1
+aws cloudformation deploy --template-file deploy/frontend.yaml \
+  --stack-name waf-agent-frontend --region us-east-1
 ```
 
-See [Deployment Guide](docs/deployment.md) for detailed instructions, region selection, and troubleshooting.
+See [Deployment Guide](docs/deployment.md) for region selection, frontend config, and troubleshooting.
 
 ## Architecture
 
@@ -83,7 +94,7 @@ graph TB
 - **Agent**: FastAPI + ag-ui-strands, streams tool calls and analysis in real-time
 - **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime
 
-See [Deployment Guide](docs/deployment.md) for the full architecture and design decisions.
+See [Deployment Guide](docs/deployment.md) for full setup details.
 
 ## Supported Regions
 
@@ -121,12 +132,9 @@ python agent.py "shield-sample-webacl 有没有流量绕过了 WAF？"
 │   └── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
 ├── frontend/             # React SPA (Vite + AG-UI streaming client)
 ├── Dockerfile            # ARM64 container for AgentCore
-└── docs/                 # Detailed documentation
+└── docs/
+    └── deployment.md     # Full deployment guide + troubleshooting
 ```
-
-## Documentation
-
-- [Deployment Guide](docs/deployment.md) — step-by-step deployment with troubleshooting
 
 ## License
 
