@@ -328,7 +328,7 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
     # Phase 1: Diversity check (NAT detection)
-    diversity_query = f'filter httpRequest.clientIp = "{safe_ip}" | stats count_distinct(httpRequest.headers.0.value) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
+    diversity_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count_distinct(ua) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
     diversity = _execute_query_internal(client, log_group, start_time, end_time, diversity_query, 1)
 
     if diversity:
@@ -346,10 +346,11 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
         "cross_query": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc | limit 15',
         "request_rate": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as req_per_min by bin(1m) | stats avg(req_per_min) as avg_rpm, max(req_per_min) as peak_rpm, count(*) as active_minutes',
         "ja4": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit 5',
+        "uri_diversity": f'filter httpRequest.clientIp = "{safe_ip}" and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static',
     }
 
     results = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(_execute_query_internal, client, log_group, start_time, end_time, q, 25): name
             for name, q in queries.items()
@@ -397,5 +398,21 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
     lines.append("**JA4 fingerprints**:")
     for row in results.get("ja4", [])[:5]:
         lines.append(f"  {row.get('ja4Fingerprint', 'N/A')} : {row.get('cnt', '0')} requests")
+    lines.append("")
+
+    # URI diversity (crawler indicator)
+    uri_div = results.get("uri_diversity", [{}])
+    if uri_div and uri_div[0]:
+        u = uri_div[0]
+        unique = u.get("unique_uris", "0")
+        total_ns = u.get("total_non_static", "0")
+        lines.append(f"**URI diversity** (non-static): {unique} unique URIs out of {total_ns} requests")
+        try:
+            if int(unique) > 200:
+                lines.append("🚨 >200 unique URIs — very likely crawler/scraper")
+            elif int(unique) > 50:
+                lines.append("⚠️ >50 unique URIs — suspicious, may be crawler")
+        except (ValueError, TypeError):
+            pass
 
     return "\n".join(lines)
