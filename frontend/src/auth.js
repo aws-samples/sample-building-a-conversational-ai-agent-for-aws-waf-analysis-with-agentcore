@@ -19,7 +19,11 @@ export function getToken() {
     const user = getCurrentUser();
     if (!user) return reject(new Error('Not signed in'));
     user.getSession((err, session) => {
-      if (err) return reject(err);
+      if (err) {
+        // Session expired/invalid — clear local state so user gets login screen
+        user.signOut();
+        return reject(new Error('Session expired'));
+      }
       resolve(session.getAccessToken().getJwtToken());
     });
   });

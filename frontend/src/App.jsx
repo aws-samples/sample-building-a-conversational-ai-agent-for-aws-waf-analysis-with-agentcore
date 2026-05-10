@@ -111,8 +111,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      if (err.message?.includes('Not signed in') || err.status === 401) {
-        signOut();
+      if (err.status === 401 || err.message === 'Session expired') {
         setUser(null);
       } else {
         setMessages(prev => [...prev, { role: 'error', content: err.message }]);
