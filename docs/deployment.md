@@ -97,7 +97,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-Any model available on Amazon Bedrock works, but it must support tool use and have sufficient context window. Recommended: Claude Sonnet 4.6 (200K context) or Claude Opus (200K context).
+Any model available on Amazon Bedrock works, but it must support tool use and have sufficient context window. Recommended: Claude Sonnet 4.6 or Claude Opus (both 1M context).
 
 Wait for `CREATE_COMPLETE`, then get outputs:
 
