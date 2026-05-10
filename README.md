@@ -34,6 +34,11 @@ See [Deployment Guide](docs/deployment.md) for detailed instructions, region sel
 
 ## Architecture
 
+![Architecture](docs/architecture.png)
+
+<details>
+<summary>Mermaid (text version)</summary>
+
 ```mermaid
 graph TB
     subgraph User["User Browser"]
@@ -73,6 +78,8 @@ graph TB
     Tools --> CW
     Tools --> Athena
 ```
+
+</details>
 
 - **Frontend**: React SPA on CloudFront + S3, protected by WAF
 - **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed)
