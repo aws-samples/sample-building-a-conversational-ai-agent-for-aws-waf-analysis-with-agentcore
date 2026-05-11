@@ -134,7 +134,6 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
-  const pendingInterrupt = useRef(null);
   const pendingResolve = useRef(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
