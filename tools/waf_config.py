@@ -95,10 +95,13 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
         else:
             return f"No WebACLs found (scope={scope}, region={region})"
 
-    # Fuzzy match if exact match fails (user might reply with partial name)
+    # Fuzzy match if exact match fails (user might reply with partial name or extra text)
     match = next((a for a in acls if a["Name"] == webacl_name), None)
     if not match:
-        match = next((a for a in acls if webacl_name.lower() in a["Name"].lower()), None)
+        # Check both directions: user input contains ACL name, or ACL name contains user input
+        match = next((a for a in acls if a["Name"].lower() in webacl_name.lower()), None)
+        if not match:
+            match = next((a for a in acls if webacl_name.lower() in a["Name"].lower()), None)
         if match:
             webacl_name = match["Name"]
     if not match:
