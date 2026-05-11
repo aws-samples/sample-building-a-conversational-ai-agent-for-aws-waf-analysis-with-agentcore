@@ -271,7 +271,7 @@ def create_app():
         def run_agent():
             try:
                 agent.callback_handler = callback_handler
-                sm = getattr(agent, '_session_manager', None)
+                sm = getattr(agent, 'session_manager', None)
                 if sm and hasattr(sm, '__enter__'):
                     with sm:
                         result = agent(input_arg)
