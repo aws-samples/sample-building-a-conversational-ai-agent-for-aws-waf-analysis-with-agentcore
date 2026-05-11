@@ -271,7 +271,12 @@ def create_app():
         def run_agent():
             try:
                 agent.callback_handler = callback_handler
-                result = agent(input_arg)
+                sm = getattr(agent, '_session_manager', None)
+                if sm and hasattr(sm, '__enter__'):
+                    with sm:
+                        result = agent(input_arg)
+                else:
+                    result = agent(input_arg)
                 loop.call_soon_threadsafe(q.put_nowait, ("RESULT", result))
             except Exception as e:
                 loop.call_soon_threadsafe(q.put_nowait, ("ERROR", str(e)))
