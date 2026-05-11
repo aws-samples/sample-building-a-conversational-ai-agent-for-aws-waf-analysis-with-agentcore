@@ -232,10 +232,12 @@ export default function App() {
     setLoading(true);
     try {
       const token = await getToken();
+      const profile = await getUserProfile().catch(() => null);
+      const userEmail = profile?.email || '';
       let assistantMsg = { role: 'assistant', content: '', tools: [] };
       setMessages(prev => [...prev, assistantMsg]);
 
-      for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses)) {
+      for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses, userEmail)) {
         switch (event.type) {
           case 'TEXT_MESSAGE_CONTENT':
             assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };

@@ -150,22 +150,54 @@ class PreQueryGuard(HookProvider):
 
 
 _agent = None
+_model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules, record_finding, ask_user]
 
+MEMORY_ID = os.environ.get("MEMORY_ID", "")
 
-def get_agent() -> Agent:
-    global _agent
-    if _agent is None:
-        model = BedrockModel(
+
+def _get_model():
+    global _model
+    if _model is None:
+        _model = BedrockModel(
             model_id=MODEL_ID,
             region_name=MODEL_REGION,
             max_tokens=4096,
             temperature=0.0,
         )
-        _agent = Agent(model=model, system_prompt=_build_system_prompt(), tools=_TOOLS,
-                       hooks=[PreQueryGuard()])
+    return _model
+
+
+def get_agent(session_id: str = "", user_id: str = "") -> Agent:
+    """Get or create Agent. If MEMORY_ID is set and session/user provided, creates with memory."""
+    global _agent
+    if _agent is not None:
+        return _agent
+
+    session_manager = None
+    if MEMORY_ID and session_id and user_id:
+        try:
+            from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
+            from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
+
+            config = AgentCoreMemoryConfig(
+                memory_id=MEMORY_ID,
+                session_id=session_id,
+                actor_id=user_id,
+                retrieval_config={
+                    f"/facts/{user_id}/": RetrievalConfig(top_k=5, relevance_score=0.5),
+                    f"/preferences/{user_id}/": RetrievalConfig(top_k=3, relevance_score=0.7),
+                    f"/summaries/{user_id}/": RetrievalConfig(top_k=3, relevance_score=0.5),
+                }
+            )
+            session_manager = AgentCoreMemorySessionManager(config, region_name=MODEL_REGION)
+        except Exception:
+            pass  # Memory not available — proceed without it
+
+    _agent = Agent(model=_get_model(), system_prompt=_build_system_prompt(), tools=_TOOLS,
+                   hooks=[PreQueryGuard()], session_manager=session_manager)
     return _agent
 
 
@@ -301,7 +333,11 @@ def create_app():
     @app.post("/invocations")
     async def invocations(request: Request):
         input_data = await request.json()
-        agent = get_agent()
+
+        # Extract session_id and user_id for memory
+        session_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-session-id", "")
+        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        agent = get_agent(session_id=session_id, user_id=user_id)
 
         # --- Resume from interrupt ---
         interrupt_responses = input_data.get("interruptResponses")
