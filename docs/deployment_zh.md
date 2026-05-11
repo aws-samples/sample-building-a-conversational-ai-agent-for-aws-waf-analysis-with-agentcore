@@ -105,7 +105,7 @@ aws cloudformation deploy \
 
 AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 名称、环境信息和调查历史。
 
-**Memory 由 CloudFormation 模板自动创建**（默认行为）。无需额外步骤。
+**Memory 由 CloudFormation 模板自动创建**（默认行为）。无需额外步骤。短期记忆事件 30 天后过期（可在模板中通过 `EventExpiryDuration` 调整）。
 
 禁用 Memory（不推荐）：
 ```bash

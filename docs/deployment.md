@@ -105,7 +105,7 @@ Any model available on Amazon Bedrock works, but it must support tool use and ha
 
 AgentCore Memory gives the agent cross-session memory — it remembers your WebACL names, environment details, and investigation history.
 
-**Memory is created automatically** by the CloudFormation template (default behavior). No extra steps needed.
+**Memory is created automatically** by the CloudFormation template (default behavior). No extra steps needed. Short-term memory events expire after 30 days (configurable via `EventExpiryDuration` in the template).
 
 To disable memory (not recommended):
 ```bash
