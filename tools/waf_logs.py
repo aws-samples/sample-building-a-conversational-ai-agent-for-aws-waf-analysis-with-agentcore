@@ -460,9 +460,7 @@ def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
         # Fetch actual UAs to detect rotation pattern
         ua_list_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count(*) as cnt by ua | sort cnt desc | limit 20'
         ua_rows = _execute_query_internal(client, log_group, start_epoch, end_epoch, ua_list_query, 20)
-        if ua_rows and not _is_nat_traffic(ua_rows):
-            pass  # Suspicious — continue to Phase 2
-        else:
+        if not ua_rows or _is_nat_traffic(ua_rows):
             return f"## {ip} — NAT/Shared IP (skipped)\n\nMultiple UAs ({ua_count}) + multiple JA4s ({ja4_count}) = shared IP (NAT gateway).\nTotal requests: {total}\n\nNo further analysis needed."
 
     # Phase 2: Parallel queries (only if not NAT)
