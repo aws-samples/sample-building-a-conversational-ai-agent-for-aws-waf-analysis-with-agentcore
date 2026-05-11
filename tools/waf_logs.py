@@ -313,7 +313,97 @@ def run_logs_query(
         values = [row_dict.get(col, "") for col in columns]
         lines.append("| " + " | ".join(values) + " |")
 
+    # Append deterministic interpretation for specific query types
+    rows_data = [{f["field"]: f["value"] for f in row} for row in results[:MAX_RESULTS]]
+    interpretation = _interpret_results(query_type, rows_data)
+    if interpretation:
+        lines.append("\n" + interpretation)
+
     return "\n".join(lines)
+
+
+def _interpret_results(query_type: str, rows: list[dict]) -> str:
+    """Append deterministic interpretation to query results."""
+    if query_type == "ip_labels":
+        return _interpret_ip_labels(rows)
+    if query_type == "host_traffic_profile":
+        return _interpret_host_profile(rows)
+    return ""
+
+
+def _interpret_ip_labels(rows: list[dict]) -> str:
+    """Classify WAF labels into categories for the LLM."""
+    all_labels = " ".join(row.get("Labels", "") for row in rows)
+    findings = []
+
+    # Bot Control
+    if "bot:verified" in all_labels:
+        findings.append("✅ Bot Control: VERIFIED bot (legitimate, should be allowed)")
+    elif "bot:unverified" in all_labels:
+        findings.append("⚠️ Bot Control: UNVERIFIED bot (claims bot identity but fails verification)")
+    if "signal:non_browser_user_agent" in all_labels:
+        findings.append("⚠️ Signal: Non-browser User-Agent detected")
+    if "signal:automated_browser" in all_labels:
+        findings.append("🔴 Signal: Automated browser detected")
+
+    # Targeted Bot Control
+    tgt_signals = []
+    if "TGT_VolumetricSession" in all_labels:
+        tgt_signals.append("VolumetricSession (abnormal session behavior)")
+    if "TGT_SignalAutomatedBrowser" in all_labels:
+        tgt_signals.append("AutomatedBrowser")
+    if "TGT_TokenReuseIP" in all_labels:
+        tgt_signals.append("TokenReuseIP (token shared across IPs)")
+    if "TGT_TokenAbsent" in all_labels:
+        tgt_signals.append("TokenAbsent (no WAF token)")
+    if "TGT_VolumetricIpTokenAbsent" in all_labels:
+        tgt_signals.append("VolumetricIpTokenAbsent (5+ tokenless from same IP)")
+    if tgt_signals:
+        findings.append("🎯 Targeted Bot Control: " + ", ".join(tgt_signals))
+
+    # Anti-DDoS
+    if "event-detected" in all_labels:
+        findings.append("🔴 Anti-DDoS: Event detected (AMR triggered)")
+    if "high-suspicion" in all_labels:
+        findings.append("🔴 Anti-DDoS: HIGH suspicion (blocked by default)")
+    elif "medium-suspicion" in all_labels:
+        findings.append("⚠️ Anti-DDoS: MEDIUM suspicion")
+    elif "low-suspicion" in all_labels:
+        findings.append("ℹ️ Anti-DDoS: LOW suspicion")
+    if "ddos-request" in all_labels and "high-suspicion" not in all_labels:
+        findings.append("⚠️ Anti-DDoS: Flagged as DDoS request")
+
+    # No detection
+    if not findings:
+        findings.append("ℹ️ No managed rule labels detected — Bot Control/AMR did not flag this IP")
+
+    return "## Label Interpretation\n" + "\n".join(f"- {f}" for f in findings)
+
+
+def _interpret_host_profile(rows: list[dict]) -> str:
+    """Classify each host as Web/API/Mixed based on write ratio."""
+    findings = []
+    for row in rows:
+        host = row.get("host", "?")
+        total = int(row.get("total", "0") or "0")
+        writes = int(row.get("write_requests", "0") or "0")
+        if total == 0:
+            continue
+        ratio = writes / total
+        if ratio > 0.3:
+            traffic_type = "API/Backend"
+            note = "Challenge/CAPTCHA ineffective; use Block-based rules only"
+        elif ratio > 0.1:
+            traffic_type = "Mixed (Web + API)"
+            note = "needs scope-down to separate browser vs API traffic"
+        else:
+            traffic_type = "Web/Frontend"
+            note = "Challenge/Bot Control Targeted effective"
+        findings.append(f"- {host}: **{traffic_type}** (write ratio {ratio:.0%}) — {note}")
+
+    if not findings:
+        return ""
+    return "## Traffic Type Classification\n" + "\n".join(findings)
 
 
 def _is_nat_traffic(ua_rows: list[dict]) -> bool:
