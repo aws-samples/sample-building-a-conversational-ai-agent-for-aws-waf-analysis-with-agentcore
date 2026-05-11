@@ -105,45 +105,17 @@ aws cloudformation deploy \
 
 AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 名称、环境信息和调查历史。
 
-**步骤 1：创建 Memory 资源**（一次性）：
+**Memory 由 CloudFormation 模板自动创建**（默认行为）。无需额外步骤。
 
+禁用 Memory（不推荐）：
 ```bash
-# 安装 AgentCore CLI
-npm install -g @aws/agentcore
-
-# 创建包含所有策略的 Memory
-agentcore add memory --name waf_agent_memory --strategies SEMANTIC,SUMMARIZATION,USER_PREFERENCE
-agentcore deploy
+--parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=none
 ```
 
-或通过 boto3：
+使用已有的 Memory 资源（而非自动创建）：
 ```bash
-aws bedrock-agentcore-control create-memory \
-  --name waf_agent_memory \
-  --region $REGION \
-  --memory-strategies '[
-    {"semanticMemoryStrategy": {"name": "Facts", "namespaceTemplates": ["/facts/{actorId}/"]}},
-    {"summaryMemoryStrategy": {"name": "Summary", "namespaceTemplates": ["/summaries/{actorId}/"]}},
-    {"userPreferenceMemoryStrategy": {"name": "Prefs", "namespaceTemplates": ["/preferences/{actorId}/"]}}
-  ]'
+--parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=mem-xxxxxxxxxxxx
 ```
-
-记下输出中的 `id`（如 `mem-xxxxxxxxxxxx`）。
-
-**步骤 2：带 Memory ID 部署：**
-
-```bash
-aws cloudformation deploy \
-  --template-file deploy/backend.yaml \
-  --stack-name waf-agent \
-  --region $REGION \
-  --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
-    MemoryId=mem-xxxxxxxxxxxx \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-如果跳过此步骤（不传 `MemoryId` 参数），Agent 正常工作但不会跨会话记忆。
 
 等待 `CREATE_COMPLETE`，然后获取输出：
 

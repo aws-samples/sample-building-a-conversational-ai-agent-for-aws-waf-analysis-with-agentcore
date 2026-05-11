@@ -23,12 +23,15 @@ Parameters:
   MemoryId:
     Type: String
     Default: ""
-    Description: "AgentCore Memory resource ID. Leave empty to disable persistent memory."
+    Description: "AgentCore Memory resource ID. Leave empty to auto-create. Set to 'none' to disable memory entirely."
 
 Conditions:
   HasModelId: !Not [!Equals [!Ref ModelId, ""]]
   HasModelRegion: !Not [!Equals [!Ref ModelRegion, ""]]
-  HasMemory: !Not [!Equals [!Ref MemoryId, ""]]
+  CreateMemory: !Not [!Equals [!Ref MemoryId, "none"]]
+  UseExistingMemory: !And
+    - !Not [!Equals [!Ref MemoryId, ""]]
+    - !Not [!Equals [!Ref MemoryId, "none"]]
 
 Resources:
   # --- Cognito ---
@@ -154,6 +157,27 @@ Resources:
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
 
+  # --- AgentCore Memory (cross-session persistent memory) ---
+  AgentMemory:
+    Type: AWS::BedrockAgentCore::Memory
+    Condition: CreateMemory
+    Properties:
+      Name: !Sub "${AgentRuntimeName}_memory"
+      EventExpiryDuration: 30
+      MemoryStrategies:
+        - SemanticMemoryStrategy:
+            Name: Facts
+            NamespaceTemplates:
+              - "/facts/{actorId}/"
+        - SummaryMemoryStrategy:
+            Name: Summary
+            NamespaceTemplates:
+              - "/summaries/{actorId}/"
+        - UserPreferenceMemoryStrategy:
+            Name: Preferences
+            NamespaceTemplates:
+              - "/preferences/{actorId}/"
+
   # --- AgentCore Runtime ---
   AgentRuntime:
     Type: AWS::BedrockAgentCore::Runtime
@@ -167,10 +191,10 @@ Resources:
         - HasModelId
         - WAF_AGENT_MODEL_ID: !Ref ModelId
           WAF_AGENT_MODEL_REGION: !If [HasModelRegion, !Ref ModelRegion, !Ref "AWS::Region"]
-          MEMORY_ID: !If [HasMemory, !Ref MemoryId, !Ref "AWS::NoValue"]
+          MEMORY_ID: !If [CreateMemory, !If [UseExistingMemory, !Ref MemoryId, !GetAtt AgentMemory.MemoryId], !Ref "AWS::NoValue"]
         - !If
-          - HasMemory
-          - MEMORY_ID: !Ref MemoryId
+          - CreateMemory
+          - MEMORY_ID: !If [UseExistingMemory, !Ref MemoryId, !GetAtt AgentMemory.MemoryId]
           - !Ref "AWS::NoValue"
       RoleArn: !GetAtt AgentExecutionRole.Arn
       NetworkConfiguration:
