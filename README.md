@@ -52,7 +52,7 @@ See [Deployment Guide](docs/deployment.md) for region selection, frontend config
 ```mermaid
 graph TB
     subgraph User["User Browser"]
-        SPA["React SPA<br/>(AG-UI Client)"]
+        SPA["React SPA<br/>(SSE Streaming)"]
     end
 
     subgraph CF["us-east-1"]
@@ -67,7 +67,8 @@ graph TB
         subgraph Agent["Strands Agent"]
             FastAPI["FastAPI + SSE Streaming<br/>12 tools"]
         end
-        Bedrock["Bedrock<br/>Claude Sonnet 4.6"]
+        Bedrock["Bedrock<br/>Claude Sonnet 4"]
+        Memory["AgentCore Memory<br/>(cross-session)"]
     end
 
     subgraph AWS["Customer AWS Resources"]
@@ -83,6 +84,7 @@ graph TB
     SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
     AC --> FastAPI
     FastAPI --> Bedrock
+    FastAPI --> Memory
     FastAPI --> WAFv2
     FastAPI --> CW
     FastAPI --> Athena

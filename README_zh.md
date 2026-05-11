@@ -52,7 +52,7 @@ aws cloudformation deploy --template-file deploy/frontend.yaml \
 ```mermaid
 graph TB
     subgraph User["用户浏览器"]
-        SPA["React SPA<br/>(AG-UI Client)"]
+        SPA["React SPA<br/>(SSE Streaming)"]
     end
 
     subgraph CF["us-east-1"]
@@ -67,7 +67,8 @@ graph TB
         subgraph Agent["Strands Agent"]
             FastAPI["FastAPI + SSE Streaming<br/>12 个工具"]
         end
-        Bedrock["Bedrock<br/>Claude Sonnet 4.6"]
+        Bedrock["Bedrock<br/>Claude Sonnet 4"]
+        Memory["AgentCore Memory<br/>(跨会话记忆)"]
     end
 
     subgraph AWS["客户 AWS 资源"]
@@ -83,6 +84,7 @@ graph TB
     SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
     AC --> FastAPI
     FastAPI --> Bedrock
+    FastAPI --> Memory
     FastAPI --> WAFv2
     FastAPI --> CW
     FastAPI --> Athena

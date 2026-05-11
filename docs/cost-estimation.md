@@ -79,13 +79,31 @@ $5.00 per TB scanned. Only used when WAF logs go to S3 (not CloudWatch Logs).
 - DDL queries (CREATE/DROP TABLE): **free**
 - **Monthly (if used):** <$5
 
+### 6. AgentCore Memory (Optional)
+
+Only incurred if Memory is enabled (`MEMORY_ID` parameter set).
+
+| Dimension | Price |
+|---|---|
+| Short-term memory (CreateEvent) | $0.25 per 1,000 requests |
+| Long-term memory storage | $0.75 per 1,000 records/month |
+| Long-term memory retrieval | $0.50 per 1,000 requests |
+
+**Typical usage per session:** 5–15 CreateEvent calls (one per turn) + 1 RetrieveMemoryRecords call (on session start).
+
+| Usage level | Monthly events | Monthly cost |
+|---|---|---|
+| Light (150 sessions) | ~1,500 events + 150 retrievals | **<$1** |
+| Medium (1,500 sessions) | ~15,000 events + 1,500 retrievals | **~$5** |
+| Heavy (12,000 sessions) | ~120,000 events + 12,000 retrievals | **~$36** |
+
 ## Total Monthly Cost Estimates
 
-| Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Total |
-|---|---|---|---|---|---|
-| **Light** (1 engineer) | $8 | $0.15 | $15 | $1 | **~$25/month** |
-| **Medium** (5 engineers) | $8 | $1.50 | $225 | $15 | **~$250/month** |
-| **Heavy** (20 engineers) | $8 | $12 | $1,800 | $50 | **~$1,870/month** |
+| Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Memory | Total |
+|---|---|---|---|---|---|---|
+| **Light** (1 engineer) | $8 | $0.15 | $15 | $1 | $1 | **~$25/month** |
+| **Medium** (5 engineers) | $8 | $1.50 | $225 | $15 | $5 | **~$255/month** |
+| **Heavy** (20 engineers) | $8 | $12 | $1,800 | $50 | $36 | **~$1,900/month** |
 
 ## Key Takeaways
 
