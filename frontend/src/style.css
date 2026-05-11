@@ -79,8 +79,8 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .sidebar-close { position: absolute; top: 0.75rem; right: 0.75rem; background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
 .sidebar-close:hover { color: var(--fg); }
 .sidebar-top { display: flex; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.5rem; }
-.sidebar-lang-btn { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; color: var(--fg); cursor: pointer; font-size: 0.85rem; font-weight: 500; }
-.sidebar-lang-btn:hover { background: var(--accent); color: #fff; }
+.sidebar-lang-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; color: var(--fg); cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+.sidebar-lang-btn:hover { border-color: var(--accent); color: var(--accent); }
 .sidebar-open { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; color: var(--fg); cursor: pointer; font-size: 1rem; margin-right: 0.75rem; }
 
 /* User menu */
