@@ -114,6 +114,9 @@ def get_waf_metrics(
         for ts, val in zip(timestamps[-MAX_RESULTS:], values[-MAX_RESULTS:]):
             lines.append(f"  {ts.strftime('%m-%d %H:%M')}  {val:,.0f}")
 
+    lines.append("\n## Hints")
+    lines.append("- Look for spikes/anomalies above. Ask user to confirm the time window before deep-diving into logs.")
+
     return "\n".join(lines)
 
 
@@ -142,5 +145,9 @@ def _search_metrics(client, expression: str, start_time, end_time) -> str:
 
     if len(results) > MAX_RESULTS:
         lines.append(f"\n  ... and {len(results) - MAX_RESULTS} more (truncated)")
+
+    lines.append("\n## Hints")
+    lines.append("- Identify the peak day/hour from above, then ask user to confirm before querying logs")
+    lines.append("- If user hasn't specified a domain/host yet, ask which one is affected")
 
     return "\n".join(lines)
