@@ -98,10 +98,18 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
     # Fuzzy match if exact match fails (user might reply with partial name or extra text)
     match = next((a for a in acls if a["Name"] == webacl_name), None)
     if not match:
-        # Check both directions: user input contains ACL name, or ACL name contains user input
-        match = next((a for a in acls if a["Name"].lower() in webacl_name.lower()), None)
+        # Direction 1: ACL name appears in user reply (user added extra text like ", 5月9号")
+        candidates = [a for a in acls if a["Name"].lower() in webacl_name.lower()]
+        if len(candidates) == 1:
+            match = candidates[0]
+        elif len(candidates) > 1:
+            match = max(candidates, key=lambda a: len(a["Name"]))  # longest match wins
+        # Direction 2: user reply appears in ACL name (user gave partial name like "shield")
         if not match:
-            match = next((a for a in acls if webacl_name.lower() in a["Name"].lower()), None)
+            candidates = [a for a in acls if webacl_name.strip().lower() in a["Name"].lower()]
+            if len(candidates) == 1:
+                match = candidates[0]
+            # Multiple partial matches → don't guess, will fall through to interrupt below
         if match:
             webacl_name = match["Name"]
     if not match:
@@ -126,7 +134,20 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
                 if match:
                     webacl_name = match["Name"]
         if not match:
-            return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"
+            # Ambiguous or not found — re-interrupt with available options
+            names = [a["Name"] for a in acls]
+            if names:
+                webacl_name = tool_context.interrupt("select_webacl", reason={
+                    "question": f"Could not match '{webacl_name}'. Please choose: {', '.join(names)}",
+                    "options": names,
+                })
+                match = next((a for a in acls if a["Name"] == webacl_name), None)
+                if not match:
+                    match = next((a for a in acls if a["Name"].lower() in webacl_name.lower()), None)
+                    if match:
+                        webacl_name = match["Name"]
+            if not match:
+                return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"
 
     # Get full config
     resp = client.get_web_acl(Name=webacl_name, Scope=scope, Id=match["Id"])
