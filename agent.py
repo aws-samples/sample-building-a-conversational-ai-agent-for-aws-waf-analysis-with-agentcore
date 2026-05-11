@@ -310,25 +310,59 @@ def create_app():
     @app.post("/invocations")
     async def invocations(request: Request):
         input_data = await request.json()
+        agent = get_agent()
 
-        # Detect payload format: AG-UI (has threadId) vs simple (has prompt)
+        # --- Resume from interrupt ---
+        interrupt_responses = input_data.get("interruptResponses")
+        if interrupt_responses:
+            resume_input = [
+                {"interruptResponse": {"interruptId": ir["interruptId"], "response": ir["response"]}}
+                for ir in interrupt_responses
+            ]
+
+            async def resume_generator():
+                import asyncio
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, lambda: agent(resume_input))
+                run_id = str(_uuid.uuid4())
+                yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': input_data.get('threadId', 'thread-1'), 'runId': run_id})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
+                # Check for chained interrupt
+                if hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
+                    pending = [{"id": i.id, "name": i.name, "reason": i.reason}
+                               for i in result.interrupts if i.response is None]
+                    if pending:
+                        yield f"data: {_json.dumps({'type': 'CUSTOM', 'name': 'interrupt', 'value': {'interrupts': pending}})}\n\n"
+                yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': input_data.get('threadId', 'thread-1'), 'runId': run_id})}\n\n"
+
+            return StreamingResponse(resume_generator(), media_type="text/event-stream")
+
+        # --- AG-UI protocol (has threadId) ---
         if "threadId" in input_data:
-            # Full AG-UI protocol
             from ag_ui_strands import StrandsAgent
             from ag_ui.core import RunAgentInput
             from ag_ui.encoder import EventEncoder
-            agui_agent = StrandsAgent(agent=get_agent(), name="waf-agent",
+            agui_agent = StrandsAgent(agent=agent, name="waf-agent",
                                       description="AWS WAF Analysis Agent")
             encoder = EventEncoder(accept=request.headers.get("accept"))
 
             async def agui_generator():
                 async for event in agui_agent.run(RunAgentInput(**input_data)):
                     yield encoder.encode(event)
+                # After stream ends, check for pending interrupts
+                if hasattr(agent, '_interrupt_state') and agent._interrupt_state and agent._interrupt_state.activated:
+                    pending = [{"id": i.id, "name": i.name, "reason": i.reason}
+                               for i in agent._interrupt_state.interrupts.values()
+                               if i.response is None]
+                    if pending:
+                        evt = {"type": "CUSTOM", "name": "interrupt", "value": {"interrupts": pending}}
+                        yield f"data: {_json.dumps(evt)}\n\n"
 
             return StreamingResponse(agui_generator(), media_type=encoder.get_content_type())
         else:
             # Simple {prompt} format — non-streaming fallback + __get_report__ endpoint.
-            # Frontend uses AG-UI mode (threadId branch) for real-time streaming.
             # This path is used only for: (1) __get_report__ HTML retrieval, (2) CLI/curl testing.
             prompt = input_data.get("prompt", "")
 
@@ -347,13 +381,18 @@ def create_app():
             async def simple_generator():
                 import asyncio
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: str(get_agent()(prompt)))
-                # Emit as simple SSE events
+                result = await loop.run_in_executor(None, lambda: agent(prompt))
                 run_id = str(_uuid.uuid4())
                 yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': 'thread-1', 'runId': run_id})}\n\n"
                 yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': result})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
                 yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
+                # Check for interrupt
+                if hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
+                    pending = [{"id": i.id, "name": i.name, "reason": i.reason}
+                               for i in result.interrupts if i.response is None]
+                    if pending:
+                        yield f"data: {_json.dumps({'type': 'CUSTOM', 'name': 'interrupt', 'value': {'interrupts': pending}})}\n\n"
                 yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': 'thread-1', 'runId': run_id})}\n\n"
 
             return StreamingResponse(simple_generator(), media_type="text/event-stream")

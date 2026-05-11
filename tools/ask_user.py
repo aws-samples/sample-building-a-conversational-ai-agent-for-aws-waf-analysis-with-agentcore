@@ -1,17 +1,18 @@
-"""Ask user tool — structured question to gather information."""
+"""Ask user tool — Strands interrupt-based HITL."""
 
 import sys
 from strands import tool
+from strands.types.tools import ToolContext
 
 
-@tool
-def ask_user(question: str, context: str = "") -> str:
+@tool(context=True)
+def ask_user(tool_context: ToolContext, question: str, context: str = "") -> str:
     """Ask the user a clarifying question and wait for their response.
 
     Use this when you need specific information to proceed with the investigation:
     - Time range (when did the issue start/end?)
     - Affected service (which domain/endpoint?)
-    - Symptom description (what behavior are they seeing?)
+    - Whether to continue investigating more IPs/time ranges
 
     Do NOT ask more than 2 questions at a time. Prefer to auto-discover via APIs first.
 
@@ -25,14 +26,9 @@ def ask_user(question: str, context: str = "") -> str:
     if sys.stdin and sys.stdin.isatty():
         # CLI mode: interactive input
         if context:
-            print(f"\n💬 Agent question ({context}):")
-        else:
-            print("\n💬 Agent question:")
+            print(f"\n💬 ({context})")
         print(f"   {question}")
-        return input("\n   Your answer: ")
-    else:
-        # AG-UI mode: return question as tool result.
-        # The agent will present this to the user via TEXT_MESSAGE_CONTENT.
-        # Frontend detects ask_user in TOOL_CALL events and prompts user.
-        # User's reply comes as the next /invocations request (same session).
-        return f"[WAITING_FOR_USER] {question}"
+        return input("\n> ")
+    # AG-UI mode: interrupt agent loop, wait for user response
+    response = tool_context.interrupt("ask_user", reason={"question": question, "context": context})
+    return response

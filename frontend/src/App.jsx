@@ -134,6 +134,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
+  const pendingInterrupt = useRef(null);
   const pendingResolve = useRef(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -189,28 +190,22 @@ export default function App() {
     await runAgent(prompt);
   }
 
-  async function runAgent(prompt) {
+  async function runAgent(prompt, interruptResponses = null) {
     setLoading(true);
     try {
       const token = await getToken();
       let assistantMsg = { role: 'assistant', content: '', tools: [] };
       setMessages(prev => [...prev, assistantMsg]);
 
-      for await (const event of invokeAgent(prompt, token, sessionId.current)) {
+      for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses)) {
         switch (event.type) {
           case 'TEXT_MESSAGE_CONTENT':
             assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'TOOL_CALL_START':
-            assistantMsg = { ...assistantMsg, _argsBuffer: '', tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
+            assistantMsg = { ...assistantMsg, tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            break;
-          case 'TOOL_CALL_ARGS':
-            if (assistantMsg.tools.at(-1)?.name === 'ask_user') {
-              assistantMsg = { ...assistantMsg, _argsBuffer: (assistantMsg._argsBuffer || '') + (event.delta || '') };
-              setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            }
             break;
           case 'TOOL_CALL_END':
           case 'TOOL_CALL_RESULT':
@@ -219,17 +214,16 @@ export default function App() {
               assistantMsg = { ...assistantMsg, hasReport: true };
             }
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            if (assistantMsg.tools.at(-1)?.name === 'ask_user' && assistantMsg._argsBuffer) {
-              try {
-                const args = JSON.parse(assistantMsg._argsBuffer);
-                if (args.question) {
-                  setLoading(false);
-                  const answer = await waitForUserInput(args.question);
-                  setMessages(prev => [...prev, { role: 'user', content: answer }]);
-                  await runAgent(answer);
-                  return;
-                }
-              } catch { /* malformed args */ }
+            break;
+          case 'CUSTOM':
+            if (event.name === 'interrupt' && event.value?.interrupts?.length) {
+              const interrupt = event.value.interrupts[0];
+              const question = interrupt.reason?.question || interrupt.reason || 'Agent needs your input';
+              setLoading(false);
+              const answer = await waitForUserInput(question);
+              setMessages(prev => [...prev, { role: 'user', content: answer }]);
+              await runAgent(null, [{ interruptId: interrupt.id, response: answer }]);
+              return;
             }
             break;
         }

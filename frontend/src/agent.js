@@ -3,28 +3,39 @@ import { config } from './config';
 /**
  * Invoke AgentCore with AG-UI protocol format.
  * Yields parsed SSE events.
+ *
+ * @param {string|null} prompt - User message (null for resume)
+ * @param {string} token - Cognito JWT
+ * @param {string} sessionId - Session ID (≥33 chars)
+ * @param {Array|null} interruptResponses - Resume payload [{interruptId, response}]
  */
-export async function* invokeAgent(prompt, token, sessionId) {
+export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const url = `${config.agentEndpoint}/runtimes/${arn}/invocations`;
 
-  // AG-UI RunAgentInput format
-  const body = {
-    threadId: sessionId,
-    runId: crypto.randomUUID(),
-    state: {},
-    messages: [
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: prompt,
-        createdAt: new Date().toISOString(),
-      },
-    ],
-    tools: [],
-    context: [],
-    forwardedProps: {},
-  };
+  let body;
+  if (interruptResponses) {
+    // Resume from interrupt
+    body = { threadId: sessionId, interruptResponses };
+  } else {
+    // Normal AG-UI RunAgentInput
+    body = {
+      threadId: sessionId,
+      runId: crypto.randomUUID(),
+      state: {},
+      messages: [
+        {
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: prompt,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+      tools: [],
+      context: [],
+      forwardedProps: {},
+    };
+  }
 
   const response = await fetch(url, {
     method: 'POST',
