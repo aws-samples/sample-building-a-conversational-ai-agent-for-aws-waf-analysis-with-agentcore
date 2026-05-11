@@ -118,11 +118,14 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
         if match:
             webacl_name = match["Name"]
     if not match:
+        # Try numeric index (user might reply "5" or "5, 5月9号下午")
         try:
-            idx = int(webacl_name.strip().rstrip('.')) - 1
-            if 0 <= idx < len(acls):
-                match = acls[idx]
-                webacl_name = match["Name"]
+            num_match = re.match(r'^\s*(\d+)', webacl_name)
+            if num_match:
+                idx = int(num_match.group(1)) - 1
+                if 0 <= idx < len(acls):
+                    match = acls[idx]
+                    webacl_name = match["Name"]
         except (ValueError, IndexError):
             pass
     if not match:
