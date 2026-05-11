@@ -51,7 +51,7 @@ function ReportDownload({ sessionId }) {
       const blob = new Blob([content], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = 'waf-weekly-report.html'; a.click();
+      a.href = url; a.download = 'waf-roi-report.html'; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { setError(e.message); }
   }
@@ -291,14 +291,14 @@ export default function App() {
     zh: {
       title: '使用指南',
       quickStart: '⚡ 试试这样问',
-      items: ['"生成周报"', '"分析这个IP: 1.2.3.4"', '"检测绕过攻击"', '"检测爬虫"', '"你能做什么？"'],
+      items: ['"生成价值报告"', '"分析这个IP: 1.2.3.4"', '"检测绕过攻击"', '"检测爬虫"', '"你能做什么？"'],
       notes: '⚠️ 注意事项',
-      noteItems: ['会话空闲 15 分钟后超时，请及时下载报告', '首次查询可能需要 ~30 秒（冷启动）', '周报生成约需 1–2 分钟'],
+      noteItems: ['会话空闲 15 分钟后超时，请及时下载报告', '首次查询可能需要 ~30 秒（冷启动）', '报告生成约需 1–2 分钟'],
     },
     en: {
       title: 'Guide',
       quickStart: '⚡ Try asking',
-      items: ['"Generate weekly report"', '"Analyze IP: 1.2.3.4"', '"Detect bypass attacks"', '"Detect crawlers"', '"What can you do?"'],
+      items: ['"Generate ROI report"', '"Analyze IP: 1.2.3.4"', '"Detect bypass attacks"', '"Detect crawlers"', '"What can you do?"'],
       notes: '⚠️ Notes',
       noteItems: ['Session times out after 15 min idle — download reports promptly', 'First query may take ~30s (cold start)', 'Report generation takes 1–2 min'],
     },

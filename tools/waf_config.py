@@ -32,8 +32,7 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     if len(acls) == 1:
         lines.append(f"\n→ Only one WebACL. Call get_waf_config(webacl_name=\"{acls[0]['Name']}\") to load its configuration.")
     else:
-        lines.append("\n---\nHints:")
-        lines.append("Consider asking the user:")
+        lines.append("\n---\nCall ask_user() tool to ask the user:")
         lines.append("- Which WebACL? (give the numbered list above)")
         lines.append("- Time range? (e.g., 'May 9 afternoon', 'last 6 hours')")
         lines.append("- Specific domain/host affected?")
@@ -131,8 +130,8 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     else:
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
 
-    # Contextual hints — what to ask user before proceeding
-    lines.append("\n---\nHints:")
+    # Contextual hints — call ask_user to collect missing info
+    lines.append("\n---\nCall ask_user() tool to ask (if not already known):")
     lines.append("- Specific time range? (e.g., 'yesterday 2-4pm', not just a date)")
     lines.append("- Which domain/host is affected? (if multiple hosts behind this WebACL)")
     lines.append("- What's the concern? (crawler/bypass, DDoS, false positive, rule evaluation)")

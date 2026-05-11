@@ -1,4 +1,4 @@
-"""Weekly Report generation tool."""
+"""WAF ROI Report generation tool."""
 
 import json
 import re
@@ -56,7 +56,7 @@ REPORT_TEMPLATE = """\
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>WAF Weekly Report — {webacl_name}</title>
+<title>WAF ROI Report — {webacl_name}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
@@ -193,7 +193,7 @@ document.documentElement.classList.add('{default_theme}');
 
 @tool
 def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: str = "dark") -> str:
-    """Generate a WAF weekly report as HTML with charts showing protection value (ROI).
+    """Generate a WAF ROI report as HTML with charts showing protection value (ROI).
 
     Queries CloudWatch Metrics for the past 7 days and produces an HTML report
     focused on demonstrating WAF value: threats mitigated, challenge effectiveness,
@@ -796,7 +796,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         daily_data_last_week_json=json.dumps(traffic_5min_last_week),
     )
 
-    output_path = f"waf-weekly-report-{webacl_name}-{end.strftime('%Y%m%d')}.html"
+    output_path = f"waf-roi-report-{webacl_name}-{end.strftime('%Y%m%d')}.html"
     with open(output_path, "w") as f:
         f.write(html)
 

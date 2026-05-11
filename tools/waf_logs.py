@@ -342,11 +342,11 @@ def _interpret_results(query_type: str, rows: list[dict]) -> str:
 def _get_hint(query_type: str, rows: list[dict]) -> str:
     """Return follow-up hints based on what was just queried."""
     hints = {
-        "top_allowed_crawlers": "---\nNext:\n- Use analyze_ip on the top suspicious IPs above\n- Ask user: is there a specific URI path being targeted?",
-        "top_allowed_repeaters": "---\nNext:\n- Use analyze_ip on the top suspicious IPs above\n- Ask user: is this a known API endpoint? Could be legitimate polling.",
-        "top_blocked_ips": "---\nNext:\n- If user wants details on a specific IP, use analyze_ip\n- Ask user: are any of these IPs expected (partners, monitoring)?",
-        "host_traffic_profile": "---\nNext:\n- Ask user: is the site SPA (single-page app)? Is WAF Client SDK integrated?\n- For API hosts: Challenge/CAPTCHA won't work, recommend Block-based rules only",
-        "count_rule_top_ips": "---\nNext:\n- Cross-validate top IPs with ip_cross_query\n- Ask user: is this rule protecting a file upload or rich-text endpoint? (likely FP if yes)",
+        "top_allowed_crawlers": "---\nNext:\n- Use analyze_ip on the top suspicious IPs above\n- Call ask_user() to ask: is there a specific URI path being targeted?",
+        "top_allowed_repeaters": "---\nNext:\n- Use analyze_ip on the top suspicious IPs above\n- Call ask_user() to ask: is this a known API endpoint? Could be legitimate polling.",
+        "top_blocked_ips": "---\nNext:\n- If user wants details on a specific IP, use analyze_ip\n- Call ask_user() to ask: are any of these IPs expected (partners, monitoring)?",
+        "host_traffic_profile": "---\nNext:\n- Call ask_user() to ask: is the site SPA? Is WAF Client SDK integrated?\n- For API hosts: Challenge/CAPTCHA won't work, recommend Block-based rules only",
+        "count_rule_top_ips": "---\nNext:\n- Cross-validate top IPs with ip_cross_query\n- Call ask_user() to ask: is this rule protecting a file upload or rich-text endpoint? (likely FP if yes)",
     }
     return hints.get(query_type, "")
 

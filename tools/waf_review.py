@@ -109,9 +109,9 @@ def review_waf_rules(webacl_name: str, scope: str = "CLOUDFRONT", region: str = 
         lines.append(f"**Recommendation**: {f['recommendation']}")
         lines.append("")
 
-    lines.append("---\nHints:")
-    lines.append("- Ask user: which findings are most urgent to address?")
-    lines.append("- Ask user: are there native apps or APIs sharing this WebACL? (affects Challenge recommendations)")
+    lines.append("---\nCall ask_user() tool to ask:")
+    lines.append("- Which findings are most urgent to address?")
+    lines.append("- Are there native apps or APIs sharing this WebACL? (affects Challenge recommendations)")
     lines.append("- For COUNT→Block decisions: offer to run count_rule_top_ips to validate traffic before switching")
 
     return "\n".join(lines)
