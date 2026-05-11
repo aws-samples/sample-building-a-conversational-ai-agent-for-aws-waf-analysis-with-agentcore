@@ -1,5 +1,7 @@
 # WAF Agent User Guide
 
+[中文版](user-guide_zh.md)
+
 WAF Agent is an AI assistant that helps security engineers investigate WAF incidents, detect bypasses, and generate ROI reports. It works best when you give it **specific, concrete questions**.
 
 ## Core Principle: Be Specific

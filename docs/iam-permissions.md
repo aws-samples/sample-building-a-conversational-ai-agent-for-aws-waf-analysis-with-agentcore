@@ -1,5 +1,7 @@
 # IAM Permissions Reference
 
+[中文版](iam-permissions_zh.md)
+
 This document lists every IAM permission WAF Agent requires, what it's used for, and whether it can modify your production environment.
 
 ## Summary

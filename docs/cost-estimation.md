@@ -1,5 +1,7 @@
 # Cost Estimation
 
+[中文版](cost-estimation_zh.md)
+
 Estimated monthly costs for WAF Agent deployment. All prices in USD.
 
 ## Cost Components
