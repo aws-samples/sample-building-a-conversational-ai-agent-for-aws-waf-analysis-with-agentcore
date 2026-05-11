@@ -178,7 +178,8 @@ def invoke(payload: dict) -> dict:
 # --- AG-UI Server (FastAPI + ag-ui-strands) ---
 
 def create_app():
-    """Create FastAPI app with AG-UI streaming endpoint."""
+    """Create FastAPI app with real-time AG-UI streaming endpoint."""
+    import asyncio
     import json as _json
     import uuid as _uuid
     from fastapi import FastAPI, Request
@@ -186,50 +187,131 @@ def create_app():
 
     app = FastAPI(title="waf-agent")
 
+    def _make_sse(event: dict) -> str:
+        return f"data: {_json.dumps(event)}\n\n"
+
+    async def _stream_agent(agent, input_arg, thread_id: str):
+        """Run agent with real-time streaming via callback_handler + asyncio.Queue.
+
+        Emits AG-UI events: RUN_STARTED, TOOL_CALL_START/END, TEXT_MESSAGE_*, CUSTOM (interrupt), RUN_FINISHED.
+        Works for both initial prompt (str) and resume (list of interruptResponse dicts).
+        """
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue = asyncio.Queue()
+        seen_tools: set = set()
+        text_started = False
+        run_id = str(_uuid.uuid4())
+
+        def callback_handler(**kwargs):
+            nonlocal text_started
+            # Text token streaming
+            if "data" in kwargs:
+                if not text_started:
+                    text_started = True
+                    loop.call_soon_threadsafe(q.put_nowait, ("TEXT_START", None))
+                loop.call_soon_threadsafe(q.put_nowait, ("TEXT", str(kwargs["data"])))
+
+            # Tool call detection (deduplicate by toolUseId)
+            if "current_tool_use" in kwargs:
+                tool = kwargs["current_tool_use"]
+                tid = tool.get("toolUseId")
+                name = tool.get("name")
+                if tid and name and tid not in seen_tools:
+                    seen_tools.add(tid)
+                    # Close any open text stream before tool
+                    if text_started:
+                        text_started = False
+                        loop.call_soon_threadsafe(q.put_nowait, ("TEXT_END", None))
+                    loop.call_soon_threadsafe(q.put_nowait, ("TOOL_START", {"id": tid, "name": name}))
+
+            # Tool result (message with tool_result content)
+            if "message" in kwargs:
+                msg = kwargs["message"]
+                if msg.get("role") == "user":
+                    # tool results come as user messages with tool_result content
+                    for block in msg.get("content", []):
+                        if isinstance(block, dict) and "toolResult" in block:
+                            tid = block["toolResult"].get("toolUseId", "")
+                            if tid in seen_tools:
+                                loop.call_soon_threadsafe(q.put_nowait, ("TOOL_END", tid))
+
+        def run_agent():
+            try:
+                result = agent(input_arg, callback_handler=callback_handler)
+                loop.call_soon_threadsafe(q.put_nowait, ("RESULT", result))
+            except Exception as e:
+                loop.call_soon_threadsafe(q.put_nowait, ("ERROR", str(e)))
+            finally:
+                loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
+
+        # Start agent in thread
+        loop.run_in_executor(None, run_agent)
+
+        # Emit RUN_STARTED
+        yield _make_sse({"type": "RUN_STARTED", "threadId": thread_id, "runId": run_id})
+
+        # Consume events from queue
+        result = None
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            event_type, payload = item
+
+            if event_type == "TEXT_START":
+                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
+            elif event_type == "TEXT":
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": payload})
+            elif event_type == "TEXT_END":
+                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+            elif event_type == "TOOL_START":
+                yield _make_sse({"type": "TOOL_CALL_START", "toolCallId": payload["id"], "toolCallName": payload["name"]})
+            elif event_type == "TOOL_END":
+                yield _make_sse({"type": "TOOL_CALL_END", "toolCallId": payload})
+            elif event_type == "RESULT":
+                result = payload
+            elif event_type == "ERROR":
+                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": f"Error: {payload}"})
+                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+
+        # Close any open text stream
+        if text_started:
+            yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+
+        # Handle interrupt
+        if result and hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
+            pending = [{"id": i.id, "name": i.name, "reason": i.reason}
+                       for i in result.interrupts if i.response is None]
+            if pending:
+                yield _make_sse({"type": "CUSTOM", "name": "interrupt", "value": {"interrupts": pending}})
+        elif result and not text_started:
+            # Agent completed but no text was streamed (edge case) — emit full result
+            text = str(result)
+            if text.strip():
+                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": text})
+                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+
+        yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
+
     @app.post("/invocations")
     async def invocations(request: Request):
         input_data = await request.json()
         agent = get_agent()
 
-        # --- Resume from interrupt (priority: checked first) ---
+        # --- Resume from interrupt ---
         interrupt_responses = input_data.get("interruptResponses")
         if interrupt_responses:
             resume_input = [
                 {"interruptResponse": {"interruptId": ir["interruptId"], "response": ir["response"]}}
                 for ir in interrupt_responses
             ]
+            thread_id = input_data.get("threadId", "thread-1")
+            return StreamingResponse(_stream_agent(agent, resume_input, thread_id), media_type="text/event-stream")
 
-            async def resume_generator():
-                import asyncio
-                run_id = str(_uuid.uuid4())
-                thread_id = input_data.get("threadId", "thread-1")
-                yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': thread_id, 'runId': run_id})}\n\n"
-
-                # Resume agent with interruptResponse blocks
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, lambda: agent(resume_input))
-
-                # Check for chained interrupt — if interrupted, don't emit text (it's interrupt dict)
-                if hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
-                    pending = [{"id": i.id, "name": i.name, "reason": i.reason}
-                               for i in result.interrupts if i.response is None]
-                    if pending:
-                        yield f"data: {_json.dumps({'type': 'CUSTOM', 'name': 'interrupt', 'value': {'interrupts': pending}})}\n\n"
-                else:
-                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
-                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
-                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
-                yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': thread_id, 'runId': run_id})}\n\n"
-
-            return StreamingResponse(resume_generator(), media_type="text/event-stream")
-
-        # --- All other requests (AG-UI with threadId, or simple {prompt}) ---
-        # NOTE: We bypass ag-ui-strands StrandsAgent.run() because it silently
-        # swallows tool_context.interrupt() (known bug in ag-ui-strands v0.1.7).
-        # Instead, we call agent() directly and emit SSE events manually.
-
+        # --- Extract prompt ---
         if "threadId" in input_data:
-            # Extract prompt from AG-UI RunAgentInput messages
             messages = input_data.get("messages", [])
             prompt = ""
             for msg in reversed(messages):
@@ -241,37 +323,20 @@ def create_app():
             prompt = input_data.get("prompt", "")
             thread_id = "thread-1"
 
-        # Special: return stored report HTML directly
+        # --- Special: return stored report HTML ---
         if prompt == '__get_report__':
             from tools.report import _latest_report_html
             async def report_generator():
                 run_id = str(_uuid.uuid4())
-                yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': thread_id, 'runId': run_id})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': _latest_report_html or ''})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
-                yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': thread_id, 'runId': run_id})}\n\n"
+                yield _make_sse({"type": "RUN_STARTED", "threadId": thread_id, "runId": run_id})
+                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": _latest_report_html or ""})
+                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+                yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
             return StreamingResponse(report_generator(), media_type="text/event-stream")
 
-        async def agent_generator():
-            import asyncio
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: agent(prompt))
-            run_id = str(_uuid.uuid4())
-            yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': thread_id, 'runId': run_id})}\n\n"
-            # If interrupted, only emit CUSTOM event (no text — str(result) is interrupt dict)
-            if hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
-                pending = [{"id": i.id, "name": i.name, "reason": i.reason}
-                           for i in result.interrupts if i.response is None]
-                if pending:
-                    yield f"data: {_json.dumps({'type': 'CUSTOM', 'name': 'interrupt', 'value': {'interrupts': pending}})}\n\n"
-            else:
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
-            yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': thread_id, 'runId': run_id})}\n\n"
-
-        return StreamingResponse(agent_generator(), media_type="text/event-stream")
+        # --- Stream agent execution ---
+        return StreamingResponse(_stream_agent(agent, prompt, thread_id), media_type="text/event-stream")
 
     @app.get("/ping")
     async def ping():
