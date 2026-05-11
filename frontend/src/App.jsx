@@ -58,7 +58,7 @@ function ReportDownload({ sessionId }) {
 
   return (
     <div className="report-card">
-      <div className="report-header">📊 WAF Weekly Business Report</div>
+      <div className="report-header">📊 WAF ROI Report</div>
       {error && <div style={{color:'#f87171',fontSize:'0.85rem',marginBottom:'0.5rem'}}>⚠ {error}</div>}
       <div className="report-actions">
         <button onClick={fetchReport} className="btn btn-primary">⬇ {html ? 'Download Again' : 'Download HTML'}</button>
@@ -70,8 +70,42 @@ function ReportDownload({ sessionId }) {
 }
 
 function MessageContent({ content }) {
+  const [copied, setCopied] = useState(false);
   const rendered = marked.parse(content, { breaks: true });
-  return <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />;
+
+  function copyMarkdown() {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }
+
+  function exportMarkdown() {
+    const blob = new Blob([content], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'waf-agent-response.md'; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportHTML() {
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f5f5f5}code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5;padding:1rem;overflow-x:auto;border-radius:6px}</style></head><body>${rendered}</body></html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'waf-agent-response.html'; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="content-wrapper">
+      <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />
+      <div className="msg-actions">
+        <button className="msg-action-btn" onClick={copyMarkdown} title="Copy as Markdown">{copied ? '✓ Copied' : 'Copy'}</button>
+        <button className="msg-action-btn" onClick={exportMarkdown} title="Export as .md file">Export MD</button>
+        <button className="msg-action-btn" onClick={exportHTML} title="Export as styled HTML">Export HTML</button>
+      </div>
+    </div>
+  );
 }
 
 function UserMenu({ onSignOut }) {
@@ -311,7 +345,7 @@ export default function App() {
         <aside className="sidebar">
           <div className="sidebar-top">
             <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
-            <button className="sidebar-lang" onClick={() => setSidebarLang(sidebarLang === 'zh' ? 'en' : 'zh')}>{sidebarLang === 'zh' ? 'Eng' : '中文'}</button>
+            <button className="sidebar-lang-btn" onClick={() => setSidebarLang(sidebarLang === 'zh' ? 'en' : 'zh')}>{sidebarLang === 'zh' ? 'English' : '中文'}</button>
           </div>
           <h2>{guide.title}</h2>
           <section>

@@ -79,8 +79,8 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .sidebar-close { position: absolute; top: 0.75rem; right: 0.75rem; background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
 .sidebar-close:hover { color: var(--fg); }
 .sidebar-top { display: flex; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.5rem; }
-.sidebar-lang { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; color: var(--muted); cursor: pointer; font-size: 0.75rem; }
-.sidebar-lang:hover { color: var(--fg); }
+.sidebar-lang-btn { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; color: var(--fg); cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+.sidebar-lang-btn:hover { background: var(--accent); color: #fff; }
 .sidebar-open { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; color: var(--fg); cursor: pointer; font-size: 1rem; margin-right: 0.75rem; }
 
 /* User menu */
@@ -102,3 +102,10 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .pw-form-actions button[type="submit"] { background: var(--accent); color: #fff; }
 .pw-form-actions button[type="button"] { background: var(--bg); border: 1px solid var(--border); color: var(--fg); }
 .pw-msg { font-size: 0.8rem; margin-top: 0.3rem; }
+
+/* Message action buttons (copy, export) */
+.content-wrapper { position: relative; }
+.msg-actions { display: flex; gap: 0.4rem; margin-top: 0.5rem; padding-top: 0.4rem; border-top: 1px solid var(--border); }
+.msg-action-btn { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.6rem; color: var(--muted); cursor: pointer; font-size: 0.75rem; transition: all 0.15s; }
+.msg-action-btn:hover { color: var(--fg); border-color: var(--accent); background: var(--bg-secondary); }
+.msg-action-btn:active { transform: scale(0.95); }
