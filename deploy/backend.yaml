@@ -111,6 +111,11 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource: '*'
+              - Sid: Firehose
+                Effect: Allow
+                Action:
+                  - firehose:DescribeDeliveryStream
+                Resource: '*'
               - Sid: Glue
                 Effect: Allow
                 Action:
