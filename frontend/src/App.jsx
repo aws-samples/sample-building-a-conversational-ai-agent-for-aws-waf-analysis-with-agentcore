@@ -247,7 +247,7 @@ export default function App() {
             break;
           case 'TOOL_CALL_END':
           case 'TOOL_CALL_RESULT':
-            assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map((t, i) => i === assistantMsg.tools.length - 1 ? { ...t, status: 'done' } : t) };
+            assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map(t => t.id === event.toolCallId ? { ...t, status: 'done' } : t) };
             if (assistantMsg.tools.at(-1)?.name === 'set_report_summary') {
               assistantMsg = { ...assistantMsg, hasReport: true };
             }
