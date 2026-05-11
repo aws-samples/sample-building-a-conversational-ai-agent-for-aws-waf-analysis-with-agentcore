@@ -104,6 +104,7 @@ Scope-down exclusions must use URI/IP/header — NOT request body (WAF doesn't i
 | Sophisticated bot (browser automation) | Targeted Bot Control |
 | Token reuse | TGT_TokenReuseIP to BLOCK |
 | Allow rule on forgeable condition (UA/header) | Change to unforgeable (IP set / WAF token / ASN) |
+| Bot signals not visible to origin | Dynamic Label Interpolation (forward bot category/signals as headers) |
 
 ## Deep Investigation
 

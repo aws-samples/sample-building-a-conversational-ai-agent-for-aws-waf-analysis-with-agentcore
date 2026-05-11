@@ -350,6 +350,32 @@ def _check_bot_control(rules, findings):
                      "Lets unverified search engine bots bypass all subsequent rules.",
                      "Remove Allow override. Use crawler labeling rule for SEO protection.")
 
+        # Check if Bot Control signals are forwarded to origin via Dynamic Label Interpolation
+        has_interpolation = _has_label_interpolation(rules)
+        if not has_interpolation:
+            _add(findings, "Awareness",
+                 "Bot Control signals not forwarded to origin",
+                 f"{rule['Name']} (priority {rule['Priority']})",
+                 "Origin application has no visibility into Bot Control classification (bot category, signals, verified/unverified status). "
+                 "Dynamic Label Interpolation can forward these as request headers with a single rule — no per-label rules needed.",
+                 "Add a Count rule with LabelMatchStatement (Scope: NAMESPACE, Key: awswaf:managed:aws:bot-control:bot:category:) "
+                 "and CustomRequestHandling.InsertHeaders using ${awswaf:managed:aws:bot-control:bot:category:} syntax. "
+                 "See https://docs.aws.amazon.com/waf/latest/developerguide/waf-dynamic-label-interpolation.html")
+
+
+
+def _has_label_interpolation(rules) -> bool:
+    """Check if any rule uses ${...} interpolation in custom headers."""
+    for rule in rules:
+        action = rule.get("Action", {})
+        for act in action.values():
+            if not isinstance(act, dict):
+                continue
+            crh = act.get("CustomRequestHandling", {})
+            for header in crh.get("InsertHeaders", []):
+                if "${" in header.get("Value", ""):
+                    return True
+    return False
 
 def _check_rate_based(rules, findings):
     """Section 6: Rate-based rules."""

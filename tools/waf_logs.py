@@ -351,10 +351,49 @@ def _get_hint(query_type: str, rows: list[dict]) -> str:
     return hints.get(query_type, "")
 
 
+def _parse_interpolated_headers(inserted: str) -> list[str]:
+    """Parse bot classification from requestHeadersInserted (Dynamic Label Interpolation).
+
+    Returns list of findings, or empty list if no relevant headers found.
+    Isolated from main logic — errors here must not affect label-based analysis.
+    """
+    findings = []
+    # Look for common interpolation header patterns
+    if "bot-category" in inserted:
+        # Extract value after bot-category header name
+        import re
+        m = re.search(r'bot-category["\s:]+([^",}\]]+)', inserted)
+        if m and m.group(1).strip():
+            findings.append(f"🏷️ Bot Category (interpolated): {m.group(1).strip()}")
+    if "bot-name" in inserted:
+        import re
+        m = re.search(r'bot-name["\s:]+([^",}\]]+)', inserted)
+        if m and m.group(1).strip():
+            findings.append(f"🏷️ Bot Name (interpolated): {m.group(1).strip()}")
+    if "bot-signals" in inserted:
+        import re
+        m = re.search(r'bot-signals["\s:]+([^"}\]]+)', inserted)
+        if m and m.group(1).strip():
+            findings.append(f"🏷️ Bot Signals (interpolated): {m.group(1).strip()}")
+    return findings
+
+
 def _interpret_ip_labels(rows: list[dict]) -> str:
     """Classify WAF labels into categories for the LLM."""
     all_labels = " ".join(row.get("Labels", "") for row in rows)
     findings = []
+
+    # Enrichment: if requestHeadersInserted contains interpolated bot headers, use them directly
+    try:
+        inserted = " ".join(row.get("requestHeadersInserted", "") for row in rows)
+        if inserted.strip():
+            header_findings = _parse_interpolated_headers(inserted)
+            if header_findings:
+                findings.extend(header_findings)
+                findings.append("(source: requestHeadersInserted via Dynamic Label Interpolation)")
+                return "---\nLabel Interpretation:\n" + "\n".join(f"- {f}" for f in findings)
+    except Exception:
+        pass  # Fallback to labels-based analysis below
 
     # Bot Control
     if "bot:verified" in all_labels:
