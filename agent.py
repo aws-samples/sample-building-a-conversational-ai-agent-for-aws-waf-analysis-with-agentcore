@@ -237,7 +237,8 @@ def create_app():
 
         def run_agent():
             try:
-                result = agent(input_arg, callback_handler=callback_handler)
+                agent.callback_handler = callback_handler
+                result = agent(input_arg)
                 loop.call_soon_threadsafe(q.put_nowait, ("RESULT", result))
             except Exception as e:
                 loop.call_soon_threadsafe(q.put_nowait, ("ERROR", str(e)))
