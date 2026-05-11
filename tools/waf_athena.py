@@ -244,8 +244,8 @@ def _find_existing_table(s3_path: str, region: str) -> str | None:
             resp = glue.get_tables(DatabaseName=db_name, MaxResults=100)
             for tbl in resp.get("TableList", []):
                 location = tbl.get("StorageDescriptor", {}).get("Location", "").rstrip("/")
-                # Match if table location covers our path (table is parent or exact match)
-                if s3_normalized == location or location.startswith(s3_normalized):
+                # Match: our s3_path is within the table's location scope (table covers our path)
+                if s3_normalized == location or s3_normalized.startswith(location):
                     # Verify it has WAF log columns
                     cols = [c["Name"] for c in tbl["StorageDescriptor"].get("Columns", [])]
                     if "action" in cols and "httprequest" in cols:
@@ -263,10 +263,15 @@ def _ensure_database(region: str, workgroup: str):
 
 def _create_temp_table(s3_path: str, storage_template: str, partition_format: str,
                        partition_unit: str, region: str, workgroup: str) -> str:
-    """Create temporary Athena table. Returns full table name."""
-    _ensure_database(region, workgroup)
+    """Create a temporary table with timestamp-based name."""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    table_name = f"waf_logs_{ts}"
+    return _create_named_table(s3_path, storage_template, partition_format, partition_unit, region, workgroup, f"waf_logs_{ts}")
+
+
+def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
+                        partition_unit: str, region: str, workgroup: str, table_name: str) -> str:
+    """Create an Athena table with the given name."""
+    _ensure_database(region, workgroup)
     range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
 
     ddl = DDL_TEMPLATE.format(
@@ -444,7 +449,9 @@ def _ensure_table(region: str, table_mode: str = "") -> str:
 
     workgroup = "primary"
     if table_mode == "permanent":
-        full_table = _create_temp_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup)
+        # Use webacl_name for a recognizable, stable table name
+        safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
+        full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup, f"waf_logs_{safe_name}")
         _athena_state["table"] = full_table
         _athena_state["temp_created"] = False  # permanent — don't cleanup
     else:
