@@ -65,12 +65,23 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
                 "options": names,
             })
         elif scope == "REGIONAL":
-            # No WebACLs in this region — ask user which region
-            webacl_name = tool_context.interrupt("select_region", reason={
+            # No WebACLs in this region — ask user which region, then retry
+            new_region = tool_context.interrupt("select_region", reason={
                 "question": f"No WebACLs found in {region}. Which AWS region is your WebACL in? (e.g., us-west-2, ap-northeast-1)",
             })
-            # User might reply with a region — retry handled by agent on next call
-            return f"No WebACLs found in {region}. User suggested: {webacl_name}. Please retry with the correct region."
+            region = new_region.strip()
+            client = get_client("wafv2", region_name=region)
+            acls = client.list_web_acls(Scope=scope).get("WebACLs", [])
+            if not acls:
+                return f"No WebACLs found in {region} either."
+            if len(acls) == 1:
+                webacl_name = acls[0]["Name"]
+            else:
+                names = [a["Name"] for a in acls]
+                webacl_name = tool_context.interrupt("select_webacl", reason={
+                    "question": f"Found {len(acls)} WebACLs in {region}: {', '.join(names)}. Which one?",
+                    "options": names,
+                })
         else:
             return f"No WebACLs found (scope={scope}, region={region})"
 
@@ -78,12 +89,14 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
     match = next((a for a in acls if a["Name"] == webacl_name), None)
     if not match:
         match = next((a for a in acls if webacl_name.lower() in a["Name"].lower()), None)
+        if match:
+            webacl_name = match["Name"]
     if not match:
-        # Try numeric index (user might say "1" or "the first one")
         try:
             idx = int(webacl_name.strip().rstrip('.')) - 1
             if 0 <= idx < len(acls):
                 match = acls[idx]
+                webacl_name = match["Name"]
         except (ValueError, IndexError):
             pass
     if not match:
