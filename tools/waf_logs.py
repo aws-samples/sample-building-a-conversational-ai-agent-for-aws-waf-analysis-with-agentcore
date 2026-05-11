@@ -323,12 +323,32 @@ def run_logs_query(
 
 
 def _interpret_results(query_type: str, rows: list[dict]) -> str:
-    """Append deterministic interpretation to query results."""
+    """Append deterministic interpretation + contextual hints to query results."""
+    parts = []
+
     if query_type == "ip_labels":
-        return _interpret_ip_labels(rows)
-    if query_type == "host_traffic_profile":
-        return _interpret_host_profile(rows)
-    return ""
+        parts.append(_interpret_ip_labels(rows))
+    elif query_type == "host_traffic_profile":
+        parts.append(_interpret_host_profile(rows))
+
+    # Contextual hints based on query type
+    hint = _get_hint(query_type, rows)
+    if hint:
+        parts.append(hint)
+
+    return "\n".join(parts)
+
+
+def _get_hint(query_type: str, rows: list[dict]) -> str:
+    """Return follow-up hints based on what was just queried."""
+    hints = {
+        "top_allowed_crawlers": "## Next steps\n- Use analyze_ip on the top suspicious IPs above\n- Ask user: is there a specific URI path being targeted?",
+        "top_allowed_repeaters": "## Next steps\n- Use analyze_ip on the top suspicious IPs above\n- Ask user: is this a known API endpoint? Could be legitimate polling.",
+        "top_blocked_ips": "## Next steps\n- If user wants details on a specific IP, use analyze_ip\n- Ask user: are any of these IPs expected (partners, monitoring)?",
+        "host_traffic_profile": "## Next steps\n- Ask user: is the site SPA (single-page app)? Is WAF Client SDK integrated?\n- For API hosts: Challenge/CAPTCHA won't work, recommend Block-based rules only",
+        "count_rule_top_ips": "## Next steps\n- Cross-validate top IPs with ip_cross_query\n- Ask user: is this rule protecting a file upload or rich-text endpoint? (likely FP if yes)",
+    }
+    return hints.get(query_type, "")
 
 
 def _interpret_ip_labels(rows: list[dict]) -> str:

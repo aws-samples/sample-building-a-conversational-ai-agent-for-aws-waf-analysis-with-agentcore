@@ -31,6 +31,13 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
 
     if len(acls) == 1:
         lines.append(f"\n→ Only one WebACL. Call get_waf_config(webacl_name=\"{acls[0]['Name']}\") to load its configuration.")
+    else:
+        lines.append("\n## Hints for ask_user")
+        lines.append("Consider asking the user (in ONE question):")
+        lines.append("- Which WebACL? (give the numbered list above)")
+        lines.append("- Time range? (e.g., 'May 9 afternoon', 'last 6 hours')")
+        lines.append("- Specific domain/host affected?")
+        lines.append("- CloudFront or ALB/regional?")
 
     return "\n".join(lines)
 
@@ -123,6 +130,16 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("  Use: run_athena_query (S3 logs via Athena)")
     else:
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
+
+    # Contextual hints — what to ask user before proceeding
+    lines.append("\n## Hints (ask user if not already known)")
+    lines.append("- Specific time range? (e.g., 'yesterday 2-4pm', not just a date)")
+    lines.append("- Which domain/host is affected? (if multiple hosts behind this WebACL)")
+    lines.append("- What's the concern? (crawler/bypass, DDoS, false positive, rule evaluation)")
+    if caps["bot_control"] != "None":
+        lines.append("- Is the site SPA? Is WAF Client SDK integrated? (affects Bot Control recommendations)")
+    if caps["has_challenge"]:
+        lines.append("- Are there native apps/APIs on the same domain? (Challenge doesn't work for non-browser)")
 
     return "\n".join(lines)
 
