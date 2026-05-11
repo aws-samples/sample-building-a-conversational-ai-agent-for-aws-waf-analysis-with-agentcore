@@ -277,6 +277,13 @@ After reaching a conclusion on any aspect of the investigation, call record_find
 This builds a structured investigation report. Call it once per distinct finding (a single investigation may produce multiple findings).
 """
 
+def _build_system_prompt() -> str:
+    """Build system prompt with current date injected."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"Current date/time: {now}\n\n" + SYSTEM_PROMPT
+
+
 _agent = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
@@ -292,7 +299,7 @@ def get_agent() -> Agent:
             max_tokens=4096,
             temperature=0.0,
         )
-        _agent = Agent(model=model, system_prompt=SYSTEM_PROMPT, tools=_TOOLS)
+        _agent = Agent(model=model, system_prompt=_build_system_prompt(), tools=_TOOLS)
     return _agent
 
 
