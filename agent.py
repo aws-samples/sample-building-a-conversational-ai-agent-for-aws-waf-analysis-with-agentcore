@@ -348,21 +348,20 @@ def create_app():
                 thread_id = input_data.get("threadId", "thread-1")
                 yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': thread_id, 'runId': run_id})}\n\n"
 
-                # Resume agent with interruptResponse blocks (streaming)
+                # Resume agent with interruptResponse blocks
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, lambda: agent(resume_input))
 
-                # Emit the result as text
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
-                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
-
-                # Check for chained interrupt
+                # Check for chained interrupt — if interrupted, don't emit text (it's interrupt dict)
                 if hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
                     pending = [{"id": i.id, "name": i.name, "reason": i.reason}
                                for i in result.interrupts if i.response is None]
                     if pending:
                         yield f"data: {_json.dumps({'type': 'CUSTOM', 'name': 'interrupt', 'value': {'interrupts': pending}})}\n\n"
+                else:
+                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
+                    yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
                 yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': thread_id, 'runId': run_id})}\n\n"
 
             return StreamingResponse(resume_generator(), media_type="text/event-stream")
@@ -403,15 +402,16 @@ def create_app():
             result = await loop.run_in_executor(None, lambda: agent(prompt))
             run_id = str(_uuid.uuid4())
             yield f"data: {_json.dumps({'type': 'RUN_STARTED', 'threadId': thread_id, 'runId': run_id})}\n\n"
-            yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
-            yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
-            yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
-            # Check for interrupt
+            # If interrupted, only emit CUSTOM event (no text — str(result) is interrupt dict)
             if hasattr(result, 'stop_reason') and result.stop_reason == "interrupt":
                 pending = [{"id": i.id, "name": i.name, "reason": i.reason}
                            for i in result.interrupts if i.response is None]
                 if pending:
                     yield f"data: {_json.dumps({'type': 'CUSTOM', 'name': 'interrupt', 'value': {'interrupts': pending}})}\n\n"
+            else:
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_START', 'messageId': 'msg-1', 'role': 'assistant'})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_CONTENT', 'messageId': 'msg-1', 'delta': str(result)})}\n\n"
+                yield f"data: {_json.dumps({'type': 'TEXT_MESSAGE_END', 'messageId': 'msg-1'})}\n\n"
             yield f"data: {_json.dumps({'type': 'RUN_FINISHED', 'threadId': thread_id, 'runId': run_id})}\n\n"
 
         return StreamingResponse(agent_generator(), media_type="text/event-stream")
