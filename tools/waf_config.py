@@ -7,6 +7,11 @@ from tools.aws_session import get_client
 from tools.session_state import set_webacl_context, set_capabilities
 
 
+def _numbered_list(names: list[str]) -> str:
+    """Format WebACL names as numbered list for interrupt questions."""
+    return "\n".join(f"  {i+1}. {n}" for i, n in enumerate(names))
+
+
 def _parse_region(text: str) -> str:
     """Extract AWS region from user text (e.g., 'Tokyo (ap-northeast-1)' → 'ap-northeast-1')."""
     m = re.search(r'[a-z]{2}-[a-z]+-\d', text)
@@ -71,7 +76,7 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
         elif len(acls) > 1:
             names = [a["Name"] for a in acls]
             webacl_name = tool_context.interrupt("select_webacl", reason={
-                "question": f"Found {len(acls)} WebACLs: {', '.join(names)}. Which one should I analyze?",
+                "question": f"Found {len(acls)} WebACLs. Enter number or full name:\n{_numbered_list(names)}",
                 "options": names,
             })
         elif scope == "REGIONAL":
@@ -89,7 +94,7 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
             else:
                 names = [a["Name"] for a in acls]
                 webacl_name = tool_context.interrupt("select_webacl", reason={
-                    "question": f"Found {len(acls)} WebACLs in {region}: {', '.join(names)}. Which one?",
+                    "question": f"Found {len(acls)} WebACLs in {region}. Enter number or full name:\n{_numbered_list(names)}",
                     "options": names,
                 })
         else:
@@ -138,7 +143,7 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
             names = [a["Name"] for a in acls]
             if names:
                 webacl_name = tool_context.interrupt("select_webacl", reason={
-                    "question": f"Could not match '{webacl_name}'. Please choose: {', '.join(names)}",
+                    "question": f"Could not match '{webacl_name}'. Enter number or full name:\n{_numbered_list(names)}",
                     "options": names,
                 })
                 match = next((a for a in acls if a["Name"] == webacl_name), None)
