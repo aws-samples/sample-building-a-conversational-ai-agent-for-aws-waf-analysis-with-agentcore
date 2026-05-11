@@ -8,7 +8,7 @@
 
 - **调查 WAF 事件** — "5月9号发生了什么？" → 定位攻击源、关联 IP、解释规则行为
 - **检测绕过攻击** — 通过频率分析发现绕过 WAF 规则的爬虫和自动化工具
-- **生成周报** — 面向管理层的 HTML 报告，证明 WAF 投入的 ROI
+- **生成价值报告** — 面向管理层的 HTML 报告，证明 WAF 投入的 ROI
 - **审查 WAF 规则** — 13 项确定性检查，发现配置问题
 
 ## 快速开始
@@ -65,7 +65,7 @@ graph TB
         Cognito["Cognito User Pool"]
         AC["AgentCore Runtime<br/>(每会话独立 microVM)"]
         subgraph Agent["Strands Agent"]
-            FastAPI["FastAPI + ag-ui-strands<br/>12 个工具"]
+            FastAPI["FastAPI + SSE Streaming<br/>12 个工具"]
         end
         Bedrock["Bedrock<br/>Claude Sonnet 4.6"]
     end
@@ -90,10 +90,12 @@ graph TB
 
 </details>
 
-- **前端**：React SPA 部署在 CloudFront + S3，受 WAF 保护。暗色主题，可折叠使用指南（中/英），报告自动下载。
+- **前端**：React SPA 部署在 CloudFront + S3，受 WAF 保护。实时流式（工具调用 + 文本 token），消息复制/导出，多消息分享导出，明暗主题，侧边栏指南（中/英）。
 - **认证**：Cognito JWT → AgentCore customJWTAuthorizer（不需要 API Gateway）
-- **Agent**：FastAPI + ag-ui-strands，实时流式展示工具调用和分析过程
+- **Agent**：FastAPI + Strands SDK，通过 callback_handler + asyncio.Queue 实时流式推送工具调用和分析过程
 - **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时
+
+详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md)
 
 ## 支持的区域
 
@@ -123,7 +125,7 @@ python agent.py "shield-sample-webacl 有没有流量绕过了 WAF？"
 │   ├── waf_logs.py       # CWL Insights 查询（22 个模板 + analyze_ip）
 │   ├── waf_athena.py     # Athena 查询（S3 日志，自动建表）
 │   ├── waf_review.py     # 13 项确定性规则检查
-│   ├── report.py         # 周报 HTML 生成
+│   ├── report.py         # ROI 报告 HTML 生成
 │   ├── ja4.py            # JA4 TLS 指纹查询
 │   ├── finding.py        # 调查发现累积器
 │   └── ask_user.py       # 人机交互（CLI 输入 / AG-UI 事件）
