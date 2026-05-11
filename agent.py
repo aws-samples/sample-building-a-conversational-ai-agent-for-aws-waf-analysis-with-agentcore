@@ -304,6 +304,36 @@ def _build_system_prompt() -> str:
     return f"Current date/time: {now}\n\n" + SYSTEM_PROMPT
 
 
+# ---------------------------------------------------------------------------
+# Pre-query guard hook — blocks log queries until WebACL is configured
+# ---------------------------------------------------------------------------
+
+from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
+
+
+class PreQueryGuard(HookProvider):
+    """Blocks run_logs_query/analyze_ip/run_athena_query unless get_waf_config has been called.
+
+    This is a code-level enforcement — LLM cannot bypass it regardless of system prompt compliance.
+    """
+
+    GUARDED_TOOLS = {"run_logs_query", "analyze_ip", "run_athena_query"}
+
+    def register_hooks(self, registry: HookRegistry, **kwargs):
+        registry.add_callback(BeforeToolCallEvent, self.check_prerequisites)
+
+    def check_prerequisites(self, event: BeforeToolCallEvent):
+        if event.tool_use["name"] not in self.GUARDED_TOOLS:
+            return
+        from tools.session_state import get_webacl_name
+        if not get_webacl_name():
+            event.cancel_tool = (
+                "BLOCKED: No WebACL configured. You MUST call get_waf_config() first "
+                "to select a WebACL before querying logs. If the user hasn't specified "
+                "which WebACL, call ask_user() to ask them."
+            )
+
+
 _agent = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
@@ -319,7 +349,8 @@ def get_agent() -> Agent:
             max_tokens=4096,
             temperature=0.0,
         )
-        _agent = Agent(model=model, system_prompt=_build_system_prompt(), tools=_TOOLS)
+        _agent = Agent(model=model, system_prompt=_build_system_prompt(), tools=_TOOLS,
+                       hooks=[PreQueryGuard()])
     return _agent
 
 
