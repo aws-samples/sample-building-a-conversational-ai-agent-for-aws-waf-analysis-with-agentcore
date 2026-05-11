@@ -114,7 +114,7 @@ To disable memory (not recommended):
 
 To use an existing Memory resource instead of auto-creating:
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=mem-xxxxxxxxxxxx
+--parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=<your-memory-id>
 ```
 
 ### Existing Cognito User Pool (optional)
@@ -128,8 +128,8 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:latest \
-    ExistingUserPoolId=us-east-1_XXXXXXXXX \
-    ExistingClientId=xxxxxxxxxxxxxxxxxxxxxxxxxx \
+    ExistingUserPoolId=<your-user-pool-id> \
+    ExistingClientId=<your-client-id> \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 

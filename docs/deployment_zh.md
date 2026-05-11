@@ -114,7 +114,7 @@ AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 
 
 使用已有的 Memory 资源（而非自动创建）：
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=mem-xxxxxxxxxxxx
+--parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=<your-memory-id>
 ```
 
 ### 使用现有 Cognito User Pool（可选）
@@ -128,8 +128,8 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:latest \
-    ExistingUserPoolId=us-east-1_XXXXXXXXX \
-    ExistingClientId=xxxxxxxxxxxxxxxxxxxxxxxxxx \
+    ExistingUserPoolId=<your-user-pool-id> \
+    ExistingClientId=<your-client-id> \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
