@@ -33,7 +33,7 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
         lines.append(f"\n→ Only one WebACL. Call get_waf_config(webacl_name=\"{acls[0]['Name']}\") to load its configuration.")
     else:
         lines.append("\n## Hints for ask_user")
-        lines.append("Consider asking the user (in ONE question):")
+        lines.append("Consider asking the user:")
         lines.append("- Which WebACL? (give the numbered list above)")
         lines.append("- Time range? (e.g., 'May 9 afternoon', 'last 6 hours')")
         lines.append("- Specific domain/host affected?")

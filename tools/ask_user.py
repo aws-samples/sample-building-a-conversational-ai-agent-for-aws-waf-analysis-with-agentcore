@@ -18,7 +18,7 @@ def ask_user(tool_context: ToolContext, question: str, context: str = "") -> str
     - Whether to continue analyzing more IPs/time ranges
     - SDK integration status, SPA architecture decisions
 
-    Do NOT ask more than 2 questions at a time.
+    You can ask multiple questions at once — users prefer answering everything in one reply.
 
     Args:
         question: The question to ask the user. Be specific and provide options when possible.
