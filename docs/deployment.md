@@ -101,6 +101,50 @@ aws cloudformation deploy \
 
 Any model available on Amazon Bedrock works, but it must support tool use and have sufficient context window. Recommended: Claude Sonnet 4.6 or Claude Opus (both 1M context).
 
+### Persistent Memory (recommended)
+
+AgentCore Memory gives the agent cross-session memory — it remembers your WebACL names, environment details, and investigation history.
+
+**Step 1: Create a Memory resource** (one-time):
+
+```bash
+# Install AgentCore CLI if not already
+npm install -g @aws/agentcore
+
+# Create memory with all strategies
+agentcore add memory --name waf_agent_memory --strategies SEMANTIC,SUMMARIZATION,USER_PREFERENCE
+agentcore deploy
+```
+
+Or via boto3:
+```bash
+aws bedrock-agentcore-control create-memory \
+  --name waf_agent_memory \
+  --region $REGION \
+  --memory-strategies '[
+    {"semanticMemoryStrategy": {"name": "Facts", "namespaceTemplates": ["/facts/{actorId}/"]}},
+    {"summaryMemoryStrategy": {"name": "Summary", "namespaceTemplates": ["/summaries/{actorId}/"]}},
+    {"userPreferenceMemoryStrategy": {"name": "Prefs", "namespaceTemplates": ["/preferences/{actorId}/"]}}
+  ]'
+```
+
+Note the `id` from the output (e.g., `mem-xxxxxxxxxxxx`).
+
+**Step 2: Deploy with Memory ID:**
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    MemoryId=mem-xxxxxxxxxxxx \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+If you skip this step (no `MemoryId` parameter), the agent works normally but won't remember anything across sessions.
+
 Wait for `CREATE_COMPLETE`, then get outputs:
 
 ```bash

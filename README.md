@@ -67,7 +67,7 @@ graph TB
         subgraph Agent["Strands Agent"]
             FastAPI["FastAPI + SSE Streaming<br/>12 tools"]
         end
-        Bedrock["Bedrock<br/>Claude Sonnet 4"]
+        Bedrock["Bedrock<br/>Bedrock LLM"]
         Memory["AgentCore Memory<br/>(cross-session)"]
     end
 

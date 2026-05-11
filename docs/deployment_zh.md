@@ -101,6 +101,50 @@ aws cloudformation deploy \
 
 模型必须支持 tool use 并有足够的上下文窗口。推荐 Claude Sonnet 4.6 或 Claude Opus（均为 1M 上下文）。
 
+### 持久记忆（推荐）
+
+AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 名称、环境信息和调查历史。
+
+**步骤 1：创建 Memory 资源**（一次性）：
+
+```bash
+# 安装 AgentCore CLI
+npm install -g @aws/agentcore
+
+# 创建包含所有策略的 Memory
+agentcore add memory --name waf_agent_memory --strategies SEMANTIC,SUMMARIZATION,USER_PREFERENCE
+agentcore deploy
+```
+
+或通过 boto3：
+```bash
+aws bedrock-agentcore-control create-memory \
+  --name waf_agent_memory \
+  --region $REGION \
+  --memory-strategies '[
+    {"semanticMemoryStrategy": {"name": "Facts", "namespaceTemplates": ["/facts/{actorId}/"]}},
+    {"summaryMemoryStrategy": {"name": "Summary", "namespaceTemplates": ["/summaries/{actorId}/"]}},
+    {"userPreferenceMemoryStrategy": {"name": "Prefs", "namespaceTemplates": ["/preferences/{actorId}/"]}}
+  ]'
+```
+
+记下输出中的 `id`（如 `mem-xxxxxxxxxxxx`）。
+
+**步骤 2：带 Memory ID 部署：**
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    MemoryId=mem-xxxxxxxxxxxx \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+如果跳过此步骤（不传 `MemoryId` 参数），Agent 正常工作但不会跨会话记忆。
+
 等待 `CREATE_COMPLETE`，然后获取输出：
 
 ```bash
