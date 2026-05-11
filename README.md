@@ -2,13 +2,13 @@
 
 English | [中文](README_zh.md)
 
-An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates weekly business reports. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
+An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates ROI reports for management. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
 
 ## What It Does
 
 - **Investigate WAF incidents** — "What happened on May 9th?" → identifies attack sources, correlates IPs, explains WAF rule behavior
 - **Detect bypasses** — finds crawlers and bots that evade WAF rules using frequency analysis
-- **Generate weekly reports** — HTML business reports proving WAF ROI for management
+- **Generate ROI reports** — HTML business reports proving WAF value for management
 - **Review WAF rules** — 13 deterministic checks for misconfigurations
 
 ## Quick Start
@@ -65,7 +65,7 @@ graph TB
         Cognito["Cognito User Pool"]
         AC["AgentCore Runtime<br/>(microVM per session)"]
         subgraph Agent["Strands Agent"]
-            FastAPI["FastAPI + ag-ui-strands<br/>12 tools"]
+            FastAPI["FastAPI + SSE Streaming<br/>12 tools"]
         end
         Bedrock["Bedrock<br/>Claude Sonnet 4.6"]
     end
@@ -90,12 +90,12 @@ graph TB
 
 </details>
 
-- **Frontend**: React SPA on CloudFront + S3, protected by WAF. GitHub dark theme, collapsible guide sidebar (zh/en), auto-download reports.
+- **Frontend**: React SPA on CloudFront + S3, protected by WAF. Real-time streaming (tool calls + text tokens), per-message copy/export, multi-message share/export, dark/light theme, sidebar guide (zh/en).
 - **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed)
-- **Agent**: FastAPI + ag-ui-strands, streams tool calls and analysis in real-time
+- **Agent**: FastAPI + Strands SDK, streams tool calls and analysis in real-time via callback_handler + asyncio.Queue
 - **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime
 
-See [Deployment Guide](docs/deployment.md) for full setup details.
+See [Deployment Guide](docs/deployment.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md)
 
 ## Supported Regions
 
