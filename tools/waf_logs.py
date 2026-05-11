@@ -2,6 +2,7 @@
 
 import time
 import re
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from strands import tool
@@ -153,12 +154,14 @@ def _sanitize_param(value: str) -> str:
 
 
 def _parse_start_time(value: str) -> int | None:
-    """Parse a date/datetime string to epoch seconds. Returns None on failure."""
-    from datetime import datetime, timezone
+    """Parse a date/datetime string to epoch seconds using user's timezone. Returns None on failure."""
+    from datetime import datetime, timezone, timedelta
+    tz_offset = int(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "8"))  # default UTC+8
+    user_tz = timezone(timedelta(hours=tz_offset))
     value = value.strip()
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:
-            dt = datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(value, fmt).replace(tzinfo=user_tz)
             return int(dt.timestamp())
         except ValueError:
             continue
@@ -256,8 +259,8 @@ def run_logs_query(
         return f"Error: max time range is {MAX_HOURS} hours (7 days). For longer ranges, use Athena. Requested: {hours_ago}h"
 
     # Hard cap: bypass/crawler queries max 24 hours (prevent expensive full-week scans)
-    _NARROW_TYPES = {"top_allowed_crawlers", "top_allowed_repeaters", "ip_unique_uris",
-                     "ip_request_rate", "ip_diversity", "ip_uri_breakdown"}
+    _NARROW_TYPES = {"top_allowed_crawlers", "top_allowed_repeaters", "top_allowed_by_volume",
+                     "ip_unique_uris", "ip_request_rate", "ip_diversity", "ip_uri_breakdown"}
     if query_type in _NARROW_TYPES and hours_ago > 24:
         hours_ago = 24
 
@@ -339,7 +342,7 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 
 
 @tool
-def analyze_ip(ip: str, hours_ago: int = 6) -> str:
+def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
     """Analyze a single IP address with parallel queries. Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
 
     This is a composite tool that runs multiple queries in one call to minimize
@@ -347,7 +350,8 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
 
     Args:
         ip: IP address to analyze.
-        hours_ago: Time window (default 6 hours, auto-adjusted by agent based on traffic volume).
+        hours_ago: Time window (default 6 hours). Capped at 24 hours.
+        start_time: Specific start date (e.g., "2026-05-09"). Overrides hours_ago. Pass user's date directly.
 
     Returns:
         Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
@@ -358,8 +362,8 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
     except ValueError:
         return f"Error: invalid IP address '{ip}'"
 
-    if hours_ago > MAX_HOURS:
-        hours_ago = MAX_HOURS
+    # Hard cap at 24 hours
+    hours_ago = min(hours_ago, 24)
 
     log_dest = get_log_destination()
     if not log_dest or ":log-group:" not in log_dest:
@@ -368,13 +372,22 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
 
     region = get_logs_region()
     client = get_client("logs", region_name=region)
-    end_time = int(time.time())
-    start_time = end_time - (hours_ago * 3600)
+    end_epoch = int(time.time())
+    if start_time:
+        parsed = _parse_start_time(start_time)
+        if parsed:
+            start_epoch = parsed
+            if (end_epoch - start_epoch) > 86400:
+                start_epoch = end_epoch - 86400
+        else:
+            start_epoch = end_epoch - (hours_ago * 3600)
+    else:
+        start_epoch = end_epoch - (hours_ago * 3600)
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
     # Phase 1: Diversity check (NAT detection)
     diversity_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count_distinct(ua) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
-    diversity = _execute_query_internal(client, log_group, start_time, end_time, diversity_query, 1)
+    diversity = _execute_query_internal(client, log_group, start_epoch, end_epoch, diversity_query, 1)
 
     if diversity:
         d = diversity[0]
@@ -397,7 +410,7 @@ def analyze_ip(ip: str, hours_ago: int = 6) -> str:
     results = {}
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
-            executor.submit(_execute_query_internal, client, log_group, start_time, end_time, q, 25): name
+            executor.submit(_execute_query_internal, client, log_group, start_epoch, end_epoch, q, 25): name
             for name, q in queries.items()
         }
         for future in as_completed(futures):
