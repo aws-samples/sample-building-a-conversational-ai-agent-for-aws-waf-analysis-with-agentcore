@@ -32,7 +32,7 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     if len(acls) == 1:
         lines.append(f"\n→ Only one WebACL. Call get_waf_config(webacl_name=\"{acls[0]['Name']}\") to load its configuration.")
     else:
-        lines.append("\n## Hints for ask_user")
+        lines.append("\n---\nHints:")
         lines.append("Consider asking the user:")
         lines.append("- Which WebACL? (give the numbered list above)")
         lines.append("- Time range? (e.g., 'May 9 afternoon', 'last 6 hours')")
@@ -132,11 +132,11 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
 
     # Contextual hints — what to ask user before proceeding
-    lines.append("\n## Hints (ask user if not already known)")
+    lines.append("\n---\nHints:")
     lines.append("- Specific time range? (e.g., 'yesterday 2-4pm', not just a date)")
     lines.append("- Which domain/host is affected? (if multiple hosts behind this WebACL)")
     lines.append("- What's the concern? (crawler/bypass, DDoS, false positive, rule evaluation)")
-    if caps["bot_control"] != "None":
+    if caps["bot_control"] != "none":
         lines.append("- Is the site SPA? Is WAF Client SDK integrated? (affects Bot Control recommendations)")
     if caps["has_challenge"]:
         lines.append("- Are there native apps/APIs on the same domain? (Challenge doesn't work for non-browser)")
@@ -160,40 +160,43 @@ def _extract_action(rule: dict) -> str:
 def _detect_capabilities(rules: list) -> dict:
     """Detect WAF capabilities from rule configuration."""
     caps = {
-        "bot_control": "None",
+        "bot_control": "none",
         "anti_ddos_amr": False,
         "has_challenge": False,
         "has_rate_based": False,
         "has_token_reuse_rule": False,
     }
     for r in rules:
-        name = r.get("Name", "")
-        # Bot Control
-        if "BotControl" in name or "bot-control" in name.lower():
-            # Check if Targeted
-            stmt = r.get("Statement", {})
-            mgr = stmt.get("ManagedRuleGroupStatement", {})
-            if mgr.get("Name") == "AWSManagedRulesBotControlRuleSet":
-                ml = mgr.get("ManagedRuleGroupConfigs", [])
-                for cfg in ml:
-                    if cfg.get("AWSManagedRulesBotControlRuleSetProperty", {}).get("InspectionLevel") == "TARGETED":
-                        caps["bot_control"] = "Targeted"
-                        break
-                else:
-                    if caps["bot_control"] != "Targeted":
-                        caps["bot_control"] = "Common"
-        # Anti-DDoS AMR
-        if "AntiDDoS" in name or "anti-ddos" in name.lower():
+        stmt = r.get("Statement", {})
+        mgr = stmt.get("ManagedRuleGroupStatement", {})
+        group_name = mgr.get("Name", "")
+
+        # Bot Control — detect by managed rule group name (not user's rule name)
+        if group_name == "AWSManagedRulesBotControlRuleSet":
+            ml = mgr.get("ManagedRuleGroupConfigs", [])
+            for cfg in ml:
+                if cfg.get("AWSManagedRulesBotControlRuleSetProperty", {}).get("InspectionLevel") == "TARGETED":
+                    caps["bot_control"] = "Targeted"
+                    break
+            else:
+                if caps["bot_control"] != "Targeted":
+                    caps["bot_control"] = "Common"
+
+        # Anti-DDoS AMR — detect by managed rule group name
+        if group_name == "AWSManagedRulesAntiDDoSRuleSet":
             caps["anti_ddos_amr"] = True
+
         # Challenge
         action = r.get("Action", {})
         if "Challenge" in action or "Captcha" in action:
             caps["has_challenge"] = True
+
         # Rate-based
-        stmt = r.get("Statement", {})
         if "RateBasedStatement" in stmt:
             caps["has_rate_based"] = True
-        # Token reuse
+
+        # Token reuse (custom rule checking for TGT_TokenReuseIP label)
+        name = r.get("Name", "")
         if "TokenReuse" in name or "token_reuse" in name.lower():
             caps["has_token_reuse_rule"] = True
 
