@@ -10,9 +10,9 @@ The agent has access to your WAF configuration, CloudWatch Metrics, CloudWatch L
 
 | Vague (slow, noisy) | Specific (fast, accurate) |
 |---|---|
-| "Check my WAF" | "Check shield-sample-webacl for bypass traffic on May 9 afternoon" |
+| "Check my WAF" | "Check my-webacl for bypass traffic on May 9 afternoon" |
 | "Any attacks?" | "IP 54.254.254.234 hit my site hard yesterday around 6am UTC" |
-| "Generate a report" | "Generate ROI report for response-id-on-page" |
+| "Generate a report" | "Generate ROI report for my-production-webacl" |
 
 ## Capabilities
 
@@ -21,7 +21,7 @@ The agent has access to your WAF configuration, CloudWatch Metrics, CloudWatch L
 Find traffic that passes all WAF rules (default ALLOW) but looks suspicious.
 
 **Good prompts:**
-- "Check if there are crawlers bypassing WAF on shield-sample-webacl, May 9 afternoon"
+- "Check if there are crawlers bypassing WAF on my-webacl, May 9 afternoon"
 - "Find high-volume IPs that weren't blocked in the last 6 hours"
 - "Are there any bots getting through Bot Control?"
 
@@ -65,7 +65,7 @@ Full behavioral profile of a specific IP address.
 Automated security audit of your WebACL configuration.
 
 **Good prompts:**
-- "Review the rules on shield-sample-webacl"
+- "Review the rules on my-webacl"
 - "Audit my WAF configuration for security issues"
 
 **What the agent does:** Runs 13 deterministic checks (forgeable Allow rules, missing scope-down, Bot Control misconfiguration, priority order issues, etc.) → returns findings with severity and recommendations.
@@ -75,7 +75,7 @@ Automated security audit of your WebACL configuration.
 HTML report with charts showing WAF protection value — designed for management.
 
 **Good prompts:**
-- "Generate ROI report for shield-sample-webacl"
+- "Generate ROI report for my-webacl"
 - "Generate ROI report" (agent will ask which WebACL)
 
 **What the agent does:** Collects 7 days of metrics → generates HTML with Chart.js charts (blocked vs allowed, daily breakdown, top rules, top countries) → asks LLM for executive summary.

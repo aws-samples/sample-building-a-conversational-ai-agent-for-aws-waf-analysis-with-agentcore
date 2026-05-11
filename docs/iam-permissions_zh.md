@@ -100,7 +100,7 @@
 | `logs:CreateLogStream` | 在 Agent 日志组内创建日志流 | 仅在 Agent 自身日志组内 |
 | `logs:PutLogEvents` | 写入 Agent 容器日志 | 仅在 Agent 自身日志组内 |
 
-**注意：** 这些权限的范围限定为 `arn:aws:logs:${Region}:${Account}:log-group:/aws/bedrock-agentcore/runtimes/*`——Agent 不能写入任何其他日志组。
+**注意：** 这些权限的范围限定为 `/aws/bedrock-agentcore/runtimes/*` (scoped by CloudFormation)——Agent 不能写入任何其他日志组。
 
 ## Agent 不能做什么
 

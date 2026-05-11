@@ -112,7 +112,7 @@ pip install -e .
 # 本地运行
 export AWS_PROFILE=your-profile
 python agent.py "列出所有 WebACL"
-python agent.py "shield-sample-webacl 有没有流量绕过了 WAF？"
+python agent.py "my-webacl 有没有流量绕过了 WAF？"
 ```
 
 ## 项目结构

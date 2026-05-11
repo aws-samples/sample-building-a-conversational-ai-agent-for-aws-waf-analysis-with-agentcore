@@ -112,7 +112,7 @@ pip install -e .
 # Run locally
 export AWS_PROFILE=your-profile
 python agent.py "List all WebACLs"
-python agent.py "Any traffic bypassing shield-sample-webacl?"
+python agent.py "Any traffic bypassing my-webacl?"
 ```
 
 ## Project Structure

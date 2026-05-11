@@ -100,7 +100,7 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 | `logs:CreateLogStream` | Create log stream within agent's log group | Within agent's own log group only |
 | `logs:PutLogEvents` | Write agent container logs | Within agent's own log group only |
 
-**Note:** These permissions are scoped to `arn:aws:logs:${Region}:${Account}:log-group:/aws/bedrock-agentcore/runtimes/*` — the agent cannot write to any other log group.
+**Note:** These permissions are scoped to `/aws/bedrock-agentcore/runtimes/*` (scoped by CloudFormation) — the agent cannot write to any other log group.
 
 ## What the Agent CANNOT Do
 

@@ -10,9 +10,9 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 
 | 模糊（慢、噪音多） | 具体（快、准确） |
 |---|---|
-| "检查一下我的 WAF" | "检查 shield-sample-webacl 在 5月9日下午有没有绕过流量" |
+| "检查一下我的 WAF" | "检查 my-webacl 在 5月9日下午有没有绕过流量" |
 | "有没有攻击？" | "IP 54.254.254.234 昨天早上6点左右大量请求我的网站" |
-| "生成报告" | "生成 response-id-on-page 的 ROI 报告" |
+| "生成报告" | "生成 my-production-webacl 的 ROI 报告" |
 
 ## 能力一览
 
@@ -21,7 +21,7 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 发现通过了所有 WAF 规则（默认 ALLOW）但行为可疑的流量。
 
 **好的提问方式：**
-- "检查 shield-sample-webacl 在5月9日下午有没有爬虫绕过了 WAF"
+- "检查 my-webacl 在5月9日下午有没有爬虫绕过了 WAF"
 - "最近6小时有没有高频 IP 没被拦截"
 - "有没有机器人绕过了 Bot Control？"
 
@@ -65,7 +65,7 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 对 WebACL 配置进行自动化安全审计。
 
 **好的提问方式：**
-- "审查 shield-sample-webacl 的规则"
+- "审查 my-webacl 的规则"
 - "检查我的 WAF 配置有没有安全问题"
 
 **Agent 的工作流程：** 运行 13 项确定性检查（可伪造的 Allow 规则、缺失的 scope-down、Bot Control 配置错误、优先级顺序问题等）→ 返回发现结果及建议。
@@ -75,7 +75,7 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 生成带图表的 HTML 报告，展示 WAF 防护价值——面向管理层。
 
 **好的提问方式：**
-- "生成 shield-sample-webacl 的 ROI 报告"
+- "生成 my-webacl 的 ROI 报告"
 - "生成价值报告"（Agent 会问你选哪个 WebACL）
 
 **Agent 的工作流程：** 收集7天指标 → 生成带 Chart.js 图表的 HTML（拦截 vs 放行、每日分布、Top 规则、Top 国家）→ 让 LLM 撰写管理层摘要。
