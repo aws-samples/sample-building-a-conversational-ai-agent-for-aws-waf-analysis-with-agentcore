@@ -37,7 +37,10 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     lines = [f"Found {len(acls)} WebACL(s) (scope={scope}, region={region}):\n"]
     for acl in acls:
         lines.append(f"  - {acl['Name']} (ID: {acl['Id']})")
-        lines.append(f"    ARN: {acl['ARN']}")
+    if len(acls) > 1:
+        lines.append("\n⚠️ Multiple WebACLs found. You MUST call get_waf_config(webacl_name=\"...\") to select one before proceeding. Do NOT ask the user yourself — get_waf_config will handle it.")
+    else:
+        lines.append(f"\n→ Only one WebACL. Call get_waf_config(webacl_name=\"{acls[0]['Name']}\") to load its configuration.")
     return "\n".join(lines)
 
 
