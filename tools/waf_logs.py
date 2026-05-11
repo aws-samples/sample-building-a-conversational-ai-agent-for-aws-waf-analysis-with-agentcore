@@ -94,11 +94,7 @@ TEMPLATES = {
         "params": ["ip"],
         "description": "Unique non-static URI count and time span for an IP (excludes JS/CSS/images)",
     },
-    "ip_diversity": {
-        "query": "filter httpRequest.clientIp = '{ip}' | parse @message /(?i)\\{{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}}/ | stats count_distinct(ua) as unique_uas, count_distinct(ja4Fingerprint) as unique_ja4s, count(*) as total_requests",
-        "params": ["ip"],
-        "description": "UA and JA4 diversity for an IP — high diversity = NAT/shared IP, low = single bot",
-    },
+    # ip_diversity intentionally NOT exposed — use analyze_ip which has proper NAT detection logic
     "top_allowed_by_volume": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "params": [],
@@ -260,7 +256,7 @@ def run_logs_query(
 
     # Hard cap: bypass/crawler queries max 24 hours (prevent expensive full-week scans)
     _NARROW_TYPES = {"top_allowed_crawlers", "top_allowed_repeaters", "top_allowed_by_volume",
-                     "ip_unique_uris", "ip_request_rate", "ip_diversity", "ip_uri_breakdown"}
+                     "ip_unique_uris", "ip_request_rate", "ip_uri_breakdown"}
     if query_type in _NARROW_TYPES and hours_ago > 24:
         hours_ago = 24
 
@@ -318,6 +314,70 @@ def run_logs_query(
         lines.append("| " + " | ".join(values) + " |")
 
     return "\n".join(lines)
+
+
+def _is_nat_traffic(ua_rows: list[dict]) -> bool:
+    """Determine if UA diversity indicates real NAT (multiple users) vs UA rotation (one bot).
+
+    Real NAT: diverse OS/browser combos (Windows+Mac+iPhone, Chrome+Safari+Firefox)
+    UA rotation: same template with only version numbers changing, or sequential versions.
+
+    Returns True if likely NAT, False if suspicious (possible rotation).
+    """
+    uas = [row.get("ua", "") for row in ua_rows if row.get("ua")]
+    if len(uas) < 4:
+        return True  # too few to judge, assume NAT
+
+    # Extract OS and browser base signatures (strip version numbers)
+    os_set = set()
+    browser_set = set()
+    version_pattern_count = 0
+
+    for ua in uas:
+        # OS detection
+        if "Windows" in ua:
+            os_set.add("Windows")
+        elif "Macintosh" in ua or "Mac OS" in ua:
+            os_set.add("Mac")
+        elif "iPhone" in ua or "iPad" in ua:
+            os_set.add("iOS")
+        elif "Android" in ua:
+            os_set.add("Android")
+        elif "Linux" in ua:
+            os_set.add("Linux")
+
+        # Browser detection (base, ignoring version)
+        if "Firefox/" in ua:
+            browser_set.add("Firefox")
+        elif "Edg/" in ua:
+            browser_set.add("Edge")
+        elif "Chrome/" in ua and "Safari/" in ua:
+            browser_set.add("Chrome")
+        elif "Safari/" in ua and "Chrome/" not in ua:
+            browser_set.add("Safari")
+
+    # Check for version-only rotation: strip version numbers and see how many unique templates remain
+    version_re = re.compile(r'\d+\.\d+[\.\d]*')
+    templates = set()
+    for ua in uas:
+        template = version_re.sub("X", ua)
+        templates.add(template)
+
+    # Heuristics:
+    # Real NAT: multiple OS (≥2) OR multiple browsers (≥2) AND multiple templates (≥3)
+    # UA rotation: single OS + single browser + few templates (1-2) despite many UAs
+    if len(templates) <= 2 and len(uas) >= 5:
+        return False  # Same template, only versions differ → rotation
+    if len(os_set) >= 2 and len(browser_set) >= 2:
+        return True  # Genuine diversity → NAT
+    if len(os_set) <= 1 and len(browser_set) <= 1 and len(templates) <= 2:
+        return False  # Single OS + single browser + same template → rotation
+
+    # Edge case: many templates but all same OS/browser (could be version rotation with minor diffs)
+    if len(os_set) <= 1 and len(browser_set) <= 1:
+        return False  # Suspicious even with template diversity
+
+    return True  # Default: assume NAT if genuinely diverse
 
 
 def _execute_query_internal(client, log_group: str, start_time: int, end_time: int, query: str, limit: int = 25) -> list:
@@ -383,19 +443,27 @@ def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
         start_epoch = end_epoch - (hours_ago * 3600)
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
-    # Phase 1: Diversity check (NAT detection)
+    # Phase 1: Diversity check (NAT vs UA-rotation detection)
     diversity_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count_distinct(ua) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
     diversity = _execute_query_internal(client, log_group, start_epoch, end_epoch, diversity_query, 1)
 
-    if diversity:
-        d = diversity[0]
-        ua_count = int(d.get("ua_count", "0"))
-        ja4_count = int(d.get("ja4_count", "0"))
-        total = int(d.get("total", "0"))
-        if ua_count > 3 and ja4_count > 3:
-            return f"## {ip} — NAT/Shared IP (skipped)\n\nMultiple UAs ({ua_count}) + multiple JA4s ({ja4_count}) = shared IP (NAT gateway).\nTotal requests: {total}\n\nNo further analysis needed."
-    else:
+    if not diversity:
         return f"Error: diversity query returned no results for {ip}"
+
+    d = diversity[0]
+    ua_count = int(d.get("ua_count", "0"))
+    ja4_count = int(d.get("ja4_count", "0"))
+    total = int(d.get("total", "0"))
+
+    # High diversity → could be NAT or UA rotation. Need deeper check.
+    if ua_count > 3 and ja4_count > 3:
+        # Fetch actual UAs to detect rotation pattern
+        ua_list_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count(*) as cnt by ua | sort cnt desc | limit 20'
+        ua_rows = _execute_query_internal(client, log_group, start_epoch, end_epoch, ua_list_query, 20)
+        if ua_rows and not _is_nat_traffic(ua_rows):
+            pass  # Suspicious — continue to Phase 2
+        else:
+            return f"## {ip} — NAT/Shared IP (skipped)\n\nMultiple UAs ({ua_count}) + multiple JA4s ({ja4_count}) = shared IP (NAT gateway).\nTotal requests: {total}\n\nNo further analysis needed."
 
     # Phase 2: Parallel queries (only if not NAT)
     queries = {

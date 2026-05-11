@@ -76,8 +76,7 @@ Step 4: Converge → output attack profile + recommendation
 
 Step 1: Metrics to find peak ALLOW window (zero cost)
 Step 2: Log queries in narrow window (≤6h): top_allowed_crawlers + top_allowed_repeaters
-Step 3: Frequency check on top 3 suspicious IPs (ip_request_rate + ip_diversity for NAT check)
-  - NAT判断: multiple UAs + multiple JA4s (>3) = NAT (skip); multiple UAs + single JA4 = suspicious; single UA + single JA4 + high volume = single bot
+Step 3: For top 3 suspicious IPs, use analyze_ip (handles NAT detection + frequency analysis automatically)
 Step 4: Cross-validate most suspicious IP (ip_unique_uris + ip_ja4_fingerprints)
   - Frequency is the strongest signal. If superhuman (>200 URIs/hour or >200 req/min sustained), conclude automation regardless of content.
 Step 5: Conclude + ask user if they want to check more
