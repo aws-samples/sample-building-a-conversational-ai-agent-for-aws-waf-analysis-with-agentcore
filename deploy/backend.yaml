@@ -183,7 +183,7 @@ Resources:
         - SummaryMemoryStrategy:
             Name: Summary
             NamespaceTemplates:
-              - "/summaries/{actorId}/"
+              - "/summaries/{actorId}/{sessionId}/"
         - UserPreferenceMemoryStrategy:
             Name: Preferences
             NamespaceTemplates:
