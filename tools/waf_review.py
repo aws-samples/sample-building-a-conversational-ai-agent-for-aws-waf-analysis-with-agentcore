@@ -21,7 +21,7 @@ PRIORITY_ORDER = [
 ]
 
 # Forgeable conditions
-FORGEABLE_FIELDS = {"SingleHeader", "Cookies", "QueryString", "Body", "JsonBody"}
+FORGEABLE_FIELDS = {"SingleHeader", "SingleQueryArgument", "Cookies", "QueryString", "Body", "JsonBody"}
 UNFORGEABLE_FIELDS = {"IPSetReferenceStatement", "AsnMatchStatement"}
 
 # Known managed rule groups
