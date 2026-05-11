@@ -200,6 +200,7 @@ def create_app():
         q: asyncio.Queue = asyncio.Queue()
         seen_tools: set = set()
         text_started = False
+        has_streamed_text = False  # only-increases flag: True once any TEXT_START emitted
         run_id = str(_uuid.uuid4())
 
         def callback_handler(**kwargs):
@@ -260,6 +261,7 @@ def create_app():
             event_type, payload = item
 
             if event_type == "TEXT_START":
+                has_streamed_text = True
                 yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
             elif event_type == "TEXT":
                 yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": payload})
@@ -276,7 +278,7 @@ def create_app():
                 yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": f"Error: {payload}"})
                 yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
 
-        # Close any open text stream
+        # Close any open text stream (safe: text_started only written by agent thread, which has ended)
         if text_started:
             yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
 
@@ -286,7 +288,7 @@ def create_app():
                        for i in result.interrupts if i.response is None]
             if pending:
                 yield _make_sse({"type": "CUSTOM", "name": "interrupt", "value": {"interrupts": pending}})
-        elif result and not text_started:
+        elif result and not has_streamed_text:
             # Agent completed but no text was streamed (edge case) — emit full result
             text = str(result)
             if text.strip():
