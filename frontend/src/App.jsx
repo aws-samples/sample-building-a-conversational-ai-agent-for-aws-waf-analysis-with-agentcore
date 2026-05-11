@@ -69,7 +69,7 @@ function ReportDownload({ sessionId }) {
   );
 }
 
-function MessageContent({ content }) {
+function MessageContent({ content, onShare, selectMode }) {
   const [copied, setCopied] = useState(false);
   const rendered = marked.parse(content, { breaks: true });
 
@@ -99,11 +99,14 @@ function MessageContent({ content }) {
   return (
     <div className="content-wrapper">
       <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />
-      <div className="msg-actions">
-        <button className="msg-action-btn" onClick={copyMarkdown} title="Copy as Markdown">{copied ? '✓ Copied' : 'Copy'}</button>
-        <button className="msg-action-btn" onClick={exportMarkdown} title="Export as .md file">Export MD</button>
-        <button className="msg-action-btn" onClick={exportHTML} title="Export as styled HTML">Export HTML</button>
-      </div>
+      {!selectMode && (
+        <div className="msg-actions">
+          <button className="msg-action-btn" onClick={copyMarkdown} title="Copy as Markdown">{copied ? '✓ Copied' : 'Copy'}</button>
+          <button className="msg-action-btn" onClick={exportMarkdown} title="Export as .md file">Export MD</button>
+          <button className="msg-action-btn" onClick={exportHTML} title="Export as styled HTML">Export HTML</button>
+          <button className="msg-action-btn" onClick={onShare} title="Select messages to export together">Share</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -163,6 +166,8 @@ export default function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState(new Set());
   const [newPassForm, setNewPassForm] = useState(null);
   const [resetForm, setResetForm] = useState(null);
   const [darkMode, setDarkMode] = useState(true);
@@ -284,6 +289,40 @@ export default function App() {
     pendingResolve.current = null;
   }
 
+  function toggleSelect(idx) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(idx) ? next.delete(idx) : next.add(idx);
+      return next;
+    });
+  }
+
+  function exportSelectedHTML() {
+    const msgs = [...selected].sort((a, b) => a - b).map(i => messages[i]).filter(Boolean);
+    const body = msgs.map(msg => {
+      const role = msg.role === 'user' ? 'You' : 'WAF Agent';
+      const roleClass = msg.role === 'user' ? 'user' : 'assistant';
+      const content = msg.role === 'user' ? `<p>${msg.content.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</p>` : marked.parse(msg.content || '', { breaks: true });
+      return `<div class="msg ${roleClass}"><div class="role">${role}</div><div class="content">${content}</div></div>`;
+    }).join('\n');
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>WAF Agent Conversation</title><style>
+body{font-family:system-ui,sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6;background:#fafafa}
+.msg{margin:1rem 0;padding:1rem 1.2rem;border-radius:10px;border:1px solid #e5e5e5}
+.msg.user{background:#e8f4fd;border-color:#b8daef}
+.msg.assistant{background:#fff;border-color:#ddd}
+.role{font-weight:600;font-size:0.8rem;color:#666;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.5px}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f5f5f5}
+code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5;padding:1rem;overflow-x:auto;border-radius:6px}
+</style></head><body><h1>WAF Agent Conversation</h1>${body}</body></html>`;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'waf-agent-conversation.html'; a.click();
+    URL.revokeObjectURL(url);
+    setSelectMode(false);
+    setSelected(new Set());
+  }
+
   if (!user) {
     if (resetForm) {
       return (
@@ -369,7 +408,8 @@ export default function App() {
       </header>
       <div className="messages">
         {messages.map((msg, i) => (
-          <div key={i} className={`msg ${msg.role}`}>
+          <div key={i} className={`msg ${msg.role}${selectMode && selected.has(i) ? ' selected' : ''}`} onClick={selectMode ? () => toggleSelect(i) : undefined}>
+            {selectMode && <input type="checkbox" className="msg-checkbox" checked={selected.has(i)} onChange={() => toggleSelect(i)} />}
             {msg.tools?.length > 0 && (
               <div className="tools">
                 {msg.tools.map((t, j) => (
@@ -377,12 +417,19 @@ export default function App() {
                 ))}
               </div>
             )}
-            {msg.content && <MessageContent content={msg.content} />}
+            {msg.content && <MessageContent content={msg.content} onShare={() => { setSelectMode(true); setSelected(new Set([i])); }} selectMode={selectMode} />}
             {msg.hasReport && <ReportDownload sessionId={sessionId.current} />}
           </div>
         ))}
         <div ref={messagesEnd} />
       </div>
+      {selectMode && (
+        <div className="select-bar">
+          <span>{selected.size} message{selected.size !== 1 ? 's' : ''} selected</span>
+          <button className="btn btn-primary" onClick={exportSelectedHTML} disabled={selected.size === 0}>Export HTML</button>
+          <button className="btn btn-secondary" onClick={() => { setSelectMode(false); setSelected(new Set()); }}>Cancel</button>
+        </div>
+      )}
       <form className="input-bar" onSubmit={pendingResolve.current ? handleUserReply : handleSend}>
         <textarea value={input} onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px'; }} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); } }} placeholder="Ask about your WAF... (Shift+Enter for new line)" disabled={loading} autoFocus rows={1} />
         <button type="submit" disabled={loading}>{loading ? '...' : '→'}</button>

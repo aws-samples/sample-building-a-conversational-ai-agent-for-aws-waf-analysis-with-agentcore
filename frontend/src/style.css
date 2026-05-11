@@ -109,3 +109,10 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .msg-action-btn { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.6rem; color: var(--muted); cursor: pointer; font-size: 0.75rem; transition: all 0.15s; }
 .msg-action-btn:hover { color: var(--fg); border-color: var(--accent); background: var(--bg-secondary); }
 .msg-action-btn:active { transform: scale(0.95); }
+
+/* Select mode (multi-message export) */
+.msg.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+.msg-checkbox { position: absolute; left: -1.5rem; top: 1rem; width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+.msg { position: relative; }
+.select-bar { display: flex; align-items: center; gap: 0.8rem; padding: 0.6rem 1rem; background: var(--bg-secondary); border-top: 1px solid var(--border); font-size: 0.85rem; }
+.select-bar span { flex: 1; color: var(--muted); }
