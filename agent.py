@@ -74,12 +74,12 @@ Step 4: Converge → output attack profile + recommendation
 
 ## Bypass/Evasion Detection
 
-Step 0: Confirm time range with user (ask_user if not provided)
 Step 1: Metrics to find peak ALLOW window (zero cost)
 Step 2: Log queries in narrow window (≤6h): top_allowed_crawlers + top_allowed_repeaters
 Step 3: Frequency check on top 3 suspicious IPs (ip_request_rate + ip_diversity for NAT check)
+  - NAT判断: multiple UAs + multiple JA4s (>3) = NAT (skip); multiple UAs + single JA4 = suspicious; single UA + single JA4 + high volume = single bot
 Step 4: Cross-validate most suspicious IP (ip_unique_uris + ip_ja4_fingerprints)
-  - Human: <50 unique non-static URIs/hour. Automation: >200/hour or >200 req/min sustained
+  - Frequency is the strongest signal. If superhuman (>200 URIs/hour or >200 req/min sustained), conclude automation regardless of content.
 Step 5: Conclude + ask user if they want to check more
 
 Constraints:
@@ -95,6 +95,7 @@ Determine traffic type before recommending Anti-DDoS or Bot Control:
 - Mixed → present options with trade-offs, let user decide
 
 Cannot determine from logs alone: SDK deployment status, SPA architecture, native-app-only paths → ask_user
+Scope-down exclusions must use URI/IP/header — NOT request body (WAF doesn't inspect body for scope-down).
 
 ## Rule Recommendations
 
@@ -107,6 +108,7 @@ Cannot determine from logs alone: SDK deployment status, SPA architecture, nativ
 | COUNT confirmed FP | Add scope-down exclusion |
 | Sophisticated bot (browser automation) | Targeted Bot Control |
 | Token reuse | TGT_TokenReuseIP to BLOCK |
+| Allow rule on forgeable condition (UA/header) | Change to unforgeable (IP set / WAF token / ASN) |
 
 ## Deep Investigation
 
