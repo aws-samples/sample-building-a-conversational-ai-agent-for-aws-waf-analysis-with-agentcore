@@ -1,9 +1,16 @@
 """WAF configuration tools — list WebACLs and get config."""
 
+import re
 from strands import tool
 from strands.types.tools import ToolContext
 from tools.aws_session import get_client
 from tools.session_state import set_webacl_context, set_capabilities
+
+
+def _parse_region(text: str) -> str:
+    """Extract AWS region from user text (e.g., 'Tokyo (ap-northeast-1)' → 'ap-northeast-1')."""
+    m = re.search(r'[a-z]{2}-[a-z]+-\d', text)
+    return m.group(0) if m else text.strip()
 
 
 @tool
@@ -69,7 +76,7 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
             new_region = tool_context.interrupt("select_region", reason={
                 "question": f"No WebACLs found in {region}. Which AWS region is your WebACL in? (e.g., us-west-2, ap-northeast-1)",
             })
-            region = new_region.strip()
+            region = _parse_region(new_region)
             client = get_client("wafv2", region_name=region)
             acls = client.list_web_acls(Scope=scope).get("WebACLs", [])
             if not acls:
@@ -100,7 +107,20 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
         except (ValueError, IndexError):
             pass
     if not match:
-        return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"
+        if scope == "REGIONAL":
+            new_region = tool_context.interrupt("select_region", reason={
+                "question": f"WebACL '{webacl_name}' not found in {region}. Which region is it in?",
+            })
+            region = _parse_region(new_region)
+            client = get_client("wafv2", region_name=region)
+            acls = client.list_web_acls(Scope=scope).get("WebACLs", [])
+            match = next((a for a in acls if a["Name"] == webacl_name), None)
+            if not match:
+                match = next((a for a in acls if webacl_name.lower() in a["Name"].lower()), None)
+                if match:
+                    webacl_name = match["Name"]
+        if not match:
+            return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"
 
     # Get full config
     resp = client.get_web_acl(Name=webacl_name, Scope=scope, Id=match["Id"])
