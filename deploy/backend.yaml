@@ -24,6 +24,14 @@ Parameters:
     Type: String
     Default: ""
     Description: "AgentCore Memory resource ID. Leave empty to auto-create. Set to 'none' to disable memory entirely."
+  ExistingUserPoolId:
+    Type: String
+    Default: ""
+    Description: "Existing Cognito User Pool ID. Leave empty to auto-create a new pool."
+  ExistingClientId:
+    Type: String
+    Default: ""
+    Description: "Existing Cognito User Pool Client ID. Required if ExistingUserPoolId is set."
 
 Conditions:
   HasModelId: !Not [!Equals [!Ref ModelId, ""]]
@@ -32,11 +40,13 @@ Conditions:
   UseExistingMemory: !And
     - !Not [!Equals [!Ref MemoryId, ""]]
     - !Not [!Equals [!Ref MemoryId, "none"]]
+  CreateUserPool: !Equals [!Ref ExistingUserPoolId, ""]
 
 Resources:
   # --- Cognito ---
   UserPool:
     Type: AWS::Cognito::UserPool
+    Condition: CreateUserPool
     Properties:
       UserPoolName: !Sub ${AWS::StackName}-users
       AutoVerifiedAttributes: [email]
@@ -50,6 +60,7 @@ Resources:
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
+    Condition: CreateUserPool
     Properties:
       UserPoolId: !Ref UserPool
       ClientName: !Sub ${AWS::StackName}-client
@@ -204,15 +215,17 @@ Resources:
           - "X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id"
       AuthorizerConfiguration:
         CustomJWTAuthorizer:
-          DiscoveryUrl: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}/.well-known/openid-configuration
+          DiscoveryUrl: !Sub
+            - https://cognito-idp.${AWS::Region}.amazonaws.com/${PoolId}/.well-known/openid-configuration
+            - PoolId: !If [CreateUserPool, !Ref UserPool, !Ref ExistingUserPoolId]
           AllowedAudience:
-            - !Ref UserPoolClient
+            - !If [CreateUserPool, !Ref UserPoolClient, !Ref ExistingClientId]
 
 Outputs:
   UserPoolId:
-    Value: !Ref UserPool
+    Value: !If [CreateUserPool, !Ref UserPool, !Ref ExistingUserPoolId]
   UserPoolClientId:
-    Value: !Ref UserPoolClient
+    Value: !If [CreateUserPool, !Ref UserPoolClient, !Ref ExistingClientId]
   AgentRuntimeArn:
     Value: !GetAtt AgentRuntime.AgentRuntimeArn
     Description: Frontend must URL-encode this in the invoke path
