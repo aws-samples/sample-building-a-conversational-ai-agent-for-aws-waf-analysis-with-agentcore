@@ -87,6 +87,7 @@ Constraints:
 ## Host Profiling
 
 Run host_traffic_profile — tool auto-classifies each host as Web/API/Mixed with recommendations.
+If host has very few HTML URIs (1-2) but many API calls from same host → likely SPA, ask user about WAF Client SDK before recommending Targeted Bot Control.
 Cannot determine from logs alone: SDK deployment status, SPA architecture, native-app-only paths → ask_user
 Scope-down exclusions must use URI/IP/header — NOT request body (WAF doesn't inspect body for scope-down).
 
