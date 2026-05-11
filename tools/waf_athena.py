@@ -384,8 +384,17 @@ def _wait_query(athena, qid: str):
 # ---------------------------------------------------------------------------
 
 
-def _ensure_table(region: str) -> str:
-    """Ensure Athena table is ready. Returns full table name. Lazy init on first call."""
+class _NoTableError(Exception):
+    """Raised when no Athena table exists and user hasn't chosen a table_mode."""
+    pass
+
+
+def _ensure_table(region: str, table_mode: str = "") -> str:
+    """Ensure Athena table is ready. Returns full table name.
+
+    If no existing table found and table_mode is empty, raises _NoTableError
+    with a prompt for the LLM to ask the user.
+    """
     if _athena_state["table"]:
         return _athena_state["table"]
 
@@ -414,6 +423,18 @@ def _ensure_table(region: str) -> str:
         _athena_state["table"] = existing
         return existing
 
+    # No table found — if no table_mode specified, ask user
+    if not table_mode:
+        raise _NoTableError(
+            "No Athena table found for this WebACL's S3 logs.\n"
+            "---\n"
+            "Call ask_user() to ask: should I create a permanent Athena table "
+            "(reusable across sessions, ~10s one-time setup) or a temporary table "
+            "(auto-deleted when this session ends)?\n"
+            "Then call run_athena_query again with table_mode=\"permanent\" or "
+            "table_mode=\"temporary\" based on their answer."
+        )
+
     # Detect partitions and create table
     if not _validate_waf_log(s3_path):
         raise RuntimeError(f"S3 path does not contain valid WAF logs: {s3_path}")
@@ -422,9 +443,14 @@ def _ensure_table(region: str) -> str:
     _athena_state["partition_format"] = part_fmt
 
     workgroup = "primary"
-    full_table = _create_temp_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup)
-    _athena_state["table"] = full_table
-    _athena_state["temp_created"] = True
+    if table_mode == "permanent":
+        full_table = _create_temp_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup)
+        _athena_state["table"] = full_table
+        _athena_state["temp_created"] = False  # permanent — don't cleanup
+    else:
+        full_table = _create_temp_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup)
+        _athena_state["table"] = full_table
+        _athena_state["temp_created"] = True  # temporary — cleanup on exit
     return full_table
 
 
@@ -604,11 +630,13 @@ def run_athena_query(
     host: str = "",
     hours_ago: int = 168,
     limit: int = 25,
+    table_mode: str = "",
 ) -> str:
     """Run a WAF log query via Athena (for S3-stored logs).
 
     Same interface as run_logs_query — same query_types, same output format.
-    Automatically discovers S3 path, creates temp Athena table if needed.
+    Automatically discovers S3 path. If no Athena table exists, returns a prompt
+    asking the user to choose permanent or temporary table creation.
 
     Args:
         query_type: Same types as run_logs_query (count_rule_top_ips, ip_cross_query, etc.)
@@ -619,9 +647,10 @@ def run_athena_query(
         host: Hostname (for host_* queries).
         hours_ago: How far back to query (default 168 = 7 days).
         limit: Max results (default 25).
+        table_mode: "permanent" or "temporary". Only needed on first call if no table exists.
 
     Returns:
-        Query results as a table, or error message.
+        Query results as a table, or error/prompt message.
     """
     from tools.session_state import get_metrics_region
     region = get_metrics_region()
@@ -635,7 +664,9 @@ def run_athena_query(
     host = re.sub(r"['\"|;`\\]", "", host)
 
     try:
-        table = _ensure_table(region)
+        table = _ensure_table(region, table_mode)
+    except _NoTableError as e:
+        return str(e)
     except RuntimeError as e:
         return f"Error: {e}"
 
