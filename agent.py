@@ -38,6 +38,10 @@ and generate weekly security reports for management.
 - When multiple WebACLs exist and user didn't specify which one: get_waf_config will interrupt automatically.
 - Asking is FAST — the user is watching. Wrong assumptions waste more time than a quick question.
 
+## Time range handling
+- When user gives a specific date (e.g., "May 9", "yesterday"), pass it as start_time parameter to run_logs_query (e.g., start_time="2026-05-09"). The tool handles date parsing — do NOT calculate hours_ago yourself.
+- Bypass detection queries (top_allowed_crawlers, top_allowed_repeaters, ip_*) are automatically capped at 24 hours by the tool.
+
 ## Investigation Workflow (COUNT Rule Evaluation)
 
 When user asks about a COUNT rule (e.g. "is this rule safe to turn to BLOCK?"):

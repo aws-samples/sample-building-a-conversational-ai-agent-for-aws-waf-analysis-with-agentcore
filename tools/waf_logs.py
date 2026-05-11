@@ -152,6 +152,19 @@ def _sanitize_param(value: str) -> str:
     return re.sub(r"['\"|;`\\]", "", value)
 
 
+def _parse_start_time(value: str) -> int | None:
+    """Parse a date/datetime string to epoch seconds. Returns None on failure."""
+    from datetime import datetime, timezone
+    value = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+            return int(dt.timestamp())
+        except ValueError:
+            continue
+    return None
+
+
 @tool
 def run_logs_query(
     query_type: str,
@@ -162,6 +175,7 @@ def run_logs_query(
     action: str = "",
     host: str = "",
     hours_ago: int = 24,
+    start_time: str = "",
     limit: int = 25,
 ) -> str:
     """Run a predefined WAF log query against CloudWatch Logs Insights.
@@ -196,7 +210,8 @@ def run_logs_query(
         label: WAF label name (for label_top_ips).
         action: Action value — BLOCK, ALLOW, COUNT (for action_timeline).
         host: Hostname (for host_uri_pattern, host_method_distribution).
-        hours_ago: How far back to query (default 24 hours).
+        hours_ago: How far back to query (default 24h). Bypass detection queries capped at 24h max.
+        start_time: Specific start date (e.g., "2026-05-09" or "2026-05-09T14:00"). Overrides hours_ago. Pass the user's date directly.
         limit: Max results (default 25, max 25).
 
     Returns:
@@ -240,14 +255,30 @@ def run_logs_query(
     if hours_ago > MAX_HOURS:
         return f"Error: max time range is {MAX_HOURS} hours (7 days). For longer ranges, use Athena. Requested: {hours_ago}h"
 
-    end_time = int(time.time())
-    start_time = end_time - (hours_ago * 3600)
+    # Hard cap: bypass/crawler queries max 24 hours (prevent expensive full-week scans)
+    _NARROW_TYPES = {"top_allowed_crawlers", "top_allowed_repeaters", "ip_unique_uris",
+                     "ip_request_rate", "ip_diversity", "ip_uri_breakdown"}
+    if query_type in _NARROW_TYPES and hours_ago > 24:
+        hours_ago = 24
+
+    # Time range calculation
+    end_epoch = int(time.time())
+    if start_time:
+        # Parse user-provided date (e.g., "2026-05-09", "2026-05-09T14:00")
+        start_epoch = _parse_start_time(start_time)
+        if start_epoch is None:
+            return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
+        # Cap at 24h for narrow types
+        if query_type in _NARROW_TYPES and (end_epoch - start_epoch) > 86400:
+            start_epoch = end_epoch - 86400
+    else:
+        start_epoch = end_epoch - (hours_ago * 3600)
 
     with _cwl_semaphore:
         resp = client.start_query(
             logGroupName=log_group,
-            startTime=start_time,
-            endTime=end_time,
+            startTime=start_epoch,
+            endTime=end_epoch,
             queryString=query,
             limit=params["limit"],
         )
