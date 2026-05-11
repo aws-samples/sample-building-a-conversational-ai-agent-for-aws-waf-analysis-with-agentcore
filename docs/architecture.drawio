@@ -1,116 +1,114 @@
-<mxfile host="app.diagrams.net" modified="2026-05-11T13:05:00.000Z" agent="WAF Agent" version="24.0.0">
+<mxfile host="app.diagrams.net" modified="2026-05-11T14:17:00.000Z" agent="WAF Agent" version="24.0.0">
   <diagram name="Architecture" id="arch-1">
-    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+    <mxGraphModel dx="1422" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
 
-        <!-- User Browser -->
-        <mxCell id="user-group" value="User Browser" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=5;" vertex="1" parent="1">
-          <mxGeometry x="50" y="350" width="160" height="80" as="geometry" />
+        <!-- User -->
+        <mxCell id="user" value="Security Engineer" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#232F3E;align=center;strokeWidth=1;fontSize=11;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.user" vertex="1" parent="1">
+          <mxGeometry x="80" y="400" width="60" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="spa" value="React SPA&#xa;(SSE Streaming)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="70" y="375" width="120" height="40" as="geometry" />
-        </mxCell>
-
-        <!-- Frontend (us-east-1) -->
-        <mxCell id="fe-group" value="Frontend (us-east-1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=5;dashed=1;" vertex="1" parent="1">
-          <mxGeometry x="300" y="280" width="200" height="220" as="geometry" />
-        </mxCell>
-        <mxCell id="waf-fe" value="WAF WebACL&#xa;Anti-DDoS · IP Rep&#xa;Rate-limit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=9;" vertex="1" parent="1">
-          <mxGeometry x="325" y="310" width="150" height="50" as="geometry" />
-        </mxCell>
-        <mxCell id="cf" value="CloudFront" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="350" y="380" width="100" height="35" as="geometry" />
-        </mxCell>
-        <mxCell id="s3" value="S3 Bucket&#xa;(Static Assets)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#d6b656;fontSize=9;" vertex="1" parent="1">
-          <mxGeometry x="350" y="435" width="100" height="40" as="geometry" />
+        <mxCell id="browser" value="React SPA&#xa;(SSE Streaming)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#232F3E;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.client" vertex="1" parent="1">
+          <mxGeometry x="180" y="400" width="60" height="60" as="geometry" />
         </mxCell>
 
-        <!-- Backend -->
-        <mxCell id="be-group" value="Backend (ap-northeast-1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=5;dashed=1;" vertex="1" parent="1">
-          <mxGeometry x="580" y="180" width="380" height="430" as="geometry" />
+        <!-- Frontend Group -->
+        <mxCell id="fe-group" value="Frontend (us-east-1)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#147EBA;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="320" y="300" width="220" height="280" as="geometry" />
         </mxCell>
-        <mxCell id="cognito" value="Cognito&#xa;User Pool" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="610" y="220" width="100" height="40" as="geometry" />
+        <mxCell id="waf-fe" value="AWS WAF" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf" vertex="1" parent="1">
+          <mxGeometry x="390" y="330" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="ac" value="AgentCore Runtime&#xa;(microVM per session)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;" vertex="1" parent="1">
-          <mxGeometry x="610" y="300" width="320" height="50" as="geometry" />
+        <mxCell id="cf" value="CloudFront" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront" vertex="1" parent="1">
+          <mxGeometry x="390" y="410" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="agent" value="Strands Agent (FastAPI + SSE)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="630" y="370" width="280" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="tools" value="12 Tools: WAF Config · Metrics · Logs · Athena · IP Analysis&#xa;Bot/DDoS Detection · JA4 · Review · ROI Report · ask_user" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666;fontSize=8;" vertex="1" parent="1">
-          <mxGeometry x="630" y="425" width="280" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="bedrock" value="Bedrock&#xa;Bedrock LLM" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="610" y="500" width="120" height="40" as="geometry" />
-        </mxCell>
-        <mxCell id="memory" value="AgentCore Memory&#xa;(cross-session LTM)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" vertex="1" parent="1">
-          <mxGeometry x="780" y="500" width="140" height="40" as="geometry" />
+        <mxCell id="s3" value="S3" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#3F8624;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3" vertex="1" parent="1">
+          <mxGeometry x="390" y="490" width="48" height="48" as="geometry" />
         </mxCell>
 
-        <!-- Customer AWS Resources -->
-        <mxCell id="aws-group" value="Customer AWS Resources (Read-Only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666;verticalAlign=top;fontStyle=1;fontSize=12;spacingTop=5;dashed=1;" vertex="1" parent="1">
-          <mxGeometry x="1050" y="280" width="200" height="280" as="geometry" />
+        <!-- Backend Group -->
+        <mxCell id="be-group" value="Backend (ap-northeast-1)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#147EBA;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="620" y="200" width="420" height="500" as="geometry" />
         </mxCell>
-        <mxCell id="wafv2" value="WAFv2 API" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#666;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="1080" y="315" width="140" height="30" as="geometry" />
+        <mxCell id="cognito" value="Cognito" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cognito" vertex="1" parent="1">
+          <mxGeometry x="660" y="240" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="cw" value="CloudWatch&#xa;Metrics + Logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#666;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="1080" y="365" width="140" height="40" as="geometry" />
+        <mxCell id="ac" value="AgentCore&#xa;Runtime" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock" vertex="1" parent="1">
+          <mxGeometry x="660" y="360" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="athena" value="Athena&#xa;(S3 WAF Logs)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#666;fontSize=10;" vertex="1" parent="1">
-          <mxGeometry x="1080" y="425" width="140" height="40" as="geometry" />
+        <mxCell id="agent-box" value="Strands Agent&#xa;FastAPI + 12 Tools&#xa;(microVM per session)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#147EBA;fontSize=10;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="740" y="340" width="170" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="glue" value="Glue Catalog&#xa;(temp tables)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#666;fontSize=9;" vertex="1" parent="1">
-          <mxGeometry x="1080" y="485" width="140" height="35" as="geometry" />
+        <mxCell id="bedrock" value="Bedrock&#xa;LLM" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock" vertex="1" parent="1">
+          <mxGeometry x="660" y="500" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="memory" value="AgentCore&#xa;Memory" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock" vertex="1" parent="1">
+          <mxGeometry x="800" y="500" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- Customer Resources Group -->
+        <mxCell id="aws-group" value="Customer AWS Resources (Read-Only)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="280" width="200" height="320" as="geometry" />
+        </mxCell>
+        <mxCell id="wafv2" value="WAFv2" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf" vertex="1" parent="1">
+          <mxGeometry x="1190" y="310" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="cw" value="CloudWatch" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch" vertex="1" parent="1">
+          <mxGeometry x="1190" y="390" width="48" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="athena" value="Athena" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena" vertex="1" parent="1">
+          <mxGeometry x="1190" y="470" width="48" height="48" as="geometry" />
         </mxCell>
 
         <!-- Arrows -->
-        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;" edge="1" source="spa" target="waf-fe" parent="1">
+        <mxCell id="e0" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#232F3E;" edge="1" source="user" target="browser" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#d6b656;" edge="1" source="waf-fe" target="cf" parent="1">
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#147EBA;" edge="1" source="browser" target="waf-fe" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#d6b656;" edge="1" source="cf" target="s3" parent="1">
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#8C4FFF;" edge="1" source="waf-fe" target="cf" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;dashed=1;" edge="1" source="spa" target="cognito" parent="1">
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#3F8624;" edge="1" source="cf" target="s3" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4-label" value="① Auth (SRP)&#xa;② JWT Token" style="edgeLabel;html=1;fontSize=8;fillColor=none;" vertex="1" connectable="0" parent="e4">
-          <mxGeometry x="-0.3" relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
-        </mxCell>
-        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#9673a6;strokeWidth=2;" edge="1" source="spa" target="ac" parent="1">
+        <!-- Auth flow -->
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#DD344C;dashed=1;" edge="1" source="browser" target="cognito" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e5-label" value="③ POST /invocations&#xa;Bearer JWT · SSE Stream" style="edgeLabel;html=1;fontSize=8;fillColor=none;" vertex="1" connectable="0" parent="e5">
-          <mxGeometry x="-0.2" relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
-        </mxCell>
-        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;" edge="1" source="agent" target="bedrock" parent="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e6b" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#9673a6;dashed=1;" edge="1" source="agent" target="memory" parent="1">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e6b-label" value="STM + LTM" style="edgeLabel;html=1;fontSize=8;fillColor=none;" vertex="1" connectable="0" parent="e6b">
+        <mxCell id="e4-label" value="JWT Auth" style="edgeLabel;html=1;fontSize=9;fillColor=none;" vertex="1" connectable="0" parent="e4">
           <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
         </mxCell>
-        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666;" edge="1" source="tools" target="wafv2" parent="1">
+        <!-- SSE to AgentCore -->
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#01A88D;strokeWidth=2;" edge="1" source="browser" target="ac" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666;" edge="1" source="tools" target="cw" parent="1">
+        <mxCell id="e5-label" value="SSE Stream&#xa;(Bearer JWT)" style="edgeLabel;html=1;fontSize=9;fillColor=none;" vertex="1" connectable="0" parent="e5">
+          <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
+        </mxCell>
+        <!-- AgentCore to Agent -->
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#01A88D;" edge="1" source="ac" target="agent-box" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#666;" edge="1" source="tools" target="athena" parent="1">
+        <!-- Agent to Bedrock -->
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#01A88D;" edge="1" source="agent-box" target="bedrock" parent="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-
-        <!-- Hook note -->
-        <mxCell id="hook-note" value="PreQueryGuard Hook:&#xa;Blocks log queries until&#xa;WebACL configured" style="shape=note;whiteSpace=wrap;html=1;size=14;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=8;align=left;spacingLeft=4;" vertex="1" parent="1">
-          <mxGeometry x="630" y="560" width="150" height="50" as="geometry" />
+        <!-- Agent to Memory -->
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#01A88D;dashed=1;" edge="1" source="agent-box" target="memory" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- Agent to Customer Resources -->
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" edge="1" source="agent-box" target="wafv2" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" edge="1" source="agent-box" target="cw" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" edge="1" source="agent-box" target="athena" parent="1">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
 
       </root>
