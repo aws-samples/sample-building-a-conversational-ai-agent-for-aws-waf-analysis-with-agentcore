@@ -117,6 +117,24 @@ To use an existing Memory resource instead of auto-creating:
 --parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=mem-xxxxxxxxxxxx
 ```
 
+### Existing Cognito User Pool (optional)
+
+By default, the template creates a new Cognito User Pool. To use an existing one:
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    ExistingUserPoolId=us-east-1_XXXXXXXXX \
+    ExistingClientId=xxxxxxxxxxxxxxxxxxxxxxxxxx \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+When using an existing pool, deleting the stack will **not** delete your User Pool.
+
 Wait for `CREATE_COMPLETE`, then get outputs:
 
 ```bash
@@ -250,7 +268,7 @@ aws s3 rm s3://$BUCKET --recursive
 # 2. Delete frontend stack (CloudFront deletion takes 5-10 minutes)
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
-# 3. Delete backend stack (includes AgentCore Runtime + Cognito + Memory)
+# 3. Delete backend stack (includes AgentCore Runtime + Memory; Cognito only if auto-created)
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
 # 4. Delete ECR repository

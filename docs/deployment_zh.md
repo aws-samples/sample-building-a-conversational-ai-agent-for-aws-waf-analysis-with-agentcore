@@ -117,6 +117,24 @@ AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 
 --parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=mem-xxxxxxxxxxxx
 ```
 
+### 使用现有 Cognito User Pool（可选）
+
+默认情况下模板会创建新的 Cognito User Pool。如需使用现有的：
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    ExistingUserPoolId=us-east-1_XXXXXXXXX \
+    ExistingClientId=xxxxxxxxxxxxxxxxxxxxxxxxxx \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+使用现有 Pool 时，删除 stack **不会**删除你的 User Pool。
+
 等待 `CREATE_COMPLETE`，然后获取输出：
 
 ```bash
@@ -250,7 +268,7 @@ aws s3 rm s3://$BUCKET --recursive
 # 2. 删除前端栈（CloudFront 删除需要 5-10 分钟）
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
-# 3. 删除后端栈（包含 AgentCore Runtime + Cognito + Memory）
+# 3. 删除后端栈（包含 AgentCore Runtime + Memory；Cognito 仅在自动创建时删除）
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
 # 4. 删除 ECR 仓库
