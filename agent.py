@@ -86,12 +86,7 @@ Constraints:
 
 ## Host Profiling
 
-Determine traffic type before recommending Anti-DDoS or Bot Control:
-- Pure Web (mostly GET, HTML pages) → AMR defaults, Targeted Bot Control
-- Pure API (high POST/PUT/DELETE, /api/*) → AMR with Challenge disabled, Common Bot Control only
-- SPA → Targeted only with WAF Client SDK (ask user about SDK integration)
-- Mixed → present options with trade-offs, let user decide
-
+Run host_traffic_profile — tool auto-classifies each host as Web/API/Mixed with recommendations.
 Cannot determine from logs alone: SDK deployment status, SPA architecture, native-app-only paths → ask_user
 Scope-down exclusions must use URI/IP/header — NOT request body (WAF doesn't inspect body for scope-down).
 
@@ -110,24 +105,9 @@ Scope-down exclusions must use URI/IP/header — NOT request body (WAF doesn't i
 
 ## Deep Investigation
 
-Use ip_labels query to see all WAF labels on a specific IP, then interpret:
-
-**Bot Control labels**:
-- bot:name:X + bot:verified → real bot (Googlebot etc), should be allowed
-- bot:name:X + bot:unverified → claims to be bot but fails reverse DNS → Block
-- signal:non_browser_user_agent → non-browser UA detected
-- TGT_VolumetricSession → behavioral anomaly (session-level)
-- TGT_SignalAutomatedBrowser → browser automation detected
-- TGT_TokenReuseIP → same token used from multiple IPs
-- No bot labels at all → Bot Control didn't detect it → browser-UA bot, needs Targeted
-
-**Anti-DDoS AMR labels**:
-- event-detected → AMR triggered an event
-- ddos-request → IP flagged as part of DDoS
-- high/medium/low-suspicion-ddos-request → severity level (high=Block by default)
-- No ddos-request label on high-volume IP → distributed attack below per-IP threshold
-
-**Cross-reference**: bot labels + ddos labels on same IP = bot-driven DDoS
+Use ip_labels query — tool auto-interprets labels (Bot Control, Targeted signals, Anti-DDoS suspicion).
+Cross-reference: bot labels + ddos labels on same IP = bot-driven DDoS.
+No labels on high-volume IP = undetected bot (needs Targeted) or distributed attack below threshold.
 
 ## Recording Findings
 
