@@ -242,13 +242,18 @@ aws cloudformation deploy \
 ## 清理
 
 ```bash
-# 删除前端（CloudFront 删除需要 5-10 分钟）
+# 1. 清空前端 S3 桶（CFN 无法删除非空桶）
+BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
+aws s3 rm s3://$BUCKET --recursive
+
+# 2. 删除前端栈（CloudFront 删除需要 5-10 分钟）
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
-# 删除后端
+# 3. 删除后端栈（包含 AgentCore Runtime + Cognito + Memory）
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 删除 ECR 仓库
+# 4. 删除 ECR 仓库
 aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
 

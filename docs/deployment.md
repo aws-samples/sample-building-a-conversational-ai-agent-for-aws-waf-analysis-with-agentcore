@@ -242,13 +242,18 @@ aws cloudformation deploy \
 ## Cleanup
 
 ```bash
-# Delete frontend (CloudFront deletion takes 5-10 minutes)
+# 1. Empty the frontend S3 bucket (CFN cannot delete non-empty buckets)
+BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
+aws s3 rm s3://$BUCKET --recursive
+
+# 2. Delete frontend stack (CloudFront deletion takes 5-10 minutes)
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
-# Delete backend
+# 3. Delete backend stack (includes AgentCore Runtime + Cognito + Memory)
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# Delete ECR repository
+# 4. Delete ECR repository
 aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
 
