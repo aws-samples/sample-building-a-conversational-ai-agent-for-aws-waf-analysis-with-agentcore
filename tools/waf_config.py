@@ -1,6 +1,7 @@
 """WAF configuration tools — list WebACLs and get config."""
 
 from strands import tool
+from strands.types.tools import ToolContext
 from tools.aws_session import get_client
 from tools.session_state import set_webacl_context, set_capabilities
 
@@ -33,12 +34,12 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     return "\n".join(lines)
 
 
-@tool
-def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
+@tool(context=True)
+def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     """Get WebACL configuration including rules and logging destination.
 
     Args:
-        webacl_name: Name of the WebACL.
+        webacl_name: Name of the WebACL. If empty or ambiguous, will ask user to choose.
         scope: WAF scope — "CLOUDFRONT" or "REGIONAL".
         region: AWS region. For CLOUDFRONT, must be us-east-1.
 
@@ -52,6 +53,20 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
 
     # Find WebACL by name
     acls = client.list_web_acls(Scope=scope).get("WebACLs", [])
+
+    # If no name given and multiple WebACLs exist, interrupt to ask user
+    if not webacl_name:
+        if len(acls) == 1:
+            webacl_name = acls[0]["Name"]
+        elif len(acls) > 1:
+            names = [a["Name"] for a in acls]
+            webacl_name = tool_context.interrupt("select_webacl", reason={
+                "question": f"Found {len(acls)} WebACLs: {', '.join(names)}. Which one should I analyze?",
+                "options": names,
+            })
+        else:
+            return f"No WebACLs found (scope={scope}, region={region})"
+
     match = next((a for a in acls if a["Name"] == webacl_name), None)
     if not match:
         return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"

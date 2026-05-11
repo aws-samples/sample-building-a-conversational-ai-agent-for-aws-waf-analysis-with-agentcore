@@ -9,12 +9,16 @@ from strands.types.tools import ToolContext
 def ask_user(tool_context: ToolContext, question: str, context: str = "") -> str:
     """Ask the user a clarifying question and wait for their response.
 
-    Use this when you need specific information to proceed with the investigation:
-    - Time range (when did the issue start/end?)
-    - Affected service (which domain/endpoint?)
-    - Whether to continue investigating more IPs/time ranges
+    This is FAST — the user is actively watching the chat and will respond immediately.
+    Prefer asking over guessing. Wrong assumptions waste more time than a quick question.
 
-    Do NOT ask more than 2 questions at a time. Prefer to auto-discover via APIs first.
+    Use this when you need specific information to proceed:
+    - Time range for investigation
+    - Which domain/host is affected
+    - Whether to continue analyzing more IPs/time ranges
+    - SDK integration status, SPA architecture decisions
+
+    Do NOT ask more than 2 questions at a time.
 
     Args:
         question: The question to ask the user. Be specific and provide options when possible.
