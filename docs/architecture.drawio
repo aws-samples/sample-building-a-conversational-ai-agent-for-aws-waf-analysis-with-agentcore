@@ -6,10 +6,10 @@
         <mxCell id="1" parent="0" />
 
         <!-- User -->
-        <mxCell id="user" value="Security Engineer" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#232F3E;fontColor=#232F3E;align=center;strokeWidth=1;fontSize=11;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.user;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
+        <mxCell id="user" value="Security Engineer" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#D45B07;fontColor=#232F3E;align=center;strokeWidth=1;fontSize=11;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.users;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="80" y="400" width="60" height="60" as="geometry" />
         </mxCell>
-        <mxCell id="browser" value="React SPA&#xa;(SSE Streaming)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#232F3E;fontColor=#232F3E;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.client;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
+        <mxCell id="browser" value="React SPA&#xa;(SSE Streaming)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#D45B07;fontColor=#232F3E;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.client;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="180" y="400" width="60" height="60" as="geometry" />
         </mxCell>
 
