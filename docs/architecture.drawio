@@ -17,13 +17,13 @@
         <mxCell id="fe-group" value="Frontend (us-east-1)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#147EBA;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
           <mxGeometry x="320" y="300" width="220" height="280" as="geometry" />
         </mxCell>
-        <mxCell id="waf-fe" value="AWS WAF" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf" vertex="1" parent="1">
+        <mxCell id="waf-fe" value="AWS WAF" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="390" y="330" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="cf" value="CloudFront" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront" vertex="1" parent="1">
+        <mxCell id="cf" value="CloudFront" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudfront;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="390" y="410" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="s3" value="S3" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#3F8624;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3" vertex="1" parent="1">
+        <mxCell id="s3" value="S3" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#3F8624;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="390" y="490" width="48" height="48" as="geometry" />
         </mxCell>
 
@@ -31,19 +31,19 @@
         <mxCell id="be-group" value="Backend (ap-northeast-1)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_region;strokeColor=#147EBA;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
           <mxGeometry x="620" y="200" width="420" height="500" as="geometry" />
         </mxCell>
-        <mxCell id="cognito" value="Cognito" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cognito" vertex="1" parent="1">
+        <mxCell id="cognito" value="Cognito" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cognito;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="660" y="240" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="ac" value="AgentCore&#xa;Runtime" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock" vertex="1" parent="1">
+        <mxCell id="ac" value="AgentCore&#xa;Runtime" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="660" y="360" width="48" height="48" as="geometry" />
         </mxCell>
         <mxCell id="agent-box" value="Strands Agent&#xa;FastAPI + 12 Tools&#xa;(microVM per session)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#147EBA;fontSize=10;verticalAlign=middle;" vertex="1" parent="1">
           <mxGeometry x="740" y="340" width="170" height="90" as="geometry" />
         </mxCell>
-        <mxCell id="bedrock" value="Bedrock&#xa;LLM" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock" vertex="1" parent="1">
+        <mxCell id="bedrock" value="Bedrock&#xa;LLM" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="660" y="500" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="memory" value="AgentCore&#xa;Memory" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock" vertex="1" parent="1">
+        <mxCell id="memory" value="AgentCore&#xa;Memory" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="800" y="500" width="48" height="48" as="geometry" />
         </mxCell>
 
@@ -51,13 +51,13 @@
         <mxCell id="aws-group" value="Customer AWS Resources (Read-Only)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" vertex="1" parent="1">
           <mxGeometry x="1120" y="280" width="200" height="320" as="geometry" />
         </mxCell>
-        <mxCell id="wafv2" value="WAFv2" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf" vertex="1" parent="1">
+        <mxCell id="wafv2" value="WAFv2" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="1190" y="310" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="cw" value="CloudWatch" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch" vertex="1" parent="1">
+        <mxCell id="cw" value="CloudWatch" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.cloudwatch;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="1190" y="390" width="48" height="48" as="geometry" />
         </mxCell>
-        <mxCell id="athena" value="Athena" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena" vertex="1" parent="1">
+        <mxCell id="athena" value="Athena" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#8C4FFF;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.athena;verticalLabelPosition=bottom;verticalAlign=top" vertex="1" parent="1">
           <mxGeometry x="1190" y="470" width="48" height="48" as="geometry" />
         </mxCell>
 
