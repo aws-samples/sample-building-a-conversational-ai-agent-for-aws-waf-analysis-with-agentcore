@@ -213,8 +213,8 @@ def run_logs_query(
         label: WAF label name (for label_top_ips).
         action: Action value — BLOCK, ALLOW, COUNT (for action_timeline).
         host: Hostname (for host_uri_pattern, host_method_distribution).
-        hours_ago: How far back to query (default 24h). Bypass detection queries capped at 24h max.
-        start_time: Specific start date (e.g., "2026-05-09" or "2026-05-09T14:00"). Overrides hours_ago. Pass the user's date directly.
+        hours_ago: How far back to query (default 24h), or duration from start_time if start_time is given. Bypass detection queries capped at 24h max.
+        start_time: Specific start date (e.g., "2026-05-09" or "2026-05-09T14:00"). Overrides hours_ago direction. Pass the user's date directly.
         limit: Max results (default 25, max 25).
 
     Returns:
@@ -271,9 +271,8 @@ def run_logs_query(
         start_epoch = _parse_start_time(start_time)
         if start_epoch is None:
             return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-        # Cap at 24h for narrow types
-        if query_type in _NARROW_TYPES and (end_epoch - start_epoch) > 86400:
-            start_epoch = end_epoch - 86400
+        # hours_ago becomes "duration from start" (default 24h if not specified)
+        end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
     else:
         start_epoch = end_epoch - (hours_ago * 3600)
 
@@ -350,8 +349,8 @@ def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
 
     Args:
         ip: IP address to analyze.
-        hours_ago: Time window (default 6 hours). Capped at 24 hours.
-        start_time: Specific start date (e.g., "2026-05-09"). Overrides hours_ago. Pass user's date directly.
+        hours_ago: Time window duration (default 6h). When start_time is given, this is duration from start. Capped at 24h.
+        start_time: Specific start date (e.g., "2026-05-09"). Overrides hours_ago direction. Pass user's date directly.
 
     Returns:
         Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
@@ -377,8 +376,7 @@ def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
         parsed = _parse_start_time(start_time)
         if parsed:
             start_epoch = parsed
-            if (end_epoch - start_epoch) > 86400:
-                start_epoch = end_epoch - 86400
+            end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
         else:
             start_epoch = end_epoch - (hours_ago * 3600)
     else:
