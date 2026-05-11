@@ -64,10 +64,28 @@ def get_waf_config(tool_context: ToolContext, webacl_name: str = "", scope: str 
                 "question": f"Found {len(acls)} WebACLs: {', '.join(names)}. Which one should I analyze?",
                 "options": names,
             })
+        elif scope == "REGIONAL":
+            # No WebACLs in this region — ask user which region
+            webacl_name = tool_context.interrupt("select_region", reason={
+                "question": f"No WebACLs found in {region}. Which AWS region is your WebACL in? (e.g., us-west-2, ap-northeast-1)",
+            })
+            # User might reply with a region — retry handled by agent on next call
+            return f"No WebACLs found in {region}. User suggested: {webacl_name}. Please retry with the correct region."
         else:
             return f"No WebACLs found (scope={scope}, region={region})"
 
+    # Fuzzy match if exact match fails (user might reply with partial name)
     match = next((a for a in acls if a["Name"] == webacl_name), None)
+    if not match:
+        match = next((a for a in acls if webacl_name.lower() in a["Name"].lower()), None)
+    if not match:
+        # Try numeric index (user might say "1" or "the first one")
+        try:
+            idx = int(webacl_name.strip().rstrip('.')) - 1
+            if 0 <= idx < len(acls):
+                match = acls[idx]
+        except (ValueError, IndexError):
+            pass
     if not match:
         return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"
 
