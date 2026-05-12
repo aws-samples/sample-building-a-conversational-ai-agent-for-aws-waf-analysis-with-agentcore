@@ -11,7 +11,7 @@ import { config } from './config';
  * @param {string} sessionId - Session ID (≥33 chars)
  * @param {Array|null} interruptResponses - Resume payload [{interruptId, response}]
  */
-export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null, userEmail = '') {
+export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const url = `${config.agentEndpoint}/runtimes/${arn}/invocations`;
 
@@ -46,7 +46,6 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
       'Accept': 'text/event-stream',
       'Authorization': `Bearer ${token}`,
       'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
-      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
     },
     body: JSON.stringify(body),
   });
@@ -83,13 +82,10 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
 /**
  * List user's session history.
  */
-export async function listSessions(token, userEmail) {
+export async function listSessions(token) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
-    },
+    headers: { 'Authorization': `Bearer ${token}` },
   });
   if (!res.ok) return [];
   const data = await res.json();
@@ -99,13 +95,10 @@ export async function listSessions(token, userEmail) {
 /**
  * Get messages for a specific session.
  */
-export async function getSessionMessages(token, userEmail, sessionId) {
+export async function getSessionMessages(token, sessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions/${sessionId}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
-    },
+    headers: { 'Authorization': `Bearer ${token}` },
   });
   if (!res.ok) return [];
   const data = await res.json();
@@ -115,13 +108,10 @@ export async function getSessionMessages(token, userEmail, sessionId) {
 /**
  * Delete a session.
  */
-export async function deleteSession(token, userEmail, sessionId) {
+export async function deleteSession(token, sessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions/${sessionId}`, {
     method: 'DELETE',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
-    },
+    headers: { 'Authorization': `Bearer ${token}` },
   });
 }

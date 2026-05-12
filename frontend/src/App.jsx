@@ -199,8 +199,7 @@ export default function App() {
   async function loadSessions() {
     try {
       const token = await getToken();
-      const profile = await getUserProfile().catch(() => null);
-      const list = await listSessions(token, profile?.email || '');
+      const list = await listSessions(token);
       setSessions(list);
     } catch {}
   }
@@ -209,8 +208,7 @@ export default function App() {
     if (sid === activeSessionId) return;
     try {
       const token = await getToken();
-      const profile = await getUserProfile().catch(() => null);
-      const msgs = await getSessionMessages(token, profile?.email || '', sid);
+      const msgs = await getSessionMessages(token, sid);
       setMessages(msgs.map(m => ({ role: m.role, content: m.content, tools: m.tools?.map(t => ({ ...t })) || [] })));
       sessionId.current = generateSessionId(); // new runtime session (old container dead)
       setActiveSessionId(sid);
@@ -227,8 +225,7 @@ export default function App() {
     e.stopPropagation();
     try {
       const token = await getToken();
-      const profile = await getUserProfile().catch(() => null);
-      await deleteSession(token, profile?.email || '', sid);
+      await deleteSession(token, sid);
       setSessions(prev => prev.filter(s => s.sessionId !== sid));
       if (sid === activeSessionId) handleNewSession();
     } catch {}
@@ -285,12 +282,10 @@ export default function App() {
     setLoading(true);
     try {
       const token = await getToken();
-      const profile = await getUserProfile().catch(() => null);
-      const userEmail = profile?.email || '';
       let assistantMsg = { role: 'assistant', content: '', tools: [] };
       setMessages(prev => [...prev, assistantMsg]);
 
-      for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses, userEmail)) {
+      for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses)) {
         switch (event.type) {
           case 'TEXT_MESSAGE_CONTENT':
             assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
