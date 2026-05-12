@@ -99,7 +99,7 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:GetAuthorizationToken
                 Resource: '*'
-              - Sid: AWS WAF
+              - Sid: Waf
                 Effect: Allow
                 Action:
                   - wafv2:GetWebACL
@@ -144,7 +144,7 @@ Resources:
                   - glue:DeleteTable
                   - glue:CreateDatabase
                 Resource: '*'
-              - Sid: Amazon Bedrock
+              - Sid: Bedrock
                 Effect: Allow
                 Action:
                   - bedrock:InvokeModel

@@ -198,7 +198,7 @@ def run_logs_query(
             - top_allowed_crawlers: IPs with high URI diversity (content crawlers, scrapers)
             - top_allowed_repeaters: IPs hitting few URIs at high frequency (scalpers, flash sale bots)
             - top_countries_blocked: Top blocked countries
-            - label_top_ips: Top IPs for a AWS WAF label (needs label)
+            - label_top_ips: Top IPs for an AWS WAF label (needs label)
             - ip_labels: All AWS WAF labels on a specific IP — Bot Control, Anti-DDoS, signals (needs ip)
             - action_timeline: Timeline of an action (needs action)
             - token_reuse_ips: Detect token reuse across multiple IPs

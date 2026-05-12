@@ -143,7 +143,7 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str]:
 
 
 def _validate_waf_log(s3_path: str) -> bool:
-    """Download one .gz file and verify it's a AWS WAF log."""
+    """Download one .gz file and verify it's an AWS WAF log."""
     parts = s3_path.replace("s3://", "").split("/", 1)
     bucket = parts[0]
     prefix = parts[1] if len(parts) > 1 else ""
@@ -641,7 +641,7 @@ def run_athena_query(
     limit: int = 25,
     table_mode: str = "",
 ) -> str:
-    """Run a AWS WAF log query via Athena (for S3-stored logs).
+    """Run an AWS WAF log query via Athena (for S3-stored logs).
 
     Same interface as run_logs_query — same query_types, same output format.
     Automatically discovers S3 path. If no Athena table exists, returns a prompt

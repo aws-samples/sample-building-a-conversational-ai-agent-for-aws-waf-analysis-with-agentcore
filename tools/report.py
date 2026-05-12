@@ -195,7 +195,7 @@ document.documentElement.classList.add('{default_theme}');
 
 @tool
 def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: str = "dark") -> str:
-    """Generate a AWS WAF ROI report as HTML with charts showing protection value (ROI).
+    """Generate an AWS WAF ROI report as HTML with charts showing protection value (ROI).
 
     Queries CloudWatch Metrics for the past 7 days and produces an HTML report
     focused on demonstrating AWS WAF value: threats mitigated, challenge effectiveness,
