@@ -194,12 +194,12 @@ export default function App() {
   useEffect(() => { getToken().then(() => setUser(true)).catch(() => setUser(false)); }, []);
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
-  useEffect(() => {}, [user]); // loadSessions deferred until first agent call warms container
+  useEffect(() => { if (user) loadSessions(); }, [user]);
 
   async function loadSessions() {
     try {
       const token = await getToken();
-      const list = await listSessions(token, sessionId.current);
+      const list = await listSessions(token);
       setSessions(list);
     } catch {}
   }
@@ -208,7 +208,7 @@ export default function App() {
     if (sid === activeSessionId) return;
     try {
       const token = await getToken();
-      const msgs = await getSessionMessages(token, sessionId.current, sid);
+      const msgs = await getSessionMessages(token, sid);
       setMessages(msgs.map(m => ({ role: m.role, content: m.content, tools: m.tools?.map(t => ({ ...t })) || [] })));
       sessionId.current = generateSessionId();
       setActiveSessionId(sid);
@@ -226,7 +226,7 @@ export default function App() {
     e.stopPropagation();
     try {
       const token = await getToken();
-      await deleteSession(token, sessionId.current, sid);
+      await deleteSession(token, sid);
       setSessions(prev => prev.filter(s => s.sessionId !== sid));
       if (sid === activeSessionId) handleNewSession();
     } catch {}
@@ -321,7 +321,7 @@ export default function App() {
       setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
     setLoading(false);
-    setTimeout(loadSessions, 1000); // delay: let AgentCore finish closing the stream
+    loadSessions();
   }
 
   function waitForUserInput(question) {

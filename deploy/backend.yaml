@@ -198,6 +198,183 @@ Resources:
         AttributeName: ttl
         Enabled: true
 
+  # --- Session API (Lambda + API Gateway) ---
+  SessionsLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:BatchWriteItem
+                Resource: !GetAtt SessionsTable.Arn
+
+  SessionsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-sessions-api
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt SessionsLambdaRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          SESSIONS_TABLE: !Ref SessionsTable
+      Code:
+        ZipFile: |
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: MIT-0
+          import json, os, boto3
+          TABLE = os.environ['SESSIONS_TABLE']
+          ddb = boto3.client('dynamodb')
+
+          def handler(event, context):
+              user_id = event.get('requestContext', {}).get('authorizer', {}).get('jwt', {}).get('claims', {}).get('email', '')
+              if not user_id:
+                  return {'statusCode': 401, 'body': '{"error":"unauthorized"}'}
+              method = event.get('routeKey', '')
+              sid = event.get('pathParameters', {}).get('sessionId', '') if event.get('pathParameters') else ''
+
+              if method == 'GET /sessions':
+                  return _list(user_id)
+              elif method == 'GET /sessions/{sessionId}':
+                  return _get(user_id, sid)
+              elif method == 'DELETE /sessions/{sessionId}':
+                  return _delete(user_id, sid)
+              return {'statusCode': 404, 'body': '{"error":"not found"}'}
+
+          def _list(user_id):
+              resp = ddb.query(TableName=TABLE, KeyConditionExpression='userId = :uid',
+                  FilterExpression='contains(sk, :meta)',
+                  ExpressionAttributeValues={':uid': {'S': user_id}, ':meta': {'S': '#0000'}},
+                  ProjectionExpression='sk, title, createdAt, lastUsed')
+              sessions = []
+              for item in resp.get('Items', []):
+                  sessions.append({'sessionId': item['sk']['S'].rsplit('#', 1)[0],
+                      'title': item.get('title', {}).get('S', ''),
+                      'createdAt': int(item.get('createdAt', {}).get('N', '0')),
+                      'lastUsed': int(item.get('lastUsed', {}).get('N', '0'))})
+              sessions.sort(key=lambda s: s['lastUsed'], reverse=True)
+              return _json_resp({'sessions': sessions[:20]})
+
+          def _get(user_id, sid):
+              if not sid: return _json_resp({'messages': []})
+              resp = ddb.query(TableName=TABLE, KeyConditionExpression='userId = :uid AND begins_with(sk, :prefix)',
+                  ExpressionAttributeValues={':uid': {'S': user_id}, ':prefix': {'S': f'{sid}#'}})
+              messages = []
+              for item in resp.get('Items', []):
+                  if item['sk']['S'].endswith('#0000'): continue
+                  tools = []
+                  for t in item.get('tools', {}).get('L', []):
+                      tools.append({'name': t.get('M', {}).get('name', {}).get('S', ''), 'status': t.get('M', {}).get('status', {}).get('S', '')})
+                  messages.append({'role': item.get('role', {}).get('S', ''), 'content': item.get('content', {}).get('S', ''),
+                      'tools': tools, 'ts': int(item.get('ts', {}).get('N', '0'))})
+              messages.sort(key=lambda m: m['ts'])
+              return _json_resp({'messages': messages})
+
+          def _delete(user_id, sid):
+              if not sid: return _json_resp({'ok': False})
+              resp = ddb.query(TableName=TABLE, KeyConditionExpression='userId = :uid AND begins_with(sk, :prefix)',
+                  ExpressionAttributeValues={':uid': {'S': user_id}, ':prefix': {'S': f'{sid}#'}},
+                  ProjectionExpression='userId, sk')
+              items = resp.get('Items', [])
+              for i in range(0, len(items), 25):
+                  batch = items[i:i+25]
+                  ddb.batch_write_item(RequestItems={TABLE: [{'DeleteRequest': {'Key': {'userId': it['userId'], 'sk': it['sk']}}} for it in batch]})
+              return _json_resp({'ok': True})
+
+          def _json_resp(body):
+              return {'statusCode': 200, 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*'}, 'body': json.dumps(body)}
+
+  SessionsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-sessions
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowMethods: ['GET', 'DELETE', 'OPTIONS']
+        AllowHeaders: ['Authorization', 'Content-Type']
+
+  SessionsApiAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref SessionsApi
+      AuthorizerType: JWT
+      IdentitySource: $request.header.Authorization
+      Name: CognitoAuth
+      JwtConfiguration:
+        Audience:
+          - !If [CreateUserPool, !Ref UserPoolClient, !Ref ExistingClientId]
+        Issuer: !Sub
+          - https://cognito-idp.${AWS::Region}.amazonaws.com/${PoolId}
+          - PoolId: !If [CreateUserPool, !Ref UserPool, !Ref ExistingUserPoolId]
+
+  SessionsApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref SessionsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SessionsLambda.Arn
+      PayloadFormatVersion: '2.0'
+
+  SessionsRouteList:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SessionsApi
+      RouteKey: GET /sessions
+      AuthorizationType: JWT
+      AuthorizerId: !Ref SessionsApiAuthorizer
+      Target: !Sub integrations/${SessionsApiIntegration}
+
+  SessionsRouteGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SessionsApi
+      RouteKey: GET /sessions/{sessionId}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref SessionsApiAuthorizer
+      Target: !Sub integrations/${SessionsApiIntegration}
+
+  SessionsRouteDelete:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref SessionsApi
+      RouteKey: DELETE /sessions/{sessionId}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref SessionsApiAuthorizer
+      Target: !Sub integrations/${SessionsApiIntegration}
+
+  SessionsApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref SessionsApi
+      StageName: $default
+      AutoDeploy: true
+
+  SessionsLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SessionsLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SessionsApi}/*
+
   # --- AgentCore Memory (cross-session persistent memory) ---
   AgentMemory:
     Type: AWS::BedrockAgentCore::Memory
@@ -267,3 +444,6 @@ Outputs:
     Value: !GetAtt AgentExecutionRole.Arn
   SessionsTableName:
     Value: !Ref SessionsTable
+  SessionsApiUrl:
+    Value: !GetAtt SessionsApi.ApiEndpoint
+    Description: Base URL for session history API

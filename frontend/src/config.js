@@ -10,4 +10,7 @@ export const config = {
   // AgentCore
   agentEndpoint: import.meta.env.VITE_AGENT_ENDPOINT || '',
   agentRuntimeArn: import.meta.env.VITE_AGENT_RUNTIME_ARN || '',
+
+  // Sessions API
+  sessionsApiUrl: import.meta.env.VITE_SESSIONS_API_URL || '',
 };
