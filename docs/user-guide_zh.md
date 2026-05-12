@@ -2,15 +2,15 @@
 
 [English](user-guide.md)
 
-WAF Agent 是一个 AI 助手，帮助安全工程师调查 WAF 安全事件、检测绕过攻击、生成 ROI 报告。它在你提出**具体、明确的问题**时效果最好。
+WAF Agent 是一个 AI 助手，帮助安全工程师调查 AWS WAF 安全事件、检测绕过攻击、生成 ROI 报告。它在你提出**具体、明确的问题**时效果最好。
 
 ## 核心原则：具体、具体、再具体
 
-Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 Athena。但它需要你缩小范围：
+Agent 可以访问你的 AWS WAF 配置、CloudWatch 指标、CloudWatch 日志和 Athena。但它需要你缩小范围：
 
 | 模糊（慢、噪音多） | 具体（快、准确） |
 |---|---|
-| "检查一下我的 WAF" | "检查 my-webacl 在 5月9日下午有没有绕过流量" |
+| "检查一下我的 AWS WAF" | "检查 my-webacl 在 5月9日下午有没有绕过流量" |
 | "有没有攻击？" | "IP 54.254.254.234 昨天早上6点左右大量请求我的网站" |
 | "生成报告" | "生成 my-production-webacl 的 ROI 报告" |
 
@@ -18,10 +18,10 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 
 ### 1. 绕过/逃逸检测
 
-发现通过了所有 WAF 规则（默认 ALLOW）但行为可疑的流量。
+发现通过了所有 AWS WAF 规则（默认 ALLOW）但行为可疑的流量。
 
 **好的提问方式：**
-- "检查 my-webacl 在5月9日下午有没有爬虫绕过了 WAF"
+- "检查 my-webacl 在5月9日下午有没有爬虫绕过了 AWS WAF"
 - "最近6小时有没有高频 IP 没被拦截"
 - "有没有机器人绕过了 Bot Control？"
 
@@ -29,7 +29,7 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 
 ### 2. 攻击溯源
 
-识别攻击者是谁、用什么手法、WAF 是否成功拦截。
+识别攻击者是谁、用什么手法、AWS WAF 是否成功拦截。
 
 **好的提问方式：**
 - "分析5月9日06:00 UTC左右的 DDoS 攻击"
@@ -58,21 +58,21 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 - "47.128.14.206 是机器人还是真实用户？"
 - "检查 13.219.181.182 是不是 NAT 出口"
 
-**Agent 的工作流程：** 检查 UA/JA4 多样性（NAT 检测）→ 请求频率 → URI 分布 → WAF 标签 → 与所有规则交叉查询。
+**Agent 的工作流程：** 检查 UA/JA4 多样性（NAT 检测）→ 请求频率 → URI 分布 → AWS WAF 标签 → 与所有规则交叉查询。
 
-### 5. WAF 规则审查
+### 5. AWS WAF 规则审查
 
 对 WebACL 配置进行自动化安全审计。
 
 **好的提问方式：**
 - "审查 my-webacl 的规则"
-- "检查我的 WAF 配置有没有安全问题"
+- "检查我的 AWS WAF 配置有没有安全问题"
 
 **Agent 的工作流程：** 运行 13 项确定性检查（可伪造的 Allow 规则、缺失的 scope-down、Bot Control 配置错误、优先级顺序问题等）→ 返回发现结果及建议。
 
 ### 6. ROI 报告生成
 
-生成带图表的 HTML 报告，展示 WAF 防护价值——面向管理层。
+生成带图表的 HTML 报告，展示 AWS WAF 防护价值——面向管理层。
 
 **好的提问方式：**
 - "生成 my-webacl 的 ROI 报告"
@@ -82,7 +82,7 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 
 ### 7. 指标查询
 
-快速、免费的 WAF 流量概览。
+快速、免费的 AWS WAF 流量概览。
 
 **好的提问方式：**
 - "显示最近7天的流量趋势"
@@ -104,7 +104,7 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 2. **指定时间范围。** "5月9日下午"、"昨天下午2-4点"、"最近6小时"——任何具体的时间。Agent 无法有效分析7天的日志。
 
 3. **提供环境上下文：**
-   - "这是一个 SPA，集成了 WAF Client SDK"
+   - "这是一个 SPA，集成了 AWS WAF Client SDK"
    - "同一域名下有原生移动 App"
    - "/upload 端点接受大文件（SizeRestrictions 误报是预期的）"
 
@@ -117,8 +117,8 @@ Agent 可以访问你的 WAF 配置、CloudWatch 指标、CloudWatch 日志和 A
 
 ## 限制
 
-- **无写操作。** Agent 不能修改你的 WAF 规则、创建/删除资源（除了自动清理的临时 Athena 表）。
+- **无写操作。** Agent 不能修改你的 AWS WAF 规则、创建/删除资源（除了自动清理的临时 Athena 表）。
 - **日志可用性。** 如果 WebACL 没有启用日志，只能使用 CloudWatch 指标（无法做 IP 级别分析）。
 - **会话超时。** 容器空闲 15 分钟后释放。请及时下载报告。
 - **冷启动。** 新会话的第一次查询需要约 30 秒（容器启动）。
-- **匹配详情。** WAF 只对 SQLi 和 XSS 规则提供请求体匹配详情。其他规则无法告诉你具体是什么内容触发了规则。
+- **匹配详情。** AWS WAF 只对 SQLi 和 XSS 规则提供请求体匹配详情。其他规则无法告诉你具体是什么内容触发了规则。

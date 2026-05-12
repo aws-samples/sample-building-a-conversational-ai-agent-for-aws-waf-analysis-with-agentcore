@@ -1,3 +1,5 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: MIT-0
 import React, { useState, useRef, useEffect } from 'react';
 import { marked } from 'marked';
 import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword, getUserProfile, changePassword } from './auth';

@@ -6,43 +6,43 @@
 
 ## 总结
 
-**WAF Agent 对你的生产资源是只读的。** 它不能修改 WAF 规则、删除日志组、更改 CloudFront 分配或改动任何生产配置。唯一的写操作是：
+**WAF Agent 对你的生产资源是只读的。** 它不能修改 AWS WAF 规则、删除日志组、更改 CloudFront 分配或改动任何生产配置。唯一的写操作是：
 
 1. 在专用数据库中创建/删除**临时 Athena 表**（会话结束时自动清理）
 2. 写入自身的**容器日志**到 CloudWatch
 
 ## 权限详情
 
-### WAF（只读）
+### AWS WAF（只读）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
 | `wafv2:ListWebACLs` | 列出可用的 WebACL | 无（只读） |
 | `wafv2:GetWebACL` | 读取 WebACL 规则和配置 | 无（只读） |
-| `wafv2:GetLoggingConfiguration` | 发现 WAF 日志发送到哪里 | 无（只读） |
+| `wafv2:GetLoggingConfiguration` | 发现 AWS WAF 日志发送到哪里 | 无（只读） |
 | `wafv2:ListResourcesForWebACL` | 查找哪些 CloudFront/ALB 资源使用了某个 WebACL | 无（只读） |
 
 ### CloudWatch 指标（只读）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `cloudwatch:GetMetricData` | 查询 WAF 指标（AllowedRequests、BlockedRequests 等） | 无（只读） |
+| `cloudwatch:GetMetricData` | 查询 AWS WAF 指标（AllowedRequests、BlockedRequests 等） | 无（只读） |
 | `cloudwatch:ListMetrics` | 发现可用的指标名称 | 无（只读） |
 
 ### CloudWatch 日志（只读）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `logs:StartQuery` | 在 WAF 日志上运行 Logs Insights 查询 | 无（只读）。查询是只读的，不能修改日志数据。 |
+| `logs:StartQuery` | 在 AWS WAF 日志上运行 Logs Insights 查询 | 无（只读）。查询是只读的，不能修改日志数据。 |
 | `logs:GetQueryResults` | 获取查询结果 | 无（只读） |
 | `logs:StopQuery` | 取消正在运行的查询（清理） | 无（停止一个读操作） |
-| `logs:DescribeLogGroups` | 查找 WAF 日志组 | 无（只读） |
+| `logs:DescribeLogGroups` | 查找 AWS WAF 日志组 | 无（只读） |
 
 ### Athena（有限写入）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `athena:StartQueryExecution` | 在 S3 WAF 日志上运行 SQL 查询 | **见下方说明** |
+| `athena:StartQueryExecution` | 在 S3 AWS WAF 日志上运行 SQL 查询 | **见下方说明** |
 | `athena:GetQueryExecution` | 检查查询状态 | 无（只读） |
 | `athena:GetQueryResults` | 获取查询结果 | 无（只读） |
 
@@ -52,20 +52,20 @@
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `s3:GetObject` | 从 S3 读取 WAF 日志文件 | 无（只读） |
+| `s3:GetObject` | 从 S3 读取 AWS WAF 日志文件 | 无（只读） |
 | `s3:ListBucket` | 发现日志文件路径和分区结构 | 无（只读） |
 
 ### Firehose（只读）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `firehose:DescribeDeliveryStream` | 发现基于 Firehose 的 WAF 日志的 S3 投递路径 | 无（只读） |
+| `firehose:DescribeDeliveryStream` | 发现基于 Firehose 的 AWS WAF 日志的 S3 投递路径 | 无（只读） |
 
 ### Glue 数据目录（有限写入）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `glue:GetTable` | 查找现有的 WAF 日志 Athena 表 | 无（只读） |
+| `glue:GetTable` | 查找现有的 AWS WAF 日志 Athena 表 | 无（只读） |
 | `glue:GetDatabase` | 检查数据库是否存在 | 无（只读） |
 | `glue:CreateDatabase` | 创建 `waf_agent_temp` 数据库（如不存在） | **创建一个新的空数据库。** 不会触碰现有数据库。 |
 | `glue:CreateTable` | 创建带分区投影的临时表 | **仅在 `waf_agent_temp` 数据库中创建表。** 不会修改现有表。 |
@@ -77,12 +77,12 @@
 - 如果清理失败（如容器被强制终止），`waf_agent_temp` 中的孤立表可以安全手动删除
 - Agent 永远不会修改其他数据库中的表
 
-### Bedrock（模型调用）
+### Amazon Bedrock（模型调用）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
-| `bedrock:InvokeModel` | 调用 LLM（Claude）进行推理 | 无（调用 Bedrock 服务的 API） |
-| `bedrock:InvokeModelWithResponseStream` | 流式 LLM 响应 | 无（调用 Bedrock 服务的 API） |
+| `bedrock:InvokeModel` | 调用 LLM（Claude）进行推理 | 无（调用 Amazon Bedrock 服务的 API） |
+| `bedrock:InvokeModelWithResponseStream` | 流式 LLM 响应 | 无（调用 Amazon Bedrock 服务的 API） |
 
 ### ECR（容器拉取）
 
@@ -104,7 +104,7 @@
 
 ## Agent 不能做什么
 
-- ❌ 修改 WAF 规则（没有 `wafv2:UpdateWebACL`、`wafv2:CreateRule` 等）
+- ❌ 修改 AWS WAF 规则（没有 `wafv2:UpdateWebACL`、`wafv2:CreateRule` 等）
 - ❌ 删除或修改日志组（没有 `logs:DeleteLogGroup`、`logs:PutRetentionPolicy`）
 - ❌ 修改 S3 对象（没有 `s3:PutObject`、`s3:DeleteObject`）
 - ❌ 修改 CloudFront 分配

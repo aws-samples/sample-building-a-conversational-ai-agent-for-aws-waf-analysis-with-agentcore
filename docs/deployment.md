@@ -9,19 +9,19 @@ WAF Agent deploys as two CloudFormation stacks:
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + IAM |
-| **frontend** | us-east-1 (required for CloudFront WAF) | CloudFront + S3 + WAF WebACL |
+| **frontend** | us-east-1 (required for CloudFront AWS WAF) | CloudFront + S3 + AWS WAF WebACL |
 
 ## Prerequisites
 
 1. **AWS CLI v2** configured with admin-level permissions
 2. **Docker** with buildx support (for ARM64 images). [finch](https://github.com/runfinch/finch) also works as a drop-in replacement.
 3. **Node.js 18+** (for building the frontend)
-4. An AWS account with WAF logging enabled (CloudWatch Logs or S3)
+4. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
 
 ## Region Selection
 
 Choose a backend region based on:
-- **Proximity to your WAF resources** — reduces CloudWatch API latency
+- **Proximity to your AWS WAF resources** — reduces CloudWatch API latency
 - **Model availability** — Claude Sonnet 4.6 must be available
 - **AgentCore support** — CloudFormation must support `AWS::BedrockAgentCore::Runtime`
 
@@ -29,14 +29,14 @@ Choose a backend region based on:
 
 | Region | Best for |
 |--------|----------|
-| us-east-1 | US customers, CloudFront-scope WAF |
+| us-east-1 | US customers, CloudFront-scope AWS WAF |
 | us-west-2 | US West Coast |
 | ap-northeast-1 | Asia Pacific (Japan, China, Korea) |
 | ap-southeast-1 | Southeast Asia |
 | eu-west-1 | Europe |
 | eu-central-1 | Europe (Germany) |
 
-**Recommendation**: If your WAF is CloudFront-scope (global), choose the region closest to you. The agent automatically routes WAF API calls to us-east-1 for CloudFront-scope resources.
+**Recommendation**: If your AWS WAF is CloudFront-scope (global), choose the region closest to you. The agent automatically routes AWS WAF API calls to us-east-1 for CloudFront-scope resources.
 
 ### Model ID by region
 
@@ -85,7 +85,7 @@ aws cloudformation deploy \
 
 ### Custom Model (optional)
 
-By default, the agent uses a region-appropriate Claude Sonnet 4.6 model. To use a different Bedrock model:
+By default, the agent uses a region-appropriate Claude Sonnet 4.6 model. To use a different Amazon Bedrock model:
 
 ```bash
 aws cloudformation deploy \

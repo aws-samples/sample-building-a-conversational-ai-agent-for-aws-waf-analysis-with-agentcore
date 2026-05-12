@@ -2,15 +2,15 @@
 
 [中文版](user-guide_zh.md)
 
-WAF Agent is an AI assistant that helps security engineers investigate WAF incidents, detect bypasses, and generate ROI reports. It works best when you give it **specific, concrete questions**.
+WAF Agent is an AI assistant that helps security engineers investigate AWS WAF incidents, detect bypasses, and generate ROI reports. It works best when you give it **specific, concrete questions**.
 
 ## Core Principle: Be Specific
 
-The agent has access to your WAF configuration, CloudWatch Metrics, CloudWatch Logs, and Athena. But it needs you to narrow the scope:
+The agent has access to your AWS WAF configuration, CloudWatch Metrics, CloudWatch Logs, and Athena. But it needs you to narrow the scope:
 
 | Vague (slow, noisy) | Specific (fast, accurate) |
 |---|---|
-| "Check my WAF" | "Check my-webacl for bypass traffic on May 9 afternoon" |
+| "Check my AWS WAF" | "Check my-webacl for bypass traffic on May 9 afternoon" |
 | "Any attacks?" | "IP 54.254.254.234 hit my site hard yesterday around 6am UTC" |
 | "Generate a report" | "Generate ROI report for my-production-webacl" |
 
@@ -18,10 +18,10 @@ The agent has access to your WAF configuration, CloudWatch Metrics, CloudWatch L
 
 ### 1. Bypass / Evasion Detection
 
-Find traffic that passes all WAF rules (default ALLOW) but looks suspicious.
+Find traffic that passes all AWS WAF rules (default ALLOW) but looks suspicious.
 
 **Good prompts:**
-- "Check if there are crawlers bypassing WAF on my-webacl, May 9 afternoon"
+- "Check if there are crawlers bypassing AWS WAF on my-webacl, May 9 afternoon"
 - "Find high-volume IPs that weren't blocked in the last 6 hours"
 - "Are there any bots getting through Bot Control?"
 
@@ -29,7 +29,7 @@ Find traffic that passes all WAF rules (default ALLOW) but looks suspicious.
 
 ### 2. Attack Source Investigation
 
-Identify who is attacking, how, and whether WAF stopped it.
+Identify who is attacking, how, and whether AWS WAF stopped it.
 
 **Good prompts:**
 - "Analyze the DDoS attack on May 9 around 06:00 UTC"
@@ -58,21 +58,21 @@ Full behavioral profile of a specific IP address.
 - "Is 47.128.14.206 a bot or a real user?"
 - "Check if 13.219.181.182 is behind a NAT"
 
-**What the agent does:** Checks UA/JA4 diversity (NAT detection) → request frequency → URI breakdown → WAF labels → cross-query with all rules.
+**What the agent does:** Checks UA/JA4 diversity (NAT detection) → request frequency → URI breakdown → AWS WAF labels → cross-query with all rules.
 
-### 5. WAF Rule Review
+### 5. AWS WAF Rule Review
 
 Automated security audit of your WebACL configuration.
 
 **Good prompts:**
 - "Review the rules on my-webacl"
-- "Audit my WAF configuration for security issues"
+- "Audit my AWS WAF configuration for security issues"
 
 **What the agent does:** Runs 13 deterministic checks (forgeable Allow rules, missing scope-down, Bot Control misconfiguration, priority order issues, etc.) → returns findings with severity and recommendations.
 
 ### 6. ROI Report Generation
 
-HTML report with charts showing WAF protection value — designed for management.
+HTML report with charts showing AWS WAF protection value — designed for management.
 
 **Good prompts:**
 - "Generate ROI report for my-webacl"
@@ -82,7 +82,7 @@ HTML report with charts showing WAF protection value — designed for management
 
 ### 7. Metrics Query
 
-Quick, free overview of WAF traffic patterns.
+Quick, free overview of AWS WAF traffic patterns.
 
 **Good prompts:**
 - "Show me traffic trends for the last 7 days"
@@ -104,7 +104,7 @@ Classify domains behind a WebACL as Web/API/Mixed to guide protection strategy.
 2. **Always specify a time range.** "May 9 afternoon", "yesterday 2-4pm", "last 6 hours" — anything concrete. The agent cannot effectively analyze 7 days of logs.
 
 3. **Provide context about your environment:**
-   - "This is a SPA with WAF Client SDK"
+   - "This is a SPA with AWS WAF Client SDK"
    - "We have native mobile apps on the same domain"
    - "The /upload endpoint accepts large files (SizeRestrictions FP expected)"
 
@@ -117,8 +117,8 @@ Classify domains behind a WebACL as Web/API/Mixed to guide protection strategy.
 
 ## Limitations
 
-- **No write operations.** The agent cannot modify your WAF rules, create/delete resources (except temporary Athena tables which are auto-cleaned).
+- **No write operations.** The agent cannot modify your AWS WAF rules, create/delete resources (except temporary Athena tables which are auto-cleaned).
 - **Log availability.** If logging is not enabled on your WebACL, only CloudWatch Metrics are available (no IP-level analysis).
 - **Session timeout.** Container idles out after 15 minutes. Download reports promptly.
 - **Cold start.** First query in a new session takes ~30 seconds (container boot).
-- **Match details.** WAF only provides request body match details for SQLi and XSS rules. For other rules, the agent cannot tell you what specific content triggered the rule.
+- **Match details.** AWS WAF only provides request body match details for SQLi and XSS rules. For other rules, the agent cannot tell you what specific content triggered the rule.

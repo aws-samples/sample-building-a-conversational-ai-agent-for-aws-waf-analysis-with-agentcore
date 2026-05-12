@@ -6,43 +6,43 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 ## Summary
 
-**WAF Agent is read-only for your production resources.** It cannot modify WAF rules, delete log groups, change CloudFront distributions, or alter any production configuration. The only write operations are:
+**WAF Agent is read-only for your production resources.** It cannot modify AWS WAF rules, delete log groups, change CloudFront distributions, or alter any production configuration. The only write operations are:
 
 1. Creating/deleting **temporary Athena tables** in a dedicated database (auto-cleaned on session end)
 2. Writing its own **container logs** to CloudWatch
 
 ## Permission Details
 
-### WAF (Read-Only)
+### AWS WAF (Read-Only)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
 | `wafv2:ListWebACLs` | List available WebACLs | None (read) |
 | `wafv2:GetWebACL` | Read WebACL rules and configuration | None (read) |
-| `wafv2:GetLoggingConfiguration` | Discover where WAF logs are sent | None (read) |
+| `wafv2:GetLoggingConfiguration` | Discover where AWS WAF logs are sent | None (read) |
 | `wafv2:ListResourcesForWebACL` | Find which CloudFront/ALB resources use a WebACL | None (read) |
 
 ### CloudWatch Metrics (Read-Only)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `cloudwatch:GetMetricData` | Query WAF metrics (AllowedRequests, BlockedRequests, etc.) | None (read) |
+| `cloudwatch:GetMetricData` | Query AWS WAF metrics (AllowedRequests, BlockedRequests, etc.) | None (read) |
 | `cloudwatch:ListMetrics` | Discover available metric names | None (read) |
 
 ### CloudWatch Logs (Read-Only)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `logs:StartQuery` | Run Logs Insights queries on WAF logs | None (read). Queries are read-only and cannot modify log data. |
+| `logs:StartQuery` | Run Logs Insights queries on AWS WAF logs | None (read). Queries are read-only and cannot modify log data. |
 | `logs:GetQueryResults` | Retrieve query results | None (read) |
 | `logs:StopQuery` | Cancel a running query (cleanup) | None (stops a read operation) |
-| `logs:DescribeLogGroups` | Find WAF log groups | None (read) |
+| `logs:DescribeLogGroups` | Find AWS WAF log groups | None (read) |
 
 ### Athena (Limited Write)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `athena:StartQueryExecution` | Run SQL queries on S3-based WAF logs | **See note below** |
+| `athena:StartQueryExecution` | Run SQL queries on S3-based AWS WAF logs | **See note below** |
 | `athena:GetQueryExecution` | Check query status | None (read) |
 | `athena:GetQueryResults` | Retrieve query results | None (read) |
 
@@ -52,20 +52,20 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `s3:GetObject` | Read WAF log files from S3 | None (read) |
+| `s3:GetObject` | Read AWS WAF log files from S3 | None (read) |
 | `s3:ListBucket` | Discover log file paths and partition structure | None (read) |
 
 ### Firehose (Read-Only)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `firehose:DescribeDeliveryStream` | Discover S3 delivery path for Firehose-based WAF logs | None (read) |
+| `firehose:DescribeDeliveryStream` | Discover S3 delivery path for Firehose-based AWS WAF logs | None (read) |
 
 ### Glue Data Catalog (Limited Write)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `glue:GetTable` | Find existing Athena tables for WAF logs | None (read) |
+| `glue:GetTable` | Find existing Athena tables for AWS WAF logs | None (read) |
 | `glue:GetDatabase` | Check if database exists | None (read) |
 | `glue:CreateDatabase` | Create `waf_agent_temp` database if not exists | **Creates a new empty database.** Does not touch existing databases. |
 | `glue:CreateTable` | Create temporary table with partition projection | **Creates a table in `waf_agent_temp` database only.** Does not modify existing tables. |
@@ -77,12 +77,12 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 - If cleanup fails (e.g., container killed), orphaned tables in `waf_agent_temp` can be safely deleted manually
 - The agent never modifies tables in other databases
 
-### Bedrock (Model Invocation)
+### Amazon Bedrock (Model Invocation)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
-| `bedrock:InvokeModel` | Call the LLM (Claude) for reasoning | None (API call to Bedrock service) |
-| `bedrock:InvokeModelWithResponseStream` | Stream LLM responses | None (API call to Bedrock service) |
+| `bedrock:InvokeModel` | Call the LLM (Claude) for reasoning | None (API call to Amazon Bedrock service) |
+| `bedrock:InvokeModelWithResponseStream` | Stream LLM responses | None (API call to Amazon Bedrock service) |
 
 ### ECR (Container Pull)
 
@@ -104,7 +104,7 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 ## What the Agent CANNOT Do
 
-- ❌ Modify WAF rules (no `wafv2:UpdateWebACL`, `wafv2:CreateRule`, etc.)
+- ❌ Modify AWS WAF rules (no `wafv2:UpdateWebACL`, `wafv2:CreateRule`, etc.)
 - ❌ Delete or modify log groups (no `logs:DeleteLogGroup`, `logs:PutRetentionPolicy`)
 - ❌ Modify S3 objects (no `s3:PutObject`, `s3:DeleteObject`)
 - ❌ Modify CloudFront distributions

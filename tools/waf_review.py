@@ -1,3 +1,5 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
 """WAF Rule Review tool — deterministic checks based on checklist."""
 
 from strands import tool

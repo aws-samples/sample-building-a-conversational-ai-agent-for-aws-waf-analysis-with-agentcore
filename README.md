@@ -6,16 +6,16 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 
 ## What It Does
 
-- **Investigate WAF incidents** — "What happened on May 9th?" → identifies attack sources, correlates IPs, explains WAF rule behavior
-- **Detect bypasses** — finds crawlers and bots that evade WAF rules using frequency analysis
-- **Generate ROI reports** — HTML business reports proving WAF value for management
-- **Review WAF rules** — 13 deterministic checks for misconfigurations
+- **Investigate AWS WAF incidents** — "What happened on May 9th?" → identifies attack sources, correlates IPs, explains AWS WAF rule behavior
+- **Detect bypasses** — finds crawlers and bots that evade AWS WAF rules using frequency analysis
+- **Generate ROI reports** — HTML business reports proving AWS WAF value for management
+- **Review AWS WAF rules** — 13 deterministic checks for misconfigurations
 
 ## Quick Start
 
 ### Prerequisites
 
-- AWS account with WAF configured and logging enabled
+- AWS account with AWS WAF configured and logging enabled
 - [Docker](https://docs.docker.com/get-docker/) with buildx (for ARM64 images)
 - AWS CLI v2 configured with appropriate permissions
 
@@ -92,7 +92,7 @@ graph TB
 
 </details>
 
-- **Frontend**: React SPA on CloudFront + S3, protected by WAF. Real-time streaming (tool calls + text tokens), per-message copy/export, multi-message share/export, dark/light theme, sidebar guide (zh/en).
+- **Frontend**: React SPA on CloudFront + S3, protected by AWS WAF. Real-time streaming (tool calls + text tokens), per-message copy/export, multi-message share/export, dark/light theme, sidebar guide (zh/en).
 - **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed)
 - **Agent**: FastAPI + Strands SDK, streams tool calls and analysis in real-time via callback_handler + asyncio.Queue
 - **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime
@@ -141,4 +141,4 @@ python agent.py "Any traffic bypassing my-webacl?"
 
 ## License
 
-MIT
+This library is licensed under the [MIT-0](LICENSE) License.

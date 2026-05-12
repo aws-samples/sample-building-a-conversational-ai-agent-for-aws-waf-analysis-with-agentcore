@@ -57,6 +57,10 @@ Resources:
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -70,7 +74,8 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Effect: Allow
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: Allow
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
@@ -78,6 +83,16 @@ Resources:
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt FrontendBucket.Arn
+              - !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
 
   CloudFrontOAC:
     Type: AWS::CloudFront::OriginAccessControl

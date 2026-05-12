@@ -1,3 +1,5 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
 """Session state — stores current WebACL context for cross-tool coordination."""
 
 # Populated by get_waf_config, consumed by other tools

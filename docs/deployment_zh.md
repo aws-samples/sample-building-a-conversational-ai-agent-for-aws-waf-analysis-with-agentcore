@@ -9,19 +9,19 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 | Stack | 区域 | 资源 |
 |-------|------|------|
 | **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + IAM |
-| **frontend** | us-east-1（CloudFront WAF 要求） | CloudFront + S3 + WAF WebACL |
+| **frontend** | us-east-1（CloudFront AWS WAF 要求） | CloudFront + S3 + AWS WAF WebACL |
 
 ## 前置条件
 
 1. **AWS CLI v2**，配置了管理员权限
 2. **Docker**（需要 buildx 支持）。[finch](https://github.com/runfinch/finch) 也可以作为替代。
 3. **Node.js 18+**（构建前端）
-4. 已开启 WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
+4. 已开启 AWS WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
 
 ## 区域选择
 
 选择后端区域时考虑：
-- **靠近你的 WAF 资源** — 减少 CloudWatch API 延迟
+- **靠近你的 AWS WAF 资源** — 减少 CloudWatch API 延迟
 - **模型可用性** — Claude Sonnet 4.6 必须可用
 - **AgentCore 支持** — CloudFormation 必须支持 `AWS::BedrockAgentCore::Runtime`
 
@@ -29,14 +29,14 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 
 | 区域 | 适合 |
 |------|------|
-| us-east-1 | 美国客户，CloudFront 范围的 WAF |
+| us-east-1 | 美国客户，CloudFront 范围的 AWS WAF |
 | us-west-2 | 美国西海岸 |
 | ap-northeast-1 | 亚太（日本、中国、韩国） |
 | ap-southeast-1 | 东南亚 |
 | eu-west-1 | 欧洲 |
 | eu-central-1 | 欧洲（德国） |
 
-**建议**：如果你的 WAF 是 CloudFront 范围（全球），选择离你最近的区域。Agent 会自动将 WAF API 调用路由到 us-east-1。
+**建议**：如果你的 AWS WAF 是 CloudFront 范围（全球），选择离你最近的区域。Agent 会自动将 AWS WAF API 调用路由到 us-east-1。
 
 ### 各区域的模型 ID
 
@@ -85,7 +85,7 @@ aws cloudformation deploy \
 
 ### 自定义模型（可选）
 
-默认使用当前区域对应的 Claude Sonnet 4.6。如需使用其他 Bedrock 模型：
+默认使用当前区域对应的 Claude Sonnet 4.6。如需使用其他 Amazon Bedrock 模型：
 
 ```bash
 aws cloudformation deploy \

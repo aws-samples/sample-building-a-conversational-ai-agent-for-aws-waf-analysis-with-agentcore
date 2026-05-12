@@ -11,7 +11,7 @@ Estimated monthly costs for WAF Agent deployment. All prices in USD.
 | Component | Cost | Notes |
 |---|---|---|
 | CloudFront (frontend) | **$0** | Free tier: 1 TB data out + 10M requests/month. A small internal tool won't exceed this. |
-| WAF (frontend protection) | **~$8/month** | 1 WebACL ($5) + 3 rules ($3). Request charges negligible for internal use. |
+| AWS WAF (frontend protection) | **~$8/month** | 1 WebACL ($5) + 3 rules ($3). Request charges negligible for internal use. |
 | Cognito User Pool | **$0** | Free tier: 10,000 MAU. Internal team won't exceed this. |
 | S3 (frontend hosting) | **<$0.10/month** | ~1 MB static files. |
 | **Subtotal** | **~$8/month** | |
@@ -39,7 +39,7 @@ AgentCore bills for active CPU time only. I/O wait (waiting for LLM, API calls) 
 
 ### 3. LLM Token Cost (Largest Component)
 
-Claude Sonnet 4 on Bedrock (approximate pricing):
+Claude Sonnet 4 on Amazon Bedrock (approximate pricing):
 - Input: ~$3.00 per 1M tokens
 - Output: ~$15.00 per 1M tokens
 
@@ -73,7 +73,7 @@ Claude Sonnet 4 on Bedrock (approximate pricing):
 
 ### 5. Athena (S3 Logs Only)
 
-$5.00 per TB scanned. Only used when WAF logs go to S3 (not CloudWatch Logs).
+$5.00 per TB scanned. Only used when AWS WAF logs go to S3 (not CloudWatch Logs).
 
 - Typical query: 10–100 MB scanned → $0.0001–$0.0005
 - DDL queries (CREATE/DROP TABLE): **free**
@@ -118,15 +118,15 @@ Only incurred if Memory is enabled (`MEMORY_ID` parameter set).
 - Use **Metrics before Logs** — metrics queries are 100x cheaper than log queries
 - Keep investigation **time windows narrow** (≤6 hours) — reduces GB scanned
 - Use **Athena for historical analysis** (S3 logs) — cheaper than keeping months of logs in CloudWatch
-- Consider **Bedrock Batch inference** for scheduled reports (50% token discount)
+- Consider **Amazon Bedrock Batch inference** for scheduled reports (50% token discount)
 - The agent's system prompt uses ~1,200 tokens — this is a fixed cost per session that cannot be reduced further
 
 ## Pricing References
 
 - [AgentCore Pricing](https://aws.amazon.com/bedrock/agentcore/pricing/)
-- [Bedrock Model Pricing](https://aws.amazon.com/bedrock/pricing/)
+- [Amazon Bedrock Model Pricing](https://aws.amazon.com/bedrock/pricing/)
 - [CloudWatch Pricing](https://aws.amazon.com/cloudwatch/pricing/)
 - [Athena Pricing](https://aws.amazon.com/athena/pricing/)
 - [CloudFront Pricing](https://aws.amazon.com/cloudfront/pricing/)
-- [WAF Pricing](https://aws.amazon.com/waf/pricing/)
+- [AWS WAF Pricing](https://aws.amazon.com/waf/pricing/)
 - [Cognito Pricing](https://aws.amazon.com/cognito/pricing/)
