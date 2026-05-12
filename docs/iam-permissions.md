@@ -137,6 +137,14 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 | `bedrock-agentcore:RetrieveMemoryRecords` | Semantic search of LTM | None (read) |
 | `bedrock-agentcore:ListMemoryRecords` | List LTM records | None (read) |
 
+### Bedrock Knowledge Base (optional)
+
+| Permission | Purpose | Production Impact |
+|---|---|---|
+| `bedrock:Retrieve` | Search AWS WAF best practices KB | None (read) |
+
+**Note:** Only granted when `KnowledgeBaseId` parameter is set. Scoped to the specific KB ARN — the agent cannot query any other knowledge base.
+
 ## What the Agent CANNOT Do
 
 - ❌ Modify AWS WAF rules (no `wafv2:UpdateWebACL`, `wafv2:CreateRule`, etc.)

@@ -67,16 +67,18 @@ graph TB
         Cognito["Cognito User Pool"]
         AC["AgentCore Runtime<br/>(每会话独立 microVM)"]
         subgraph Agent["Strands Agent"]
-            FastAPI["FastAPI + SSE Streaming<br/>12 个工具"]
+            FastAPI["FastAPI + SSE Streaming"]
         end
         Bedrock["Bedrock<br/>Bedrock LLM"]
         Memory["AgentCore Memory<br/>(跨会话 LTM)"]
+        KB["Bedrock<br/>Knowledge Base"]
+        S3Vec["S3 Vectors"]
         DDB["DynamoDB<br/>(会话历史)"]
         APIGW["API Gateway<br/>(会话 API)"]
         Lambda["Lambda<br/>(会话)"]
     end
 
-    subgraph AWS["客户 AWS 资源"]
+    subgraph AWS["您的 AWS 资源（只读）"]
         WAFv2["WAFv2 API"]
         CW["CloudWatch<br/>Metrics + Logs"]
         Athena["Athena<br/>(S3 日志)"]
@@ -92,6 +94,8 @@ graph TB
     AC --> FastAPI
     FastAPI --> Bedrock
     FastAPI --> Memory
+    FastAPI --> KB
+    KB --> S3Vec
     FastAPI --> DDB
     APIGW --> Lambda --> DDB
     FastAPI --> WAFv2

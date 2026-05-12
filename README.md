@@ -67,16 +67,18 @@ graph TB
         Cognito["Cognito User Pool"]
         AC["AgentCore Runtime<br/>(microVM per session)"]
         subgraph Agent["Strands Agent"]
-            FastAPI["FastAPI + SSE Streaming<br/>12 tools"]
+            FastAPI["FastAPI + SSE Streaming"]
         end
         Bedrock["Bedrock<br/>Bedrock LLM"]
         Memory["AgentCore Memory<br/>(cross-session LTM)"]
+        KB["Bedrock<br/>Knowledge Base"]
+        S3Vec["S3 Vectors"]
         DDB["DynamoDB<br/>(session history)"]
         APIGW["API Gateway<br/>(sessions)"]
         Lambda["Lambda<br/>(sessions)"]
     end
 
-    subgraph AWS["Customer AWS Resources"]
+    subgraph AWS["Your AWS Resources (Read-Only)"]
         WAFv2["WAFv2 API"]
         CW["CloudWatch<br/>Metrics + Logs"]
         Athena["Athena<br/>(S3 logs)"]
@@ -92,6 +94,8 @@ graph TB
     AC --> FastAPI
     FastAPI --> Bedrock
     FastAPI --> Memory
+    FastAPI --> KB
+    KB --> S3Vec
     FastAPI --> DDB
     APIGW --> Lambda --> DDB
     FastAPI --> WAFv2

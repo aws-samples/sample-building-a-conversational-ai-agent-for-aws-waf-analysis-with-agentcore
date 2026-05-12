@@ -128,13 +128,32 @@ Only incurred if session history is enabled (`deploy/sessions-api.yaml` deployed
 
 **Typical usage:** ~10 API calls per session (list + restore). All usage levels stay within Lambda free tier. API Gateway cost < $0.01/month.
 
+### 8. Knowledge Base (optional)
+
+S3 Vectors + Bedrock KB for AWS WAF best practices retrieval.
+
+| Dimension | Price |
+|---|---|
+| S3 Vectors storage | $0.10 per million vectors/month |
+| Retrieve API | $0.02 per 1,000 chunks retrieved |
+| Embedding (ingestion) | ~$0.01 per sync (20 docs) |
+| S3 storage (source docs) | <$0.01/month (<1 MB) |
+
+| Usage level | Monthly retrievals | Monthly cost |
+|---|---|---|
+| Light (50 queries) | ~250 chunks | **<$0.01** |
+| Medium (500 queries) | ~2,500 chunks | **~$0.05** |
+| Heavy (5,000 queries) | ~25,000 chunks | **~$0.50** |
+
+Knowledge Base cost is negligible at any scale for this use case.
+
 ## Total Monthly Cost Estimates
 
-| Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Memory | DynamoDB | Total |
-|---|---|---|---|---|---|---|---|
-| **Light** (1 engineer) | $8 | $0.15 | $15 | $1 | $1 | <$0.01 | **~$25/month** |
-| **Medium** (5 engineers) | $8 | $1.50 | $225 | $15 | $5 | <$0.01 | **~$255/month** |
-| **Heavy** (20 engineers) | $8 | $12 | $1,800 | $50 | $36 | $0.05 | **~$1,900/month** |
+| Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Memory | DynamoDB | KB | Total |
+|---|---|---|---|---|---|---|---|---|
+| **Light** (1 engineer) | $8 | $0.15 | $15 | $1 | $1 | <$0.01 | <$0.01 | **~$25/month** |
+| **Medium** (5 engineers) | $8 | $1.50 | $225 | $15 | $5 | <$0.01 | $0.05 | **~$255/month** |
+| **Heavy** (20 engineers) | $8 | $12 | $1,800 | $50 | $36 | $0.05 | $0.50 | **~$1,900/month** |
 
 ## Key Takeaways
 

@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net" agent="WAF Agent">
   <diagram name="Architecture" id="arch-1">
-    <mxGraphModel dx="1081" dy="594" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+    <mxGraphModel dx="1643" dy="903" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -31,25 +31,31 @@
         <mxCell id="ac" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" value="AgentCore&#xa;Runtime" vertex="1">
           <mxGeometry height="48" width="48" x="660" y="360" as="geometry" />
         </mxCell>
-        <mxCell id="agent-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#147EBA;fontSize=10;verticalAlign=middle;" value="Strands Agent&#xa;FastAPI + 12 Tools&#xa;(microVM per session)" vertex="1">
+        <mxCell id="agent-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#147EBA;fontSize=10;verticalAlign=middle;" value="Strands Agent&#xa;FastAPI + SSE Streaming&#xa;(microVM per session)" vertex="1">
           <mxGeometry height="90" width="170" x="760" y="339" as="geometry" />
         </mxCell>
         <mxCell id="bedrock" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" value="Bedrock&#xa;LLM" vertex="1">
           <mxGeometry height="48" width="48" x="660" y="500" as="geometry" />
         </mxCell>
         <mxCell id="memory" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" value="AgentCore&#xa;Memory" vertex="1">
-          <mxGeometry height="48" width="48" x="790" y="500" as="geometry" />
+          <mxGeometry height="48" width="48" x="750" y="500" as="geometry" />
+        </mxCell>
+        <mxCell id="kb" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" value="Bedrock&#xa;Knowledge Base" vertex="1">
+          <mxGeometry height="48" width="48" x="841" y="500" as="geometry" />
+        </mxCell>
+        <mxCell id="s3vec" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#3F8624;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3;verticalLabelPosition=bottom;verticalAlign=top" value="S3 Vectors" vertex="1">
+          <mxGeometry height="48" width="48" x="940" y="500" as="geometry" />
         </mxCell>
         <mxCell id="ddb" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#C925D1;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;verticalLabelPosition=bottom;verticalAlign=top" value="DynamoDB&#xa;(Sessions)" vertex="1">
-          <mxGeometry height="48" width="48" x="1020" y="500" as="geometry" />
+          <mxGeometry height="48" width="48" x="1020" y="610" as="geometry" />
         </mxCell>
         <mxCell id="apigw" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;verticalLabelPosition=bottom;verticalAlign=top" value="API Gateway" vertex="1">
-          <mxGeometry height="48" width="48" x="910" y="452" as="geometry" />
+          <mxGeometry height="48" width="48" x="660" y="610" as="geometry" />
         </mxCell>
         <mxCell id="lambda" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#ED7100;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top" value="Lambda&#xa;(Sessions)" vertex="1">
-          <mxGeometry height="48" width="48" x="910" y="560" as="geometry" />
+          <mxGeometry height="48" width="48" x="841" y="610" as="geometry" />
         </mxCell>
-        <mxCell id="aws-group" parent="1" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" value="Customer AWS Resources (Read-Only)" vertex="1">
+        <mxCell id="aws-group" parent="1" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" value="Your AWS Resources (Read-Only)" vertex="1">
           <mxGeometry height="330" width="200" x="1180" y="250" as="geometry" />
         </mxCell>
         <mxCell id="wafv2" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#DD344C;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.waf;verticalLabelPosition=bottom;verticalAlign=top" value="WAFv2" vertex="1">
@@ -73,8 +79,11 @@
         <mxCell id="e3" edge="1" parent="1" source="cf" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#3F8624;" target="s3">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e4" edge="1" parent="1" source="browser" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#DD344C;dashed=1;" target="cognito">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e4" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#DD344C;dashed=1;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="260" y="440" as="sourcePoint" />
+            <mxPoint x="732" y="310" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
         <mxCell id="e4-label" connectable="0" parent="e4" style="edgeLabel;html=1;fontSize=9;fillColor=none;" value="JWT Auth" vertex="1">
           <mxGeometry relative="1" as="geometry">
@@ -98,19 +107,33 @@
         <mxCell id="e8" edge="1" parent="1" source="agent-box" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#01A88D;dashed=1;" target="memory">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
+        <mxCell id="e8a" edge="1" parent="1" source="agent-box" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#01A88D;dashed=1;" target="kb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8c" edge="1" parent="1" source="kb" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#3F8624;" target="s3vec">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
         <mxCell id="e8b" edge="1" parent="1" source="agent-box" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#C925D1;dashed=1;" target="ddb">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e8c" edge="1" parent="1" source="browser" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#E7157B;dashed=1;" target="apigw">
-          <mxGeometry relative="1" as="geometry" />
-        </mxCell>
-        <mxCell id="e8c-label" connectable="0" parent="e8c" style="edgeLabel;html=1;fontSize=8;fillColor=none;" value="Sessions API" vertex="1">
           <mxGeometry relative="1" as="geometry">
-            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="1044" y="400" />
+            </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e8d" edge="1" parent="1" source="apigw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#ED7100;" target="lambda">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="-xx6-zniSjv4NPc4mYaZ-1" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#E7157B;dashed=1;" target="apigw">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="230" y="632" />
+            </Array>
+            <mxPoint x="230" y="470" as="sourcePoint" />
+            <mxPoint x="660" y="632" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8d" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#ED7100;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="707.5" y="633.79" as="sourcePoint" />
+            <mxPoint x="840.5" y="633.79" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
         <mxCell id="e8e" edge="1" parent="1" source="lambda" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#C925D1;" target="ddb">
           <mxGeometry relative="1" as="geometry" />
@@ -121,8 +144,17 @@
         <mxCell id="e10" edge="1" parent="1" source="agent-box" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" target="cw">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="e11" edge="1" parent="1" source="agent-box" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" target="athena">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="e11" edge="1" parent="1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" target="athena">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="932" y="384" />
+              <mxPoint x="932" y="384" />
+              <mxPoint x="1090" y="384" />
+              <mxPoint x="1090" y="494" />
+            </Array>
+            <mxPoint x="930" y="384" as="sourcePoint" />
+            <mxPoint x="1274" y="557" as="targetPoint" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>

@@ -11,6 +11,14 @@
 - **HTML report**: Downloadable styled report with Mermaid flow diagram, severity summary, and actionable recommendations
 - **Two-tool pattern**: `review_waf_rules_deep` (pipeline) → Agent analysis → `finalize_review_report` (assemble + render)
 
+### Knowledge Base
+
+- **Bedrock KB + S3 Vectors**: Semantic search over AWS WAF best practices documents
+- **`search_waf_knowledge` tool**: Agent retrieves domain-specific guidance during conversation
+- **Separate CFN stack** (`deploy/kb.yaml`): Optional, recommended. Independent of backend.
+- **`deploy/sync-kb.sh`**: One-command document upload + ingestion trigger
+- **Graceful degradation**: KB not configured → tool returns "not configured", no errors
+
 ## 0.4.0 (2026-05-12)
 
 ### Session History

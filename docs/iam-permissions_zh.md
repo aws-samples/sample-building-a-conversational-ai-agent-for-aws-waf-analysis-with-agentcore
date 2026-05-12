@@ -137,6 +137,14 @@
 | `bedrock-agentcore:RetrieveMemoryRecords` | 语义搜索 LTM | 无（只读） |
 | `bedrock-agentcore:ListMemoryRecords` | 列出 LTM 记录 | 无（只读） |
 
+### Bedrock 知识库（可选）
+
+| 权限 | 用途 | 生产影响 |
+|---|---|---|
+| `bedrock:Retrieve` | 搜索 AWS WAF 最佳实践知识库 | 无（只读） |
+
+**注意：** 仅在设置 `KnowledgeBaseId` 参数时授予。权限范围限定为特定 KB ARN — Agent 无法查询其他知识库。
+
 ## Agent 不能做什么
 
 - ❌ 修改 AWS WAF 规则（没有 `wafv2:UpdateWebACL`、`wafv2:CreateRule` 等）
@@ -146,4 +154,5 @@
 - ❌ 创建或修改 Firehose 投递流
 - ❌ 修改现有 Glue 表或数据库（仅在 `waf_agent_temp` 中创建）
 - ❌ 访问自身会话表以外的 DynamoDB 表
+- ❌ 查询其他知识库（仅限指定的 AWS WAF KB）
 - ❌ 访问上述未列出的任何服务
