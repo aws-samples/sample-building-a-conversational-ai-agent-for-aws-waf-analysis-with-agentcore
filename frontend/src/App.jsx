@@ -199,7 +199,7 @@ export default function App() {
   async function loadSessions() {
     try {
       const token = await getToken();
-      const list = await listSessions(token);
+      const list = await listSessions(token, sessionId.current);
       setSessions(list);
     } catch {}
   }
@@ -208,9 +208,9 @@ export default function App() {
     if (sid === activeSessionId) return;
     try {
       const token = await getToken();
-      const msgs = await getSessionMessages(token, sid);
+      const msgs = await getSessionMessages(token, sessionId.current, sid);
       setMessages(msgs.map(m => ({ role: m.role, content: m.content, tools: m.tools?.map(t => ({ ...t })) || [] })));
-      sessionId.current = generateSessionId(); // new runtime session (old container dead)
+      sessionId.current = generateSessionId();
       setActiveSessionId(sid);
     } catch {}
   }
@@ -225,7 +225,7 @@ export default function App() {
     e.stopPropagation();
     try {
       const token = await getToken();
-      await deleteSession(token, sid);
+      await deleteSession(token, sessionId.current, sid);
       setSessions(prev => prev.filter(s => s.sessionId !== sid));
       if (sid === activeSessionId) handleNewSession();
     } catch {}
