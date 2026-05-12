@@ -10,11 +10,15 @@ function generateSessionId() {
   return crypto.randomUUID() + crypto.randomUUID().slice(0, 2);
 }
 
-function ReportDownload({ sessionId }) {
+function ReportDownload({ sessionId, type = 'roi' }) {
   const [html, setHtml] = useState(null);
   const [error, setError] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const fetched = useRef(false);
+
+  const prompt = type === 'review' ? '__get_review_report__' : '__get_report__';
+  const title = type === 'review' ? '🔍 WAF Review Report' : '📊 WAF ROI Report';
+  const filename = type === 'review' ? 'waf-review-report.html' : 'waf-roi-report.html';
 
   useEffect(() => {
     if (fetched.current) return;
@@ -35,7 +39,7 @@ function ReportDownload({ sessionId }) {
           'Authorization': `Bearer ${token}`,
           'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
         },
-        body: JSON.stringify({ prompt: '__get_report__' }),
+        body: JSON.stringify({ prompt }),
       });
       if (!res.ok) { setError(`HTTP ${res.status}`); return; }
       const text = await res.text();
@@ -53,14 +57,14 @@ function ReportDownload({ sessionId }) {
       const blob = new Blob([content], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = 'waf-roi-report.html'; a.click();
+      a.href = url; a.download = filename; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { setError(e.message); }
   }
 
   return (
     <div className="report-card">
-      <div className="report-header">📊 WAF ROI Report</div>
+      <div className="report-header">{title}</div>
       {error && <div style={{color:'#f87171',fontSize:'0.85rem',marginBottom:'0.5rem'}}>⚠ {error}</div>}
       <div className="report-actions">
         <button onClick={fetchReport} className="btn btn-primary">⬇ {html ? 'Download Again' : 'Download HTML'}</button>
@@ -302,6 +306,9 @@ export default function App() {
             if (assistantMsg.tools.at(-1)?.name === 'set_report_summary') {
               assistantMsg = { ...assistantMsg, hasReport: true };
             }
+            if (assistantMsg.tools.at(-1)?.name === 'finalize_review_report') {
+              assistantMsg = { ...assistantMsg, hasReviewReport: true };
+            }
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'CUSTOM':
@@ -463,7 +470,8 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
               </div>
             )}
             {msg.content && <MessageContent content={msg.content} onShare={() => { setSelectMode(true); setSelected(new Set([i])); }} selectMode={selectMode} />}
-            {msg.hasReport && <ReportDownload sessionId={sessionId.current} />}
+            {msg.hasReport && <ReportDownload sessionId={sessionId.current} type="roi" />}
+            {msg.hasReviewReport && <ReportDownload sessionId={sessionId.current} type="review" />}
           </div>
         ))}
         <div ref={messagesEnd} />
