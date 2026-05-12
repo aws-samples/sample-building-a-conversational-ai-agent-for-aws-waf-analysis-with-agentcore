@@ -172,7 +172,7 @@ function UserMenu({ onSignOut }) {
 }
 
 export default function App() {
-  const [user, setUser] = useState(false);
+  const [user, setUser] = useState(null); // null = checking, false = not logged in, true = logged in
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -189,6 +189,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarLang, setSidebarLang] = useState('zh');
 
+  useEffect(() => { getToken().then(() => setUser(true)).catch(() => setUser(false)); }, []);
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
 
@@ -336,6 +337,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
     setSelected(new Set());
   }
 
+  if (user === null) return null; // checking session...
   if (!user) {
     if (resetForm) {
       return (
