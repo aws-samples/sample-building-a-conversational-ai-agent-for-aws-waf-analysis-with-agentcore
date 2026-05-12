@@ -9,6 +9,7 @@ WAF Agent deploys as two CloudFormation stacks:
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
+| **sessions** | Same as backend | API Gateway + Lambda (session history API) |
 | **frontend** | us-east-1 (required for CloudFront AWS WAF) | CloudFront + S3 + AWS WAF WebACL |
 
 ## Prerequisites
@@ -147,8 +148,26 @@ Save these values — you'll need them for the frontend:
 - `UserPoolClientId`
 - `AgentRuntimeArn`
 - `AgentEndpoint`
+- `SessionsTableName`
 
-## Step 3: Deploy Frontend
+## Step 3: Deploy Sessions API
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/sessions-api.yaml \
+  --stack-name waf-agent-sessions \
+  --region $REGION \
+  --parameter-overrides \
+    SessionsTableArn=arn:aws:dynamodb:$REGION:$ACCOUNT_ID:table/<SessionsTableName> \
+    SessionsTableName=<SessionsTableName from Step 2> \
+    CognitoUserPoolId=<UserPoolId from Step 2> \
+    CognitoClientId=<UserPoolClientId from Step 2> \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+Note the `SessionsApiUrl` output.
+
+## Step 4: Deploy Frontend
 
 ```bash
 aws cloudformation deploy \
@@ -164,7 +183,7 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
-## Step 4: Build and Upload Frontend
+## Step 5: Build and Upload Frontend
 
 ```bash
 cd frontend
@@ -176,6 +195,7 @@ VITE_CLIENT_ID=<UserPoolClientId from Step 2>
 VITE_REGION=$REGION
 VITE_AGENT_ENDPOINT=<AgentEndpoint from Step 2>
 VITE_AGENT_RUNTIME_ARN=<AgentRuntimeArn from Step 2>
+VITE_SESSIONS_API_URL=<SessionsApiUrl from Step 3>
 EOF
 
 # Build
@@ -186,7 +206,7 @@ npm run build
 aws s3 sync dist/ s3://<FrontendBucket from Step 3>/ --region us-east-1
 ```
 
-## Step 5: Create a User
+## Step 6: Create a User
 
 ```bash
 aws cognito-idp admin-create-user \

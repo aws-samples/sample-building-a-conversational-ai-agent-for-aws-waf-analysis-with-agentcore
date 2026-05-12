@@ -9,6 +9,7 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 | Stack | 区域 | 资源 |
 |-------|------|------|
 | **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
+| **sessions** | 与 backend 相同 | API Gateway + Lambda（会话历史 API） |
 | **frontend** | us-east-1（CloudFront AWS WAF 要求） | CloudFront + S3 + AWS WAF WebACL |
 
 ## 前置条件
@@ -147,8 +148,26 @@ aws cloudformation describe-stacks --stack-name waf-agent --region $REGION \
 - `UserPoolClientId`
 - `AgentRuntimeArn`
 - `AgentEndpoint`
+- `SessionsTableName`
 
-## 第 3 步：部署前端
+## 第 3 步：部署会话 API
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/sessions-api.yaml \
+  --stack-name waf-agent-sessions \
+  --region $REGION \
+  --parameter-overrides \
+    SessionsTableArn=arn:aws:dynamodb:$REGION:$ACCOUNT_ID:table/<SessionsTableName> \
+    SessionsTableName=<第 2 步的 SessionsTableName> \
+    CognitoUserPoolId=<第 2 步的 UserPoolId> \
+    CognitoClientId=<第 2 步的 UserPoolClientId> \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+记下输出中的 `SessionsApiUrl`。
+
+## 第 4 步：部署前端
 
 ```bash
 aws cloudformation deploy \
@@ -164,7 +183,7 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
-## 第 4 步：构建并上传前端
+## 第 5 步：构建并上传前端
 
 ```bash
 cd frontend
@@ -176,6 +195,7 @@ VITE_CLIENT_ID=<第 2 步的 UserPoolClientId>
 VITE_REGION=$REGION
 VITE_AGENT_ENDPOINT=<第 2 步的 AgentEndpoint>
 VITE_AGENT_RUNTIME_ARN=<第 2 步的 AgentRuntimeArn>
+VITE_SESSIONS_API_URL=<第 3 步的 SessionsApiUrl>
 EOF
 
 # 构建
@@ -186,7 +206,7 @@ npm run build
 aws s3 sync dist/ s3://<第 3 步的 FrontendBucket>/ --region us-east-1
 ```
 
-## 第 5 步：创建用户
+## 第 6 步：创建用户
 
 ```bash
 aws cognito-idp admin-create-user \

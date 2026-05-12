@@ -70,6 +70,7 @@ graph TB
         Bedrock["Bedrock<br/>Bedrock LLM"]
         Memory["AgentCore Memory<br/>(跨会话 LTM)"]
         DDB["DynamoDB<br/>(会话历史)"]
+        APIGW["API Gateway + Lambda<br/>(会话 API)"]
     end
 
     subgraph AWS["客户 AWS 资源"]
@@ -83,10 +84,12 @@ graph TB
     SPA -->|"① 认证 (SRP)"| Cognito
     Cognito -->|"② JWT Token"| SPA
     SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
+    SPA -->|"④ GET /sessions<br/>Bearer JWT"| APIGW
     AC --> FastAPI
     FastAPI --> Bedrock
     FastAPI --> Memory
     FastAPI --> DDB
+    APIGW --> DDB
     FastAPI --> WAFv2
     FastAPI --> CW
     FastAPI --> Athena
