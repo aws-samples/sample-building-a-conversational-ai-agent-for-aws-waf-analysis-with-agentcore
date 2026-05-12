@@ -169,6 +169,7 @@ def _validate_waf_log(s3_path: str) -> bool:
 
     # Download and validate
     tmp = tempfile.NamedTemporaryFile(suffix=".gz", delete=False)
+    tmp.close()
     try:
         s3.download_file(bucket, key, tmp.name)
         with gzip.open(tmp.name, "rt") as f:
@@ -374,7 +375,7 @@ def _wait_query(athena, qid: str):
     """Poll until query completes."""
     elapsed = 0
     while elapsed < MAX_POLL:
-        time.sleep(2)
+        time.sleep(2)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
         elapsed += 2
         resp = athena.get_query_execution(QueryExecutionId=qid)
         state = resp["QueryExecution"]["Status"]["State"]

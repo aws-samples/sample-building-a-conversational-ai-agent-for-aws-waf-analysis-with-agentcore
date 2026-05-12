@@ -287,7 +287,7 @@ def run_logs_query(
         # Poll
         elapsed = 0
         while elapsed < MAX_POLL:
-            time.sleep(POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for CWL query
             elapsed += POLL_INTERVAL
             result = client.get_query_results(queryId=query_id)
             status = result["status"]
@@ -541,7 +541,7 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
         query_id = resp["queryId"]
         elapsed = 0
         while elapsed < MAX_POLL:
-            time.sleep(POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for CWL query
             elapsed += POLL_INTERVAL
             result = client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):

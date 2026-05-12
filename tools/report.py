@@ -865,7 +865,7 @@ def _poll_log_query(logs_client, log_group, start, end, query, return_full=False
     query_id = resp["queryId"]
     elapsed = 0
     while elapsed < max_wait:
-        time.sleep(2)
+        time.sleep(2)  # nosemgrep: arbitrary-sleep — polling for CWL query
         elapsed += 2
         result = logs_client.get_query_results(queryId=query_id)
         if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
