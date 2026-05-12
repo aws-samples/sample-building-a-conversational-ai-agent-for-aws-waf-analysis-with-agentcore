@@ -86,12 +86,19 @@ export async function listSessions(token, sessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream', 'Authorization': `Bearer ${token}`, 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId },
     body: JSON.stringify({ action: 'list_sessions' }),
   });
   if (!res.ok) return [];
-  const data = await res.json();
-  return data.sessions || [];
+  const text = await res.text();
+  try { return (JSON.parse(text)).sessions || []; } catch {}
+  // Fallback: parse as SSE
+  for (const line of text.split('\n')) {
+    if (line.startsWith('data: ')) {
+      try { return JSON.parse(line.slice(6)).sessions || []; } catch {}
+    }
+  }
+  return [];
 }
 
 /**
@@ -101,12 +108,18 @@ export async function getSessionMessages(token, sessionId, targetSessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream', 'Authorization': `Bearer ${token}`, 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId },
     body: JSON.stringify({ action: 'get_session', sessionId: targetSessionId }),
   });
   if (!res.ok) return [];
-  const data = await res.json();
-  return data.messages || [];
+  const text = await res.text();
+  try { return (JSON.parse(text)).messages || []; } catch {}
+  for (const line of text.split('\n')) {
+    if (line.startsWith('data: ')) {
+      try { return JSON.parse(line.slice(6)).messages || []; } catch {}
+    }
+  }
+  return [];
 }
 
 /**
@@ -116,7 +129,7 @@ export async function deleteSession(token, sessionId, targetSessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream', 'Authorization': `Bearer ${token}`, 'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId },
     body: JSON.stringify({ action: 'delete_session', sessionId: targetSessionId }),
   });
 }

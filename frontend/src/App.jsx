@@ -194,7 +194,7 @@ export default function App() {
   useEffect(() => { getToken().then(() => setUser(true)).catch(() => setUser(false)); }, []);
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
-  useEffect(() => { if (user) loadSessions(); }, [user]);
+  useEffect(() => {}, [user]); // loadSessions deferred until first agent call warms container
 
   async function loadSessions() {
     try {
@@ -321,7 +321,7 @@ export default function App() {
       setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
     setLoading(false);
-    loadSessions();
+    setTimeout(loadSessions, 1000); // delay: let AgentCore finish closing the stream
   }
 
   function waitForUserInput(question) {
