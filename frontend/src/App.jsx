@@ -103,10 +103,19 @@ function MessageContent({ content, onShare, selectMode }) {
       <div className="content markdown" dangerouslySetInnerHTML={{ __html: rendered }} />
       {!selectMode && (
         <div className="msg-actions">
-          <button className="msg-action-btn" onClick={copyMarkdown} title="Copy as Markdown">{copied ? '✓ Copied' : 'Copy'}</button>
-          <button className="msg-action-btn" onClick={exportMarkdown} title="Export as .md file">Export MD</button>
-          <button className="msg-action-btn" onClick={exportHTML} title="Export as styled HTML">Export HTML</button>
-          <button className="msg-action-btn" onClick={onShare} title="Select messages to export together">Share</button>
+          <button className="msg-action-btn" onClick={copyMarkdown} title="Copy as Markdown">
+            {copied ? <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
+            : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>}
+          </button>
+          <button className="msg-action-btn" onClick={exportMarkdown} title="Export as Markdown">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+          <button className="msg-action-btn" onClick={exportHTML} title="Export as HTML">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+          </button>
+          <button className="msg-action-btn" onClick={onShare} title="Select messages to export">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          </button>
         </div>
       )}
     </div>
