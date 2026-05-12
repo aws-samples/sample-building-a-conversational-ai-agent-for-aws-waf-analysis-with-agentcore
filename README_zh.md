@@ -68,7 +68,8 @@ graph TB
             FastAPI["FastAPI + SSE Streaming<br/>12 个工具"]
         end
         Bedrock["Bedrock<br/>Bedrock LLM"]
-        Memory["AgentCore Memory<br/>(跨会话记忆)"]
+        Memory["AgentCore Memory<br/>(跨会话 LTM)"]
+        DDB["DynamoDB<br/>(会话历史)"]
     end
 
     subgraph AWS["客户 AWS 资源"]
@@ -85,6 +86,7 @@ graph TB
     AC --> FastAPI
     FastAPI --> Bedrock
     FastAPI --> Memory
+    FastAPI --> DDB
     FastAPI --> WAFv2
     FastAPI --> CW
     FastAPI --> Athena
@@ -92,10 +94,11 @@ graph TB
 
 </details>
 
-- **前端**：React SPA 部署在 CloudFront + S3，受 AWS WAF 保护。实时流式（工具调用 + 文本 token），消息复制/导出，多消息分享导出，明暗主题，侧边栏指南（中/英）。
-- **认证**：Cognito JWT → AgentCore customJWTAuthorizer（不需要 API Gateway）
+- **前端**：React SPA 部署在 CloudFront + S3，受 AWS WAF 保护。实时流式（工具调用 + 文本 token），消息复制/导出，多消息分享导出，明暗主题，会话历史侧边栏。
+- **认证**：Cognito JWT → AgentCore customJWTAuthorizer（不需要 API Gateway）。用户身份从 JWT claims 服务端提取。
 - **Agent**：FastAPI + Strands SDK，通过 callback_handler + asyncio.Queue 实时流式推送工具调用和分析过程
-- **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时
+- **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时。历史持久化到 DynamoDB（30 天 TTL）。
+- **记忆**：AgentCore Memory 提供跨会话 LTM（事实、偏好、摘要）。DynamoDB 存储完整消息历史。
 
 详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md)
 

@@ -68,7 +68,8 @@ graph TB
             FastAPI["FastAPI + SSE Streaming<br/>12 tools"]
         end
         Bedrock["Bedrock<br/>Bedrock LLM"]
-        Memory["AgentCore Memory<br/>(cross-session)"]
+        Memory["AgentCore Memory<br/>(cross-session LTM)"]
+        DDB["DynamoDB<br/>(session history)"]
     end
 
     subgraph AWS["Customer AWS Resources"]
@@ -85,6 +86,7 @@ graph TB
     AC --> FastAPI
     FastAPI --> Bedrock
     FastAPI --> Memory
+    FastAPI --> DDB
     FastAPI --> WAFv2
     FastAPI --> CW
     FastAPI --> Athena
@@ -92,10 +94,11 @@ graph TB
 
 </details>
 
-- **Frontend**: React SPA on CloudFront + S3, protected by AWS WAF. Real-time streaming (tool calls + text tokens), per-message copy/export, multi-message share/export, dark/light theme, sidebar guide (zh/en).
-- **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed)
+- **Frontend**: React SPA on CloudFront + S3, protected by AWS WAF. Real-time streaming (tool calls + text tokens), per-message copy/export, multi-message share/export, dark/light theme, session history sidebar.
+- **Auth**: Cognito JWT → AgentCore customJWTAuthorizer (no API Gateway needed). User identity derived from JWT claims server-side.
 - **Agent**: FastAPI + Strands SDK, streams tool calls and analysis in real-time via callback_handler + asyncio.Queue
-- **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime
+- **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime. History persisted to DynamoDB (30-day TTL).
+- **Memory**: AgentCore Memory for cross-session LTM (facts, preferences, summaries). DynamoDB for full message history.
 
 See [Deployment Guide](docs/deployment.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md)
 

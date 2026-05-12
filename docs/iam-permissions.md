@@ -10,6 +10,8 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 1. Creating/deleting **temporary Athena tables** in a dedicated database (auto-cleaned on session end)
 2. Writing its own **container logs** to CloudWatch
+3. Writing **session history** to a dedicated DynamoDB table (auto-expires after 30 days)
+4. Writing **memory events** to AgentCore Memory (managed service, auto-expires)
 
 ## Permission Details
 
@@ -102,6 +104,27 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 **Note:** These permissions are scoped to `/aws/bedrock-agentcore/runtimes/*` (scoped by CloudFormation) — the agent cannot write to any other log group.
 
+### DynamoDB (Session History)
+
+| Permission | Purpose | Production Impact |
+|---|---|---|
+| `dynamodb:PutItem` | Save conversation messages | Writes to dedicated sessions table only |
+| `dynamodb:GetItem` | Retrieve session metadata | None (read) |
+| `dynamodb:Query` | List sessions / get messages | None (read) |
+| `dynamodb:DeleteItem` | Delete session on user request | Deletes from sessions table only |
+| `dynamodb:BatchWriteItem` | Bulk delete session messages | Deletes from sessions table only |
+
+**Note:** Scoped to the `${StackName}-sessions` table ARN only — the agent cannot access any other DynamoDB table.
+
+### AgentCore Memory
+
+| Permission | Purpose | Production Impact |
+|---|---|---|
+| `bedrock-agentcore:CreateEvent` | Store conversation turns (STM) | Writes to managed Memory service |
+| `bedrock-agentcore:ListEvents` | Retrieve recent turns | None (read) |
+| `bedrock-agentcore:RetrieveMemoryRecords` | Semantic search of LTM | None (read) |
+| `bedrock-agentcore:ListMemoryRecords` | List LTM records | None (read) |
+
 ## What the Agent CANNOT Do
 
 - ❌ Modify AWS WAF rules (no `wafv2:UpdateWebACL`, `wafv2:CreateRule`, etc.)
@@ -110,4 +133,5 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 - ❌ Modify CloudFront distributions
 - ❌ Create or modify Firehose delivery streams
 - ❌ Modify existing Glue tables or databases (only creates in `waf_agent_temp`)
+- ❌ Access DynamoDB tables other than its own sessions table
 - ❌ Access any service not listed above

@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.4.0 (2026-05-12)
+
+### Session History
+
+- **DynamoDB backend**: Full message history persisted across sessions (split-item pattern, no 400KB limit)
+- **Sidebar UI**: Session list with new chat button, click to restore, delete with ×
+- **Restore mechanism**: Loads messages from DDB, uses new runtimeSessionId + AgentCore Memory LTM for context continuity
+- **Action multiplexing**: Session ops (list/get/delete) dispatched through `/invocations` with `action` field (AgentCore only forwards this path)
+- **30-day TTL**: Automatic cleanup via DynamoDB TTL
+
+### Security
+
+- **IDOR fix**: User identity derived from JWT claims server-side (not client-supplied header). AgentCore does not validate custom headers against JWT.
+- **Authorization header forwarded**: Added to `RequestHeaderAllowlist` so container can decode JWT
+- **Agent user isolation**: Agent instance recreated if user_id changes (prevents cross-user memory leak)
+- **Removed custom-user-id header**: No longer sent by frontend or trusted by backend (reduces attack surface)
+
+### AWS WAF Features
+
+- **Dynamic Label Interpolation**: `review_waf_rules` detects missing interpolation config, suggests forwarding Bot Control signals to origin
+- **requestHeadersInserted parsing**: `_interpret_ip_labels` reads interpolated bot headers when available (fallback to labels array)
+
+### Infrastructure
+
+- **S3 hardening**: AES256 encryption, versioning, access logging, DenyInsecureTransport policy
+- **DynamoDB table**: On-demand billing, TTL enabled, IAM scoped to table ARN only
+- **CFN Memory auto-create**: Default behavior creates AgentCore Memory resource; set `MemoryId=none` to disable
+
+### Compliance
+
+- **Copyright headers**: SPDX MIT-0 on all source files (13 .py + 5 .jsx/.js/.css)
+- **Service naming**: "AWS WAF" and "Amazon Bedrock" throughout all docs and code
+- **Semgrep fixes**: tempfile flush, nosemgrep for polling sleep, route refactor
+
 ## 0.3.0 (2026-05-11)
 
 ### Architecture

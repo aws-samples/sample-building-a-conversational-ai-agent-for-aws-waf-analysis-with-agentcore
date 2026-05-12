@@ -8,7 +8,7 @@ WAF Agent deploys as two CloudFormation stacks:
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
-| **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + IAM |
+| **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
 | **frontend** | us-east-1 (required for CloudFront AWS WAF) | CloudFront + S3 + AWS WAF WebACL |
 
 ## Prerequisites

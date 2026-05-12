@@ -8,7 +8,7 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 
 | Stack | 区域 | 资源 |
 |-------|------|------|
-| **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + IAM |
+| **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
 | **frontend** | us-east-1（CloudFront AWS WAF 要求） | CloudFront + S3 + AWS WAF WebACL |
 
 ## 前置条件

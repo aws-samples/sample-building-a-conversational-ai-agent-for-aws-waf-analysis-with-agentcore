@@ -10,6 +10,8 @@
 
 1. 在专用数据库中创建/删除**临时 Athena 表**（会话结束时自动清理）
 2. 写入自身的**容器日志**到 CloudWatch
+3. 写入**会话历史**到专用 DynamoDB 表（30 天后自动过期）
+4. 写入**记忆事件**到 AgentCore Memory（托管服务，自动过期）
 
 ## 权限详情
 
@@ -102,6 +104,27 @@
 
 **注意：** 这些权限的范围限定为 `/aws/bedrock-agentcore/runtimes/*` (scoped by CloudFormation)——Agent 不能写入任何其他日志组。
 
+### DynamoDB（会话历史）
+
+| 权限 | 用途 | 生产影响 |
+|---|---|---|
+| `dynamodb:PutItem` | 保存对话消息 | 仅写入专用会话表 |
+| `dynamodb:GetItem` | 获取会话元数据 | 无（只读） |
+| `dynamodb:Query` | 列出会话/获取消息 | 无（只读） |
+| `dynamodb:DeleteItem` | 用户请求删除会话 | 仅从会话表删除 |
+| `dynamodb:BatchWriteItem` | 批量删除会话消息 | 仅从会话表删除 |
+
+**注意：** 权限范围限定为 `${StackName}-sessions` 表 ARN——Agent 不能访问任何其他 DynamoDB 表。
+
+### AgentCore Memory
+
+| 权限 | 用途 | 生产影响 |
+|---|---|---|
+| `bedrock-agentcore:CreateEvent` | 存储对话轮次（STM） | 写入托管 Memory 服务 |
+| `bedrock-agentcore:ListEvents` | 获取最近轮次 | 无（只读） |
+| `bedrock-agentcore:RetrieveMemoryRecords` | 语义搜索 LTM | 无（只读） |
+| `bedrock-agentcore:ListMemoryRecords` | 列出 LTM 记录 | 无（只读） |
+
 ## Agent 不能做什么
 
 - ❌ 修改 AWS WAF 规则（没有 `wafv2:UpdateWebACL`、`wafv2:CreateRule` 等）
@@ -110,4 +133,5 @@
 - ❌ 修改 CloudFront 分配
 - ❌ 创建或修改 Firehose 投递流
 - ❌ 修改现有 Glue 表或数据库（仅在 `waf_agent_temp` 中创建）
+- ❌ 访问自身会话表以外的 DynamoDB 表
 - ❌ 访问上述未列出的任何服务
