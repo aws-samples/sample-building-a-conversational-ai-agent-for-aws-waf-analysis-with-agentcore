@@ -25,16 +25,14 @@ def list_sessions(user_id: str) -> list[dict]:
     resp = _ddb().query(
         TableName=TABLE_NAME,
         KeyConditionExpression="userId = :uid",
-        FilterExpression="contains(sk, :meta)",
-        ExpressionAttributeValues={
-            ":uid": {"S": user_id},
-            ":meta": {"S": "#0000"},
-        },
+        ExpressionAttributeValues={":uid": {"S": user_id}},
         ProjectionExpression="sk, title, createdAt, lastUsed",
     )
     sessions = []
     for item in resp.get("Items", []):
         sk = item["sk"]["S"]
+        if not sk.endswith("#0000"):
+            continue
         sessions.append({
             "sessionId": sk.rsplit("#", 1)[0],
             "title": item.get("title", {}).get("S", ""),
