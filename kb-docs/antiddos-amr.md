@@ -1,5 +1,15 @@
 # AntiDDoS AMR (AWSManagedRulesAntiDDoSRuleSet)
 
+## Why CloudFront Scope is Strongly Preferred
+
+Anti-DDoS AMR should be deployed on a CLOUDFRONT-scope WebACL, not REGIONAL. Two reasons:
+
+1. **IP aggregation**: Regional WAF (ALB/API Gateway) sees CDN/proxy IPs as source IP, not real client IPs. Anti-DDoS AMR does per-client-IP behavior analysis — if all traffic appears from a few CDN IPs, AMR either misidentifies them as attackers (false positive on all users) or cannot distinguish attackers from legitimate users. AMR does NOT support ForwardedIPConfig.
+
+2. **DDoS hits the resource before WAF evaluates**: With Regional WAF, requests first reach ALB (TLS termination, connection handling), THEN get evaluated by WAF. A volumetric DDoS flood can overwhelm ALB before WAF can mitigate — causing 5xx errors, scaling delays, or resource exhaustion. With CloudFront-scope WAF, evaluation happens at the edge layer before traffic reaches the origin.
+
+If CloudFront is not in the architecture, Regional WAF Anti-DDoS AMR provides limited value. Consider adding CloudFront in front of ALB specifically for DDoS protection.
+
 ### Detection mechanism
 - Per-client-IP behavior analysis (NOT aggregate traffic volume)
 - Requires a minimum of ~15 minutes after activation before it can start detecting anomalies; the full traffic baseline is built over a longer period
