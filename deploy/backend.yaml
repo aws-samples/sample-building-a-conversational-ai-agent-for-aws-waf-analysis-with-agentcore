@@ -24,6 +24,10 @@ Parameters:
     Type: String
     Default: ""
     Description: "AgentCore Memory resource ID. Leave empty to auto-create. Set to 'none' to disable memory entirely."
+  KnowledgeBaseId:
+    Type: String
+    Default: ""
+    Description: "Bedrock Knowledge Base ID for AWS WAF best practices. Leave empty to disable KB retrieval."
   ExistingUserPoolId:
     Type: String
     Default: ""
@@ -41,6 +45,7 @@ Conditions:
     - !Not [!Equals [!Ref MemoryId, ""]]
     - !Not [!Equals [!Ref MemoryId, "none"]]
   CreateUserPool: !Equals [!Ref ExistingUserPoolId, ""]
+  HasKnowledgeBase: !Not [!Equals [!Ref KnowledgeBaseId, ""]]
 
 Resources:
   # --- Cognito ---
@@ -177,6 +182,13 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:BatchWriteItem
                 Resource: !GetAtt SessionsTable.Arn
+              - !If
+                - HasKnowledgeBase
+                - Sid: KBRetrieve
+                  Effect: Allow
+                  Action: bedrock:Retrieve
+                  Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}"
+                - !Ref AWS::NoValue
 
   # --- DynamoDB (session history) ---
   SessionsTable:
@@ -234,11 +246,14 @@ Resources:
           WAF_AGENT_MODEL_REGION: !If [HasModelRegion, !Ref ModelRegion, !Ref "AWS::Region"]
           MEMORY_ID: !If [CreateMemory, !If [UseExistingMemory, !Ref MemoryId, !GetAtt AgentMemory.MemoryId], !Ref "AWS::NoValue"]
           SESSIONS_TABLE: !Ref SessionsTable
+          KNOWLEDGE_BASE_ID: !If [HasKnowledgeBase, !Ref KnowledgeBaseId, !Ref "AWS::NoValue"]
         - !If
           - CreateMemory
           - MEMORY_ID: !If [UseExistingMemory, !Ref MemoryId, !GetAtt AgentMemory.MemoryId]
             SESSIONS_TABLE: !Ref SessionsTable
+            KNOWLEDGE_BASE_ID: !If [HasKnowledgeBase, !Ref KnowledgeBaseId, !Ref "AWS::NoValue"]
           - SESSIONS_TABLE: !Ref SessionsTable
+            KNOWLEDGE_BASE_ID: !If [HasKnowledgeBase, !Ref KnowledgeBaseId, !Ref "AWS::NoValue"]
       RoleArn: !GetAtt AgentExecutionRole.Arn
       NetworkConfiguration:
         NetworkMode: PUBLIC

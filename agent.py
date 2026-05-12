@@ -17,6 +17,7 @@ from tools.waf_athena import run_athena_query
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
+from tools.waf_knowledge import search_waf_knowledge
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -159,7 +160,8 @@ _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
-          review_waf_rules_deep, finalize_review_report, record_finding, ask_user]
+          review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
+          record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
 

@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS WAF Agent — Knowledge Base (Bedrock KB + S3 Vectors). Deploy in same region as backend.
+
+# NOTE: S3 VectorBucket and VectorIndex must be pre-created via CLI before deploying this stack.
+# See deployment guide for commands.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: waf-agent-kb
+  VectorBucketName:
+    Type: String
+    Description: "Pre-created S3 Vector Bucket name (from: aws s3vectors create-vector-bucket)"
+  VectorIndexArn:
+    Type: String
+    Description: "Pre-created S3 Vector Index ARN (from: aws s3vectors create-index)"
+
+Resources:
+  # --- S3 bucket for source documents ---
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  DocumentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DocumentsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DocumentsBucket.Arn
+              - !Sub "${DocumentsBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # --- KB service role ---
+  KBServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/*"
+      Policies:
+        - PolicyName: KBServicePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: BedrockEmbedding
+                Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+              - Sid: S3ReadDocs
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DocumentsBucket.Arn
+                  - !Sub "${DocumentsBucket.Arn}/*"
+              - Sid: S3VectorsAccess
+                Effect: Allow
+                Action:
+                  - s3vectors:PutVectors
+                  - s3vectors:GetVectors
+                  - s3vectors:DeleteVectors
+                  - s3vectors:QueryVectors
+                  - s3vectors:GetIndex
+                Resource: !Ref VectorIndexArn
+
+  # --- Bedrock Knowledge Base ---
+  KnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Sub "${AppName}"
+      RoleArn: !GetAtt KBServiceRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+          EmbeddingModelConfiguration:
+            BedrockEmbeddingModelConfiguration:
+              Dimensions: 1024
+      StorageConfiguration:
+        Type: S3_VECTORS
+        S3VectorsConfiguration:
+          BucketArn: !Sub "arn:aws:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${VectorBucketName}"
+          IndexArn: !Ref VectorIndexArn
+
+  # --- Data Source ---
+  DataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !Ref KnowledgeBase
+      Name: !Sub "${AppName}-s3"
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt DocumentsBucket.Arn
+      VectorIngestionConfiguration:
+        ChunkingConfiguration:
+          ChunkingStrategy: SEMANTIC
+          SemanticChunkingConfiguration:
+            MaxTokens: 300
+            BufferSize: 1
+            BreakpointPercentileThreshold: 95
+
+Outputs:
+  KnowledgeBaseId:
+    Value: !GetAtt KnowledgeBase.KnowledgeBaseId
+  DataSourceId:
+    Value: !GetAtt DataSource.DataSourceId
+  DocumentsBucketName:
+    Value: !Ref DocumentsBucket
