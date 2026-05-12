@@ -135,3 +135,14 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 - ❌ Modify existing Glue tables or databases (only creates in `waf_agent_temp`)
 - ❌ Access DynamoDB tables other than its own sessions table
 - ❌ Access any service not listed above
+
+## Data Privacy
+
+Session history (conversation messages) is stored in DynamoDB within **your AWS account**. Each user can only access their own sessions (enforced by JWT-derived user identity as the partition key).
+
+**AWS account administrators** with DynamoDB access can view all users' session history. This is consistent with the standard AWS shared responsibility model — the data resides in your account under your control.
+
+Mitigations:
+- 30-day TTL automatically deletes old sessions
+- Users can manually delete individual sessions from the sidebar
+- No session data leaves your AWS account
