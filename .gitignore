@@ -13,3 +13,4 @@ design/
 test/
 *.html
 !frontend/index.html
+.playwright-mcp/

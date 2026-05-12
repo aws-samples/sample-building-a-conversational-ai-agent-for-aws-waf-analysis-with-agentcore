@@ -243,6 +243,7 @@ Resources:
         NetworkMode: PUBLIC
       RequestHeaderConfiguration:
         RequestHeaderAllowlist:
+          - "Authorization"
           - "X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id"
       AuthorizerConfiguration:
         CustomJWTAuthorizer:

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT-0
 """WAF Analysis Agent — FastAPI + AG-UI + Strands."""
 
+import base64
+import json as _json_mod
 import os
 import time
 from strands import Agent
@@ -213,6 +215,22 @@ def invoke(payload: dict) -> dict:
 
 # --- AG-UI Server (FastAPI + ag-ui-strands) ---
 
+def _get_user_id_from_jwt(request) -> str:
+    """Extract user email from JWT (AgentCore already validated signature)."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return ""
+    try:
+        token = auth[7:]
+        payload = token.split(".")[1]
+        # Add padding
+        payload += "=" * (4 - len(payload) % 4)
+        claims = _json_mod.loads(base64.b64decode(payload))
+        return claims.get("email", claims.get("sub", ""))
+    except Exception:
+        return ""
+
+
 def create_app():
     """Create FastAPI app with real-time AG-UI streaming endpoint."""
     import asyncio
@@ -360,9 +378,9 @@ def create_app():
     async def _invocations(request: Request):
         input_data = await request.json()
 
-        # Extract session_id and user_id for memory
+        # Extract session_id and user_id (from JWT, not client header — prevents IDOR)
         session_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-session-id", "")
-        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        user_id = _get_user_id_from_jwt(request)
         agent = get_agent(session_id=session_id, user_id=user_id)
 
         # --- Resume from interrupt ---
@@ -415,14 +433,14 @@ def create_app():
         return JSONResponse({"status": "Healthy"})
 
     async def _list_sessions(request: Request):
-        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        user_id = _get_user_id_from_jwt(request)
         if not user_id:
             return JSONResponse({"sessions": []})
         from tools.sessions import list_sessions
         return JSONResponse({"sessions": list_sessions(user_id)})
 
     async def _get_session(request: Request):
-        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        user_id = _get_user_id_from_jwt(request)
         session_id = request.path_params.get("session_id", "")
         if not user_id or not session_id:
             return JSONResponse({"messages": []})
@@ -430,7 +448,7 @@ def create_app():
         return JSONResponse({"messages": get_session_messages(user_id, session_id)})
 
     async def _delete_session(request: Request):
-        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        user_id = _get_user_id_from_jwt(request)
         session_id = request.path_params.get("session_id", "")
         if not user_id or not session_id:
             return JSONResponse({"ok": False})
