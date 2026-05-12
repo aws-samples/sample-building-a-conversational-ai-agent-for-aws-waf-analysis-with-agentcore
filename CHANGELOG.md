@@ -5,9 +5,9 @@
 ### Session History
 
 - **DynamoDB backend**: Full message history persisted across sessions (split-item pattern, no 400KB limit)
-- **Sidebar UI**: Session list with new chat button, click to restore, delete with ×
+- **Sessions API**: Separate CFN stack (`deploy/sessions-api.yaml`) — Lambda + API Gateway HTTP API with Cognito JWT authorizer. Optional but recommended.
+- **Sidebar UI**: Session list with new chat button, click to restore, delete with ×. Auto-detects browser language. Limited to 10 most recent.
 - **Restore mechanism**: Loads messages from DDB, uses new runtimeSessionId + AgentCore Memory LTM for context continuity
-- **Action multiplexing**: Session ops (list/get/delete) dispatched through `/invocations` with `action` field (AgentCore only forwards this path)
 - **30-day TTL**: Automatic cleanup via DynamoDB TTL
 
 ### Security

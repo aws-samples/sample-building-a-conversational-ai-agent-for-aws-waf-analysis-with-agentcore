@@ -117,6 +117,17 @@ On-demand pricing. Stores full conversation messages with 30-day TTL.
 
 DynamoDB cost is negligible at any scale for this use case.
 
+### 8. Sessions API — Lambda + API Gateway (Optional)
+
+Only incurred if session history is enabled (`deploy/sessions-api.yaml` deployed).
+
+| Component | Price |
+|---|---|
+| Lambda | Free tier: 1M requests + 400K GB-seconds/month. Internal tool usage stays well within free tier. |
+| API Gateway HTTP API | $1.00 per million requests. |
+
+**Typical usage:** ~10 API calls per session (list + restore). All usage levels stay within Lambda free tier. API Gateway cost < $0.01/month.
+
 ## Total Monthly Cost Estimates
 
 | Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Memory | DynamoDB | Total |

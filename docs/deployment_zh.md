@@ -9,7 +9,7 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 | Stack | 区域 | 资源 |
 |-------|------|------|
 | **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
-| **sessions** | 与 backend 相同 | API Gateway + Lambda（会话历史 API） |
+| **sessions** | 与 backend 相同 | API Gateway + Lambda（会话历史 API）— *可选* |
 | **frontend** | us-east-1（CloudFront AWS WAF 要求） | CloudFront + S3 + AWS WAF WebACL |
 
 ## 前置条件
@@ -150,7 +150,7 @@ aws cloudformation describe-stacks --stack-name waf-agent --region $REGION \
 - `AgentEndpoint`
 - `SessionsTableName`
 
-## 第 3 步：部署会话 API
+## 第 3 步：部署会话 API（可选，推荐）
 
 ```bash
 aws cloudformation deploy \
@@ -166,6 +166,8 @@ aws cloudformation deploy \
 ```
 
 记下输出中的 `SessionsApiUrl`。
+
+> **可以跳过此步骤吗？** Agent 不部署会话历史也能完整工作——只是侧边栏不会显示历史对话。可以之后再部署，不影响后端或前端。
 
 ## 第 4 步：部署前端
 

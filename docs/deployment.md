@@ -9,7 +9,7 @@ WAF Agent deploys as two CloudFormation stacks:
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
-| **sessions** | Same as backend | API Gateway + Lambda (session history API) |
+| **sessions** | Same as backend | API Gateway + Lambda (session history API) — *optional* |
 | **frontend** | us-east-1 (required for CloudFront AWS WAF) | CloudFront + S3 + AWS WAF WebACL |
 
 ## Prerequisites
@@ -150,7 +150,7 @@ Save these values — you'll need them for the frontend:
 - `AgentEndpoint`
 - `SessionsTableName`
 
-## Step 3: Deploy Sessions API
+## Step 3: Deploy Sessions API (optional, recommended)
 
 ```bash
 aws cloudformation deploy \
@@ -166,6 +166,8 @@ aws cloudformation deploy \
 ```
 
 Note the `SessionsApiUrl` output.
+
+> **Skip this step?** The agent works fully without session history — you just won't see past conversations in the sidebar. You can deploy this later without affecting the backend or frontend.
 
 ## Step 4: Deploy Frontend
 
