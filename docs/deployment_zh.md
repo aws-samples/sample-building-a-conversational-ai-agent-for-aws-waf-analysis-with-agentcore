@@ -169,6 +169,8 @@ aws cloudformation deploy \
 
 > **可以跳过此步骤吗？** Agent 不部署会话历史也能完整工作——只是侧边栏不会显示历史对话。可以之后再部署，不影响后端或前端。
 
+> **安全说明：** 会话 API 受 Cognito JWT 授权保护——只有认证用户可以访问。如需额外防护（频率限制、IP 信誉、地理封锁），可在 API Gateway 前面加一个 CloudFront 分配并关联 AWS WAF WebACL。HTTP API (v2) 不支持直接关联 WAF。
+
 ## 第 4 步：部署前端
 
 ```bash

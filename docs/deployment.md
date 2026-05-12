@@ -169,6 +169,8 @@ Note the `SessionsApiUrl` output.
 
 > **Skip this step?** The agent works fully without session history — you just won't see past conversations in the sidebar. You can deploy this later without affecting the backend or frontend.
 
+> **Security note:** The Sessions API is protected by Cognito JWT authorization — only authenticated users can access it. For additional protection (rate limiting, IP reputation, geo-blocking), place a CloudFront distribution with an AWS WAF WebACL in front of the API Gateway. HTTP API (v2) does not support direct WAF association.
+
 ## Step 4: Deploy Frontend
 
 ```bash
