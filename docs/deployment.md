@@ -205,7 +205,7 @@ npm install
 npm run build
 
 # Upload to S3
-aws s3 sync dist/ s3://<FrontendBucket from Step 3>/ --region us-east-1
+aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1
 ```
 
 ## Step 6: Create a User

@@ -205,7 +205,7 @@ npm install
 npm run build
 
 # 上传到 S3
-aws s3 sync dist/ s3://<第 3 步的 FrontendBucket>/ --region us-east-1
+aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1
 ```
 
 ## 第 6 步：创建用户
