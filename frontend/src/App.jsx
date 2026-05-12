@@ -187,7 +187,7 @@ export default function App() {
   const pendingResolve = useRef(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarLang, setSidebarLang] = useState('zh');
+  const [sidebarLang, setSidebarLang] = useState(() => navigator.language.startsWith('zh') ? 'zh' : 'en');
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(sessionId.current);
 
