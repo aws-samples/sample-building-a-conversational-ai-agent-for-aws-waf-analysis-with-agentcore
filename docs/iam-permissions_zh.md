@@ -106,15 +106,27 @@
 
 ### DynamoDB（会话历史）
 
+**AgentCore Runtime 角色**（对话过程中保存消息）：
+
 | 权限 | 用途 | 生产影响 |
 |---|---|---|
 | `dynamodb:PutItem` | 保存对话消息 | 仅写入专用会话表 |
 | `dynamodb:GetItem` | 获取会话元数据 | 无（只读） |
 | `dynamodb:Query` | 列出会话/获取消息 | 无（只读） |
-| `dynamodb:DeleteItem` | 用户请求删除会话 | 仅从会话表删除 |
+| `dynamodb:DeleteItem` | 删除单条记录 | 仅从会话表删除 |
+| `dynamodb:UpdateItem` | 更新会话元数据（标题、最后使用时间） | 仅更新会话表 |
 | `dynamodb:BatchWriteItem` | 批量删除会话消息 | 仅从会话表删除 |
 
-**注意：** 权限范围限定为 `${StackName}-sessions` 表 ARN——Agent 不能访问任何其他 DynamoDB 表。
+**会话 API Lambda 角色**（处理侧边栏的列表/获取/删除）：
+
+| 权限 | 用途 | 生产影响 |
+|---|---|---|
+| `dynamodb:Query` | 列出会话/获取消息 | 无（只读） |
+| `dynamodb:GetItem` | 获取会话元数据 | 无（只读） |
+| `dynamodb:DeleteItem` | 删除单条记录 | 仅从会话表删除 |
+| `dynamodb:BatchWriteItem` | 批量删除会话消息 | 仅从会话表删除 |
+
+**注意：** 两个角色的权限范围都限定为 `${StackName}-sessions` 表 ARN。
 
 ### AgentCore Memory
 

@@ -106,15 +106,27 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 ### DynamoDB (Session History)
 
+**AgentCore Runtime role** (saves messages during conversations):
+
 | Permission | Purpose | Production Impact |
 |---|---|---|
 | `dynamodb:PutItem` | Save conversation messages | Writes to dedicated sessions table only |
 | `dynamodb:GetItem` | Retrieve session metadata | None (read) |
 | `dynamodb:Query` | List sessions / get messages | None (read) |
-| `dynamodb:DeleteItem` | Delete session on user request | Deletes from sessions table only |
+| `dynamodb:DeleteItem` | Delete individual items | Deletes from sessions table only |
+| `dynamodb:UpdateItem` | Upsert session metadata (title, lastUsed) | Updates sessions table only |
 | `dynamodb:BatchWriteItem` | Bulk delete session messages | Deletes from sessions table only |
 
-**Note:** Scoped to the `${StackName}-sessions` table ARN only — the agent cannot access any other DynamoDB table.
+**Sessions API Lambda role** (handles sidebar list/get/delete):
+
+| Permission | Purpose | Production Impact |
+|---|---|---|
+| `dynamodb:Query` | List sessions / get messages | None (read) |
+| `dynamodb:GetItem` | Retrieve session metadata | None (read) |
+| `dynamodb:DeleteItem` | Delete individual items | Deletes from sessions table only |
+| `dynamodb:BatchWriteItem` | Bulk delete session messages | Deletes from sessions table only |
+
+**Note:** Both roles are scoped to the `${StackName}-sessions` table ARN only.
 
 ### AgentCore Memory
 
