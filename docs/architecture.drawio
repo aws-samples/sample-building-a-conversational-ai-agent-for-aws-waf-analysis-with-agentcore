@@ -31,7 +31,7 @@
         <mxCell id="ac" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" value="AgentCore&#xa;Runtime" vertex="1">
           <mxGeometry height="48" width="48" x="660" y="360" as="geometry" />
         </mxCell>
-        <mxCell id="agent-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#147EBA;fontSize=10;verticalAlign=middle;" value="Strands Agent&#xa;FastAPI + SSE Streaming&#xa;(microVM per session)" vertex="1">
+        <mxCell id="agent-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#147EBA;fontSize=10;verticalAlign=middle;" value="Strands Agent&lt;br&gt;FastAPI + SSE Streaming&lt;br&gt;(microVM per session)" vertex="1">
           <mxGeometry height="90" width="170" x="760" y="339" as="geometry" />
         </mxCell>
         <mxCell id="bedrock" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#01A88D;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;verticalLabelPosition=bottom;verticalAlign=top" value="Bedrock&#xa;LLM" vertex="1">
