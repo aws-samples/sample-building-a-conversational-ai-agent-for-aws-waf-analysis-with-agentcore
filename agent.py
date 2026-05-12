@@ -390,26 +390,17 @@ def create_app():
         action = input_data.get("action")
         if action == "list_sessions":
             from tools.sessions import list_sessions
-            data = _json.dumps({"sessions": list_sessions(user_id) if user_id else []})
-            async def _session_response():
-                yield f"data: {data}\n\n"
-            return StreamingResponse(_session_response(), media_type="text/event-stream")
+            return JSONResponse({"sessions": list_sessions(user_id) if user_id else []})
         if action == "get_session":
             from tools.sessions import get_session_messages
             sid = input_data.get("sessionId", "")
-            data = _json.dumps({"messages": get_session_messages(user_id, sid) if user_id and sid else []})
-            async def _session_response():
-                yield f"data: {data}\n\n"
-            return StreamingResponse(_session_response(), media_type="text/event-stream")
+            return JSONResponse({"messages": get_session_messages(user_id, sid) if user_id and sid else []})
         if action == "delete_session":
             from tools.sessions import delete_session
             sid = input_data.get("sessionId", "")
             if user_id and sid:
                 delete_session(user_id, sid)
-            data = _json.dumps({"ok": True})
-            async def _session_response():
-                yield f"data: {data}\n\n"
-            return StreamingResponse(_session_response(), media_type="text/event-stream")
+            return JSONResponse({"ok": True})
 
         # --- Agent invocation ---
         agent = get_agent(session_id=session_id, user_id=user_id)
