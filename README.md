@@ -13,6 +13,8 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 
 ## Quick Start
 
+![AWS WAF Agent Screenshot](docs/screenshot.png)
+
 ### Prerequisites
 
 - AWS account with AWS WAF configured and logging enabled

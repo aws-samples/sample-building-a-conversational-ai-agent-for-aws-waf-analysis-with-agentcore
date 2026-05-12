@@ -13,6 +13,8 @@
 
 ## 快速开始
 
+![AWS WAF Agent 截图](docs/screenshot.png)
+
 ### 前置条件
 
 - 已配置 AWS WAF 并开启日志的 AWS 账号
