@@ -11,7 +11,7 @@ from tools.aws_session import get_client
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
 
-# Human-readable names for WAF rule labels (management-friendly)
+# Human-readable names for AWS WAF rule labels (management-friendly)
 _FRIENDLY_NAMES = {
     "CategoryHttpLibrary": "HTTP Libraries (curl, python-requests)",
     "CategorySearchEngine": "Search Engines (Google, Bing)",
@@ -94,7 +94,7 @@ canvas {{ max-height: 300px; }}
 </head>
 <body>
 <button class="theme-toggle" onclick="toggleTheme()">🌓 Toggle Theme</button>
-<h1>WAF Weekly Business Report</h1>
+<h1>AWS WAF Weekly Business Report</h1>
 <p class="subtitle">{webacl_name} — {date_range}</p>
 
 <h2>Executive Summary</h2>
@@ -195,15 +195,15 @@ document.documentElement.classList.add('{default_theme}');
 
 @tool
 def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: str = "dark") -> str:
-    """Generate a WAF ROI report as HTML with charts showing protection value (ROI).
+    """Generate a AWS WAF ROI report as HTML with charts showing protection value (ROI).
 
     Queries CloudWatch Metrics for the past 7 days and produces an HTML report
-    focused on demonstrating WAF value: threats mitigated, challenge effectiveness,
+    focused on demonstrating AWS WAF value: threats mitigated, challenge effectiveness,
     bot detection rates, and week-over-week trends.
 
     Args:
         webacl_name: Name of the WebACL to report on.
-        scope: WAF scope — "CLOUDFRONT" or "REGIONAL".
+        scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
         theme: Default theme — "dark" (for projection) or "light" (for PDF). User can toggle in browser.
 
     Returns:
@@ -916,7 +916,7 @@ def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
 
 
 def _get_5min_traffic(cw, webacl_name: str, start, end) -> list:
-    """Get 5-min resolution traffic data using SEARCH (same approach as WAF native dashboard)."""
+    """Get 5-min resolution traffic data using SEARCH (same approach as AWS WAF native dashboard)."""
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
@@ -1047,7 +1047,7 @@ def set_report_summary(path: str, summary: str) -> str:
     """Finalize a weekly report by injecting the executive summary.
 
     Call this after generate_weekly_report, with a compelling executive summary
-    that answers: What happened this week? What did WAF protect? Is the investment worth it?
+    that answers: What happened this week? What did AWS WAF protect? Is the investment worth it?
 
     Args:
         path: Path to the HTML report file (returned by generate_weekly_report).

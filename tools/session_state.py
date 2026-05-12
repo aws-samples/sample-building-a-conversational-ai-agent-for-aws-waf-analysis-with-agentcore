@@ -18,12 +18,12 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
 
 
 def set_capabilities(capabilities: dict):
-    """Store detected WAF capabilities."""
+    """Store detected AWS WAF capabilities."""
     _state["capabilities"] = capabilities
 
 
 def get_capabilities() -> dict:
-    """Get detected WAF capabilities."""
+    """Get detected AWS WAF capabilities."""
     return _state.get("capabilities", {})
 
 

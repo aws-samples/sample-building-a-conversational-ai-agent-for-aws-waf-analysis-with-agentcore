@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""WAF Athena query tool — for S3-stored WAF logs."""
+"""WAF Athena query tool — for S3-stored AWS WAF logs."""
 
 import re
 import time
@@ -55,7 +55,7 @@ def _resolve_s3_path(log_dest_arn: str) -> str:
 
 
 def _try_standard_path(bucket: str, account_id: str, scope: str, webacl_name: str, region: str) -> str | None:
-    """Try the standard WAF direct delivery path. Returns full S3 path or None."""
+    """Try the standard AWS WAF direct delivery path. Returns full S3 path or None."""
     s3 = get_client("s3", region_name="us-east-1")
     scope_dir = "cloudfront" if scope == "CLOUDFRONT" else region
     prefix = f"AWSLogs/{account_id}/WAFLogs/{scope_dir}/{webacl_name}/"
@@ -143,7 +143,7 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str]:
 
 
 def _validate_waf_log(s3_path: str) -> bool:
-    """Download one .gz file and verify it's a WAF log."""
+    """Download one .gz file and verify it's a AWS WAF log."""
     parts = s3_path.replace("s3://", "").split("/", 1)
     bucket = parts[0]
     prefix = parts[1] if len(parts) > 1 else ""
@@ -248,7 +248,7 @@ def _find_existing_table(s3_path: str, region: str) -> str | None:
                 location = tbl.get("StorageDescriptor", {}).get("Location", "").rstrip("/")
                 # Match: our s3_path is within the table's location scope (table covers our path)
                 if s3_normalized == location or s3_normalized.startswith(location):
-                    # Verify it has WAF log columns
+                    # Verify it has AWS WAF log columns
                     cols = [c["Name"] for c in tbl["StorageDescriptor"].get("Columns", [])]
                     if "action" in cols and "httprequest" in cols:
                         return f"{db_name}.{tbl['Name']}"
@@ -444,7 +444,7 @@ def _ensure_table(region: str, table_mode: str = "") -> str:
 
     # Detect partitions and create table
     if not _validate_waf_log(s3_path):
-        raise RuntimeError(f"S3 path does not contain valid WAF logs: {s3_path}")
+        raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}")
 
     storage_template, part_fmt, part_unit = _detect_partitions(s3_path)
     _athena_state["partition_format"] = part_fmt
@@ -641,7 +641,7 @@ def run_athena_query(
     limit: int = 25,
     table_mode: str = "",
 ) -> str:
-    """Run a WAF log query via Athena (for S3-stored logs).
+    """Run a AWS WAF log query via Athena (for S3-stored logs).
 
     Same interface as run_logs_query — same query_types, same output format.
     Automatically discovers S3 path. If no Athena table exists, returns a prompt
@@ -651,7 +651,7 @@ def run_athena_query(
         query_type: Same types as run_logs_query (count_rule_top_ips, ip_cross_query, etc.)
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
-        label: WAF label name (for label_top_ips).
+        label: AWS WAF label name (for label_top_ips).
         action: Action value (for action_timeline).
         host: Hostname (for host_* queries).
         hours_ago: How far back to query (default 168 = 7 days).

@@ -15,11 +15,11 @@ Parameters:
   ModelId:
     Type: String
     Default: ""
-    Description: "Bedrock model ID (e.g., anthropic.claude-sonnet-4-6, us.anthropic.claude-sonnet-4-6). Leave empty for region-based default."
+    Description: "Amazon Bedrock model ID (e.g., anthropic.claude-sonnet-4-6, us.anthropic.claude-sonnet-4-6). Leave empty for region-based default."
   ModelRegion:
     Type: String
     Default: ""
-    Description: "Region for Bedrock model invocation. Leave empty to use stack region."
+    Description: "Region for Amazon Bedrock model invocation. Leave empty to use stack region."
   MemoryId:
     Type: String
     Default: ""
@@ -99,7 +99,7 @@ Resources:
                   - ecr:GetDownloadUrlForLayer
                   - ecr:GetAuthorizationToken
                 Resource: '*'
-              - Sid: WAF
+              - Sid: AWS WAF
                 Effect: Allow
                 Action:
                   - wafv2:GetWebACL
@@ -144,7 +144,7 @@ Resources:
                   - glue:DeleteTable
                   - glue:CreateDatabase
                 Resource: '*'
-              - Sid: Bedrock
+              - Sid: Amazon Bedrock
                 Effect: Allow
                 Action:
                   - bedrock:InvokeModel

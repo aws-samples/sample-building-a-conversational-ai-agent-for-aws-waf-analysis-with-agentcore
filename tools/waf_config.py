@@ -12,7 +12,7 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     """List all WAF WebACLs in the account.
 
     Args:
-        scope: WAF scope — "CLOUDFRONT" (global) or "REGIONAL". Default CLOUDFRONT.
+        scope: AWS WAF scope — "CLOUDFRONT" (global) or "REGIONAL". Default CLOUDFRONT.
         region: AWS region. For CLOUDFRONT scope, must be us-east-1.
 
     Returns:
@@ -52,7 +52,7 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
 
     Args:
         webacl_name: Exact name of the WebACL (case-insensitive).
-        scope: WAF scope — "CLOUDFRONT" or "REGIONAL".
+        scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
         region: AWS region. For CLOUDFRONT, must be us-east-1.
 
     Returns:
@@ -138,7 +138,7 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     lines.append("- Which domain/host is affected? (if multiple hosts behind this WebACL)")
     lines.append("- What's the concern? (crawler/bypass, DDoS, false positive, rule evaluation)")
     if caps["bot_control"] != "none":
-        lines.append("- Is the site SPA? Is WAF Client SDK integrated? (affects Bot Control recommendations)")
+        lines.append("- Is the site SPA? Is AWS WAF Client SDK integrated? (affects Bot Control recommendations)")
     if caps["has_challenge"]:
         lines.append("- Are there native apps/APIs on the same domain? (Challenge doesn't work for non-browser)")
 

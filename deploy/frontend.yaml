@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: WAF Agent — Frontend (CloudFront + S3 + WAF). Deploy in us-east-1.
 
 Resources:
-  # --- WAF for Frontend ---
+  # --- AWS WAF for Frontend ---
   FrontendWebACL:
     Type: AWS::WAFv2::WebACL
     Properties:
@@ -61,6 +61,10 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        LogFilePrefix: access-logs/
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true

@@ -22,7 +22,7 @@ def get_waf_metrics(
     use_search: bool = False,
     search_expression: str = "",
 ) -> str:
-    """Query CloudWatch Metrics for WAF statistics.
+    """Query CloudWatch Metrics for AWS WAF statistics.
 
     Args:
         webacl_name: WebACL name (used as dimension value).

@@ -81,7 +81,7 @@ def _update_index(timeout=120):
 def lookup_ja4(fingerprints: str) -> str:
     """Look up JA4 TLS fingerprints to identify client software.
 
-    JA4 fingerprints are found in WAF logs (ja4Fingerprint field). This tool
+    JA4 fingerprints are found in AWS WAF logs (ja4Fingerprint field). This tool
     identifies what application/library generated the TLS connection, helping
     distinguish real browsers from automation tools.
 

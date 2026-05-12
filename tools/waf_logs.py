@@ -74,12 +74,12 @@ TEMPLATES = {
     "label_top_ips": {
         "query": "filter @message like '{label}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "params": ["label"],
-        "description": "Top IPs matching a specific WAF label",
+        "description": "Top IPs matching a specific AWS WAF label",
     },
     "ip_labels": {
         "query": "filter httpRequest.clientIp = '{ip}' | parse @message '\"labels\":[*]' as Labels | filter ispresent(Labels) | stats count(*) as cnt by Labels | sort cnt desc | limit {limit}",
         "params": ["ip"],
-        "description": "All WAF labels applied to a specific IP — shows Bot Control, Anti-DDoS, and other managed rule detections",
+        "description": "All AWS WAF labels applied to a specific IP — shows Bot Control, Anti-DDoS, and other managed rule detections",
     },
     "action_timeline": {
         "query": "filter action = '{action}' | stats count(*) as cnt by bin(5m) | sort @timestamp asc | limit {limit}",
@@ -179,7 +179,7 @@ def run_logs_query(
     start_time: str = "",
     limit: int = 25,
 ) -> str:
-    """Run a predefined WAF log query against CloudWatch Logs Insights.
+    """Run a predefined AWS WAF log query against CloudWatch Logs Insights.
 
     Args:
         query_type: Type of query to run. Available types:
@@ -198,8 +198,8 @@ def run_logs_query(
             - top_allowed_crawlers: IPs with high URI diversity (content crawlers, scrapers)
             - top_allowed_repeaters: IPs hitting few URIs at high frequency (scalpers, flash sale bots)
             - top_countries_blocked: Top blocked countries
-            - label_top_ips: Top IPs for a WAF label (needs label)
-            - ip_labels: All WAF labels on a specific IP — Bot Control, Anti-DDoS, signals (needs ip)
+            - label_top_ips: Top IPs for a AWS WAF label (needs label)
+            - ip_labels: All AWS WAF labels on a specific IP — Bot Control, Anti-DDoS, signals (needs ip)
             - action_timeline: Timeline of an action (needs action)
             - token_reuse_ips: Detect token reuse across multiple IPs
             - host_traffic_profile: Traffic profile per Host — identify frontend vs backend domains
@@ -208,7 +208,7 @@ def run_logs_query(
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
-        label: WAF label name (for label_top_ips).
+        label: AWS WAF label name (for label_top_ips).
         action: Action value — BLOCK, ALLOW, COUNT (for action_timeline).
         host: Hostname (for host_uri_pattern, host_method_distribution).
         hours_ago: How far back to query (default 24h), or duration from start_time if start_time is given. Bypass detection queries capped at 24h max.
@@ -347,7 +347,7 @@ def _get_hint(query_type: str, rows: list[dict]) -> str:
         "top_allowed_crawlers": "---\nNext:\n- Use analyze_ip on the top suspicious IPs above\n- Call ask_user() to ask: is there a specific URI path being targeted?",
         "top_allowed_repeaters": "---\nNext:\n- Use analyze_ip on the top suspicious IPs above\n- Call ask_user() to ask: is this a known API endpoint? Could be legitimate polling.",
         "top_blocked_ips": "---\nNext:\n- If user wants details on a specific IP, use analyze_ip\n- Call ask_user() to ask: are any of these IPs expected (partners, monitoring)?",
-        "host_traffic_profile": "---\nNext:\n- Call ask_user() to ask: is the site SPA? Is WAF Client SDK integrated?\n- For API hosts: Challenge/CAPTCHA won't work, recommend Block-based rules only",
+        "host_traffic_profile": "---\nNext:\n- Call ask_user() to ask: is the site SPA? Is AWS WAF Client SDK integrated?\n- For API hosts: Challenge/CAPTCHA won't work, recommend Block-based rules only",
         "count_rule_top_ips": "---\nNext:\n- Cross-validate top IPs with ip_cross_query\n- Call ask_user() to ask: is this rule protecting a file upload or rich-text endpoint? (likely FP if yes)",
     }
     return hints.get(query_type, "")
@@ -381,7 +381,7 @@ def _parse_interpolated_headers(inserted: str) -> list[str]:
 
 
 def _interpret_ip_labels(rows: list[dict]) -> str:
-    """Classify WAF labels into categories for the LLM."""
+    """Classify AWS WAF labels into categories for the LLM."""
     all_labels = " ".join(row.get("Labels", "") for row in rows)
     findings = []
 
@@ -416,7 +416,7 @@ def _interpret_ip_labels(rows: list[dict]) -> str:
     if "TGT_TokenReuseIP" in all_labels:
         tgt_signals.append("TokenReuseIP (token shared across IPs)")
     if "TGT_TokenAbsent" in all_labels:
-        tgt_signals.append("TokenAbsent (no WAF token)")
+        tgt_signals.append("TokenAbsent (no AWS WAF token)")
     if "TGT_VolumetricIpTokenAbsent" in all_labels:
         tgt_signals.append("VolumetricIpTokenAbsent (5+ tokenless from same IP)")
     if tgt_signals:

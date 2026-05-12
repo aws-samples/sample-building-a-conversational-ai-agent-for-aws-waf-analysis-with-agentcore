@@ -57,7 +57,7 @@ def review_waf_rules(webacl_name: str, scope: str = "CLOUDFRONT", region: str = 
 
     Args:
         webacl_name: Name of the WebACL to review.
-        scope: WAF scope — "CLOUDFRONT" or "REGIONAL".
+        scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
         region: AWS region.
 
     Returns:
@@ -172,7 +172,7 @@ def _check_allow_rules(rules, findings):
                  f"Allow rule '{rule['Name']}' based on forgeable condition",
                  f"{rule['Name']} (priority {rule['Priority']})",
                  "Allow action with forgeable matching condition (header/UA/cookie). Attacker can forge this to bypass all subsequent rules.",
-                 "Change to Count+Label, or use unforgeable condition (IP set, WAF token, ASN).")
+                 "Change to Count+Label, or use unforgeable condition (IP set, AWS WAF token, ASN).")
 
         # Check managed rule group Allow overrides
         mrg = _get_mrg(rule)
