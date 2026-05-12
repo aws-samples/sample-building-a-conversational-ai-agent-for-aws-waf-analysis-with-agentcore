@@ -176,10 +176,13 @@ def _get_model():
     return _model
 
 
+_agent_user_id = ""
+
+
 def get_agent(session_id: str = "", user_id: str = "") -> Agent:
-    """Get or create Agent. If MEMORY_ID is set and session/user provided, creates with memory."""
-    global _agent
-    if _agent is not None:
+    """Get or create Agent. Recreates if user_id changes (prevents cross-user memory leak)."""
+    global _agent, _agent_user_id
+    if _agent is not None and _agent_user_id == user_id:
         return _agent
 
     session_manager = None
@@ -200,10 +203,11 @@ def get_agent(session_id: str = "", user_id: str = "") -> Agent:
             )
             session_manager = AgentCoreMemorySessionManager(config, region_name=MODEL_REGION)
         except Exception:
-            pass  # Memory not available — proceed without it
+            pass
 
     _agent = Agent(model=_get_model(), system_prompt=_build_system_prompt(), tools=_TOOLS,
                    hooks=[PreQueryGuard()], session_manager=session_manager)
+    _agent_user_id = user_id
     return _agent
 
 
