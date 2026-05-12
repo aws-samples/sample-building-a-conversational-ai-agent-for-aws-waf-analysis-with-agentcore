@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT-0
 #
 # Sync KB documents to S3 and trigger ingestion.
-# Usage: ./scripts/sync-kb.sh [stack-name] [docs-dir]
+# Usage: ./deploy/sync-kb.sh [stack-name] [docs-dir]
 
 set -euo pipefail
 

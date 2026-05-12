@@ -187,7 +187,61 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
-## 第 5 步：构建并上传前端
+## 第 5 步：部署知识库（可选，推荐）
+
+为 Agent 添加 AWS WAF 最佳实践检索能力。不需要可跳过。
+
+### 5a. 预创建 S3 Vectors 资源（CFN 暂不支持，需用 CLI）
+
+```bash
+aws s3vectors create-vector-bucket \
+  --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --region $REGION
+
+aws s3vectors create-index \
+  --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --index-name waf-agent-kb-index \
+  --data-type float32 --dimension 1024 --distance-metric cosine \
+  --region $REGION
+```
+
+记录输出中的 Vector Index ARN。
+
+### 5b. 部署 KB 堆栈
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/kb.yaml \
+  --stack-name waf-agent-kb \
+  --region $REGION \
+  --parameter-overrides \
+    VectorBucketName=waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+    VectorIndexArn=arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION}/index/waf-agent-kb-index \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+### 5c. 上传文档并触发索引
+
+```bash
+./deploy/sync-kb.sh waf-agent-kb ./kb-docs
+```
+
+### 5d. 更新后端（传入 KB ID）
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    KnowledgeBaseId=<第 5b 步输出的 KnowledgeBaseId> \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+> **后续更新文档**：只需运行 `./deploy/sync-kb.sh`，无需重新部署。
+
+## 第 6 步：构建并上传前端
 
 ```bash
 cd frontend
@@ -210,7 +264,7 @@ npm run build
 aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1
 ```
 
-## 第 6 步：创建用户
+## 第 7 步：创建用户
 
 ```bash
 aws cognito-idp admin-create-user \
@@ -222,7 +276,7 @@ aws cognito-idp admin-create-user \
 
 > 首次登录时会提示设置新密码，前端会自动处理。
 
-## 第 6 步：访问
+## 第 7 步：访问
 
 浏览器打开 `https://<第 3 步的 CloudFrontDomain>`，用邮箱和临时密码登录。
 
@@ -292,10 +346,24 @@ aws s3 rm s3://$BUCKET --recursive
 # 2. 删除前端栈（CloudFront 删除需要 5-10 分钟）
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
-# 3. 删除后端栈（包含 AgentCore Runtime + Memory；Cognito 仅在自动创建时删除）
+# 3. 删除会话 API 栈（如已部署）
+aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
+
+# 4. 删除知识库栈（如已部署）— 先清空文档桶
+KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
+[ -n "$KB_BUCKET" ] && aws s3 rm s3://$KB_BUCKET --recursive
+aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
+# 删除预创建的 S3 Vectors 资源：
+aws s3vectors delete-index --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --index-name waf-agent-kb-index --region $REGION
+aws s3vectors delete-vector-bucket --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --region $REGION
+
+# 5. 删除后端栈（包含 AgentCore Runtime + Memory；Cognito 仅在自动创建时删除）
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 4. 删除 ECR 仓库
+# 6. 删除 ECR 仓库
 aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
 

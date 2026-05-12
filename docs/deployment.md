@@ -187,7 +187,74 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
-## Step 5: Build and Upload Frontend
+## Step 5: Deploy Knowledge Base (optional, recommended)
+
+Adds AWS WAF best practices retrieval to the agent. Skip this if you don't need KB-powered recommendations.
+
+### 5a. Pre-create S3 Vectors resources (CLI only — CFN types not yet available)
+
+```bash
+aws s3vectors create-vector-bucket \
+  --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --region $REGION
+
+aws s3vectors create-index \
+  --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --index-name waf-agent-kb-index \
+  --data-type float32 --dimension 1024 --distance-metric cosine \
+  --region $REGION
+```
+
+Note the Vector Index ARN from the output (format: `arn:aws:s3vectors:REGION:ACCOUNT:bucket/BUCKET_NAME/index/INDEX_NAME`).
+
+### 5b. Deploy KB stack
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/kb.yaml \
+  --stack-name waf-agent-kb \
+  --region $REGION \
+  --parameter-overrides \
+    VectorBucketName=waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+    VectorIndexArn=arn:aws:s3vectors:${REGION}:${ACCOUNT_ID}:bucket/waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION}/index/waf-agent-kb-index \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+### 5c. Upload documents and trigger ingestion
+
+```bash
+# Upload your KB documents
+aws s3 sync ./kb-docs/ s3://<DocumentsBucketName from stack output>/ --region $REGION
+
+# Trigger ingestion
+aws bedrock-agent start-ingestion-job \
+  --knowledge-base-id <KnowledgeBaseId from stack output> \
+  --data-source-id <DataSourceId from stack output> \
+  --region $REGION
+```
+
+Or use the helper script (reads all IDs from CFN outputs automatically):
+```bash
+./deploy/sync-kb.sh waf-agent-kb ./kb-docs
+```
+
+### 5d. Update backend with KB ID
+
+Redeploy the backend stack with the `KnowledgeBaseId` parameter:
+```bash
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides \
+    AgentContainerUri=$ECR_URI:latest \
+    KnowledgeBaseId=<KnowledgeBaseId from Step 5b> \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+> **Updating KB documents later**: Just run `./deploy/sync-kb.sh`. No redeployment needed.
+
+## Step 6: Build and Upload Frontend
 
 ```bash
 cd frontend
@@ -210,7 +277,7 @@ npm run build
 aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1
 ```
 
-## Step 6: Create a User
+## Step 7: Create a User
 
 ```bash
 aws cognito-idp admin-create-user \
@@ -222,7 +289,7 @@ aws cognito-idp admin-create-user \
 
 > On first login, you'll be prompted to set a new password. The frontend handles this automatically.
 
-## Step 6: Access
+## Step 7: Access
 
 Open `https://<CloudFrontDomain from Step 3>` in your browser. Sign in with the email and temporary password (you'll be prompted to set a new password on first login).
 
@@ -292,10 +359,24 @@ aws s3 rm s3://$BUCKET --recursive
 # 2. Delete frontend stack (CloudFront deletion takes 5-10 minutes)
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
 
-# 3. Delete backend stack (includes AgentCore Runtime + Memory; Cognito only if auto-created)
+# 3. Delete sessions API stack (if deployed)
+aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
+
+# 4. Delete KB stack (if deployed) — empty docs bucket first
+KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
+[ -n "$KB_BUCKET" ] && aws s3 rm s3://$KB_BUCKET --recursive
+aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
+# Also delete pre-created S3 Vectors resources:
+aws s3vectors delete-index --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --index-name waf-agent-kb-index --region $REGION
+aws s3vectors delete-vector-bucket --vector-bucket-name waf-agent-kb-vectors-${ACCOUNT_ID}-${REGION} \
+  --region $REGION
+
+# 5. Delete backend stack (includes AgentCore Runtime + Memory; Cognito only if auto-created)
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 4. Delete ECR repository
+# 6. Delete ECR repository
 aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
 
