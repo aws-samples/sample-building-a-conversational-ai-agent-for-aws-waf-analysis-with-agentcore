@@ -338,9 +338,7 @@ def create_app():
 
         yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
 
-    @app.post("/invocations")
-    # nosemgrep: useless-inner-function
-    async def invocations(request: Request):
+    async def _invocations(request: Request):
         input_data = await request.json()
 
         # Extract session_id and user_id for memory
@@ -386,10 +384,11 @@ def create_app():
         # --- Stream agent execution ---
         return StreamingResponse(_stream_agent(agent, prompt, thread_id), media_type="text/event-stream")
 
-    @app.get("/ping")
-    # nosemgrep: useless-inner-function
-    async def ping():
+    async def _ping():
         return JSONResponse({"status": "Healthy"})
+
+    app.post("/invocations")(_invocations)
+    app.get("/ping")(_ping)
 
     return app
 
