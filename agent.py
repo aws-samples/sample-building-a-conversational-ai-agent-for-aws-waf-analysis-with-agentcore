@@ -3,6 +3,7 @@
 """WAF Analysis Agent — FastAPI + AG-UI + Strands."""
 
 import os
+import time
 from strands import Agent
 from strands.models import BedrockModel
 from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
@@ -225,7 +226,7 @@ def create_app():
     def _make_sse(event: dict) -> str:
         return f"data: {_json.dumps(event)}\n\n"
 
-    async def _stream_agent(agent, input_arg, thread_id: str):
+    async def _stream_agent(agent, input_arg, thread_id: str, user_id: str = "", session_id: str = "", msg_seq: int = 0):
         """Run agent with real-time streaming via callback_handler + asyncio.Queue.
 
         Emits AG-UI events: RUN_STARTED, TOOL_CALL_START/END, TEXT_MESSAGE_*, CUSTOM (interrupt), RUN_FINISHED.
@@ -294,6 +295,8 @@ def create_app():
 
         # Consume events from queue
         result = None
+        _collected_text = []
+        _collected_tools = []
         while True:
             item = await q.get()
             if item is None:
@@ -304,10 +307,12 @@ def create_app():
                 has_streamed_text = True
                 yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
             elif event_type == "TEXT":
+                _collected_text.append(payload)
                 yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": payload})
             elif event_type == "TEXT_END":
                 yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
             elif event_type == "TOOL_START":
+                _collected_tools.append(payload)
                 yield _make_sse({"type": "TOOL_CALL_START", "toolCallId": payload["id"], "toolCallName": payload["name"]})
             elif event_type == "TOOL_END":
                 yield _make_sse({"type": "TOOL_CALL_END", "toolCallId": payload})
@@ -338,6 +343,20 @@ def create_app():
 
         yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
 
+        # Persist to DDB (fire-and-forget)
+        if user_id and session_id:
+            try:
+                from tools.sessions import save_message
+                if isinstance(input_arg, str) and input_arg:
+                    save_message(user_id, session_id, msg_seq, "user", input_arg)
+                    msg_seq += 1
+                assistant_text = "".join(_collected_text)
+                if assistant_text:
+                    tools_list = [{"name": t["name"], "status": "done"} for t in _collected_tools] or None
+                    save_message(user_id, session_id, msg_seq, "assistant", assistant_text, tools_list)
+            except Exception:
+                pass
+
     async def _invocations(request: Request):
         input_data = await request.json()
 
@@ -354,7 +373,11 @@ def create_app():
                 for ir in interrupt_responses
             ]
             thread_id = input_data.get("threadId", "thread-1")
-            return StreamingResponse(_stream_agent(agent, resume_input, thread_id), media_type="text/event-stream")
+            msg_seq = int(time.time() * 1000)
+            return StreamingResponse(
+                _stream_agent(agent, resume_input, thread_id, user_id=user_id, session_id=session_id, msg_seq=msg_seq),
+                media_type="text/event-stream",
+            )
 
         # --- Extract prompt ---
         if "threadId" in input_data:
@@ -382,13 +405,44 @@ def create_app():
             return StreamingResponse(report_generator(), media_type="text/event-stream")
 
         # --- Stream agent execution ---
-        return StreamingResponse(_stream_agent(agent, prompt, thread_id), media_type="text/event-stream")
+        msg_seq = int(time.time() * 1000)  # timestamp-based seq for DDB ordering
+        return StreamingResponse(
+            _stream_agent(agent, prompt, thread_id, user_id=user_id, session_id=session_id, msg_seq=msg_seq),
+            media_type="text/event-stream",
+        )
 
     async def _ping():
         return JSONResponse({"status": "Healthy"})
 
+    async def _list_sessions(request: Request):
+        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        if not user_id:
+            return JSONResponse({"sessions": []})
+        from tools.sessions import list_sessions
+        return JSONResponse({"sessions": list_sessions(user_id)})
+
+    async def _get_session(request: Request):
+        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        session_id = request.path_params.get("session_id", "")
+        if not user_id or not session_id:
+            return JSONResponse({"messages": []})
+        from tools.sessions import get_session_messages
+        return JSONResponse({"messages": get_session_messages(user_id, session_id)})
+
+    async def _delete_session(request: Request):
+        user_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-custom-user-id", "")
+        session_id = request.path_params.get("session_id", "")
+        if not user_id or not session_id:
+            return JSONResponse({"ok": False})
+        from tools.sessions import delete_session
+        delete_session(user_id, session_id)
+        return JSONResponse({"ok": True})
+
     app.post("/invocations")(_invocations)
     app.get("/ping")(_ping)
+    app.get("/sessions")(_list_sessions)
+    app.get("/sessions/{session_id}")(_get_session)
+    app.delete("/sessions/{session_id}")(_delete_session)
 
     return app
 

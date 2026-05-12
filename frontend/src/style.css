@@ -71,19 +71,28 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .chat { flex: 1; display: flex; flex-direction: column; height: 100%; min-width: 0; }
 
 /* Sidebar */
-.sidebar { width: 280px; background: var(--bg2); border-right: 1px solid var(--border); padding: 1.25rem; overflow-y: auto; position: relative; flex-shrink: 0; }
-.sidebar h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+.sidebar { width: 280px; background: var(--bg2); border-right: 1px solid var(--border); padding: 1.25rem; overflow-y: auto; position: relative; flex-shrink: 0; display: flex; flex-direction: column; }
 .sidebar h3 { font-size: 0.9rem; margin: 1rem 0 0.4rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
-.sidebar section { margin-bottom: 0.5rem; }
 .sidebar ul { list-style: none; padding: 0; font-size: 0.85rem; line-height: 1.8; }
 .sidebar li { padding-left: 0.5rem; border-left: 2px solid var(--border); margin-bottom: 0.25rem; }
 .sidebar em { color: var(--accent); font-style: normal; font-family: monospace; font-size: 0.8rem; }
 .sidebar-close { position: absolute; top: 0.75rem; right: 0.75rem; background: none; border: none; color: var(--muted); font-size: 1.1rem; cursor: pointer; }
 .sidebar-close:hover { color: var(--fg); }
 .sidebar-top { display: flex; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.5rem; }
-.sidebar-lang-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem 0.8rem; color: var(--fg); cursor: pointer; font-size: 0.85rem; font-weight: 500; }
+.sidebar-lang-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.6rem; color: var(--fg); cursor: pointer; font-size: 0.75rem; font-weight: 500; }
 .sidebar-lang-btn:hover { border-color: var(--accent); color: var(--accent); }
 .sidebar-open { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; color: var(--fg); cursor: pointer; font-size: 1rem; margin-right: 0.75rem; }
+.new-session-btn { width: 100%; padding: 0.6rem; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.75rem; }
+.new-session-btn:hover { opacity: 0.9; }
+.session-list { flex: 1; overflow-y: auto; margin-bottom: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
+.session-item { display: flex; align-items: center; padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.82rem; color: var(--fg); margin-bottom: 2px; }
+.session-item:hover { background: var(--bg); }
+.session-item.active { background: var(--bg); border-left: 3px solid var(--accent); }
+.session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-delete { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0 0.3rem; opacity: 0; }
+.session-item:hover .session-delete { opacity: 1; }
+.session-delete:hover { color: #f87171; }
+.sidebar-quickstart { border-top: 1px solid var(--border); padding-top: 0.5rem; margin-top: auto; }
 
 /* User menu */
 .user-menu { position: relative; }

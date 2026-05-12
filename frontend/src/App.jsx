@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { marked } from 'marked';
 import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword, getUserProfile, changePassword } from './auth';
-import { invokeAgent } from './agent';
+import { invokeAgent, listSessions, getSessionMessages, deleteSession } from './agent';
 import { config } from './config';
 
 function generateSessionId() {
@@ -188,10 +188,51 @@ export default function App() {
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarLang, setSidebarLang] = useState('zh');
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(sessionId.current);
 
   useEffect(() => { getToken().then(() => setUser(true)).catch(() => setUser(false)); }, []);
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
+  useEffect(() => { if (user) loadSessions(); }, [user]);
+
+  async function loadSessions() {
+    try {
+      const token = await getToken();
+      const profile = await getUserProfile().catch(() => null);
+      const list = await listSessions(token, profile?.email || '');
+      setSessions(list);
+    } catch {}
+  }
+
+  async function handleSwitchSession(sid) {
+    if (sid === activeSessionId) return;
+    try {
+      const token = await getToken();
+      const profile = await getUserProfile().catch(() => null);
+      const msgs = await getSessionMessages(token, profile?.email || '', sid);
+      setMessages(msgs.map(m => ({ role: m.role, content: m.content, tools: m.tools?.map(t => ({ ...t })) || [] })));
+      sessionId.current = generateSessionId(); // new runtime session (old container dead)
+      setActiveSessionId(sid);
+    } catch {}
+  }
+
+  function handleNewSession() {
+    sessionId.current = generateSessionId();
+    setActiveSessionId(sessionId.current);
+    setMessages([]);
+  }
+
+  async function handleDeleteSession(sid, e) {
+    e.stopPropagation();
+    try {
+      const token = await getToken();
+      const profile = await getUserProfile().catch(() => null);
+      await deleteSession(token, profile?.email || '', sid);
+      setSessions(prev => prev.filter(s => s.sessionId !== sid));
+      if (sid === activeSessionId) handleNewSession();
+    } catch {}
+  }
 
   async function handleLogin(e) {
     e.preventDefault();
@@ -284,6 +325,7 @@ export default function App() {
       setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
     setLoading(false);
+    loadSessions();
   }
 
   function waitForUserInput(question) {
@@ -375,23 +417,9 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
     );
   }
 
-  const guideContent = {
-    zh: {
-      title: '使用指南',
-      quickStart: '⚡ 试试这样问',
-      items: ['"生成价值报告"', '"分析这个IP: 1.2.3.4"', '"检测绕过攻击"', '"检测爬虫"', '"你能做什么？"'],
-      notes: '⚠️ 注意事项',
-      noteItems: ['会话空闲 15 分钟后超时，请及时下载报告', '首次查询可能需要 ~30 秒（冷启动）', '报告生成约需 1–2 分钟'],
-    },
-    en: {
-      title: 'Guide',
-      quickStart: '⚡ Try asking',
-      items: ['"Generate ROI report"', '"Analyze IP: 1.2.3.4"', '"Detect bypass attacks"', '"Detect crawlers"', '"What can you do?"'],
-      notes: '⚠️ Notes',
-      noteItems: ['Session times out after 15 min idle — download reports promptly', 'First query may take ~30s (cold start)', 'Report generation takes 1–2 min'],
-    },
-  };
-  const guide = guideContent[sidebarLang];
+  const guideItems = sidebarLang === 'zh'
+    ? ['"生成价值报告"', '"检测绕过攻击"', '"检测爬虫"', '"你能做什么？"']
+    : ['"Generate ROI report"', '"Detect bypass attacks"', '"Detect crawlers"', '"What can you do?"'];
 
   return (
     <div className="app-layout">
@@ -399,17 +427,23 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
         <aside className="sidebar">
           <div className="sidebar-top">
             <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
-            <button className="sidebar-lang-btn" onClick={() => setSidebarLang(sidebarLang === 'zh' ? 'en' : 'zh')}>{sidebarLang === 'zh' ? 'English' : '中文'}</button>
+            <button className="sidebar-lang-btn" onClick={() => setSidebarLang(sidebarLang === 'zh' ? 'en' : 'zh')}>{sidebarLang === 'zh' ? 'EN' : '中'}</button>
           </div>
-          <h2>{guide.title}</h2>
-          <section>
-            <h3>{guide.quickStart}</h3>
-            <ul>{guide.items.map((t, i) => <li key={i}><em>{t}</em></li>)}</ul>
-          </section>
-          <section>
-            <h3>{guide.notes}</h3>
-            <ul>{guide.noteItems.map((t, i) => <li key={i}>{t}</li>)}</ul>
-          </section>
+          <button className="new-session-btn" onClick={handleNewSession}>+ {sidebarLang === 'zh' ? '新建会话' : 'New Chat'}</button>
+          {sessions.length > 0 && (
+            <div className="session-list">
+              {sessions.map(s => (
+                <div key={s.sessionId} className={`session-item${s.sessionId === activeSessionId ? ' active' : ''}`} onClick={() => handleSwitchSession(s.sessionId)}>
+                  <span className="session-title">{s.title || '(untitled)'}</span>
+                  <button className="session-delete" onClick={(e) => handleDeleteSession(s.sessionId, e)}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="sidebar-quickstart">
+            <h3>⚡ {sidebarLang === 'zh' ? '试试这样问' : 'Try asking'}</h3>
+            <ul>{guideItems.map((t, i) => <li key={i}><em>{t}</em></li>)}</ul>
+          </div>
         </aside>
       )}
       <div className="chat">

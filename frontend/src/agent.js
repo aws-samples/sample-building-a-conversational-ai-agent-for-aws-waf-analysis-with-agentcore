@@ -78,3 +78,50 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
     }
   }
 }
+
+
+/**
+ * List user's session history.
+ */
+export async function listSessions(token, userEmail) {
+  const arn = encodeURIComponent(config.agentRuntimeArn);
+  const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
+    },
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.sessions || [];
+}
+
+/**
+ * Get messages for a specific session.
+ */
+export async function getSessionMessages(token, userEmail, sessionId) {
+  const arn = encodeURIComponent(config.agentRuntimeArn);
+  const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions/${sessionId}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
+    },
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.messages || [];
+}
+
+/**
+ * Delete a session.
+ */
+export async function deleteSession(token, userEmail, sessionId) {
+  const arn = encodeURIComponent(config.agentRuntimeArn);
+  await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions/${sessionId}`, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      ...(userEmail && { 'X-Amzn-Bedrock-AgentCore-Runtime-Custom-User-Id': userEmail }),
+    },
+  });
+}

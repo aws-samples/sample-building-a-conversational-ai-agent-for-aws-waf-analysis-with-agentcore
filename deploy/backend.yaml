@@ -167,6 +167,35 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/bedrock-agentcore/runtimes/*
+              - Sid: DynamoDB
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:DeleteItem
+                  - dynamodb:BatchWriteItem
+                Resource: !GetAtt SessionsTable.Arn
+
+  # --- DynamoDB (session history) ---
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-sessions
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
 
   # --- AgentCore Memory (cross-session persistent memory) ---
   AgentMemory:
@@ -203,10 +232,12 @@ Resources:
         - WAF_AGENT_MODEL_ID: !Ref ModelId
           WAF_AGENT_MODEL_REGION: !If [HasModelRegion, !Ref ModelRegion, !Ref "AWS::Region"]
           MEMORY_ID: !If [CreateMemory, !If [UseExistingMemory, !Ref MemoryId, !GetAtt AgentMemory.MemoryId], !Ref "AWS::NoValue"]
+          SESSIONS_TABLE: !Ref SessionsTable
         - !If
           - CreateMemory
           - MEMORY_ID: !If [UseExistingMemory, !Ref MemoryId, !GetAtt AgentMemory.MemoryId]
-          - !Ref "AWS::NoValue"
+            SESSIONS_TABLE: !Ref SessionsTable
+          - SESSIONS_TABLE: !Ref SessionsTable
       RoleArn: !GetAtt AgentExecutionRole.Arn
       NetworkConfiguration:
         NetworkMode: PUBLIC
@@ -233,3 +264,5 @@ Outputs:
     Value: !Sub https://bedrock-agentcore.${AWS::Region}.amazonaws.com
   ExecutionRoleArn:
     Value: !GetAtt AgentExecutionRole.Arn
+  SessionsTableName:
+    Value: !Ref SessionsTable
