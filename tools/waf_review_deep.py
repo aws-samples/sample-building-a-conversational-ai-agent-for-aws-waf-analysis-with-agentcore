@@ -28,9 +28,16 @@ SECTION_REFERENCES = {
 
 def _run_script(name: str, args: list[str], timeout: int = 30) -> tuple[bool, str]:
     """Run a pipeline script. Returns (success, stdout)."""
-    cmd = [sys.executable, str(SCRIPTS_DIR / name)] + args
+    script_path = str(SCRIPTS_DIR / name)
+    # Validate script exists to prevent path traversal
+    if not (SCRIPTS_DIR / name).is_file():
+        return False, f"Script not found: {name}"
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(SCRIPTS_DIR))
+        result = subprocess.run(
+            [sys.executable, script_path, *args],
+            capture_output=True, text=True, timeout=timeout, cwd=str(SCRIPTS_DIR),
+            shell=False,
+        )
         if result.returncode == 2:  # FATAL
             return False, result.stdout + result.stderr
         return True, result.stdout
