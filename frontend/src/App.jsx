@@ -428,7 +428,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
           <button className="new-session-btn" onClick={handleNewSession}>+ {sidebarLang === 'zh' ? '新建会话' : 'New Chat'}</button>
           {sessions.length > 0 && (
             <div className="session-list">
-              {sessions.slice(0, 10).map(s => (
+              {sessions.slice(0, 20).map(s => (
                 <div key={s.sessionId} className={`session-item${s.sessionId === activeSessionId ? ' active' : ''}`} onClick={() => handleSwitchSession(s.sessionId)}>
                   <span className="session-title">{s.title || '(untitled)'}</span>
                   <button className="session-delete" onClick={(e) => handleDeleteSession(s.sessionId, e)}>×</button>
