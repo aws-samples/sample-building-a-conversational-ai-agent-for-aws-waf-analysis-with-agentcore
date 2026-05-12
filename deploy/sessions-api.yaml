@@ -98,10 +98,16 @@ Resources:
 
           def _get(user_id, sid):
               if not sid: return _resp({'messages': []})
-              resp = ddb.query(TableName=TABLE, KeyConditionExpression='userId = :uid AND begins_with(sk, :prefix)',
-                  ExpressionAttributeValues={':uid': {'S': user_id}, ':prefix': {'S': sid + '#'}})
+              items = []
+              kwargs = {'TableName': TABLE, 'KeyConditionExpression': 'userId = :uid AND begins_with(sk, :prefix)',
+                  'ExpressionAttributeValues': {':uid': {'S': user_id}, ':prefix': {'S': sid + '#'}}}
+              while True:
+                  resp = ddb.query(**kwargs)
+                  items.extend(resp.get('Items', []))
+                  if 'LastEvaluatedKey' not in resp: break
+                  kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
               messages = []
-              for item in resp.get('Items', []):
+              for item in items:
                   if item['sk']['S'].endswith('#0000'): continue
                   tools = []
                   for t in item.get('tools', {}).get('L', []):
@@ -113,10 +119,15 @@ Resources:
 
           def _delete(user_id, sid):
               if not sid: return _resp({'ok': False})
-              resp = ddb.query(TableName=TABLE, KeyConditionExpression='userId = :uid AND begins_with(sk, :prefix)',
-                  ExpressionAttributeValues={':uid': {'S': user_id}, ':prefix': {'S': sid + '#'}},
-                  ProjectionExpression='userId, sk')
-              items = resp.get('Items', [])
+              items = []
+              kwargs = {'TableName': TABLE, 'KeyConditionExpression': 'userId = :uid AND begins_with(sk, :prefix)',
+                  'ExpressionAttributeValues': {':uid': {'S': user_id}, ':prefix': {'S': sid + '#'}},
+                  'ProjectionExpression': 'userId, sk'}
+              while True:
+                  resp = ddb.query(**kwargs)
+                  items.extend(resp.get('Items', []))
+                  if 'LastEvaluatedKey' not in resp: break
+                  kwargs['ExclusiveStartKey'] = resp['LastEvaluatedKey']
               for i in range(0, len(items), 25):
                   batch = items[i:i+25]
                   ddb.batch_write_item(RequestItems={TABLE: [{'DeleteRequest': {'Key': {'userId': it['userId'], 'sk': it['sk']}}} for it in batch]})

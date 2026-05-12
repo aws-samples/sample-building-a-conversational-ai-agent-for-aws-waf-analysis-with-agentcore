@@ -267,3 +267,6 @@ Outputs:
     Value: !GetAtt AgentExecutionRole.Arn
   SessionsTableName:
     Value: !Ref SessionsTable
+  SessionsTableArn:
+    Value: !GetAtt SessionsTable.Arn
+    Description: Pass this to sessions-api stack as SessionsTableArn parameter
