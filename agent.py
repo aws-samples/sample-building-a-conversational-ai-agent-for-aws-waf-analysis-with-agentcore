@@ -224,7 +224,7 @@ def _get_user_id_from_jwt(request) -> str:
         token = auth[7:]
         payload = token.split(".")[1]
         # Add padding
-        payload += "=" * (4 - len(payload) % 4)
+        payload += "=" * (-len(payload) % 4)
         claims = _json_mod.loads(base64.b64decode(payload))
         return claims.get("email", claims.get("sub", ""))
     except Exception:
