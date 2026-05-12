@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0 (2026-05-12)
+
+### Deep WAF Review
+
+- **Comprehensive rules audit**: Deterministic pipeline (10 Python scripts) analyzes WebACL for security issues, misconfigurations, and optimization opportunities
+- **Label dependency analysis**: Maps label producers → consumers, detects broken chains and priority ordering issues
+- **18+ automated checks**: Forgeable Allow rules, scope-down issues, missing baselines, Bot Control config, rate-limiting, and more
+- **LLM-assisted analysis**: Agent performs cross-rule dependency analysis and Bot Control strategy assessment using domain-specific references
+- **HTML report**: Downloadable styled report with Mermaid flow diagram, severity summary, and actionable recommendations
+- **Two-tool pattern**: `review_waf_rules_deep` (pipeline) → Agent analysis → `finalize_review_report` (assemble + render)
+
 ## 0.4.0 (2026-05-12)
 
 ### Session History

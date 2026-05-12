@@ -62,13 +62,14 @@ Full behavioral profile of a specific IP address.
 
 ### 5. AWS WAF Rule Review
 
-Automated security audit of your WebACL configuration.
+Comprehensive security audit of your WebACL configuration with a downloadable HTML report.
 
 **Good prompts:**
 - "Review the rules on my-webacl"
 - "Audit my AWS WAF configuration for security issues"
+- "Generate a review report for production-webacl"
 
-**What the agent does:** Runs 13 deterministic checks (forgeable Allow rules, missing scope-down, Bot Control misconfiguration, priority order issues, etc.) → returns findings with severity and recommendations.
+**What the agent does:** Runs a deterministic analysis pipeline (18+ checks: forgeable Allow rules, label dependency chains, scope-down issues, Bot Control config, priority ordering, etc.) → Agent adds cross-rule impact analysis → generates styled HTML report with Mermaid flow diagram → auto-downloads.
 
 ### 6. ROI Report Generation
 

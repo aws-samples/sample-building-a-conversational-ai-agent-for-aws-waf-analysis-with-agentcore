@@ -9,7 +9,7 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 - **Investigate AWS WAF incidents** — "What happened on May 9th?" → identifies attack sources, correlates IPs, explains AWS WAF rule behavior
 - **Detect bypasses** — finds crawlers and bots that evade AWS WAF rules using frequency analysis
 - **Generate ROI reports** — HTML business reports proving AWS WAF value for management
-- **Review AWS WAF rules** — 13 deterministic checks for misconfigurations
+- **Deep WAF rules review** — comprehensive security audit with 18+ automated checks, label dependency analysis, Mermaid flow diagram, and downloadable HTML report
 
 ## Quick Start
 
@@ -135,8 +135,8 @@ python agent.py "Any traffic bypassing my-webacl?"
 │   ├── waf_config.py     # WebACL discovery + capabilities detection
 │   ├── waf_metrics.py    # CloudWatch Metrics (free, fast)
 │   ├── waf_logs.py       # CWL Insights queries (22 templates + analyze_ip)
-│   ├── waf_review.py     # 13 deterministic rule checks
-│   ├── report.py         # Weekly HTML report generation
+│   ├── waf_review_deep.py # Comprehensive rules audit pipeline
+│   ├── report.py         # ROI HTML report generation
 │   ├── ja4.py            # JA4 TLS fingerprint lookup
 │   ├── finding.py        # Investigation findings accumulator
 │   └── ask_user.py       # Human-in-the-loop (CLI input / AG-UI event)
