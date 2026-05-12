@@ -22,14 +22,22 @@ def list_sessions(user_id: str) -> list[dict]:
     """List all sessions for a user (metadata only), sorted by lastUsed desc."""
     if not TABLE_NAME:
         return []
-    resp = _ddb().query(
-        TableName=TABLE_NAME,
-        KeyConditionExpression="userId = :uid",
-        ExpressionAttributeValues={":uid": {"S": user_id}},
-        ProjectionExpression="sk, title, createdAt, lastUsed",
-    )
+    items = []
+    kwargs = {
+        "TableName": TABLE_NAME,
+        "KeyConditionExpression": "userId = :uid",
+        "ExpressionAttributeValues": {":uid": {"S": user_id}},
+        "ProjectionExpression": "sk, title, createdAt, lastUsed",
+    }
+    ddb = _ddb()
+    while True:
+        resp = ddb.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
     sessions = []
-    for item in resp.get("Items", []):
+    for item in items:
         sk = item["sk"]["S"]
         if not sk.endswith("#0000"):
             continue

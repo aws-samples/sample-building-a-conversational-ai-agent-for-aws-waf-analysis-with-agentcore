@@ -215,8 +215,8 @@ export default function App() {
     } catch {}
   }
 
-  function handleNewSession() {
-    loadSessions(); // refresh list (saves current session's presence in sidebar)
+  async function handleNewSession() {
+    await loadSessions();
     sessionId.current = generateSessionId();
     setActiveSessionId(sessionId.current);
     setMessages([]);
