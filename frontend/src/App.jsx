@@ -216,6 +216,7 @@ export default function App() {
   }
 
   function handleNewSession() {
+    loadSessions(); // refresh list (saves current session's presence in sidebar)
     sessionId.current = generateSessionId();
     setActiveSessionId(sessionId.current);
     setMessages([]);
@@ -351,12 +352,12 @@ export default function App() {
   function exportSelectedHTML() {
     const msgs = [...selected].sort((a, b) => a - b).map(i => messages[i]).filter(Boolean);
     const body = msgs.map(msg => {
-      const role = msg.role === 'user' ? 'You' : 'WAF Agent';
+      const role = msg.role === 'user' ? 'You' : 'AWS WAF Agent';
       const roleClass = msg.role === 'user' ? 'user' : 'assistant';
       const content = msg.role === 'user' ? `<p>${msg.content.replace(/</g,'&lt;').replace(/\n/g,'<br>')}</p>` : marked.parse(msg.content || '', { breaks: true });
       return `<div class="msg ${roleClass}"><div class="role">${role}</div><div class="content">${content}</div></div>`;
     }).join('\n');
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>WAF Agent Conversation</title><style>
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>AWS WAF Agent Conversation</title><style>
 body{font-family:system-ui,sans-serif;max-width:800px;margin:2rem auto;padding:0 1rem;line-height:1.6;background:#fafafa}
 .msg{margin:1rem 0;padding:1rem 1.2rem;border-radius:10px;border:1px solid #e5e5e5}
 .msg.user{background:#e8f4fd;border-color:#b8daef}
@@ -364,7 +365,7 @@ body{font-family:system-ui,sans-serif;max-width:800px;margin:2rem auto;padding:0
 .role{font-weight:600;font-size:0.8rem;color:#666;margin-bottom:0.4rem;text-transform:uppercase;letter-spacing:0.5px}
 table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f5f5f5}
 code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5;padding:1rem;overflow-x:auto;border-radius:6px}
-</style></head><body><h1>WAF Agent Conversation</h1>${body}</body></html>`;
+</style></head><body><h1>AWS WAF Agent Conversation</h1>${body}</body></html>`;
     const blob = new Blob([html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -402,7 +403,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
     }
     return (
       <div className="login">
-        <h1>WAF Agent</h1>
+        <h1>AWS WAF Agent</h1>
         <form onSubmit={handleLogin}>
           <input type="email" placeholder="Email" value={loginForm.email} onChange={e => setLoginForm({ ...loginForm, email: e.target.value })} required />
           <input type="password" placeholder="Password" value={loginForm.password} onChange={e => setLoginForm({ ...loginForm, password: e.target.value })} required />
@@ -444,7 +445,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
       <div className="chat">
         <header>
           {!sidebarOpen && <button className="sidebar-open" onClick={() => setSidebarOpen(true)}>☰</button>}
-        <h1>WAF Agent</h1>
+        <h1>AWS WAF Agent</h1>
         <div className="header-actions">
           <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
           <UserMenu onSignOut={() => { signOut(); setUser(null); }} />
