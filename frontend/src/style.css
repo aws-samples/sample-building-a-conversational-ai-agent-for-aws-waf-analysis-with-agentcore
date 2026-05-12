@@ -85,9 +85,9 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .new-session-btn { width: 100%; padding: 0.6rem; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.75rem; }
 .new-session-btn:hover { opacity: 0.9; }
 .session-list { flex: 1; overflow-y: auto; margin-bottom: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
-.session-item { display: flex; align-items: center; padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.82rem; color: var(--fg); margin-bottom: 2px; }
-.session-item:hover { background: var(--bg); }
-.session-item.active { background: var(--bg); border-left: 3px solid var(--accent); }
+.session-item { display: flex; align-items: center; padding: 0.5rem 0.6rem; border-radius: 8px; cursor: pointer; font-size: 0.82rem; color: var(--fg); margin-bottom: 0.4rem; border: 1px solid var(--border); }
+.session-item:hover { background: var(--bg); border-color: var(--muted); }
+.session-item.active { background: var(--bg); border-color: var(--accent); border-left: 3px solid var(--accent); }
 .session-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-delete { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0 0.3rem; opacity: 0; }
 .session-item:hover .session-delete { opacity: 1; }
