@@ -43,8 +43,11 @@
         <mxCell id="ddb" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#C925D1;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;verticalLabelPosition=bottom;verticalAlign=top" value="DynamoDB&#xa;(Sessions)" vertex="1">
           <mxGeometry height="48" width="48" x="920" y="500" as="geometry" />
         </mxCell>
-        <mxCell id="apigw" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;verticalLabelPosition=bottom;verticalAlign=top" value="API Gateway&#xa;+ Lambda" vertex="1">
-          <mxGeometry height="48" width="48" x="920" y="400" as="geometry" />
+        <mxCell id="apigw" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#E7157B;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;verticalLabelPosition=bottom;verticalAlign=top" value="API Gateway" vertex="1">
+          <mxGeometry height="48" width="48" x="920" y="380" as="geometry" />
+        </mxCell>
+        <mxCell id="lambda" parent="1" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;strokeColor=none;fillColor=#ED7100;align=center;strokeWidth=1;fontSize=10;fontStyle=0;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;verticalLabelPosition=bottom;verticalAlign=top" value="Lambda&#xa;(Sessions)" vertex="1">
+          <mxGeometry height="48" width="48" x="920" y="450" as="geometry" />
         </mxCell>
         <mxCell id="aws-group" parent="1" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;spacingTop=5;dashed=0;" value="Customer AWS Resources (Read-Only)" vertex="1">
           <mxGeometry height="330" width="200" x="1120" y="250" as="geometry" />
@@ -104,7 +107,10 @@
         <mxCell id="e8c-label" connectable="0" parent="e8c" style="edgeLabel;html=1;fontSize=8;fillColor=none;" value="Sessions API" vertex="1">
           <mxGeometry relative="1" as="geometry"><mxPoint as="offset" /></mxGeometry>
         </mxCell>
-        <mxCell id="e8d" edge="1" parent="1" source="apigw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#C925D1;" target="ddb">
+        <mxCell id="e8d" edge="1" parent="1" source="apigw" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#ED7100;" target="lambda">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8e" edge="1" parent="1" source="lambda" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#C925D1;" target="ddb">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
         <mxCell id="e9" edge="1" parent="1" source="agent-box" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#CD2264;" target="wafv2">

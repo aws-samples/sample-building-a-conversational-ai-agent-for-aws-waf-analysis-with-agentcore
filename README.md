@@ -70,7 +70,8 @@ graph TB
         Bedrock["Bedrock<br/>Bedrock LLM"]
         Memory["AgentCore Memory<br/>(cross-session LTM)"]
         DDB["DynamoDB<br/>(session history)"]
-        APIGW["API Gateway + Lambda<br/>(sessions API)"]
+        APIGW["API Gateway<br/>(sessions)"]
+        Lambda["Lambda<br/>(sessions)"]
     end
 
     subgraph AWS["Customer AWS Resources"]
@@ -85,11 +86,12 @@ graph TB
     Cognito -->|"② JWT Token"| SPA
     SPA -->|"③ POST /invocations<br/>Bearer JWT · SSE"| AC
     SPA -->|"④ GET /sessions<br/>Bearer JWT"| APIGW
+    APIGW --> Lambda
     AC --> FastAPI
     FastAPI --> Bedrock
     FastAPI --> Memory
     FastAPI --> DDB
-    APIGW --> DDB
+    APIGW --> Lambda --> DDB
     FastAPI --> WAFv2
     FastAPI --> CW
     FastAPI --> Athena
