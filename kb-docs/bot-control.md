@@ -1,4 +1,4 @@
-## Bot Control (AWSManagedRulesBotControlRuleSet)
+# Bot Control (AWSManagedRulesBotControlRuleSet)
 
 ### Common level
 - Identifies self-declared bots by analyzing the User-Agent header
@@ -62,3 +62,18 @@ These two rules block requests with non-browser User-Agents. Default Block frequ
 - `TGT_TokenAbsent` (default Count, often overridden to Challenge): flags requests without AWS WAF token. **Do not override to Count.**
 - `TGT_VolumetricIpTokenAbsent` (default Challenge): 5+ requests from same IP without token in 5 min
 
+
+
+## How Agent Should Use This
+
+When analyzing logs:
+1. `bot:verified` on an IP = legitimate, do not flag as threat
+2. `signal:non_browser_user_agent` without `bot:verified` = likely automation
+3. High-volume IP with no bot labels at all = undetected bot (Common level insufficient)
+4. `bot:unverified` + high frequency = malicious bot spoofing identity
+
+When reviewing rules:
+1. CategorySearchEngine/CategorySeo overridden to Allow → Low severity (only affects unverified)
+2. SignalNonBrowserUserAgent at default Block + native app traffic → recommend Count override
+3. No Bot Control at all + bot traffic detected → recommend Common level first
+4. Common level present but sophisticated bots detected → recommend Targeted (only if active malicious behavior confirmed)

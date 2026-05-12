@@ -1,4 +1,4 @@
-## Common Anti-patterns
+# Common Anti-patterns
 
 ### Count action as labeling mechanism
 - Count is non-terminating: the request continues to subsequent rules
@@ -40,3 +40,13 @@
 ### Override to Allow when default already handles the case
 - CategorySearchEngine/CategorySeo Allow → category rules only match unverified bots; verified bots already pass without action; forged UAs never match category rules and are handled by SignalNonBrowserUserAgent. Allow override lets unverified search engine bots bypass all subsequent rules. See "Common level common misconfigurations" for details.
 
+
+
+## How Agent Should Use This
+
+When reviewing rules:
+1. Allow rule with forgeable condition (UA/cookie/header) → Critical finding
+2. Count rule without RuleLabels → Awareness (monitoring only or missing labels?)
+3. HostingProviderIPList overridden to Allow → Critical (cloud attacks bypass all rules)
+4. Count rule with name suggesting Block/Challenge intent → evaluate as if action were already switched
+5. Scope-down `URI EXACTLY "/"` on broad rule group → effectively disabled for all other paths

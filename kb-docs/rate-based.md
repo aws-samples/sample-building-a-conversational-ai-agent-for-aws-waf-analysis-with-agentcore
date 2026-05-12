@@ -1,4 +1,4 @@
-## Rate-based Rules
+# Rate-based Rules
 
 ### Characteristics
 - There is a delay from threshold breach to rule activation — rate-based rules do not take effect instantaneously
@@ -20,3 +20,16 @@
 - The other rules are effectively redundant for that traffic
 - If the intent was different rate limits for different traffic types, scope-downs should be adjusted to be mutually exclusive
 
+
+
+## How Agent Should Use This
+
+When analyzing logs:
+1. ALLOW entries before BLOCK from same IP on rate-based rule = normal (kick-in delay)
+2. Rate-based rule blocking legitimate users → check if threshold is too low for the evaluation window
+
+When reviewing rules:
+1. Challenge action on rate-based rule for API paths → effectively Block (low severity if threshold is high)
+2. Multiple rate-based rules with overlapping scope-downs → only lowest threshold triggers (redundancy)
+3. No rate-based rule covering native app traffic → gap in protection
+4. Very low threshold (e.g., 10) with short window (60s) → high FP risk for legitimate burst traffic

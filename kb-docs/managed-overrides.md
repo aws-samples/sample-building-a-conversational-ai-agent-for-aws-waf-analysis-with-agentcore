@@ -1,4 +1,4 @@
-## AWSManagedRulesCommonRuleSet (CRS) Notes
+# AWSManagedRulesCommonRuleSet (CRS) Notes
 
 - Provides OWASP Top 10 protection (SQLi, XSS, etc.)
 - `SizeRestrictions_Body` rule blocks request bodies larger than 8KB. This frequently causes false positives on file upload endpoints, API endpoints with large payloads, form submissions with rich content, etc. Most users don't know which of their endpoints need large bodies. When recommending CRS, always advise overriding `SizeRestrictions_Body` to Count.
@@ -28,7 +28,7 @@
 
 ## Recommended Rule Priority Order
 
-See **Appendix D** in the review report for the full recommended priority order table.
+
 
 Key principles:
 - Label producers before label consumers
@@ -58,3 +58,15 @@ For all other managed rule groups, the version shown in JSON is just the current
 - Override to Allow on one rule bypasses all subsequent protections — not just the current rule group
 - When reviewing overrides, consider the rule's position within the group and what comes after it
 
+
+
+## How Agent Should Use This
+
+When reviewing rules:
+1. CRS present but SizeRestrictions_Body not overridden to Count → recommend override (frequent FP)
+2. No CRS and no KnownBadInputs → recommend both as baseline (unless DDoS-only WebACL)
+3. SQLiRuleSet pinned below 2.0 → recommend upgrade
+4. BotControlRuleSet pinned below 5.0 → recommend upgrade (700 bot types vs far fewer)
+5. Any rule overridden to Allow → check if it bypasses all subsequent rules (most dangerous override)
+6. Token domain missing apex domain → subdomains not covered
+7. WCU approaching 5000 → warn before recommending additional rules

@@ -1,4 +1,4 @@
-## Challenge Action
+# Challenge Action
 
 ### How it works
 - Returns HTTP 202 with JavaScript interstitial page
@@ -49,3 +49,17 @@
 - Both are token-aware: if client has valid unexpired token (with the relevant timestamp), both act like Count (no interstitial). Each checks its own timestamp with its own immunity time.
 - Both require browser JS execution; neither works for non-browser or non-GET requests
 
+
+
+## How Agent Should Use This
+
+When analyzing logs:
+1. `token:accepted` = client has valid token (previously passed Challenge/CAPTCHA)
+2. `token:absent` on high-volume IP = bot that cannot execute JavaScript
+3. `token:rejected:domain_mismatch` = possible token theft or misconfigured token domain
+
+When reviewing rules:
+1. Challenge/CAPTCHA action on POST/API paths → effectively Block (flag as issue)
+2. Challenge on rate-based rule for API paths → low severity (users rarely exceed threshold)
+3. No always-on Challenge on landing pages + DDoS protection goal → recommend adding
+4. Token immunity time < 4 hours for always-on Challenge → recommend extending

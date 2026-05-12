@@ -1,4 +1,4 @@
-## ASN Match Statement
+# Crawler and SEO Protection
 
 - Match requests by source IP's Autonomous System Number
 - Syntax: `"AsnMatchStatement": { "AsnList": [15169, 8075] }`
@@ -19,7 +19,7 @@ Bot Control Common level does identify verified search engine crawlers and adds 
 
 ### Rule JSON
 
-See **Appendix A** in the review report for the complete rule JSON.
+
 
 ### Confirmed ASNs
 - Google: ASN 15169
@@ -85,3 +85,19 @@ The user must define their own landing page URI list based on their application.
 - Always-on Challenge is proactive: it requires proof of browser capability before any landing page content is served
 - Together they provide defense in depth: always-on Challenge handles the bulk of non-browser DDoS traffic on landing pages instantly, while AntiDDoS AMR handles sophisticated attacks that use real browsers or target non-landing-page paths
 
+
+
+## How Agent Should Use This
+
+When reviewing rules:
+1. No crawler labeling rule + AntiDDoS AMR present → Medium finding (crawlers challenged during events)
+2. No crawler labeling rule + Always-on Challenge present → Medium finding (crawlers challenged continuously)
+3. Bot Control CategorySearchEngine overridden to Allow "for SEO" → unnecessary, recommend crawler labeling rule instead
+4. Always-on Challenge without crawler exclusion → SEO risk
+5. Always-on Challenge with token immunity < 4 hours → recommend extending
+
+When user asks about SEO + DDoS protection conflict:
+1. Explain the ASN + UA crawler labeling pattern
+2. Recommend placing labeling rule before both AMR and Challenge rules
+3. Confirmed crawler ASNs: Google 15169, Bing 8075, Yandex 13238/208722
+4. Other search engines: advise user to verify current ASNs from official docs

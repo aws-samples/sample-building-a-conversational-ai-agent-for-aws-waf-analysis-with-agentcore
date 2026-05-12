@@ -1,4 +1,4 @@
-## IP Reputation Rule Groups
+# IP Reputation Rule Groups
 
 ### AWSManagedRulesAmazonIpReputationList (WCU: 25)
 Contains three rules:
@@ -16,3 +16,12 @@ AWSManagedIPDDoSList defaults to Count because these IPs may belong to legitimat
 
 **HostingProviderIPList outdated assumption**: This rule assumes legitimate users don't originate from cloud platforms. This is increasingly false — many enterprises route traffic through cloud-based proxies, VPNs, or SaaS gateways, and many websites serve both enterprise and consumer traffic on the same domain. Default Block frequently causes false positives. Best practice: override to **Count** and optionally use the label for downstream rate limiting. Override to Allow is dangerous — it lets cloud-hosted attack traffic bypass all subsequent rules.
 
+
+
+## How Agent Should Use This
+
+When reviewing rules:
+1. HostingProviderIPList at default Block → recommend Count override (frequent FP)
+2. HostingProviderIPList overridden to Allow → Critical finding (bypasses all subsequent rules)
+3. AWSManagedIPDDoSList at default Count without downstream rule consuming its label → no protection (label exists but unused)
+4. No IP reputation rule groups at all → recommend adding AWSManagedRulesAmazonIpReputationList (low WCU, low FP)

@@ -1,4 +1,4 @@
-## AntiDDoS AMR (AWSManagedRulesAntiDDoSRuleSet)
+# AntiDDoS AMR (AWSManagedRulesAntiDDoSRuleSet)
 
 ### Detection mechanism
 - Per-client-IP behavior analysis (NOT aggregate traffic volume)
@@ -62,7 +62,7 @@ Trade-off: common DDoS requests (e.g., `Accept: */*`, no `Sec-Fetch-*` headers) 
 
 Note: the AWS console does not allow adding the same managed rule group twice. Use the JSON editor: copy the existing AMR rule JSON, paste as a new custom-JSON rule, change the Name and MetricName fields.
 
-See **Appendix B** in the review report for the full implementation steps.
+
 
 **Bad: single instance, all rules Count + custom label-based rules**
 
@@ -76,5 +76,20 @@ Not recommended. The dual-instance pattern achieves near-complete native AMR cap
 ### SEO: excluding search engine crawlers from AntiDDoS AMR
 `ChallengeAllDuringEvent` will Challenge all challengeable requests during a DDoS event, including search engine crawlers. Although modern crawlers may support JavaScript execution, real-world cases have been observed where crawlers indexed the Challenge interstitial page (HTTP 202) instead of actual content during DDoS events, severely damaging SEO. The root cause is not fully understood — it may be that crawlers behave differently under high-load conditions, or that the Challenge interstitial is served in a context where the crawler does not retry after token acquisition.
 
-The solution is to place the "ASN + UA Crawler Labeling Rule" (see crawler-seo.md) before AntiDDoS AMR, then add a scope-down to AntiDDoS AMR that excludes requests with the `crawler:verified` label. See **Appendix B** for the scope-down JSON.
+The solution is to place the "ASN + UA Crawler Labeling Rule" (see crawler-seo.md) before AntiDDoS AMR, then add a scope-down to AntiDDoS AMR that excludes requests with the `crawler:verified` label.
 
+
+
+## How Agent Should Use This
+
+When analyzing logs:
+1. `anti-ddos:event-detected` label present = DDoS event active. Legitimate users being challenged is EXPECTED.
+2. `anti-ddos:high-suspicion-ddos-request` = confirmed attacker IP
+3. Many IPs with `low-suspicion` but no `high-suspicion` = distributed low-rate attack (AMR blind spot)
+4. `challengeable-request` label on API paths = exempt URI regex misconfigured
+
+When reviewing rules:
+1. ChallengeAllDuringEvent overridden to Count → check if dual-instance pattern is used instead
+2. No exempt URI regex configured → API/SPA paths will get HTTP 202 during events
+3. Exempt URI regex unanchored (no `^`) → attackers can bypass by embedding keyword in path
+4. No crawler labeling rule before AMR → crawlers will be challenged during events (SEO risk)
