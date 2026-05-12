@@ -7,6 +7,8 @@ RUN uv sync --frozen --no-cache --extra serve --no-install-project
 
 COPY agent.py ./
 COPY tools/ ./tools/
+COPY scripts/ ./scripts/
+COPY references/ ./references/
 
 # Pre-download JA4 database (avoids 120s cold-start delay)
 RUN uv run python -c "from tools.ja4 import _update_index; _update_index()" || true

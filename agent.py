@@ -16,7 +16,7 @@ from tools.waf_logs import run_logs_query, analyze_ip
 from tools.waf_athena import run_athena_query
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
-from tools.waf_review import review_waf_rules
+from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -159,7 +159,7 @@ _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
-          review_waf_rules, record_finding, ask_user]
+          review_waf_rules_deep, finalize_review_report, record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
 
@@ -427,6 +427,17 @@ def create_app():
                 yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
                 yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
             return StreamingResponse(report_generator(), media_type="text/event-stream")
+
+        if prompt == '__get_review_report__':
+            from tools.waf_review_deep import _latest_review_html
+            async def review_report_generator():
+                run_id = str(_uuid.uuid4())
+                yield _make_sse({"type": "RUN_STARTED", "threadId": thread_id, "runId": run_id})
+                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": _latest_review_html or ""})
+                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+                yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
+            return StreamingResponse(review_report_generator(), media_type="text/event-stream")
 
         # --- Stream agent execution ---
         msg_seq = int(time.time() * 1000)  # timestamp-based seq for DDB ordering

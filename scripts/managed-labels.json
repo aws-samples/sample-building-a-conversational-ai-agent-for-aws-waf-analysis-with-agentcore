@@ -1,0 +1,63 @@
+{
+  "label_producers": {
+    "AWSManagedRulesAntiDDoSRuleSet": [
+      "awswaf:managed:aws:anti-ddos:challengeable-request",
+      "awswaf:managed:aws:anti-ddos:event-detected",
+      "awswaf:managed:aws:anti-ddos:ddos-request",
+      "awswaf:managed:aws:anti-ddos:high-suspicion-ddos-request",
+      "awswaf:managed:aws:anti-ddos:medium-suspicion-ddos-request",
+      "awswaf:managed:aws:anti-ddos:low-suspicion-ddos-request",
+      "awswaf:managed:aws:anti-ddos:ChallengeAllDuringEvent",
+      "awswaf:managed:aws:anti-ddos:ChallengeDDoSRequests",
+      "awswaf:managed:aws:anti-ddos:DDoSRequests"
+    ],
+    "AWSManagedRulesAmazonIpReputationList": [
+      "awswaf:managed:aws:amazon-ip-list:AWSManagedIPReputationList",
+      "awswaf:managed:aws:amazon-ip-list:AWSManagedReconnaissanceList",
+      "awswaf:managed:aws:amazon-ip-list:AWSManagedIPDDoSList"
+    ],
+    "AWSManagedRulesAnonymousIpList": [
+      "awswaf:managed:aws:anonymous-ip-list:AnonymousIPList",
+      "awswaf:managed:aws:anonymous-ip-list:HostingProviderIPList"
+    ],
+    "AWSManagedRulesBotControlRuleSet": [
+      "awswaf:managed:aws:bot-control:bot:verified",
+      "awswaf:managed:aws:bot-control:bot:unverified",
+      "awswaf:managed:aws:bot-control:signal:non_browser_user_agent"
+    ]
+  },
+  "managed_label_prefixes": {
+    "awswaf:managed:aws:anti-ddos:": "AWSManagedRulesAntiDDoSRuleSet",
+    "awswaf:managed:aws:amazon-ip-list:": "AWSManagedRulesAmazonIpReputationList",
+    "awswaf:managed:aws:anonymous-ip-list:": "AWSManagedRulesAnonymousIpList",
+    "awswaf:managed:aws:bot-control:": "AWSManagedRulesBotControlRuleSet",
+    "awswaf:managed:aws:atp:": "AWSManagedRulesATPRuleSet",
+    "awswaf:managed:aws:acfp:": "AWSManagedRulesACFPRuleSet",
+    "awswaf:managed:aws:core-rule-set:": "AWSManagedRulesCommonRuleSet",
+    "awswaf:managed:aws:known-bad-inputs:": "AWSManagedRulesKnownBadInputsRuleSet"
+  },
+  "shared_token_labels": [
+    "awswaf:managed:token:absent",
+    "awswaf:managed:token:accepted",
+    "awswaf:managed:token:rejected"
+  ],
+  "token_label_producers": [
+    "AWSManagedRulesAntiDDoSRuleSet",
+    "AWSManagedRulesBotControlRuleSet",
+    "AWSManagedRulesATPRuleSet",
+    "AWSManagedRulesACFPRuleSet"
+  ],
+  "forgeability": {
+    "forgeable_field_types": [
+      "single_header", "single_query_argument", "cookie", "cookies",
+      "body", "json_body", "uri_path", "query_string", "method",
+      "header_order", "headers"
+    ],
+    "unforgeable_statement_types": [
+      "ip_set", "asn_match", "geo_match", "rate_based"
+    ],
+    "unforgeable_field_types": [
+      "ja3_fingerprint", "ja4_fingerprint"
+    ]
+  }
+}
