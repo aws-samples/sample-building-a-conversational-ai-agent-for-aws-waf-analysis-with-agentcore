@@ -97,13 +97,33 @@ Only incurred if Memory is enabled (`MEMORY_ID` parameter set).
 | Medium (1,500 sessions) | ~15,000 events + 1,500 retrievals | **~$5** |
 | Heavy (12,000 sessions) | ~120,000 events + 12,000 retrievals | **~$36** |
 
+### 7. DynamoDB (Session History)
+
+On-demand pricing. Stores full conversation messages with 30-day TTL.
+
+| Dimension | Price |
+|---|---|
+| Write request units (WRU) | $1.25 per million |
+| Read request units (RRU) | $0.25 per million |
+| Storage | $0.25 per GB/month |
+
+**Typical usage per session:** ~10 writes (messages) + 1 read (restore history) + metadata updates.
+
+| Usage level | Monthly writes | Monthly reads | Storage | Monthly cost |
+|---|---|---|---|---|
+| Light (150 sessions) | ~1,500 | ~200 | <1 MB | **<$0.01** |
+| Medium (1,500 sessions) | ~15,000 | ~2,000 | ~10 MB | **<$0.01** |
+| Heavy (12,000 sessions) | ~120,000 | ~15,000 | ~100 MB | **~$0.05** |
+
+DynamoDB cost is negligible at any scale for this use case.
+
 ## Total Monthly Cost Estimates
 
-| Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Memory | Total |
-|---|---|---|---|---|---|---|
-| **Light** (1 engineer) | $8 | $0.15 | $15 | $1 | $1 | **~$25/month** |
-| **Medium** (5 engineers) | $8 | $1.50 | $225 | $15 | $5 | **~$255/month** |
-| **Heavy** (20 engineers) | $8 | $12 | $1,800 | $50 | $36 | **~$1,900/month** |
+| Usage Level | Infrastructure | AgentCore | Tokens | CloudWatch | Memory | DynamoDB | Total |
+|---|---|---|---|---|---|---|---|
+| **Light** (1 engineer) | $8 | $0.15 | $15 | $1 | $1 | <$0.01 | **~$25/month** |
+| **Medium** (5 engineers) | $8 | $1.50 | $225 | $15 | $5 | <$0.01 | **~$255/month** |
+| **Heavy** (20 engineers) | $8 | $12 | $1,800 | $50 | $36 | $0.05 | **~$1,900/month** |
 
 ## Key Takeaways
 
@@ -111,7 +131,8 @@ Only incurred if Memory is enabled (`MEMORY_ID` parameter set).
 2. **AgentCore is extremely cheap.** ~$0.001 per session because you only pay for active CPU (not I/O wait).
 3. **CloudWatch Logs Insights is cheap.** $0.005/GB scanned. Even heavy usage stays under $50/month.
 4. **Free tier covers infrastructure.** CloudFront, Cognito, and basic S3 are effectively free for internal tools.
-5. **Cost scales linearly with usage.** No minimum commitments or reserved capacity needed.
+5. **DynamoDB is effectively free.** On-demand pricing for <1M requests/month is under $1.
+6. **Cost scales linearly with usage.** No minimum commitments or reserved capacity needed.
 
 ## Cost Optimization Tips
 
