@@ -382,9 +382,27 @@ def create_app():
     async def _invocations(request: Request):
         input_data = await request.json()
 
-        # Extract session_id and user_id (from JWT, not client header — prevents IDOR)
-        session_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-session-id", "")
+        # Extract user_id from JWT (prevents IDOR)
         user_id = _get_user_id_from_jwt(request)
+        session_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-session-id", "")
+
+        # --- Session management actions (multiplexed through /invocations) ---
+        action = input_data.get("action")
+        if action == "list_sessions":
+            from tools.sessions import list_sessions
+            return JSONResponse({"sessions": list_sessions(user_id) if user_id else []})
+        if action == "get_session":
+            from tools.sessions import get_session_messages
+            sid = input_data.get("sessionId", "")
+            return JSONResponse({"messages": get_session_messages(user_id, sid) if user_id and sid else []})
+        if action == "delete_session":
+            from tools.sessions import delete_session
+            sid = input_data.get("sessionId", "")
+            if user_id and sid:
+                delete_session(user_id, sid)
+            return JSONResponse({"ok": True})
+
+        # --- Agent invocation ---
         agent = get_agent(session_id=session_id, user_id=user_id)
 
         # --- Resume from interrupt ---
@@ -436,35 +454,8 @@ def create_app():
     async def _ping():
         return JSONResponse({"status": "Healthy"})
 
-    async def _list_sessions(request: Request):
-        user_id = _get_user_id_from_jwt(request)
-        if not user_id:
-            return JSONResponse({"sessions": []})
-        from tools.sessions import list_sessions
-        return JSONResponse({"sessions": list_sessions(user_id)})
-
-    async def _get_session(request: Request):
-        user_id = _get_user_id_from_jwt(request)
-        session_id = request.path_params.get("session_id", "")
-        if not user_id or not session_id:
-            return JSONResponse({"messages": []})
-        from tools.sessions import get_session_messages
-        return JSONResponse({"messages": get_session_messages(user_id, session_id)})
-
-    async def _delete_session(request: Request):
-        user_id = _get_user_id_from_jwt(request)
-        session_id = request.path_params.get("session_id", "")
-        if not user_id or not session_id:
-            return JSONResponse({"ok": False})
-        from tools.sessions import delete_session
-        delete_session(user_id, session_id)
-        return JSONResponse({"ok": True})
-
     app.post("/invocations")(_invocations)
     app.get("/ping")(_ping)
-    app.get("/sessions")(_list_sessions)
-    app.get("/sessions/{session_id}")(_get_session)
-    app.delete("/sessions/{session_id}")(_delete_session)
 
     return app
 

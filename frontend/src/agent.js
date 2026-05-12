@@ -84,8 +84,10 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
  */
 export async function listSessions(token) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
-  const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions`, {
-    headers: { 'Authorization': `Bearer ${token}` },
+  const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ action: 'list_sessions' }),
   });
   if (!res.ok) return [];
   const data = await res.json();
@@ -97,8 +99,10 @@ export async function listSessions(token) {
  */
 export async function getSessionMessages(token, sessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
-  const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions/${sessionId}`, {
-    headers: { 'Authorization': `Bearer ${token}` },
+  const res = await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ action: 'get_session', sessionId }),
   });
   if (!res.ok) return [];
   const data = await res.json();
@@ -110,8 +114,9 @@ export async function getSessionMessages(token, sessionId) {
  */
 export async function deleteSession(token, sessionId) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
-  await fetch(`${config.agentEndpoint}/runtimes/${arn}/sessions/${sessionId}`, {
-    method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${token}` },
+  await fetch(`${config.agentEndpoint}/runtimes/${arn}/invocations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ action: 'delete_session', sessionId }),
   });
 }
