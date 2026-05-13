@@ -15,7 +15,7 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 ## 前置条件
 
 1. **AWS CLI v2**，配置了管理员权限
-2. **Docker**（需要 buildx 支持）。[finch](https://github.com/runfinch/finch) 也可以作为替代。
+2. **Docker Desktop**（含 buildx，用于构建容器镜像）。[安装 Docker Desktop](https://docs.docker.com/get-docker/)。替代方案：[finch](https://github.com/runfinch/finch)——见[附录](#替代方案使用-finch)。
 3. **Node.js 18+**（构建前端）
 4. 已开启 AWS WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
 

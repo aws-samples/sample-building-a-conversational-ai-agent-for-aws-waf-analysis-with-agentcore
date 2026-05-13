@@ -15,7 +15,7 @@ WAF Agent deploys as two CloudFormation stacks:
 ## Prerequisites
 
 1. **AWS CLI v2** configured with admin-level permissions
-2. **Docker** with buildx support (for ARM64 images). [finch](https://github.com/runfinch/finch) also works as a drop-in replacement.
+2. **Docker Desktop** (includes buildx for cross-platform builds). [Install Docker Desktop](https://docs.docker.com/get-docker/). Alternative: [finch](https://github.com/runfinch/finch) — see [appendix](#alternative-using-finch).
 3. **Node.js 18+** (for building the frontend)
 4. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
 
