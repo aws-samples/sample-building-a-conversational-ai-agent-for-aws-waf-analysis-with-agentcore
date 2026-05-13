@@ -92,7 +92,7 @@ HTML report with charts showing AWS WAF protection value — designed for manage
 
 **What the agent does:** Collects 7 days of metrics → generates HTML with Chart.js charts (blocked vs allowed, daily breakdown, top rules, top countries) → asks LLM for executive summary.
 
-> **Note:** ROI report uses CloudWatch Metrics + CloudWatch Logs Insights only (no Athena). If your WAF logs go to S3 via Firehose, the report still works — it uses metrics for charts/numbers and CWL for bot/DDoS details. If CWL is not configured, bot classification details are omitted but the report is still generated.
+> **Note:** ROI report uses CloudWatch Metrics + CloudWatch Logs Insights only (no Athena). Management reports only need aggregate numbers — not IP/URI-level details. If your WAF logs go to S3 via Firehose, the report still works (metrics for charts, CWL for bot/DDoS classification). If CWL is not configured, bot details are omitted but the report is still generated. For detailed attack source analysis, use Security Patrol or ask the agent directly.
 
 ### 8. Metrics Query
 
