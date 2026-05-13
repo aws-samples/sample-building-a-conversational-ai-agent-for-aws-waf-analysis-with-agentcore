@@ -74,11 +74,12 @@ def _get_category_timeseries(cw, webacl_name: str, rules: list[dict], start, end
             category_rules[cat] = []
         category_rules[cat].append(rule["name"])
 
-    category_ts = {}
-    timestamps = None
+    # Collect all timestamps across all rules, then align by timestamp key
+    all_timestamps: set[str] = set()
+    raw_data: dict[str, dict[str, int]] = {}  # {category: {iso_timestamp: value}}
+
     for cat, rule_names in category_rules.items():
-        # Sum all rules in this category
-        cat_values = None
+        cat_data: dict[str, int] = {}
         for rule_name in rule_names:
             dimensions = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": rule_name}]
             if scope != "CLOUDFRONT":
@@ -89,25 +90,22 @@ def _get_category_timeseries(cw, webacl_name: str, rules: list[dict], start, end
                     StartTime=start, EndTime=end,
                 )
                 result = resp.get("MetricDataResults", [{}])[0]
-                ts = result.get("Timestamps", [])
-                vals = result.get("Values", [])
-                if ts:
-                    paired = sorted(zip(ts, vals))
-                    sorted_ts, sorted_vals = zip(*paired)
-                    if timestamps is None:
-                        timestamps = [t.isoformat() for t in sorted_ts]
-                    if cat_values is None:
-                        cat_values = [0] * len(sorted_vals)
-                    # Align and sum (timestamps may differ slightly between rules)
-                    for i, v in enumerate(sorted_vals):
-                        if i < len(cat_values):
-                            cat_values[i] += int(v)
+                for ts, val in zip(result.get("Timestamps", []), result.get("Values", [])):
+                    key = ts.isoformat()
+                    all_timestamps.add(key)
+                    cat_data[key] = cat_data.get(key, 0) + int(val)
             except Exception:
                 continue
-        if cat_values:
-            category_ts[cat] = cat_values
+        if cat_data:
+            raw_data[cat] = cat_data
 
-    return {"timestamps": timestamps or [], "categories": category_ts}
+    # Align all categories to the same sorted timestamp list
+    sorted_timestamps = sorted(all_timestamps)
+    category_ts = {}
+    for cat, cat_data in raw_data.items():
+        category_ts[cat] = [cat_data.get(ts, 0) for ts in sorted_timestamps]
+
+    return {"timestamps": sorted_timestamps, "categories": category_ts}
 
 
 def _get_all_metrics(cw, webacl_name: str, rules: list[dict], start, end, region: str = "us-east-1", scope: str = "REGIONAL") -> dict:
@@ -357,8 +355,7 @@ def patrol_scan(days: int = 7) -> str:
                 detail = log_details[event["rule"]]
                 ips = detail.get("ips", [])
                 if ips:
-                    total_from_top = sum(int(r.get("cnt", 0)) for r in ips)
-                    top_ip = ips[0] if ips else {}
+                    top_ip = ips[0]
                     top_ip_pct = int(top_ip.get("cnt", 0)) / max(event["blocked"], 1)
                     event["top_ip"] = top_ip.get("httpRequest.clientIp", "unknown")
                     event["top_ip_pct"] = round(top_ip_pct * 100)
@@ -563,7 +560,7 @@ new Chart(document.getElementById('categoryChart'), {{
       zoom: zoomOpts
     }},
     scales: {{
-      x: {{ ticks: {{ color: c, maxTicksLimit: 28, maxRotation: 45 }} }},
+      x: {{ stacked: true, ticks: {{ color: c, maxTicksLimit: 28, maxRotation: 45 }} }},
       y: {{ stacked: true, beginAtZero: true, ticks: {{ color: c }}, title: {{ display: true, text: 'Blocked per hour', color: c }} }}
     }}
   }}
