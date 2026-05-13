@@ -130,7 +130,10 @@ canvas {{ max-height: 300px; }}
 </div>
 
 <div class="chart-container"><canvas id="dailyChart"></canvas></div>
-<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum · Scroll to zoom, drag to pan</p>
+<p style="color:var(--muted);font-size:.8rem;text-align:center;">15-minute sum · Scroll to zoom, drag to pan</p>
+
+<div class="chart-container"><canvas id="protectionChart"></canvas></div>
+<p style="color:var(--muted);font-size:.8rem;text-align:center;">Daily totals · Threats mitigated by AWS WAF</p>
 
 <h2>Top Attack Sources (Countries)</h2>
 <table>
@@ -146,7 +149,6 @@ canvas {{ max-height: 300px; }}
 
 <script>
 const thisWeek = {daily_data_json};
-const lastWeek = {daily_data_last_week_json};
 const chartTextColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-text').trim() || '#e6edf3';
 
 const trafficChart = new Chart(document.getElementById('dailyChart'), {{
@@ -156,19 +158,13 @@ const trafficChart = new Chart(document.getElementById('dailyChart'), {{
     datasets: [
       {{ label: 'Allowed', data: thisWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderWidth: 1.5, backgroundColor: 'rgba(63,185,80,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
       {{ label: 'Blocked', data: thisWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderWidth: 1.5, backgroundColor: 'rgba(248,81,73,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'Challenged', data: thisWeek.map(d => d.challenged || 0), borderColor: '#d29922', borderWidth: 1.5, backgroundColor: 'rgba(210,153,34,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'CAPTCHA', data: thisWeek.map(d => d.captcha || 0), borderColor: '#a371f7', borderWidth: 1.5, backgroundColor: 'rgba(163,113,247,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'Allowed (last week)', data: lastWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
-      {{ label: 'Blocked (last week)', data: lastWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
-      {{ label: 'Challenged (last week)', data: lastWeek.map(d => d.challenged || 0), borderColor: '#d29922', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
-      {{ label: 'CAPTCHA (last week)', data: lastWeek.map(d => d.captcha || 0), borderColor: '#a371f7', borderWidth: 1.5, borderDash: [5,5], pointRadius: 0, tension: 0.3 }},
     ]
   }},
   options: {{
     responsive: true,
     interaction: {{ mode: 'index', intersect: false }},
     plugins: {{
-      title: {{ display: true, text: 'Traffic Overview (solid = this week, dashed = last week)', color: chartTextColor }},
+      title: {{ display: true, text: 'Traffic Overview ({webacl_name})', color: chartTextColor }},
       legend: {{ labels: {{ color: chartTextColor }} }},
       tooltip: {{ mode: 'index', intersect: false, callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }},
       zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }}
@@ -176,6 +172,40 @@ const trafficChart = new Chart(document.getElementById('dailyChart'), {{
     scales: {{
       x: {{ ticks: {{ color: chartTextColor, maxTicksLimit: 14 }} }},
       y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
+    }}
+  }}
+}});
+
+// Daily Protection chart — aggregate by day
+const dailyMap = {{}};
+thisWeek.forEach(d => {{
+  const day = d.date.substring(0, 5);
+  if (!dailyMap[day]) dailyMap[day] = {{ blocked: 0, challenged: 0, captcha: 0 }};
+  dailyMap[day].blocked += (d.blocked || 0);
+  dailyMap[day].challenged += (d.challenged || 0);
+  dailyMap[day].captcha += (d.captcha || 0);
+}});
+const dailyDays = Object.keys(dailyMap).sort();
+new Chart(document.getElementById('protectionChart'), {{
+  type: 'bar',
+  data: {{
+    labels: dailyDays,
+    datasets: [
+      {{ label: 'Blocked', data: dailyDays.map(d => dailyMap[d].blocked), backgroundColor: 'rgba(248,81,73,0.8)' }},
+      {{ label: 'Challenged', data: dailyDays.map(d => dailyMap[d].challenged), backgroundColor: 'rgba(210,153,34,0.8)' }},
+      {{ label: 'CAPTCHA', data: dailyDays.map(d => dailyMap[d].captcha), backgroundColor: 'rgba(163,113,247,0.8)' }},
+    ]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      title: {{ display: true, text: 'Daily Protection (Threats Mitigated)', color: chartTextColor }},
+      legend: {{ labels: {{ color: chartTextColor }} }},
+      tooltip: {{ mode: 'index', intersect: false, callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }}
+    }},
+    scales: {{
+      x: {{ stacked: true, ticks: {{ color: chartTextColor }} }},
+      y: {{ stacked: true, beginAtZero: true, ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests', color: chartTextColor }} }}
     }}
   }}
 }});
@@ -234,7 +264,6 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
     # 5-min resolution traffic for chart (this week + last week)
     traffic_5min = _get_5min_traffic(cw, webacl_name, start_this_week, end)
-    traffic_5min_last_week = _get_5min_traffic(cw, webacl_name, start_last_week, start_this_week)
     countries = _get_top_countries(cw, webacl_name, start_this_week, end)
     rules = _get_top_rules(cw, webacl_name, start_this_week, end)
 
@@ -391,9 +420,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     import json as _json
                     ddos_chart_resp = cw.get_metric_data(
                         MetricDataQueries=[
-                            {"Id": "total", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"AllowedRequests\" OR \"BlockedRequests\" OR \"ChallengeRequests\")', 'Sum', 600),0))"},
-                            {"Id": "evtdet", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 600),0))"},
-                            {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 600),0))"},
+                            {"Id": "total", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"AllowedRequests\" OR \"BlockedRequests\" OR \"ChallengeRequests\")', 'Sum', 900),0))"},
+                            {"Id": "evtdet", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 900),0))"},
+                            {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 900),0))"},
                         ],
                         StartTime=start_this_week, EndTime=end, ScanBy="TimestampAscending",
                     )
@@ -409,7 +438,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     if ddos_chart_data["labels"]:
                         antiddos_section += (
                             f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
-                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">10-minute sum · Scroll to zoom, drag to pan</p>'
+                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">15-minute sum · Scroll to zoom, drag to pan</p>'
                             f'<script>'
                             f'(function(){{'
                             f'const ddosData = {_json.dumps(ddos_chart_data)};'
@@ -805,7 +834,6 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         country_rows=country_rows,
         rule_rows=rule_rows,
         daily_data_json=json.dumps(traffic_5min),
-        daily_data_last_week_json=json.dumps(traffic_5min_last_week),
     )
 
     output_path = f"waf-roi-report-{webacl_name}-{end.strftime('%Y%m%d')}.html"
@@ -923,14 +951,14 @@ def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRON
 
 
 def _get_5min_traffic(cw, webacl_name: str, start, end) -> list:
-    """Get 5-min resolution traffic data using SEARCH (same approach as AWS WAF native dashboard)."""
+    """Get 15-min resolution traffic data using SEARCH."""
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"AllowedRequests\"', 'Sum', 600),0))"},
-                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"BlockedRequests\"', 'Sum', 600),0))"},
-                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"ChallengeRequests\"', 'Sum', 600),0))"},
-                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"CaptchaRequests\"', 'Sum', 600),0))"},
+                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"AllowedRequests\"', 'Sum', 900),0))"},
+                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"BlockedRequests\"', 'Sum', 900),0))"},
+                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
+                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"CaptchaRequests\"', 'Sum', 900),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
