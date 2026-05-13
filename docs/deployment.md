@@ -50,7 +50,9 @@ Choose a backend region based on:
 
 Override via environment variable `WAF_AGENT_MODEL_ID` if needed.
 
-## Step 1: Build and Push Image
+## Step 1: Build and Push Container Image
+
+The agent runs as a container on AWS. This step packages the agent code into a container image and uploads it to Amazon ECR (a private container registry in your AWS account).
 
 ```bash
 # Set your region and account
@@ -58,25 +60,27 @@ export REGION=ap-northeast-1
 export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export ECR_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/waf-agent
 
-# Create ECR repository
+# Create ECR repository (your private container registry)
 aws ecr create-repository --repository-name waf-agent --region $REGION
 
-# Authenticate
+# Log in to ECR (token valid for 12 hours)
 aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
-# Build ARM64 image and push
+# Build the container image (ARM64 architecture, required by AgentCore)
 docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 ```
 
-> **Note**: AgentCore requires ARM64 images. x86_64 images will fail with "incompatible binary" error.
->
+> **What this does**: Reads the `Dockerfile` in the project root, installs Python dependencies, copies agent code into the image, and uploads it to ECR. AgentCore will pull this image when starting the agent.
+
 > **Using finch?** Finch does not support `--push` or `buildx`. Use separate commands:
 > ```bash
 > finch build --platform linux/arm64 -t $ECR_URI:latest .
 > finch push $ECR_URI:latest
 > ```
-> On Apple Silicon (M1/M2/M3), `--platform linux/arm64` is optional — your Mac is already ARM64. Cross-platform builds via QEMU may hang; omit the flag if building natively.
+> On Apple Silicon (M1/M2/M3), `--platform linux/arm64` is optional — your Mac is already ARM64. If the build hangs, try restarting the VM: `finch vm stop && finch vm start`, then retry.
+
+> **Troubleshooting**: Build typically takes 1-2 minutes. If it hangs longer than 5 minutes, check network connectivity (the build downloads Python packages from PyPI). You can add `--no-cache` to force a clean build.
 
 ## Step 2: Deploy Backend
 

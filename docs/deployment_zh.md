@@ -50,7 +50,9 @@ WAF Agent 通过两个 CloudFormation Stack 部署：
 
 可通过环境变量 `WAF_AGENT_MODEL_ID` 覆盖。
 
-## 第 1 步：构建并推送镜像
+## 第 1 步：构建并推送容器镜像
+
+Agent 以容器形式运行在 AWS 上。此步骤将 Agent 代码打包为容器镜像，并上传到 Amazon ECR（您 AWS 账户中的私有容器仓库）。
 
 ```bash
 # 设置区域和账号
@@ -58,10 +60,10 @@ export REGION=ap-northeast-1
 export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 export ECR_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/waf-agent
 
-# 创建 ECR 仓库
+# 创建 ECR 仓库（私有容器仓库）
 aws ecr create-repository --repository-name waf-agent --region $REGION
 
-# 登录 ECR
+# 登录 ECR（令牌有效期 12 小时）
 aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
@@ -69,14 +71,16 @@ aws ecr get-login-password --region $REGION | \
 docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 ```
 
-> **注意**：AgentCore 要求 ARM64 镜像。x86_64 镜像会报 "incompatible binary" 错误。
->
+> **这一步做了什么**：读取项目根目录的 `Dockerfile`，安装 Python 依赖，将 Agent 代码复制到镜像中，然后上传到 ECR。AgentCore 启动 Agent 时会从 ECR 拉取此镜像。
+
 > **使用 finch？** Finch 不支持 `--push` 和 `buildx`，需要分开执行：
 > ```bash
 > finch build --platform linux/arm64 -t $ECR_URI:latest .
 > finch push $ECR_URI:latest
 > ```
-> 在 Apple Silicon（M1/M2/M3）上，`--platform linux/arm64` 可省略——Mac 本身就是 ARM64。跨平台构建（QEMU 模拟）可能卡住，原生构建时请去掉该参数。
+> 在 Apple Silicon（M1/M2/M3）上，`--platform linux/arm64` 可省略——Mac 本身就是 ARM64。如果构建卡住，尝试重启 VM：`finch vm stop && finch vm start`，然后重试。
+
+> **排查**：构建通常需要 1-2 分钟。如果超过 5 分钟没有反应，检查网络连接（构建过程需要从 PyPI 下载 Python 包）。可以加 `--no-cache` 强制全新构建。
 
 ## 第 2 步：部署后端
 
