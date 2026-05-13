@@ -263,7 +263,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     daily_last_week = _get_daily_breakdown(cw, webacl_name, start_last_week, start_this_week, scope, region)
 
     # 5-min resolution traffic for chart (this week + last week)
-    traffic_5min = _get_5min_traffic(cw, webacl_name, start_this_week, end)
+    traffic_5min = _get_traffic_timeseries(cw, webacl_name, start_this_week, end)
     countries = _get_top_countries(cw, webacl_name, start_this_week, end)
     rules = _get_top_rules(cw, webacl_name, start_this_week, end)
 
@@ -950,7 +950,7 @@ def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRON
     }
 
 
-def _get_5min_traffic(cw, webacl_name: str, start, end) -> list:
+def _get_traffic_timeseries(cw, webacl_name: str, start, end) -> list:
     """Get 15-min resolution traffic data using SEARCH."""
     try:
         resp = cw.get_metric_data(
