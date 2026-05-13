@@ -11,6 +11,14 @@ from tools.aws_session import get_client
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
 
+
+def _dims(webacl: str, scope: str, region: str, rule: str = "ALL") -> list[dict]:
+    """Build CloudWatch metric dimensions. Omit Region for CLOUDFRONT scope."""
+    d = [{"Name": "WebACL", "Value": webacl}, {"Name": "Rule", "Value": rule}]
+    if scope != "CLOUDFRONT":
+        d.append({"Name": "Region", "Value": region})
+    return d
+
 # Human-readable names for AWS WAF rule labels (management-friendly)
 _FRIENDLY_NAMES = {
     "CategoryHttpLibrary": "HTTP Libraries (curl, python-requests)",
@@ -217,10 +225,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     start_this_week = end - timedelta(days=7)
     start_last_week = start_this_week - timedelta(days=7)
 
-    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end)
-    last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week)
-    daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end)
-    daily_last_week = _get_daily_breakdown(cw, webacl_name, start_last_week, start_this_week)
+    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region)
+    last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region)
+    daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end, scope, region)
+    daily_last_week = _get_daily_breakdown(cw, webacl_name, start_last_week, start_this_week, scope, region)
 
     # 5-min resolution traffic for chart (this week + last week)
     traffic_5min = _get_5min_traffic(cw, webacl_name, start_this_week, end)
@@ -244,7 +252,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     "Id": metric_id,
                     "MetricStat": {
                         "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric_name,
-                                   "Dimensions": [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]},
+                                   "Dimensions": _dims(webacl_name, scope, region)},
                         "Period": 604800, "Stat": "Sum",
                     },
                 }],
@@ -884,7 +892,7 @@ def _poll_log_query(logs_client, log_group, start, end, query, return_full=False
         return row
     return int(float(row.get("cnt", 0)))
 
-def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
+def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "us-east-1") -> dict:
     """Get total allowed/blocked/challenge/captcha for a time range."""
     queries = []
     metrics = ["AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests"]
@@ -895,10 +903,7 @@ def _get_weekly_totals(cw, webacl_name: str, start, end) -> dict:
                 "Metric": {
                     "Namespace": "AWS/WAFV2",
                     "MetricName": metric,
-                    "Dimensions": [
-                        {"Name": "WebACL", "Value": webacl_name},
-                        {"Name": "Rule", "Value": "ALL"},
-                    ],
+                    "Dimensions": _dims(webacl_name, scope, region),
                 },
                 "Period": 604800,
                 "Stat": "Sum",
@@ -939,7 +944,7 @@ def _get_5min_traffic(cw, webacl_name: str, start, end) -> list:
         return []
 
 
-def _get_daily_breakdown(cw, webacl_name: str, start, end) -> list:
+def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "us-east-1") -> list:
     """Get daily allowed/blocked/challenged/captcha counts."""
     queries = []
     for i, metric in enumerate(["AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests"]):
@@ -949,10 +954,7 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end) -> list:
                 "Metric": {
                     "Namespace": "AWS/WAFV2",
                     "MetricName": metric,
-                    "Dimensions": [
-                        {"Name": "WebACL", "Value": webacl_name},
-                        {"Name": "Rule", "Value": "ALL"},
-                    ],
+                    "Dimensions": _dims(webacl_name, scope, region),
                 },
                 "Period": 86400,
                 "Stat": "Sum",

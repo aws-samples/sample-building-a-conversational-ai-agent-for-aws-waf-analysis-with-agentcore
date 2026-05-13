@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_metrics_region
+from tools.session_state import get_metrics_region, get_scope
 
 MAX_RESULTS = 25
 
@@ -51,6 +51,8 @@ def get_waf_metrics(
 
     # Build dimensions
     dimensions = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+    if get_scope() != "CLOUDFRONT":
+        dimensions.append({"Name": "Region", "Value": region})
     if dimension_filters:
         extra = json.loads(dimension_filters)
         # Replace default Rule if specified

@@ -10,6 +10,7 @@ from strands import tool
 from tools.aws_session import get_client
 
 _latest_patrol_html: str | None = None
+_patrol_chart_data: dict = {}  # Stored between patrol_scan and finalize_patrol_report
 
 # Thresholds for anomaly detection
 DAILY_BLOCK_ATTENTION = 500
@@ -21,7 +22,7 @@ CHALLENGE_FAIL_SEVERE = 0.70
 
 
 def _get_metric_sum(cw, webacl_name: str, metric: str, rule: str, start, end, region: str = "us-east-1", scope: str = "REGIONAL", period: int = 86400) -> list[float]:
-    """Get daily sums for a metric/rule combination."""
+    """Get sums for a metric/rule combination."""
     dimensions = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": rule}]
     if scope != "CLOUDFRONT":
         dimensions.append({"Name": "Region", "Value": region})
@@ -31,6 +32,26 @@ def _get_metric_sum(cw, webacl_name: str, metric: str, rule: str, start, end, re
     )
     values = resp.get("MetricDataResults", [{}])[0].get("Values", [])
     return values
+
+
+def _get_metric_timeseries(cw, webacl_name: str, metric: str, rule: str, start, end, region: str = "us-east-1", scope: str = "REGIONAL") -> tuple[list[str], list[float]]:
+    """Get 15-min timeseries (timestamps + values) for charts."""
+    dimensions = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": rule}]
+    if scope != "CLOUDFRONT":
+        dimensions.append({"Name": "Region", "Value": region})
+    resp = cw.get_metric_data(
+        MetricDataQueries=[{"Id": "m1", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric, "Dimensions": dimensions}, "Period": 900, "Stat": "Sum"}, "ReturnData": True}],
+        StartTime=start, EndTime=end,
+    )
+    result = resp.get("MetricDataResults", [{}])[0]
+    timestamps = [t.isoformat() for t in result.get("Timestamps", [])]
+    values = result.get("Values", [])
+    # Sort by timestamp (CloudWatch returns reverse order)
+    paired = sorted(zip(timestamps, values))
+    if paired:
+        timestamps, values = zip(*paired)
+        return list(timestamps), [int(v) for v in values]
+    return [], []
 
 
 def _get_all_metrics(cw, webacl_name: str, rules: list[dict], start, end, region: str = "us-east-1", scope: str = "REGIONAL") -> dict:
@@ -204,6 +225,8 @@ def patrol_scan(days: int = 7) -> str:
     start = end - timedelta(days=days)
 
     # 1. Discover WebACLs (CLOUDFRONT + current region)
+    global _patrol_chart_data
+    _patrol_chart_data = {}
     webacls_info = []
     state = get_state()
     agent_region = state.get("region", "ap-northeast-1") if state else "ap-northeast-1"
@@ -285,6 +308,15 @@ def patrol_scan(days: int = 7) -> str:
                 uris = detail.get("uris", [])
                 if uris:
                     event["top_uri"] = uris[0].get("httpRequest.uri", "unknown")
+
+
+        # Collect 15-min timeseries for charts (first WebACL only to limit API calls)
+        if not _patrol_chart_data.get("block_ts"):
+            _patrol_chart_data["block_ts"] = _get_metric_timeseries(cw, acl_info["name"], "BlockedRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
+            _patrol_chart_data["allow_ts"] = _get_metric_timeseries(cw, acl_info["name"], "AllowedRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
+            _patrol_chart_data["challenge_ts"] = _get_metric_timeseries(cw, acl_info["name"], "ChallengeRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
+            _patrol_chart_data["challenge_solved_ts"] = _get_metric_timeseries(cw, acl_info["name"], "ChallengesSolved", "ALL", start, end, acl_info["region"], acl_info["scope"])
+            _patrol_chart_data["webacl_name"] = acl_info["name"]
 
         webacl_summaries.append({
             "name": acl_info["name"],
@@ -388,7 +420,7 @@ def finalize_patrol_report(report_md: str) -> str:
 
 
 def _render_patrol_html(md: str, generated_at: datetime) -> str:
-    """Render patrol report markdown to styled HTML."""
+    """Render patrol report markdown to styled HTML with Chart.js charts."""
     try:
         import markdown
         body = markdown.markdown(md, extensions=["tables", "smarty"])
@@ -396,11 +428,101 @@ def _render_patrol_html(md: str, generated_at: datetime) -> str:
         import html as html_mod
         body = f"<pre>{html_mod.escape(md)}</pre>"
 
+    # Build chart JS
+    chart_js = ""
+    block_ts = _patrol_chart_data.get("block_ts", ([], []))
+    allow_ts = _patrol_chart_data.get("allow_ts", ([], []))
+    challenge_ts = _patrol_chart_data.get("challenge_ts", ([], []))
+    challenge_solved_ts = _patrol_chart_data.get("challenge_solved_ts", ([], []))
+    webacl_name = _patrol_chart_data.get("webacl_name", "")
+
+    if block_ts[0]:
+        labels_json = json.dumps(block_ts[0])
+        blocked_json = json.dumps(block_ts[1])
+        allowed_json = json.dumps(allow_ts[1] if allow_ts[0] else [])
+        challenge_json = json.dumps(challenge_ts[1] if challenge_ts[0] else [])
+        challenge_solved_json = json.dumps(challenge_solved_ts[1] if challenge_solved_ts[0] else [])
+
+        chart_js = f"""
+<script>
+const labels = {labels_json}.map(t => new Date(t).toLocaleString(undefined, {{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}}));
+const c = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#e0e0e0';
+const zoomOpts = {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }};
+
+new Chart(document.getElementById('trafficChart'), {{
+  type: 'line',
+  data: {{
+    labels: labels,
+    datasets: [
+      {{ label: 'Blocked', data: {blocked_json}, borderColor: '#ef5350', backgroundColor: 'rgba(239,83,80,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+      {{ label: 'Allowed', data: {allowed_json}, borderColor: '#66bb6a', backgroundColor: 'rgba(102,187,106,0.05)', fill: true, tension: 0.3, pointRadius: 0 }},
+    ]
+  }},
+  options: {{
+    responsive: true,
+    interaction: {{ mode: 'index', intersect: false }},
+    plugins: {{
+      title: {{ display: true, text: 'Traffic: Blocked vs Allowed ({webacl_name})', color: c }},
+      legend: {{ labels: {{ color: c }} }},
+      tooltip: {{ mode: 'index', intersect: false }},
+      zoom: zoomOpts
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: c, maxTicksLimit: 28, maxRotation: 45 }} }},
+      y: {{ beginAtZero: true, ticks: {{ color: c }}, title: {{ display: true, text: 'Requests per 15 min', color: c }} }}
+    }}
+  }}
+}});
+
+new Chart(document.getElementById('challengeChart'), {{
+  type: 'line',
+  data: {{
+    labels: labels,
+    datasets: [
+      {{ label: 'Challenge Issued', data: {challenge_json}, borderColor: '#ffa726', backgroundColor: 'rgba(255,167,38,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+      {{ label: 'Challenge Solved', data: {challenge_solved_json}, borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
+    ]
+  }},
+  options: {{
+    responsive: true,
+    interaction: {{ mode: 'index', intersect: false }},
+    plugins: {{
+      title: {{ display: true, text: 'Challenge Effectiveness ({webacl_name})', color: c }},
+      legend: {{ labels: {{ color: c }} }},
+      tooltip: {{ mode: 'index', intersect: false }},
+      zoom: zoomOpts
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: c, maxTicksLimit: 28, maxRotation: 45 }} }},
+      y: {{ beginAtZero: true, ticks: {{ color: c }}, title: {{ display: true, text: 'Requests per 15 min', color: c }} }}
+    }}
+  }}
+}});
+</script>
+"""
+
+    charts_html = ""
+    if block_ts[0]:
+        charts_html = """
+<div class="chart-container">
+  <canvas id="trafficChart" height="80"></canvas>
+  <div class="chart-note">Data granularity: 15 min | Statistic: Sum (total requests per 15-min window) | Scroll to zoom, drag to pan</div>
+</div>
+<div class="chart-container">
+  <canvas id="challengeChart" height="80"></canvas>
+  <div class="chart-note">Data granularity: 15 min | Statistic: Sum | Gap between lines = unsolved challenges (likely bots or non-browser clients)</div>
+</div>
+<hr>
+"""
+
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Security Patrol Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
 <style>
 :root {{ --bg: #1a1a2e; --fg: #e0e0e0; --accent: #4fc3f7; --card-bg: #16213e; --border: #2a3a5e; --success: #66bb6a; --warning: #ffa726; --danger: #ef5350; }}
-body {{ font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 900px; margin: 0 auto; padding: 2rem 1rem; line-height: 1.6; }}
+body {{ font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 1000px; margin: 0 auto; padding: 2rem 1rem; line-height: 1.6; }}
 h1 {{ color: var(--accent); border-bottom: 2px solid var(--accent); padding-bottom: 0.5rem; }}
 h2 {{ color: var(--accent); margin-top: 2rem; }}
 h3 {{ color: var(--fg); }}
@@ -410,12 +532,15 @@ th {{ background: var(--card-bg); color: var(--accent); }}
 tr:nth-child(even) {{ background: rgba(255,255,255,0.02); }}
 strong {{ color: var(--accent); }}
 hr {{ border: none; border-top: 1px solid var(--border); margin: 2rem 0; }}
+.chart-container {{ background: var(--card-bg); border-radius: 8px; padding: 1rem; margin: 1.5rem 0; }}
+.chart-note {{ color: #888; font-size: 0.75rem; margin-top: 0.5rem; text-align: center; }}
 .footer {{ color: #888; font-size: 0.8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
-code {{ background: var(--card-bg); padding: 2px 6px; border-radius: 3px; }}
 ul, ol {{ padding-left: 1.5rem; }}
 li {{ margin: 0.3rem 0; }}
 </style></head><body>
 <h1>🛡️ Security Patrol Report</h1>
+{charts_html}
 {body}
 <div class="footer">Generated by AWS WAF Agent · {generated_at.strftime('%Y-%m-%d %H:%M UTC')}</div>
+{chart_js}
 </body></html>"""
