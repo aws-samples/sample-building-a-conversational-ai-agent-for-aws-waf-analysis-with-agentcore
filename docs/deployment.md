@@ -71,7 +71,12 @@ docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 
 > **Note**: AgentCore requires ARM64 images. x86_64 images will fail with "incompatible binary" error.
 >
-> If you use **finch** instead of Docker, replace `docker` with `finch` in all commands above (they are interchangeable).
+> **Using finch?** Finch does not support `--push` or `buildx`. Use separate commands:
+> ```bash
+> finch build --platform linux/arm64 -t $ECR_URI:latest .
+> finch push $ECR_URI:latest
+> ```
+> On Apple Silicon (M1/M2/M3), `--platform linux/arm64` is optional — your Mac is already ARM64. Cross-platform builds via QEMU may hang; omit the flag if building natively.
 
 ## Step 2: Deploy Backend
 

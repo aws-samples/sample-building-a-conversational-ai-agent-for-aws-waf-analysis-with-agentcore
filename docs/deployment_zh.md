@@ -71,7 +71,12 @@ docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 
 > **注意**：AgentCore 要求 ARM64 镜像。x86_64 镜像会报 "incompatible binary" 错误。
 >
-> 如果使用 **finch**，将上面命令中的 `docker` 替换为 `finch` 即可。
+> **使用 finch？** Finch 不支持 `--push` 和 `buildx`，需要分开执行：
+> ```bash
+> finch build --platform linux/arm64 -t $ECR_URI:latest .
+> finch push $ECR_URI:latest
+> ```
+> 在 Apple Silicon（M1/M2/M3）上，`--platform linux/arm64` 可省略——Mac 本身就是 ARM64。跨平台构建（QEMU 模拟）可能卡住，原生构建时请去掉该参数。
 
 ## 第 2 步：部署后端
 
