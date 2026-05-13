@@ -73,14 +73,7 @@ docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 
 > **这一步做了什么**：读取项目根目录的 `Dockerfile`，安装 Python 依赖，将 Agent 代码复制到镜像中，然后上传到 ECR。AgentCore 启动 Agent 时会从 ECR 拉取此镜像。
 
-> **使用 finch？** Finch 不支持 `--push` 和 `buildx`，需要分开执行：
-> ```bash
-> finch build --platform linux/arm64 -t $ECR_URI:latest .
-> finch push $ECR_URI:latest
-> ```
-> 在 Apple Silicon（M1/M2/M3）上，`--platform linux/arm64` 可省略——Mac 本身就是 ARM64。如果构建卡住，尝试重启 VM：`finch vm stop && finch vm start`，然后重试。
-
-> **排查**：构建通常需要 1-2 分钟。如果超过 5 分钟没有反应，检查网络连接（构建过程需要从 PyPI 下载 Python 包）。可以加 `--no-cache` 强制全新构建。
+> **排查**：构建通常需要 1-2 分钟。如果超过 5 分钟没有反应，检查网络连接（构建过程需要从 PyPI 下载 Python 包）。可以加 `--no-cache` 强制全新构建。如果没有 Docker Desktop，参见本文末尾的[替代方案：使用 finch](#替代方案使用-finch)。
 
 ## 第 2 步：部署后端
 
@@ -343,6 +336,27 @@ aws cloudformation deploy \
 ```
 
 > **注意**：已有会话继续运行旧代码，新会话使用更新后的镜像。
+
+## 替代方案：使用 finch
+
+[finch](https://github.com/runfinch/finch) 是一个轻量级开源容器工具（无需 Docker Desktop 许可证）。如果使用 finch：
+
+```bash
+# 登录（和 Docker 相同）
+aws ecr get-login-password --region $REGION | \
+  finch login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+
+# 构建（finch 不支持 --push，必须分开执行）
+finch build --platform linux/arm64 -t $ECR_URI:latest .
+
+# 推送
+finch push $ECR_URI:latest
+```
+
+**注意：**
+- 在 Apple Silicon（M1/M2/M3）上，`--platform linux/arm64` 可省略——Mac 本身就是 ARM64。
+- 如果构建卡住，重启 finch VM：`finch vm stop && finch vm start`，然后重试。
+- 首次使用需要 `finch vm init`（约 2 分钟）。
 
 ## 清理
 

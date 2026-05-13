@@ -73,14 +73,7 @@ docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
 
 > **What this does**: Reads the `Dockerfile` in the project root, installs Python dependencies, copies agent code into the image, and uploads it to ECR. AgentCore will pull this image when starting the agent.
 
-> **Using finch?** Finch does not support `--push` or `buildx`. Use separate commands:
-> ```bash
-> finch build --platform linux/arm64 -t $ECR_URI:latest .
-> finch push $ECR_URI:latest
-> ```
-> On Apple Silicon (M1/M2/M3), `--platform linux/arm64` is optional — your Mac is already ARM64. If the build hangs, try restarting the VM: `finch vm stop && finch vm start`, then retry.
-
-> **Troubleshooting**: Build typically takes 1-2 minutes. If it hangs longer than 5 minutes, check network connectivity (the build downloads Python packages from PyPI). You can add `--no-cache` to force a clean build.
+> **Troubleshooting**: Build typically takes 1-2 minutes. If it hangs longer than 5 minutes, check network connectivity (the build downloads Python packages from PyPI). You can add `--no-cache` to force a clean build. If you don't have Docker Desktop, see [Alternative: Using finch](#alternative-using-finch) at the end of this guide.
 
 ## Step 2: Deploy Backend
 
@@ -356,6 +349,27 @@ aws cloudformation deploy \
 ```
 
 > **Note**: Existing sessions continue running old code. New sessions will use the updated image.
+
+## Alternative: Using finch
+
+[finch](https://github.com/runfinch/finch) is a lightweight open-source container tool (no Docker Desktop license needed). If you use finch instead of Docker:
+
+```bash
+# Login (same as Docker)
+aws ecr get-login-password --region $REGION | \
+  finch login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+
+# Build (finch does not support --push, must be separate)
+finch build --platform linux/arm64 -t $ECR_URI:latest .
+
+# Push
+finch push $ECR_URI:latest
+```
+
+**Notes:**
+- On Apple Silicon (M1/M2/M3), `--platform linux/arm64` is optional — your Mac is already ARM64.
+- If the build hangs, restart the finch VM: `finch vm stop && finch vm start`, then retry.
+- First-time setup requires `finch vm init` (takes ~2 minutes).
 
 ## Cleanup
 
