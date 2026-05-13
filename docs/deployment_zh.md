@@ -4,12 +4,13 @@
 
 ## 概述
 
-WAF Agent 通过两个 CloudFormation Stack 部署：
+WAF Agent 最多通过四个 CloudFormation Stack 部署：
 
 | Stack | 区域 | 资源 |
 |-------|------|------|
 | **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
 | **sessions** | 与 backend 相同 | API Gateway + Lambda（会话历史 API）— *可选* |
+| **kb** | 与 backend 相同 | S3 Vectors + Bedrock Knowledge Base + S3（文档）— *可选* |
 | **frontend** | us-east-1（CloudFront AWS WAF 要求） | CloudFront + S3 + AWS WAF WebACL |
 
 ## 前置条件
@@ -222,6 +223,8 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
+> **注意**：如果第 2 步使用了 `ExistingUserPoolId`/`ExistingClientId`，这里也需要带上这些参数。CloudFormation 每次部署都需要传入所有非默认参数。
+
 > **后续更新文档**：只需运行 `./deploy/sync-kb.sh`，无需重新部署。
 
 ## 第 6 步：构建并上传前端
@@ -259,9 +262,9 @@ aws cognito-idp admin-create-user \
 
 > 首次登录时会提示设置新密码，前端会自动处理。
 
-## 第 7 步：访问
+## 第 8 步：访问
 
-浏览器打开 `https://<第 3 步的 CloudFrontDomain>`，用邮箱和临时密码登录。
+浏览器打开 `https://<第 4 步的 CloudFrontDomain>`，用邮箱和临时密码登录。
 
 ## 故障排查
 
