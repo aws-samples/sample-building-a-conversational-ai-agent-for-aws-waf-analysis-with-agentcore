@@ -16,9 +16,12 @@ function ReportDownload({ sessionId, type = 'roi' }) {
   const [showPreview, setShowPreview] = useState(false);
   const fetched = useRef(false);
 
-  const prompt = type === 'review' ? '__get_review_report__' : '__get_report__';
-  const title = type === 'review' ? '🔍 WAF Review Report' : '📊 WAF ROI Report';
-  const filename = type === 'review' ? 'waf-review-report.html' : 'waf-roi-report.html';
+  const prompts = { roi: '__get_report__', review: '__get_review_report__', patrol: '__get_patrol_report__' };
+  const titles = { roi: '📊 WAF ROI Report', review: '🔍 WAF Review Report', patrol: '🛡️ Security Patrol Report' };
+  const filenames = { roi: 'waf-roi-report.html', review: 'waf-review-report.html', patrol: 'waf-patrol-report.html' };
+  const prompt = prompts[type] || prompts.roi;
+  const title = titles[type] || titles.roi;
+  const filename = filenames[type] || filenames.roi;
 
   useEffect(() => {
     if (fetched.current) return;
@@ -309,6 +312,9 @@ export default function App() {
             if (assistantMsg.tools.at(-1)?.name === 'finalize_review_report') {
               assistantMsg = { ...assistantMsg, hasReviewReport: true };
             }
+            if (assistantMsg.tools.at(-1)?.name === 'finalize_patrol_report') {
+              assistantMsg = { ...assistantMsg, hasPatrolReport: true };
+            }
             setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
             break;
           case 'CUSTOM':
@@ -421,8 +427,8 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
   }
 
   const guideItems = sidebarLang === 'zh'
-    ? ['"生成价值报告"', '"检测绕过攻击"', '"检测爬虫"', '"你能做什么？"']
-    : ['"Generate ROI report"', '"Detect bypass attacks"', '"Detect crawlers"', '"What can you do?"'];
+    ? ['"安全巡检"', '"生成价值报告"', '"检测绕过攻击"', '"审查我的WAF规则"', '"你能做什么？"']
+    : ['"Weekly security summary"', '"Generate ROI report"', '"Detect bypass attacks"', '"Review my WAF rules"', '"What can you do?"'];
 
   return (
     <div className="app-layout">
@@ -472,6 +478,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
             {msg.content && <MessageContent content={msg.content} onShare={() => { setSelectMode(true); setSelected(new Set([i])); }} selectMode={selectMode} />}
             {msg.hasReport && <ReportDownload sessionId={sessionId.current} type="roi" />}
             {msg.hasReviewReport && <ReportDownload sessionId={sessionId.current} type="review" />}
+            {msg.hasPatrolReport && <ReportDownload sessionId={sessionId.current} type="patrol" />}
           </div>
         ))}
         <div ref={messagesEnd} />

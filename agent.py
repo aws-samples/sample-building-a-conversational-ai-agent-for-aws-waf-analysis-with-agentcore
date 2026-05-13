@@ -18,6 +18,7 @@ from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
 from tools.waf_knowledge import search_waf_knowledge
+from tools.waf_patrol import patrol_scan, finalize_patrol_report
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -37,9 +38,13 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 
 ## Tool Usage Strategy
 - "review/audit/检查 my WAF rules" or "generate review report" → call review_waf_rules_deep (produces full HTML report)
+- "安全巡检/patrol/weekly summary/最近安全怎么样/有没有异常" → call patrol_scan (comprehensive weekly overview, no specific target)
 - AWS WAF best practice / configuration guidance questions → call search_waf_knowledge first, then answer based on results
 - Single rule question ("is this rule safe?") → use get_waf_config + your own reasoning (no need for deep review)
+- Specific attack/IP/URI question ("check IP 1.2.3.4" / "any SQLi yesterday") → use run_logs_query/analyze_ip (targeted, fast)
 - After review_waf_rules_deep completes your analysis → MUST call finalize_review_report with your findings
+- After patrol_scan completes → write natural language report → MUST call finalize_patrol_report
+- patrol_scan is for comprehensive weekly overview with NO specific target. If the user mentions a specific IP, URI, time, rule, or attack type, use the targeted tools instead.
 
 ## Time range
 - Pass user's date directly: start_time="2026-05-09" or start_time="2026-05-09T14:00"
@@ -197,6 +202,7 @@ _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
+          patrol_scan, finalize_patrol_report,
           record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
@@ -476,6 +482,17 @@ def create_app():
                 yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
                 yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
             return StreamingResponse(review_report_generator(), media_type="text/event-stream")
+
+        if prompt == '__get_patrol_report__':
+            from tools.waf_patrol import _latest_patrol_html
+            async def patrol_report_generator():
+                run_id = str(_uuid.uuid4())
+                yield _make_sse({"type": "RUN_STARTED", "threadId": thread_id, "runId": run_id})
+                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": _latest_patrol_html or ""})
+                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
+                yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
+            return StreamingResponse(patrol_report_generator(), media_type="text/event-stream")
 
         # --- Stream agent execution ---
         msg_seq = int(time.time() * 1000)  # timestamp-based seq for DDB ordering
