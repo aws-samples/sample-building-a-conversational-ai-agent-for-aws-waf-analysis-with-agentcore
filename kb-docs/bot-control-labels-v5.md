@@ -91,10 +91,10 @@ These are behavioral signals — they don't identify specific bots but flag susp
 
 ## Targeted Rule Name Prefixes
 
-| Prefix | Meaning | Detection Method |
-|---|---|---|
-| `TGT_` | Targeted protection rules | Browser interrogation, fingerprinting, behavior heuristics |
-| `TGT_ML_` | Targeted ML rules | Machine learning on traffic statistics (timestamps, browser characteristics, previous URL). Enabled by default, can be disabled in rule group config. When disabled, these rules are not evaluated. |
+| Prefix | Meaning | Detection Method | Token Required? |
+|---|---|---|---|
+| `TGT_` | Targeted protection rules | Browser interrogation, fingerprinting, behavior heuristics | Yes — requires AWS WAF token for session tracking |
+| `TGT_ML_` | Targeted ML rules | Machine learning on traffic statistics (timestamps, browser characteristics, previous URL). Enabled by default, can be disabled in rule group config. When disabled, these rules are not evaluated. | **No** — does not require AWS WAF token or Challenge/CAPTCHA as prerequisite. Works on raw traffic patterns without client-side instrumentation. |
 
 ## Targeted Signal Labels (Targeted Level Only)
 

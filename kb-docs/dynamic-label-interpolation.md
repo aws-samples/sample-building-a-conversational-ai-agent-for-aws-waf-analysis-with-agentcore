@@ -78,3 +78,32 @@ When reviewing AWS WAF rules:
 ```
 
 This single rule covers all bot categories without needing updates when new categories are added.
+
+## Common Pattern: Cache Segmentation with CloudFront
+
+Interpolation can drive CloudFront cache keys — different bot classifications get separate cache entries:
+
+```json
+{
+  "Name": "cache-segmentation",
+  "Statement": {
+    "LabelMatchStatement": {
+      "Scope": "NAMESPACE",
+      "Key": "awswaf:managed:aws:bot-control:bot:category:"
+    }
+  },
+  "Action": {
+    "Count": {
+      "CustomRequestHandling": {
+        "InsertHeaders": [
+          {"Name": "bot-category", "Value": "${awswaf:managed:aws:bot-control:bot:category:}"}
+        ]
+      }
+    }
+  }
+}
+```
+
+CloudFront is configured to include `x-amzn-waf-bot-category` in the cache key policy. Result: verified crawlers, unverified bots, and normal users each get their own cache — origin can serve different content per classification without additional logic.
+
+When reviewing rules: if you see an interpolation rule with Count action that inserts headers used in CloudFront cache key policy, this is a **performance optimization pattern**, not a security rule. Do not flag it as "Count rule without labels" or suggest changing its action.
