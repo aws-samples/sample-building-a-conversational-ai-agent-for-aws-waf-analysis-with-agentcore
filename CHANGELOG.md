@@ -19,6 +19,21 @@
 - **`deploy/sync-kb.sh`**: One-command document upload + ingestion trigger
 - **Graceful degradation**: KB not configured → tool returns "not configured", no errors
 
+### Security Patrol Report
+
+- **One-click weekly summary**: `patrol_scan()` scans all WebACLs, collects 7-day metrics, detects anomalies, queries logs for details
+- **3 interactive charts**: Traffic Overview (15 min), Threats by Category (1h stacked area), Challenge Effectiveness (15 min)
+- **Anomaly detection**: Concentration-based (single IP >30%) + absolute thresholds + spike detection (>3x daily average)
+- **Zero-parameter tool**: Agent auto-discovers all WebACLs, no user input needed
+- **CWL log details**: Parallel Logs Insights queries for top IPs/URIs on flagged rules
+- **HTML report**: Downloadable dark-themed report with Chart.js zoom/pan
+
+### ROI Report Improvements
+
+- **Simplified Traffic chart**: 8 lines → 2 (Allowed + Blocked), cleaner for management
+- **New Daily Protection chart**: Stacked bar (Blocked + Challenged + CAPTCHA per day) — ROI visual anchor
+- **Unified 15-min period**: All charts now use 15-min granularity (consistent with patrol report)
+
 ## 0.4.0 (2026-05-12)
 
 ### Session History

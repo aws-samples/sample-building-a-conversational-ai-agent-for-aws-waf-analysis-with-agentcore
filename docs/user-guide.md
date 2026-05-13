@@ -71,7 +71,18 @@ Comprehensive security audit of your WebACL configuration with a downloadable HT
 
 **What the agent does:** Runs a deterministic analysis pipeline (18+ checks: forgeable Allow rules, label dependency chains, scope-down issues, Bot Control config, priority ordering, etc.) → Agent adds cross-rule impact analysis → generates styled HTML report with Mermaid flow diagram → auto-downloads.
 
-### 6. ROI Report Generation
+### 6. Security Patrol (Weekly Summary)
+
+Comprehensive security event summary across all WebACLs — designed for operations teams.
+
+**Good prompts:**
+- "Security patrol" / "安全巡检"
+- "Weekly security summary"
+- "What happened this week?"
+
+**What the agent does:** Scans all WebACLs → collects 7 days of metrics per rule → detects anomalies (concentration, spikes) → queries logs for top IPs/URIs on flagged rules → generates HTML report with 3 charts (Traffic, Threats by Category, Challenge Effectiveness).
+
+### 7. ROI Report Generation
 
 HTML report with charts showing AWS WAF protection value — designed for management.
 
@@ -81,7 +92,7 @@ HTML report with charts showing AWS WAF protection value — designed for manage
 
 **What the agent does:** Collects 7 days of metrics → generates HTML with Chart.js charts (blocked vs allowed, daily breakdown, top rules, top countries) → asks LLM for executive summary.
 
-### 7. Metrics Query
+### 8. Metrics Query
 
 Quick, free overview of AWS WAF traffic patterns.
 
@@ -90,7 +101,7 @@ Quick, free overview of AWS WAF traffic patterns.
 - "How many requests were blocked yesterday?"
 - "Show AllowedRequests metric with 1-hour granularity"
 
-### 8. Host Traffic Profiling
+### 9. Host Traffic Profiling
 
 Classify domains behind a WebACL as Web/API/Mixed to guide protection strategy.
 
