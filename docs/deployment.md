@@ -351,6 +351,8 @@ aws cloudformation deploy \
 ## Cleanup
 
 ```bash
+REGION=ap-northeast-1  # Same region used during deployment
+
 # 1. Empty the frontend S3 bucket (CFN cannot delete non-empty buckets)
 BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)

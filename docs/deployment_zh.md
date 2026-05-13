@@ -338,6 +338,8 @@ aws cloudformation deploy \
 ## 清理
 
 ```bash
+REGION=ap-northeast-1  # 与部署时使用的区域一致
+
 # 1. 清空前端 S3 桶（CFN 无法删除非空桶）
 BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
