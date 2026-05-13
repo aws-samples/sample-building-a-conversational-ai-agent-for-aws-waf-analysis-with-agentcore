@@ -54,6 +54,62 @@ def _get_metric_timeseries(cw, webacl_name: str, metric: str, rule: str, start, 
     return [], []
 
 
+# Category display names and colors
+CATEGORY_META = {
+    "web_exploits": {"label": "Web Exploits", "color": "#ef5350"},
+    "bot": {"label": "Bot & Automation", "color": "#ffa726"},
+    "ddos": {"label": "DDoS", "color": "#ab47bc"},
+    "ip_reputation": {"label": "IP Reputation", "color": "#42a5f5"},
+    "custom": {"label": "Custom Rules", "color": "#78909c"},
+}
+
+
+def _get_category_timeseries(cw, webacl_name: str, rules: list[dict], start, end, region: str, scope: str) -> dict:
+    """Get 1-hour blocked timeseries per category for stacked area chart."""
+    # Group rules by category
+    category_rules: dict[str, list[str]] = {}
+    for rule in rules:
+        cat = rule["type"]
+        if cat not in category_rules:
+            category_rules[cat] = []
+        category_rules[cat].append(rule["name"])
+
+    category_ts = {}
+    timestamps = None
+    for cat, rule_names in category_rules.items():
+        # Sum all rules in this category
+        cat_values = None
+        for rule_name in rule_names:
+            dimensions = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": rule_name}]
+            if scope != "CLOUDFRONT":
+                dimensions.append({"Name": "Region", "Value": region})
+            try:
+                resp = cw.get_metric_data(
+                    MetricDataQueries=[{"Id": "m1", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": dimensions}, "Period": 3600, "Stat": "Sum"}, "ReturnData": True}],
+                    StartTime=start, EndTime=end,
+                )
+                result = resp.get("MetricDataResults", [{}])[0]
+                ts = result.get("Timestamps", [])
+                vals = result.get("Values", [])
+                if ts:
+                    paired = sorted(zip(ts, vals))
+                    sorted_ts, sorted_vals = zip(*paired)
+                    if timestamps is None:
+                        timestamps = [t.isoformat() for t in sorted_ts]
+                    if cat_values is None:
+                        cat_values = [0] * len(sorted_vals)
+                    # Align and sum (timestamps may differ slightly between rules)
+                    for i, v in enumerate(sorted_vals):
+                        if i < len(cat_values):
+                            cat_values[i] += int(v)
+            except Exception:
+                continue
+        if cat_values:
+            category_ts[cat] = cat_values
+
+    return {"timestamps": timestamps or [], "categories": category_ts}
+
+
 def _get_all_metrics(cw, webacl_name: str, rules: list[dict], start, end, region: str = "us-east-1", scope: str = "REGIONAL") -> dict:
     """Get Block/Count/Challenge metrics for all rules over the period."""
     results = {}
@@ -75,7 +131,7 @@ def _get_all_metrics(cw, webacl_name: str, rules: list[dict], start, end, region
 
 
 def _classify_rules(webacl_data: dict) -> list[dict]:
-    """Extract and classify rules from WebACL config."""
+    """Extract and classify rules into 5 user-friendly categories."""
     rules = []
     for rule in webacl_data.get("Rules", webacl_data.get("rules", [])):
         name = rule.get("Name", rule.get("name", ""))
@@ -84,18 +140,23 @@ def _classify_rules(webacl_data: dict) -> list[dict]:
         if "ManagedRuleGroupStatement" in stmt or "managed_rule_group_statement" in stmt:
             mrg = stmt.get("ManagedRuleGroupStatement", stmt.get("managed_rule_group_statement", {}))
             mrg_name = mrg.get("Name", mrg.get("name", ""))
-            if "CommonRuleSet" in mrg_name or "KnownBadInputs" in mrg_name:
-                rule_type = "owasp"
-            elif "BotControl" in mrg_name:
+            # Web Exploits: CRS, KnownBadInputs, SQLi, AdminProtection, OS/platform rules
+            if any(k in mrg_name for k in ("CommonRuleSet", "KnownBadInputs", "SQLi", "AdminProtection",
+                                            "LinuxRuleSet", "UnixRuleSet", "WindowsRuleSet", "PHPRuleSet", "WordPressRuleSet")):
+                rule_type = "web_exploits"
+            # Bot & Automation: BotControl, ATP, ACFP
+            elif any(k in mrg_name for k in ("BotControl", "AccountTakeover", "AccountCreationFraud", "ATP", "ACFP")):
                 rule_type = "bot"
+            # DDoS
             elif "AntiDDoS" in mrg_name or "anti-ddos" in mrg_name.lower():
                 rule_type = "ddos"
-            elif "IpReputation" in mrg_name or "AnonymousIp" in mrg_name:
+            # IP Reputation
+            elif any(k in mrg_name for k in ("IpReputation", "AnonymousIp")):
                 rule_type = "ip_reputation"
             else:
-                rule_type = "managed_other"
+                rule_type = "web_exploits"  # unknown managed → treat as web exploits
         elif "RateBasedStatement" in stmt or "rate_based_statement" in stmt:
-            rule_type = "rate"
+            rule_type = "ddos"  # rate-based → DDoS category
         rules.append({"name": name, "type": rule_type})
     return rules
 
@@ -316,6 +377,7 @@ def patrol_scan(days: int = 7) -> str:
             _patrol_chart_data["allow_ts"] = _get_metric_timeseries(cw, acl_info["name"], "AllowedRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
             _patrol_chart_data["challenge_ts"] = _get_metric_timeseries(cw, acl_info["name"], "ChallengeRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
             _patrol_chart_data["challenge_solved_ts"] = _get_metric_timeseries(cw, acl_info["name"], "ChallengesSolved", "ALL", start, end, acl_info["region"], acl_info["scope"])
+            _patrol_chart_data["category_ts"] = _get_category_timeseries(cw, acl_info["name"], rules, start, end, acl_info["region"], acl_info["scope"])
             _patrol_chart_data["webacl_name"] = acl_info["name"]
 
         webacl_summaries.append({
@@ -349,7 +411,7 @@ def patrol_scan(days: int = 7) -> str:
 | Category | Blocked/Detected | Status |
 |----------|-----------------|--------|
 """
-    type_names = {"owasp": "OWASP (SQLi/XSS/LFI)", "bot": "Bot Control", "ddos": "Anti-DDoS", "rate": "Rate Limiting", "ip_reputation": "IP Reputation", "challenge": "Challenge Failed", "custom": "Custom Rules", "managed_other": "Other Managed Rules"}
+    type_names = {"web_exploits": "Web Exploits", "bot": "Bot & Automation", "ddos": "DDoS", "ip_reputation": "IP Reputation", "challenge": "Challenge Failed", "custom": "Custom Rules"}
     for t, totals in sorted(type_totals.items(), key=lambda x: x[1]["blocked"], reverse=True):
         status = "✅ Normal"
         for e in all_events:
@@ -398,6 +460,7 @@ def patrol_scan(days: int = 7) -> str:
 3. For normal events: one line summary
 4. Configuration recommendations (if any)
 5. Conclusion
+6. End with a "Need more details?" section with 2-3 example questions the user can ask for deeper investigation
 
 Then call finalize_patrol_report(your_report_markdown) to generate the HTML report.
 """
@@ -434,6 +497,7 @@ def _render_patrol_html(md: str, generated_at: datetime) -> str:
     allow_ts = _patrol_chart_data.get("allow_ts", ([], []))
     challenge_ts = _patrol_chart_data.get("challenge_ts", ([], []))
     challenge_solved_ts = _patrol_chart_data.get("challenge_solved_ts", ([], []))
+    category_ts = _patrol_chart_data.get("category_ts", {})
     webacl_name = _patrol_chart_data.get("webacl_name", "")
 
     if block_ts[0]:
@@ -443,9 +507,17 @@ def _render_patrol_html(md: str, generated_at: datetime) -> str:
         challenge_json = json.dumps(challenge_ts[1] if challenge_ts[0] else [])
         challenge_solved_json = json.dumps(challenge_solved_ts[1] if challenge_solved_ts[0] else [])
 
+        # Category chart data (1-hour granularity)
+        cat_labels_json = json.dumps(category_ts.get("timestamps", []))
+        cat_datasets_js = ""
+        for cat, values in category_ts.get("categories", {}).items():
+            meta = CATEGORY_META.get(cat, {"label": cat, "color": "#78909c"})
+            cat_datasets_js += f"      {{ label: '{meta['label']}', data: {json.dumps(values)}, borderColor: '{meta['color']}', backgroundColor: '{meta['color']}33', fill: true, tension: 0.3, pointRadius: 0 }},\n"
+
         chart_js = f"""
 <script>
 const labels = {labels_json}.map(t => new Date(t).toLocaleString(undefined, {{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}}));
+const catLabels = {cat_labels_json}.map(t => new Date(t).toLocaleString(undefined, {{month:'short',day:'numeric',hour:'2-digit'}}));
 const c = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#e0e0e0';
 const zoomOpts = {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }};
 
@@ -470,6 +542,29 @@ new Chart(document.getElementById('trafficChart'), {{
     scales: {{
       x: {{ ticks: {{ color: c, maxTicksLimit: 28, maxRotation: 45 }} }},
       y: {{ beginAtZero: true, ticks: {{ color: c }}, title: {{ display: true, text: 'Requests per 15 min', color: c }} }}
+    }}
+  }}
+}});
+
+new Chart(document.getElementById('categoryChart'), {{
+  type: 'line',
+  data: {{
+    labels: catLabels,
+    datasets: [
+{cat_datasets_js}    ]
+  }},
+  options: {{
+    responsive: true,
+    interaction: {{ mode: 'index', intersect: false }},
+    plugins: {{
+      title: {{ display: true, text: 'Threats by Category ({webacl_name})', color: c }},
+      legend: {{ labels: {{ color: c }} }},
+      tooltip: {{ mode: 'index', intersect: false }},
+      zoom: zoomOpts
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: c, maxTicksLimit: 28, maxRotation: 45 }} }},
+      y: {{ stacked: true, beginAtZero: true, ticks: {{ color: c }}, title: {{ display: true, text: 'Blocked per hour', color: c }} }}
     }}
   }}
 }});
@@ -507,6 +602,10 @@ new Chart(document.getElementById('challengeChart'), {{
 <div class="chart-container">
   <canvas id="trafficChart" height="80"></canvas>
   <div class="chart-note">Data granularity: 15 min | Statistic: Sum (total requests per 15-min window) | Scroll to zoom, drag to pan</div>
+</div>
+<div class="chart-container">
+  <canvas id="categoryChart" height="80"></canvas>
+  <div class="chart-note">Data granularity: 1 hour | Stacked area — each color represents a threat category | Scroll to zoom, drag to pan</div>
 </div>
 <div class="chart-container">
   <canvas id="challengeChart" height="80"></canvas>

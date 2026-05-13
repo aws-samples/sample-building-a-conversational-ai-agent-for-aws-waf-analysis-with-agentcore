@@ -220,6 +220,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
+    # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
+    _region_dim = [{"Name": "Region", "Value": region}] if scope != "CLOUDFRONT" else []
 
     end = datetime.now(timezone.utc)
     start_this_week = end - timedelta(days=7)
@@ -505,7 +507,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             {"Name": "LabelName", "Value": org_name},
                             {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:organization"},
                             {"Name": "WebACL", "Value": webacl_name},
-                        ]}, "Period": 604800, "Stat": "Sum",
+                        ] + _region_dim}, "Period": 604800, "Stat": "Sum",
                     }})
                 org_resp = cw.get_metric_data(MetricDataQueries=org_queries, StartTime=start_this_week, EndTime=end)
                 for i, org_name in enumerate(list(org_names)[:10]):
@@ -583,7 +585,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                             {"Name": "LabelName", "Value": cat_name},
                             {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
                             {"Name": "WebACL", "Value": webacl_name},
-                        ]}, "Period": 604800, "Stat": "Sum",
+                        ] + _region_dim}, "Period": 604800, "Stat": "Sum",
                     }})
                 cat_resp = cw.get_metric_data(MetricDataQueries=cat_queries, StartTime=start_this_week, EndTime=end)
                 for i, cat_name in enumerate(list(cat_names)[:20]):
@@ -619,7 +621,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                         {"Name": "LabelName", "Value": bn},
                         {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
                         {"Name": "WebACL", "Value": webacl_name},
-                    ]}, "Period": 604800, "Stat": "Sum",
+                    ] + _region_dim}, "Period": 604800, "Stat": "Sum",
                 }})
                 name_query_keys.append((qid, bn, metric))
             if name_queries:
@@ -653,12 +655,12 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                                 {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
                                 {"Name": "LabelName", "Value": "verified"},
                                 {"Name": "WebACL", "Value": webacl_name},
-                            ]}, "Period": 604800, "Stat": "Sum"}},
+                            ] + _region_dim}, "Period": 604800, "Stat": "Sum"}},
                             {"Id": "uv", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
                                 {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
                                 {"Name": "LabelName", "Value": "unverified"},
                                 {"Name": "WebACL", "Value": webacl_name},
-                            ]}, "Period": 604800, "Stat": "Sum"}},
+                            ] + _region_dim}, "Period": 604800, "Stat": "Sum"}},
                         ],
                         StartTime=start_this_week, EndTime=end,
                     )
