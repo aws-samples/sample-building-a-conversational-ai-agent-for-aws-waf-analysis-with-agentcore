@@ -4,12 +4,13 @@ English | [中文](deployment_zh.md)
 
 ## Overview
 
-WAF Agent deploys as two CloudFormation stacks:
+WAF Agent deploys as up to four CloudFormation stacks:
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
 | **sessions** | Same as backend | API Gateway + Lambda (session history API) — *optional* |
+| **kb** | Same as backend | S3 Vectors + Bedrock Knowledge Base + S3 (documents) — *optional* |
 | **frontend** | us-east-1 (required for CloudFront AWS WAF) | CloudFront + S3 + AWS WAF WebACL |
 
 ## Prerequisites
@@ -222,6 +223,8 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
+> **Note**: If you used `ExistingUserPoolId`/`ExistingClientId` in Step 2, include those parameters again here. CloudFormation requires all non-default parameters on every deploy.
+
 > **Updating KB documents later**: Just run `./deploy/sync-kb.sh`. No redeployment needed.
 
 ## Step 6: Build and Upload Frontend
@@ -259,9 +262,9 @@ aws cognito-idp admin-create-user \
 
 > On first login, you'll be prompted to set a new password. The frontend handles this automatically.
 
-## Step 7: Access
+## Step 8: Access
 
-Open `https://<CloudFrontDomain from Step 3>` in your browser. Sign in with the email and temporary password (you'll be prompted to set a new password on first login).
+Open `https://<CloudFrontDomain from Step 4>` in your browser. Sign in with the email and temporary password (you'll be prompted to set a new password on first login).
 
 ## Troubleshooting
 
