@@ -1,21 +1,28 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: AWS WAF Agent — Knowledge Base (Bedrock KB + S3 Vectors). Deploy in same region as backend.
 
-# NOTE: S3 VectorBucket and VectorIndex must be pre-created via CLI before deploying this stack.
-# See deployment guide for commands.
-
 Parameters:
   AppName:
     Type: String
     Default: waf-agent-kb
-  VectorBucketName:
-    Type: String
-    Description: "Pre-created S3 Vector Bucket name (from: aws s3vectors create-vector-bucket)"
-  VectorIndexArn:
-    Type: String
-    Description: "Pre-created S3 Vector Index ARN (from: aws s3vectors create-index)"
 
 Resources:
+  # --- S3 Vectors (vector store) ---
+  VectorBucket:
+    Type: AWS::S3Vectors::VectorBucket
+    Properties:
+      VectorBucketName: !Sub "${AppName}-vectors-${AWS::AccountId}-${AWS::Region}"
+
+  VectorIndex:
+    Type: AWS::S3Vectors::Index
+    Properties:
+      VectorBucketName: !Sub "${AppName}-vectors-${AWS::AccountId}-${AWS::Region}"
+      IndexName: !Sub "${AppName}-index"
+      DataType: float32
+      Dimension: 1024
+      DistanceMetric: cosine
+    DependsOn: VectorBucket
+
   # --- S3 bucket for source documents ---
   DocumentsBucket:
     Type: AWS::S3::Bucket
@@ -91,7 +98,7 @@ Resources:
                   - s3vectors:DeleteVectors
                   - s3vectors:QueryVectors
                   - s3vectors:GetIndex
-                Resource: !Ref VectorIndexArn
+                Resource: !Sub "arn:aws:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${AppName}-vectors-${AWS::AccountId}-${AWS::Region}/index/${AppName}-index"
 
   # --- Bedrock Knowledge Base ---
   KnowledgeBase:
@@ -109,8 +116,8 @@ Resources:
       StorageConfiguration:
         Type: S3_VECTORS
         S3VectorsConfiguration:
-          BucketArn: !Sub "arn:aws:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${VectorBucketName}"
-          IndexArn: !Ref VectorIndexArn
+          VectorBucketArn: !Sub "arn:aws:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${AppName}-vectors-${AWS::AccountId}-${AWS::Region}"
+          IndexArn: !Sub "arn:aws:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${AppName}-vectors-${AWS::AccountId}-${AWS::Region}/index/${AppName}-index"
 
   # --- Data Source ---
   DataSource:
@@ -124,11 +131,10 @@ Resources:
           BucketArn: !GetAtt DocumentsBucket.Arn
       VectorIngestionConfiguration:
         ChunkingConfiguration:
-          ChunkingStrategy: SEMANTIC
-          SemanticChunkingConfiguration:
+          ChunkingStrategy: FIXED_SIZE
+          FixedSizeChunkingConfiguration:
             MaxTokens: 300
-            BufferSize: 1
-            BreakpointPercentileThreshold: 95
+            OverlapPercentage: 20
 
 Outputs:
   KnowledgeBaseId:
