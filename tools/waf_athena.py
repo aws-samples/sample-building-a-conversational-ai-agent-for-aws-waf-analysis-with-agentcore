@@ -472,10 +472,14 @@ _UA_EXPR = "element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-ag
 _HOST_EXPR = "element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value"
 
 
-def _time_filter(table: str, hours_ago: int, partition_format: str | None) -> str:
+def _time_filter(table: str, hours_ago: int, partition_format: str | None, start_epoch: int | None = None) -> str:
     """Build WHERE clause with timestamp + partition pruning."""
-    end_ms = int(time.time()) * 1000
-    start_ms = end_ms - (hours_ago * 3600 * 1000)
+    if start_epoch:
+        start_ms = start_epoch * 1000
+        end_ms = start_ms + (hours_ago * 3600 * 1000)
+    else:
+        end_ms = int(time.time()) * 1000
+        start_ms = end_ms - (hours_ago * 3600 * 1000)
     clause = f'"timestamp" BETWEEN {start_ms} AND {end_ms}'
     if partition_format:
         start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
@@ -491,9 +495,9 @@ def _time_filter(table: str, hours_ago: int, partition_format: str | None) -> st
 
 
 def _build_query(query_type: str, table: str, hours_ago: int, partition_format: str | None,
-                 limit: int, **params) -> str:
+                 limit: int, start_epoch: int | None = None, **params) -> str:
     """Build Athena SQL for a given query_type."""
-    tf = _time_filter(table, hours_ago, partition_format)
+    tf = _time_filter(table, hours_ago, partition_format, start_epoch)
     ip = params.get("ip", "")
     rule_name = params.get("rule_name", "")
     label = params.get("label", "")
@@ -633,12 +637,13 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
 @tool
 def run_athena_query(
     query_type: str,
+    start_time: str,
+    hours_ago: int = 6,
     rule_name: str = "",
     ip: str = "",
     label: str = "",
     action: str = "",
     host: str = "",
-    hours_ago: int = 168,
     limit: int = 25,
     table_mode: str = "",
 ) -> str:
@@ -648,14 +653,18 @@ def run_athena_query(
     Automatically discovers S3 path. If no Athena table exists, returns a prompt
     asking the user to choose permanent or temporary table creation.
 
+    IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
+    Max query window is 6 hours. For broader trends, use CloudWatch Metrics instead.
+
     Args:
         query_type: Same types as run_logs_query (count_rule_top_ips, ip_cross_query, etc.)
+        start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
+        hours_ago: Duration in hours from start_time (default 6, max 6). The query covers [start_time, start_time + hours_ago].
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
         label: AWS WAF label name (for label_top_ips).
         action: Action value (for action_timeline).
         host: Hostname (for host_* queries).
-        hours_ago: How far back to query (default 168 = 7 days).
         limit: Max results (default 25).
         table_mode: "permanent" or "temporary". Only needed on first call if no table exists.
 
@@ -665,6 +674,23 @@ def run_athena_query(
     from tools.session_state import get_metrics_region
     region = get_metrics_region()
     limit = min(limit, 25)
+
+    # Validate start_time
+    if not start_time:
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_athena_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
+
+    # Cap at 6 hours
+    hours_ago = min(hours_ago, 6)
+
+    # Parse start_time
+    try:
+        if "T" in start_time:
+            _st = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
+        else:
+            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
+        start_epoch = int(_st.timestamp())
+    except ValueError:
+        return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
     # Sanitize params
     ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
@@ -682,7 +708,7 @@ def run_athena_query(
 
     try:
         sql = _build_query(query_type, table, hours_ago, _athena_state.get("partition_format"),
-                           limit, ip=ip, rule_name=rule_name, label=label, action=action, host=host)
+                           limit, start_epoch=start_epoch, ip=ip, rule_name=rule_name, label=label, action=action, host=host)
     except ValueError as e:
         return str(e)
 

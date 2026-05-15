@@ -169,17 +169,20 @@ def _parse_start_time(value: str) -> int | None:
 @tool
 def run_logs_query(
     query_type: str,
+    start_time: str,
+    hours_ago: int = 6,
     log_group: str = "",
     rule_name: str = "",
     ip: str = "",
     label: str = "",
     action: str = "",
     host: str = "",
-    hours_ago: int = 24,
-    start_time: str = "",
     limit: int = 25,
 ) -> str:
     """Run a predefined AWS WAF log query against CloudWatch Logs Insights.
+
+    IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
+    Max query window is 6 hours. For broader trends, use CloudWatch Metrics instead.
 
     Args:
         query_type: Type of query to run. Available types:
@@ -205,14 +208,14 @@ def run_logs_query(
             - host_traffic_profile: Traffic profile per Host — identify frontend vs backend domains
             - host_uri_pattern: Top URIs for a specific host (needs host param)
             - host_method_distribution: HTTP method distribution for a host (needs host param)
+        start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
+        hours_ago: Duration in hours from start_time (default 6, max 6). The query covers [start_time, start_time + hours_ago].
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
         label: AWS WAF label name (for label_top_ips).
         action: Action value — BLOCK, ALLOW, COUNT (for action_timeline).
         host: Hostname (for host_uri_pattern, host_method_distribution).
-        hours_ago: How far back to query (default 24h), or duration from start_time if start_time is given. Bypass detection queries capped at 24h max.
-        start_time: Specific start date (e.g., "2026-05-09" or "2026-05-09T14:00"). Overrides hours_ago direction. Pass the user's date directly.
         limit: Max results (default 25, max 25).
 
     Returns:
@@ -256,23 +259,18 @@ def run_logs_query(
     if hours_ago > MAX_HOURS:
         return f"Error: max time range is {MAX_HOURS} hours (7 days). For longer ranges, use Athena. Requested: {hours_ago}h"
 
-    # Hard cap: bypass/crawler queries max 24 hours (prevent expensive full-week scans)
-    _NARROW_TYPES = {"top_allowed_crawlers", "top_allowed_repeaters", "top_allowed_by_volume",
-                     "ip_unique_uris", "ip_request_rate", "ip_uri_breakdown"}
-    if query_type in _NARROW_TYPES and hours_ago > 24:
-        hours_ago = 24
+    # Hard cap: all queries max 6 hours
+    if hours_ago > 6:
+        hours_ago = 6
 
     # Time range calculation
-    end_epoch = int(time.time())
-    if start_time:
-        # Parse user-provided date (e.g., "2026-05-09", "2026-05-09T14:00")
-        start_epoch = _parse_start_time(start_time)
-        if start_epoch is None:
-            return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-        # hours_ago becomes "duration from start" (default 24h if not specified)
-        end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
-    else:
-        start_epoch = end_epoch - (hours_ago * 3600)
+    if not start_time:
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
+
+    start_epoch = _parse_start_time(start_time)
+    if start_epoch is None:
+        return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
+    end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
 
     with _cwl_semaphore:
         resp = client.start_query(
