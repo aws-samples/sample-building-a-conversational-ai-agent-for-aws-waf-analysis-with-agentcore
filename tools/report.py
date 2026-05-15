@@ -306,11 +306,16 @@ document.documentElement.classList.add('{default_theme}');
 
 
 @tool
-def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: str = "dark", lang: str = "zh") -> str:
+def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, scope: str = "CLOUDFRONT", theme: str = "dark", lang: str = "zh") -> str:
     """Generate an AWS WAF Weekly Summary as HTML with charts showing security posture.
+
+    IMPORTANT: You MUST provide start_time. Ask the user for the reporting period.
+    Max window is 7 days. WoW comparison uses the same duration from the previous period.
 
     Args:
         webacl_name: Name of the WebACL to report on.
+        start_time: Start date for the report (e.g., "2026-05-08"). REQUIRED — ask user if not provided.
+        days: Duration in days from start_time (default 7, max 7).
         scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
         theme: Default theme — "dark" (for projection) or "light" (for PDF).
         lang: Language for report labels — "zh" (Chinese) or "en" (English).
@@ -318,6 +323,19 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     Returns:
         Path to the generated HTML file, or error message.
     """
+    if not start_time:
+        return "Error: start_time is required. Ask the user which period to report on.\nExample: generate_weekly_report(webacl_name=\"my-acl\", start_time=\"2026-05-08\", days=7)"
+    days = min(days, 7)
+
+    # Parse start_time
+    try:
+        if "T" in start_time:
+            _st = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
+        else:
+            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
+
     L = _I18N.get(lang, _I18N["en"])
     _tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
     from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
@@ -326,9 +344,9 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
     _region_dim = [{"Name": "Region", "Value": region}] if scope != "CLOUDFRONT" else []
 
-    end = datetime.now(timezone.utc)
-    start_this_week = end - timedelta(days=7)
-    start_last_week = start_this_week - timedelta(days=7)
+    end = min(_st + timedelta(days=days), datetime.now(timezone.utc))
+    start_this_week = _st
+    start_last_week = start_this_week - timedelta(days=days)
 
     this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region)
     last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region)
