@@ -546,16 +546,19 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 
 
 @tool
-def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
+def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
     """Analyze a single IP address with parallel queries. Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
 
     This is a composite tool that runs multiple queries in one call to minimize
     LLM round-trips. Use this instead of calling run_logs_query multiple times for the same IP.
 
+    IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
+    Max query window is 6 hours.
+
     Args:
         ip: IP address to analyze.
-        hours_ago: Time window duration (default 6h). When start_time is given, this is duration from start. Capped at 24h.
-        start_time: Specific start date (e.g., "2026-05-09"). Overrides hours_ago direction. Pass user's date directly.
+        start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
+        hours_ago: Duration in hours from start_time (default 6, max 6).
 
     Returns:
         Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
@@ -566,8 +569,11 @@ def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
     except ValueError:
         return f"Error: invalid IP address '{ip}'"
 
-    # Hard cap at 24 hours
-    hours_ago = min(hours_ago, 24)
+    if not start_time:
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
+
+    # Hard cap at 6 hours
+    hours_ago = min(hours_ago, MAX_HOURS)
 
     log_dest = get_log_destination()
     if not log_dest or ":log-group:" not in log_dest:
@@ -576,16 +582,11 @@ def analyze_ip(ip: str, hours_ago: int = 6, start_time: str = "") -> str:
 
     region = get_logs_region()
     client = get_client("logs", region_name=region)
-    end_epoch = int(time.time())
-    if start_time:
-        parsed = _parse_start_time(start_time)
-        if parsed:
-            start_epoch = parsed
-            end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
-        else:
-            start_epoch = end_epoch - (hours_ago * 3600)
-    else:
-        start_epoch = end_epoch - (hours_ago * 3600)
+
+    start_epoch = _parse_start_time(start_time)
+    if start_epoch is None:
+        return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
+    end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
     # Phase 1: Diversity check (NAT vs UA-rotation detection)
