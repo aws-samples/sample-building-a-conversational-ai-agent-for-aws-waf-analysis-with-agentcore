@@ -20,7 +20,7 @@ TMP_DATABASE = "waf_analysis_tmp"
 _athena_state = {
     "table": None,           # "database.table_name"
     "partition_format": None, # "yyyy/MM/dd/HH" or "yyyy/MM/dd/HH/mm"
-    "temp_created": False,    # True if we created the table (need cleanup)
+    "temp_created": False,
 }
 
 
@@ -264,16 +264,9 @@ def _ensure_database(region: str, workgroup: str):
     _run_athena_ddl(sql, region, workgroup)
 
 
-def _create_temp_table(s3_path: str, storage_template: str, partition_format: str,
-                       partition_unit: str, region: str, workgroup: str) -> str:
-    """Create a temporary table with timestamp-based name."""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return _create_named_table(s3_path, storage_template, partition_format, partition_unit, region, workgroup, f"waf_logs_{ts}")
-
-
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
                         partition_unit: str, region: str, workgroup: str, table_name: str) -> str:
-    """Create an Athena table with the given name."""
+    """Create a permanent Athena table with the given name."""
     _ensure_database(region, workgroup)
     range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
 
@@ -285,14 +278,6 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     )
     _run_athena_ddl(ddl, region, workgroup)
     return f"{TMP_DATABASE}.{table_name}"
-
-
-def _drop_table(full_table: str, region: str, workgroup: str):
-    """Drop temporary table."""
-    try:
-        _run_athena_ddl(f"DROP TABLE IF EXISTS {full_table}", region, workgroup)
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -392,16 +377,11 @@ def _wait_query(athena, qid: str):
 # ---------------------------------------------------------------------------
 
 
-class _NoTableError(Exception):
-    """Raised when no Athena table exists and user hasn't chosen a table_mode."""
-    pass
 
-
-def _ensure_table(region: str, table_mode: str = "") -> str:
+def _ensure_table(region: str) -> str:
     """Ensure Athena table is ready. Returns full table name.
 
-    If no existing table found and table_mode is empty, raises _NoTableError
-    with a prompt for the LLM to ask the user.
+    Auto-creates a permanent table if none exists.
     """
     if _athena_state["table"]:
         return _athena_state["table"]
@@ -431,19 +411,7 @@ def _ensure_table(region: str, table_mode: str = "") -> str:
         _athena_state["table"] = existing
         return existing
 
-    # No table found — if no table_mode specified, ask user
-    if not table_mode:
-        raise _NoTableError(
-            "No Athena table found for this WebACL's S3 logs.\n"
-            "---\n"
-            "Call ask_user() to ask: should I create a permanent Athena table "
-            "(reusable across sessions, ~10s one-time setup) or a temporary table "
-            "(auto-deleted when this session ends)?\n"
-            "Then call run_athena_query again with table_mode=\"permanent\" or "
-            "table_mode=\"temporary\" based on their answer."
-        )
-
-    # Detect partitions and create table
+    # Detect partitions and create permanent table
     if not _validate_waf_log(s3_path):
         raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}")
 
@@ -451,16 +419,10 @@ def _ensure_table(region: str, table_mode: str = "") -> str:
     _athena_state["partition_format"] = part_fmt
 
     workgroup = "primary"
-    if table_mode == "permanent":
-        # Use webacl_name for a recognizable, stable table name
-        safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-        full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup, f"waf_logs_{safe_name}")
-        _athena_state["table"] = full_table
-        _athena_state["temp_created"] = False  # permanent — don't cleanup
-    else:
-        full_table = _create_temp_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup)
-        _athena_state["table"] = full_table
-        _athena_state["temp_created"] = True  # temporary — cleanup on exit
+    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
+    full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup, f"waf_logs_{safe_name}")
+    _athena_state["table"] = full_table
+    _athena_state["temp_created"] = False
     return full_table
 
 
@@ -645,13 +607,11 @@ def run_athena_query(
     action: str = "",
     host: str = "",
     limit: int = 25,
-    table_mode: str = "",
 ) -> str:
     """Run an AWS WAF log query via Athena (for S3-stored logs).
 
     Same interface as run_logs_query — same query_types, same output format.
-    Automatically discovers S3 path. If no Athena table exists, returns a prompt
-    asking the user to choose permanent or temporary table creation.
+    Automatically discovers S3 path and creates a permanent Athena table if needed.
 
     IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
     Max query window is 6 hours. For broader trends, use CloudWatch Metrics instead.
@@ -666,10 +626,9 @@ def run_athena_query(
         action: Action value (for action_timeline).
         host: Hostname (for host_* queries).
         limit: Max results (default 25).
-        table_mode: "permanent" or "temporary". Only needed on first call if no table exists.
 
     Returns:
-        Query results as a table, or error/prompt message.
+        Query results as a table, or error message.
     """
     from tools.session_state import get_metrics_region
     region = get_metrics_region()
@@ -700,9 +659,7 @@ def run_athena_query(
     host = re.sub(r"['\"|;`\\]", "", host)
 
     try:
-        table = _ensure_table(region, table_mode)
-    except _NoTableError as e:
-        return str(e)
+        table = _ensure_table(region)
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -733,19 +690,4 @@ def run_athena_query(
     return "\n".join(lines)
 
 
-# Cleanup hook — SIGTERM handler required for atexit to fire in AgentCore (15s grace period)
-import atexit
-import signal
-import sys
 
-signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
-
-def _cleanup():
-    if _athena_state.get("temp_created") and _athena_state.get("table"):
-        try:
-            from tools.session_state import get_metrics_region
-            _drop_table(_athena_state["table"], get_metrics_region(), "primary")
-        except Exception:
-            pass
-
-atexit.register(_cleanup)
