@@ -1080,24 +1080,41 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
         if wr.get("bot_data"):
             bd = wr["bot_data"]
             extra_bot = ""
-            # Targeted bot signals table
+            # Targeted bot signals chart
             if bd.get("targeted_signals"):
                 sigs = bd["targeted_signals"]
-                # Sort by total volume
                 sorted_sigs = sorted(sigs.items(), key=lambda x: sum(x[1].values()), reverse=True)
-                tgt_rows = ""
+                tgt_labels = []
+                tgt_blocked = []
+                tgt_challenged = []
+                tgt_captcha = []
+                tgt_allowed = []
                 for name, metrics in sorted_sigs:
                     blocked = metrics.get("BlockedRequests", 0) + metrics.get("BlockRuleMatch", 0)
                     challenged = metrics.get("ChallengeRequests", 0) + metrics.get("ChallengeRuleMatch", 0)
+                    captchaed = metrics.get("CaptchaRequests", 0) + metrics.get("CaptchaRuleMatch", 0)
                     allowed = metrics.get("AllowedRequests", 0)
-                    counted = metrics.get("CountRuleMatch", 0)
-                    total = blocked + challenged + allowed
-                    if total == 0 and counted == 0:
+                    if blocked + challenged + captchaed + allowed == 0:
                         continue
-                    tgt_rows += f'<tr><td>{name}</td><td>{blocked:,}</td><td>{challenged:,}</td><td>{allowed:,}</td><td>{counted:,}</td></tr>\n'
-                if tgt_rows:
+                    tgt_labels.append(name[:30])
+                    tgt_blocked.append(blocked)
+                    tgt_challenged.append(challenged)
+                    tgt_captcha.append(captchaed)
+                    tgt_allowed.append(allowed)
+                if tgt_labels:
+                    tgt_id = f'tgtsig_{wr["name"].replace("-","_")}'
+                    tgt_height = 40 * len(tgt_labels) + 50
                     extra_bot += f'''<h3>{L["bot_targeted"]}</h3>
-<table><tr><th>{L["rule"]}</th><th>{L["blocked"]}</th><th>{L["challenge"]}</th><th>{L["allowed"]}</th><th>{L["counted"]}</th></tr>{tgt_rows}</table>
+<div class="chart-wide"><canvas id="{tgt_id}" height="{tgt_height}"></canvas></div>
+<script>
+(function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
+new Chart(document.getElementById('{tgt_id}'),{{type:'bar',data:{{labels:{json.dumps(tgt_labels)},datasets:[
+  {{label:"{L["blocked"]}",data:{json.dumps(tgt_blocked)},backgroundColor:"#f85149",maxBarThickness:28}},
+  {{label:"{L["challenge"]}",data:{json.dumps(tgt_challenged)},backgroundColor:"#d29922",maxBarThickness:28}},
+  {{label:"{L["captcha"]}",data:{json.dumps(tgt_captcha)},backgroundColor:"#e3b341",maxBarThickness:28}},
+  {{label:"{L["allowed"]}",data:{json.dumps(tgt_allowed)},backgroundColor:"#3fb950",maxBarThickness:28}}
+]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
+</script>
 '''
             # Bot names bar chart
             if bd.get("bot_names"):
