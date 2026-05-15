@@ -18,7 +18,7 @@ from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
 from tools.waf_knowledge import search_waf_knowledge
-from tools.waf_patrol import patrol_scan, finalize_patrol_report
+from tools.waf_patrol import patrol_scan
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -38,13 +38,14 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 
 ## Tool Usage Strategy
 - "review/audit/检查 my WAF rules" or "generate review report" → call review_waf_rules_deep (produces full HTML report)
-- "安全巡检/patrol/weekly summary/最近安全怎么样/有没有异常" → call patrol_scan (comprehensive weekly overview, no specific target)
+- "安全巡检/patrol/weekly summary/最近安全怎么样/有没有异常" → call patrol_scan (produces deterministic HTML report, no LLM writing needed)
 - AWS WAF best practice / configuration guidance questions → call search_waf_knowledge first, then answer based on results
 - Single rule question ("is this rule safe?") → use get_waf_config + your own reasoning (no need for deep review)
 - Specific attack/IP/URI question ("check IP 1.2.3.4" / "any SQLi yesterday") → use run_logs_query/analyze_ip (targeted, fast)
 - After review_waf_rules_deep completes your analysis → MUST call finalize_review_report with your findings
-- After patrol_scan completes → write natural language report → MUST call finalize_patrol_report
-- patrol_scan is for comprehensive weekly overview with NO specific target. If the user mentions a specific IP, URI, time, rule, or attack type, use the targeted tools instead.
+- patrol_scan generates the report directly — do NOT call finalize_patrol_report afterward. Just present the summary to the user.
+- patrol_scan requires webacl_name and start_time. Ask the user: which WebACL and which date/time period (max 24h)?
+- run_logs_query and run_athena_query require start_time (max 6h window). Always ask the user for the time period before querying logs.
 
 ## Time range
 - Pass user's date directly: start_time="2026-05-09" or start_time="2026-05-09T14:00"
@@ -202,7 +203,7 @@ _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
-          patrol_scan, finalize_patrol_report,
+          patrol_scan,
           record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
