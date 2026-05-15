@@ -864,21 +864,34 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 "unverified_challenged": u_challenged,
                 "unverified_captchaed": u_captchaed,
             }
-            # Targeted bot: use SEARCH to get all targeted signals
+            # Targeted bot: query rule-level TGT_ labels + signals via SEARCH
             try:
                 tgt_resp = cw.get_metric_data(MetricDataQueries=[
-                    {"Id": "tgt_b", "Expression": f"SUM(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\" MetricName=\"BlockedRequests\"', 'Sum', {int(hours*3600)}))"},
-                    {"Id": "tgt_ch", "Expression": f"SUM(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\" MetricName=\"ChallengeRequests\"', 'Sum', {int(hours*3600)}))"},
-                    {"Id": "tgt_a", "Expression": f"SUM(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\" MetricName=\"AllowedRequests\"', 'Sum', {int(hours*3600)}))"},
+                    {"Id": "tgt_rules", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {int(hours*3600)})"},
+                    {"Id": "tgt_sig", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal\"', 'Sum', {int(hours*3600)})"},
+                    {"Id": "tgt_csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\"', 'Sum', {int(hours*3600)})"},
+                    {"Id": "tgt_vol", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\"', 'Sum', {int(hours*3600)})"},
                 ], StartTime=start, EndTime=end)
-                tgt_vals = {}
+                # Parse: group by LabelName, aggregate by action type
+                targeted_signals = {}  # {label_name: {metric: count}}
                 for r in tgt_resp.get("MetricDataResults", []):
-                    tgt_vals[r["Id"]] = int(sum(r.get("Values", [])))
-                tgt_total = sum(tgt_vals.values())
-                if tgt_total > 0:
-                    bot_data["targeted_blocked"] = tgt_vals.get("tgt_b", 0)
-                    bot_data["targeted_challenged"] = tgt_vals.get("tgt_ch", 0)
-                    bot_data["targeted_allowed"] = tgt_vals.get("tgt_a", 0)
+                    val = int(sum(r.get("Values", [])))
+                    if val == 0:
+                        continue
+                    label_str = r.get("Label", "")
+                    # Label format: "LabelName LabelNamespace MetricName"
+                    parts = label_str.split(" ")
+                    if len(parts) >= 3:
+                        lbl_name, _, metric_name = parts[0], parts[1], parts[2]
+                    else:
+                        continue
+                    # Only include TGT_ rules and signals, skip Category* (already in bot names)
+                    if lbl_name.startswith("TGT_") or lbl_name.startswith("Signal") or lbl_name in ("token_absent", "non_browser_user_agent") or parts[1].endswith("cloud_service_provider"):
+                        if lbl_name not in targeted_signals:
+                            targeted_signals[lbl_name] = {}
+                        targeted_signals[lbl_name][metric_name] = targeted_signals[lbl_name].get(metric_name, 0) + val
+                if targeted_signals:
+                    bot_data["targeted_signals"] = targeted_signals
             except Exception:
                 pass
             # Bot categories: use SEARCH to discover all bot names dynamically
@@ -1012,14 +1025,25 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
         if wr.get("bot_data"):
             bd = wr["bot_data"]
             extra_bot = ""
-            # Targeted bot signal
-            if bd.get("targeted_blocked") or bd.get("targeted_challenged") or bd.get("targeted_allowed"):
-                tb = bd.get("targeted_blocked", 0)
-                tc = bd.get("targeted_challenged", 0)
-                ta = bd.get("targeted_allowed", 0)
-                tgt_total = tb + tc + ta
-                tgt_mitigated = tb + tc
-                extra_bot += f'<div class="wow-notes"><strong>{L["bot_targeted"]}</strong>: {tgt_total:,} — {L["blocked"]} {tb:,} · {L["challenge"]} {tc:,} · {L["allowed"]} {ta:,}</div>\n'
+            # Targeted bot signals table
+            if bd.get("targeted_signals"):
+                sigs = bd["targeted_signals"]
+                # Sort by total volume
+                sorted_sigs = sorted(sigs.items(), key=lambda x: sum(x[1].values()), reverse=True)
+                tgt_rows = ""
+                for name, metrics in sorted_sigs:
+                    blocked = metrics.get("BlockedRequests", 0) + metrics.get("BlockRuleMatch", 0)
+                    challenged = metrics.get("ChallengeRequests", 0) + metrics.get("ChallengeRuleMatch", 0)
+                    allowed = metrics.get("AllowedRequests", 0)
+                    counted = metrics.get("CountRuleMatch", 0)
+                    total = blocked + challenged + allowed
+                    if total == 0 and counted == 0:
+                        continue
+                    tgt_rows += f'<tr><td>{name}</td><td>{blocked:,}</td><td>{challenged:,}</td><td>{allowed:,}</td><td>{counted:,}</td></tr>\n'
+                if tgt_rows:
+                    extra_bot += f'''<h3>{L["bot_targeted"]}</h3>
+<table><tr><th>Signal</th><th>{L["blocked"]}</th><th>{L["challenge"]}</th><th>{L["allowed"]}</th><th>{L["counted"]}</th></tr>{tgt_rows}</table>
+'''
             # Bot names bar chart
             if bd.get("bot_names"):
                 names = bd["bot_names"]
