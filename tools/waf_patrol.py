@@ -163,14 +163,14 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 action_items.append({
                     "severity": "critical",
                     "rule": rule_name,
-                    "text": f"High mitigation volume: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day)",
+                    "text": f"High mitigation volume: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day) (baseline not yet established)",
                     "suggestion": "Investigate top sources",
                 })
             elif daily_avg >= DAILY_BLOCK_ATTENTION:
                 action_items.append({
                     "severity": "moderate",
                     "rule": rule_name,
-                    "text": f"Elevated mitigation: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day)",
+                    "text": f"Elevated mitigation: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day) (baseline not yet established)",
                     "suggestion": "Monitor trend",
                 })
 
@@ -401,6 +401,15 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
                 mode = "Block"
                 status = "ok"
                 detail = ""
+
+            # Bot Control: detect inspection level (Common vs Targeted)
+            if mrg_name == "AWSManagedRulesBotControlRuleSet":
+                inspection_level = "Common"
+                for cfg in mrg.get("ManagedRuleGroupConfigs", []):
+                    payload = cfg.get("AWSManagedRulesBotControlRuleSet", {})
+                    if payload.get("InspectionLevel") == "TARGETED":
+                        inspection_level = "Targeted"
+                detail = f"{inspection_level} level" + (f"; {detail}" if detail else "")
 
             # Check excluded rules
             excluded = mrg.get("ExcludedRules", [])
