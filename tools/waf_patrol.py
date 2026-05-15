@@ -43,10 +43,13 @@ _PATROL_I18N = {
         "moderate": "moderate",
         "items_attention": "items need attention",
         "all_nominal": "All systems nominal — no action required",
-        "bot_activity": "Bot Activity",
+        "bot_activity": "Bot Activity (Self-Declared)",
         "bot_verified": "✅ Verified",
         "bot_unverified_allowed": "⚠️ Unverified Allowed",
         "bot_unverified_mitigated": "🚫 Unverified Mitigated",
+        "bot_targeted": "Targeted Bot Detection",
+        "bot_token_absent": "Token Absent",
+        "bot_category": "Bot Categories",
     },
     "zh": {
         "title": "安全巡检报告",
@@ -78,10 +81,13 @@ _PATROL_I18N = {
         "moderate": "注意",
         "items_attention": "项需要关注",
         "all_nominal": "所有系统正常，无需操作",
-        "bot_activity": "Bot 活动",
+        "bot_activity": "Bot 活动（自声明）",
         "bot_verified": "✅ 已验证",
         "bot_unverified_allowed": "⚠️ 未验证放行",
         "bot_unverified_mitigated": "🚫 未验证拦截",
+        "bot_targeted": "Targeted Bot 检测",
+        "bot_token_absent": "无 Token",
+        "bot_category": "Bot 类别分布",
     },
 }
 
@@ -858,6 +864,47 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 "unverified_challenged": u_challenged,
                 "unverified_captchaed": u_captchaed,
             }
+            # Targeted bot: token_absent signal
+            try:
+                tgt_resp = cw.get_metric_data(MetricDataQueries=[
+                    {"Id": "ta", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                        {"Name": "LabelName", "Value": "token_absent"},
+                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip"},
+                        {"Name": "WebACL", "Value": webacl_name},
+                    ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum"}},
+                    {"Id": "tb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": [
+                        {"Name": "LabelName", "Value": "token_absent"},
+                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip"},
+                        {"Name": "WebACL", "Value": webacl_name},
+                    ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum"}},
+                ], StartTime=start, EndTime=end)
+                tgt_vals = {r["Id"]: int(sum(r.get("Values", []))) for r in tgt_resp.get("MetricDataResults", [])}
+                if tgt_vals.get("ta", 0) + tgt_vals.get("tb", 0) > 0:
+                    bot_data["targeted_token_absent_allowed"] = tgt_vals.get("ta", 0)
+                    bot_data["targeted_token_absent_blocked"] = tgt_vals.get("tb", 0)
+            except Exception:
+                pass
+            # Bot categories (top categories by volume)
+            try:
+                cat_resp = cw.get_metric_data(MetricDataQueries=[
+                    {"Id": f"cat{i}", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
+                        {"Name": "LabelName", "Value": cat},
+                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
+                        {"Name": "WebACL", "Value": webacl_name},
+                    ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum"}}
+                    for i, cat in enumerate(["monitoring", "http_library", "search_engine", "social_media", "advertising", "scraping"])
+                ], StartTime=start, EndTime=end)
+                categories = {}
+                cat_names = ["monitoring", "http_library", "search_engine", "social_media", "advertising", "scraping"]
+                for r in cat_resp.get("MetricDataResults", []):
+                    idx = int(r["Id"].replace("cat", ""))
+                    val = int(sum(r.get("Values", [])))
+                    if val > 0:
+                        categories[cat_names[idx]] = val
+                if categories:
+                    bot_data["categories"] = categories
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -967,6 +1014,35 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
   </div>
 '''
         webacl_sections += '</div>\n'
+
+        # Targeted bot + categories (below donut row)
+        if wr.get("bot_data"):
+            bd = wr["bot_data"]
+            extra_bot = ""
+            # Targeted bot signal
+            if bd.get("targeted_token_absent_allowed") or bd.get("targeted_token_absent_blocked"):
+                ta = bd.get("targeted_token_absent_allowed", 0)
+                tb = bd.get("targeted_token_absent_blocked", 0)
+                extra_bot += f'<div class="wow-notes"><strong>{L["bot_targeted"]}</strong>: {L["bot_token_absent"]} — {L["allowed"]} {ta:,} · {L["blocked"]} {tb:,}</div>\n'
+            # Category bar chart
+            if bd.get("categories"):
+                cats = bd["categories"]
+                cat_id = f'botcat_{wr["name"].replace("-","_")}'
+                cat_labels = json.dumps(list(cats.keys()))
+                cat_values = json.dumps(list(cats.values()))
+                cat_height = max(80, 35 * len(cats) + 40)
+                extra_bot += f'''
+<h3>{L["bot_category"]}</h3>
+<div class="chart-wide"><canvas id="{cat_id}" height="{cat_height}"></canvas></div>
+<script>
+(function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
+new Chart(document.getElementById('{cat_id}'),{{type:'bar',data:{{labels:{cat_labels},datasets:[
+  {{label:"Requests",data:{cat_values},backgroundColor:"#58a6ff",maxBarThickness:28}}
+]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{display:false}}}},scales:{{x:{{beginAtZero:true,ticks:{{color:c}}}},y:{{ticks:{{color:c}}}}}}}}}});}})();
+</script>
+'''
+            if extra_bot:
+                webacl_sections += extra_bot
 
         # --- 2. Top Rules (horizontal stacked bar) ---
         rules_sorted = sorted(wr["rules_table"], key=lambda r: r["blocked"] + r["challenge"] + r["captcha"], reverse=True)[:10]
