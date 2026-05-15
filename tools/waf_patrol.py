@@ -498,6 +498,63 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
     return tools
 
 
+def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region: str, start, end, attention_rules: list[str]) -> dict:
+    """Query top IPs/URIs via Athena for S3-stored logs. Auto-creates permanent table."""
+    try:
+        from tools.waf_athena import _resolve_s3_path, _try_standard_path, _get_account_id, \
+            _find_existing_table, _validate_waf_log, _detect_partitions, _create_named_table, \
+            _run_athena_select, _athena_state, _ensure_database
+        import re as _re
+
+        # Resolve S3 path
+        s3_base = _resolve_s3_path(log_dest)
+        bucket = s3_base.replace("s3://", "").split("/")[0]
+        s3_path = None
+        if ":s3:::" in log_dest:
+            account_id = _get_account_id()
+            s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
+        if not s3_path:
+            s3_path = s3_base
+
+        # Find or create table
+        full_table = _find_existing_table(s3_path, region)
+        if not full_table:
+            if not _validate_waf_log(s3_path):
+                return {}
+            storage_template, part_fmt, part_unit = _detect_partitions(s3_path)
+            _ensure_database(region, "primary")
+            safe_name = _re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
+            full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, "primary", f"waf_logs_{safe_name}")
+
+        # Build time filter
+        start_str = start.strftime("%Y-%m-%d %H:%M:%S")
+        end_str = end.strftime("%Y-%m-%d %H:%M:%S")
+        time_cond = f"from_unixtime(\"timestamp\"/1000) BETWEEN TIMESTAMP '{start_str}' AND TIMESTAMP '{end_str}'"
+
+        # Query top IPs and URIs per rule (parallel)
+        details = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {}
+            for rule_name in attention_rules[:5]:
+                safe_rule = rule_name.replace("'", "''")
+                ip_sql = f"SELECT httprequest.clientip AS \"httpRequest.clientIp\", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = '{safe_rule}' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT 5"
+                uri_sql = f"SELECT httprequest.uri AS \"httpRequest.uri\", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = '{safe_rule}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT 5"
+                futures[executor.submit(_run_athena_select, ip_sql, region)] = (rule_name, "ips")
+                futures[executor.submit(_run_athena_select, uri_sql, region)] = (rule_name, "uris")
+            for future in concurrent.futures.as_completed(futures, timeout=120):
+                rule_name, qtype = futures[future]
+                try:
+                    result = future.result()
+                    if rule_name not in details:
+                        details[rule_name] = {}
+                    details[rule_name][qtype] = result
+                except Exception:
+                    pass
+        return details
+    except Exception:
+        return {}
+
+
 def _classify_rules(webacl_data: dict) -> list[dict]:
     """Extract and classify rules into 5 user-friendly categories."""
     rules = []
@@ -700,7 +757,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
     ddos_windows = _detect_ddos_windows(cw, webacl_name, start, end)
     action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None)
 
-    # 7. Top IPs/URIs for attention rules (CWL only)
+    # 7. Top IPs/URIs for attention rules (CWL or Athena)
     log_details = {}
     if logging_type == "cwl":
         attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
@@ -710,6 +767,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
             log_start = int(start.timestamp())
             log_end = int(end.timestamp())
             log_details = _get_log_details(logs_client, log_group, log_start, log_end, attention_rules)
+    elif logging_type == "s3":
+        attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
+        if attention_rules:
+            log_details = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, attention_rules)
 
     # 8. Build per-rule table + rate-limit info
     rules_table = []
