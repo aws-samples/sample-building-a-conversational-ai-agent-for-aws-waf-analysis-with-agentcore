@@ -615,7 +615,7 @@ def _assess_events(metrics: dict, rules: list[dict], days: int) -> list[dict]:
 @tool
 def patrol_scan(days: int = 7) -> str:
     """Run a comprehensive security patrol scan across all WebACLs.
-    Produces a full security event summary for the specified period.
+    Produces a full security event summary with deterministic HTML report.
 
     Use this ONLY when user asks for a patrol report, security summary, or weekly review.
     Do NOT use for specific questions about individual attacks, IPs, or rules.
@@ -627,9 +627,10 @@ def patrol_scan(days: int = 7) -> str:
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
+    start_last = start - timedelta(days=days)  # WoW comparison period
 
-    # 1. Discover WebACLs (CLOUDFRONT + current region)
-    global _patrol_chart_data
+    # 1. Discover WebACLs
+    global _patrol_chart_data, _latest_patrol_html
     _patrol_chart_data = {}
     webacls_info = []
     state = get_state()
@@ -647,9 +648,9 @@ def patrol_scan(days: int = 7) -> str:
     if not webacls_info:
         return "No WebACLs found. Cannot perform patrol scan."
 
-    # 2. Analyze each WebACL
-    all_events = []
-    webacl_summaries = []
+    # 2. Analyze each WebACL using v2 functions
+    all_action_items = []
+    webacl_results = []
 
     for acl_info in webacls_info:
         waf = get_client("wafv2", region_name=acl_info["region"])
@@ -657,11 +658,8 @@ def patrol_scan(days: int = 7) -> str:
             acl_resp = waf.get_web_acl(Name=acl_info["name"], Scope=acl_info["scope"], Id=acl_info["id"])
             webacl_data = acl_resp.get("WebACL", {})
         except Exception:
-            webacl_summaries.append({"name": acl_info["name"], "scope": acl_info["scope"], "error": "Failed to get WebACL config"})
+            webacl_results.append({"name": acl_info["name"], "scope": acl_info["scope"], "error": "Failed to get WebACL config"})
             continue
-
-        # Classify rules
-        rules = _classify_rules(webacl_data)
 
         # Check logging
         log_dest = None
@@ -670,146 +668,247 @@ def patrol_scan(days: int = 7) -> str:
             log_dest = log_resp.get("LoggingConfiguration", {}).get("LogDestinationConfigs", [None])[0]
         except Exception:
             pass
-
         logging_type = "none"
         if log_dest and ":log-group:" in log_dest:
             logging_type = "cwl"
         elif log_dest and ("s3:" in log_dest or "firehose" in log_dest.lower()):
             logging_type = "s3"
 
-        # Get metrics
+        # Section 2: Detection Tools Status
+        detection_tools = _analyze_detection_tools(webacl_data, logging_type, log_dest)
+
+        # Section 3-5: Per-rule metrics (this week + last week for WoW)
         cw = get_client("cloudwatch", region_name=acl_info["region"])
-        metrics = _get_all_metrics(cw, acl_info["name"], rules, start, end, acl_info["region"], acl_info["scope"])
+        this_week_metrics = _get_all_rules_metrics_search(cw, acl_info["name"], start, end, period=86400)
+        last_week_metrics = _get_all_rules_metrics_search(cw, acl_info["name"], start_last, start, period=86400)
 
-        # Assess events
-        events = _assess_events(metrics, rules, days)
+        # Challenge solved (WebACL level)
+        challenge_solved, captcha_solved = _get_challenge_solved(cw, acl_info["name"], acl_info["scope"], acl_info["region"], start, end)
 
-        # Get log details for attention/severe rules (CWL only for now)
+        # Section 1: Action Items (WoW anomaly detection)
+        action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools)
+
+        # Section 6: Top IPs/URIs for attention rules (CWL only)
         log_details = {}
-        attention_rules = [e["rule"] for e in events if e["severity"] in ("attention", "severe") and e["type"] != "challenge"]
-        if logging_type == "cwl" and attention_rules:
-            log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
-            logs_client = get_client("logs", region_name=acl_info["region"])
-            log_start = int(start.timestamp())
-            log_end = int(end.timestamp())
-            log_details = _get_log_details(logs_client, log_group, log_start, log_end, attention_rules)
+        if logging_type == "cwl":
+            attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
+            if attention_rules:
+                log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+                logs_client = get_client("logs", region_name=acl_info["region"])
+                log_start = int(start.timestamp())
+                log_end = int(end.timestamp())
+                log_details = _get_log_details(logs_client, log_group, log_start, log_end, attention_rules)
 
-        # Enrich events with log details
-        for event in events:
-            if event["rule"] in log_details:
-                detail = log_details[event["rule"]]
-                ips = detail.get("ips", [])
-                if ips:
-                    top_ip = ips[0]
-                    top_ip_pct = int(top_ip.get("cnt", 0)) / max(event["blocked"], 1)
-                    event["top_ip"] = top_ip.get("httpRequest.clientIp", "unknown")
-                    event["top_ip_pct"] = round(top_ip_pct * 100)
-                    if top_ip_pct >= IP_CONCENTRATION_SEVERE:
-                        event["severity"] = "severe"
-                    elif top_ip_pct >= IP_CONCENTRATION_ATTENTION and event["severity"] == "normal":
-                        event["severity"] = "attention"
-                uris = detail.get("uris", [])
-                if uris:
-                    event["top_uri"] = uris[0].get("httpRequest.uri", "unknown")
+        # Build per-rule table data
+        rules_table = []
+        skip = {"ALL", acl_info["name"]}
+        for rule_name, data in this_week_metrics.items():
+            if rule_name in skip:
+                continue
+            tw_b = sum(data.get("blocked", []))
+            tw_c = sum(data.get("counted", []))
+            tw_ch = sum(data.get("challenge", []))
+            tw_cap = sum(data.get("captcha", []))
+            tw_total = tw_b + tw_c + tw_ch + tw_cap
+            if tw_total == 0:
+                continue
+            # WoW
+            lw = last_week_metrics.get(rule_name, {})
+            lw_total = sum(lw.get("blocked", [])) + sum(lw.get("counted", [])) + sum(lw.get("challenge", [])) + sum(lw.get("captcha", []))
+            wow = tw_total / lw_total if lw_total > 0 else None
+            rules_table.append({
+                "name": rule_name, "blocked": tw_b, "counted": tw_c,
+                "challenge": tw_ch, "captcha": tw_cap, "total": tw_total,
+                "wow": wow, "log_detail": log_details.get(rule_name, {}),
+            })
+        rules_table.sort(key=lambda x: x["total"], reverse=True)
 
+        # Totals from ALL
+        all_data = this_week_metrics.get("ALL", {})
+        totals = {
+            "blocked": sum(all_data.get("blocked", [])),
+            "counted": sum(all_data.get("counted", [])),
+            "challenge": sum(all_data.get("challenge", [])),
+            "captcha": sum(all_data.get("captcha", [])),
+            "allowed": sum(all_data.get("allowed", [])),
+            "challenge_solved": challenge_solved,
+            "captcha_solved": captcha_solved,
+        }
 
-        # Collect 15-min timeseries for charts (first WebACL only to limit API calls)
-        if not _patrol_chart_data.get("block_ts"):
-            _patrol_chart_data["block_ts"] = _get_metric_timeseries(cw, acl_info["name"], "BlockedRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
-            _patrol_chart_data["allow_ts"] = _get_metric_timeseries(cw, acl_info["name"], "AllowedRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
-            _patrol_chart_data["challenge_ts"] = _get_metric_timeseries(cw, acl_info["name"], "ChallengeRequests", "ALL", start, end, acl_info["region"], acl_info["scope"])
-            _patrol_chart_data["challenge_solved_ts"] = _get_metric_timeseries(cw, acl_info["name"], "ChallengesSolved", "ALL", start, end, acl_info["region"], acl_info["scope"])
-            _patrol_chart_data["category_ts"] = _get_category_timeseries(cw, acl_info["name"], rules, start, end, acl_info["region"], acl_info["scope"])
-            _patrol_chart_data["webacl_name"] = acl_info["name"]
-
-        webacl_summaries.append({
-            "name": acl_info["name"],
-            "scope": acl_info["scope"],
-            "region": acl_info["region"],
-            "rules_count": len(rules),
-            "logging": logging_type,
-            "events": events,
-            "rule_types": {r["type"] for r in rules},
+        webacl_results.append({
+            "name": acl_info["name"], "scope": acl_info["scope"], "region": acl_info["region"],
+            "detection_tools": detection_tools, "action_items": action_items,
+            "rules_table": rules_table, "totals": totals, "logging": logging_type,
         })
-        all_events.extend([{**e, "webacl": acl_info["name"]} for e in events])
+        all_action_items.extend([{**a, "webacl": acl_info["name"]} for a in action_items])
 
-    # 3. Build structured output for LLM
-    attention_events = [e for e in all_events if e["severity"] in ("attention", "severe")]
-    type_totals = {}
-    for e in all_events:
-        t = e["type"]
-        if t not in type_totals:
-            type_totals[t] = {"blocked": 0, "counted": 0}
-        type_totals[t]["blocked"] += e.get("blocked", 0)
-        type_totals[t]["counted"] += e.get("counted", 0)
+    # 3. Generate deterministic HTML
+    _latest_patrol_html = _render_patrol_html_v2(webacl_results, all_action_items, start, end, days)
 
-    result = f"""## Patrol Scan Complete
+    # 4. Return summary to user (short, for chat display)
+    n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
+    n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
+    n_low = sum(1 for a in all_action_items if a["severity"] == "low")
 
-**Period**: {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({days} days)
-**WebACLs scanned**: {len(webacl_summaries)}
-
-### Defense Overview (totals across all WebACLs)
-
-| Category | Blocked/Detected | Status |
-|----------|-----------------|--------|
-"""
-    type_names = {"web_exploits": "Web Exploits", "bot": "Bot & Automation", "ddos": "DDoS", "ip_reputation": "IP Reputation", "challenge": "Challenge Failed", "custom": "Custom Rules"}
-    for t, totals in sorted(type_totals.items(), key=lambda x: x[1]["blocked"], reverse=True):
-        status = "✅ Normal"
-        for e in all_events:
-            if e["type"] == t and e["severity"] == "severe":
-                status = "🔴 Severe"
-                break
-            elif e["type"] == t and e["severity"] == "attention":
-                status = "⚠️ Attention"
-        result += f"| {type_names.get(t, t)} | {totals['blocked']:,} | {status} |\n"
-
-    if attention_events:
-        result += "\n### Events Requiring Attention\n\n"
-        for i, e in enumerate(sorted(attention_events, key=lambda x: x["blocked"], reverse=True)[:10], 1):
-            sev = "🔴" if e["severity"] == "severe" else "⚠️"
-            result += f"**{i}. [{sev} {type_names.get(e['type'], e['type'])}] {e['rule']}** — {e['blocked']:,} blocked (avg {e['daily_avg']:,}/day)\n"
-            if e.get("top_ip"):
-                result += f"   - Top source: {e['top_ip']} ({e.get('top_ip_pct', 0)}% of blocks)\n"
-            if e.get("top_uri"):
-                result += f"   - Top target: {e['top_uri']}\n"
-            if e.get("fail_rate"):
-                result += f"   - Failure rate: {e['fail_rate']}%\n"
-            if e.get("spike_ratio", 0) > 3:
-                result += f"   - Spike detected: peak day was {e['spike_ratio']}x average\n"
-            result += "\n"
+    if n_critical > 0:
+        status = f"🔴 {n_critical} critical + {n_moderate} moderate items need attention"
+    elif n_moderate > 0:
+        status = f"⚠️ {n_moderate} items need attention"
+    elif n_low > 0:
+        status = f"💡 {n_low} low-priority suggestions"
     else:
-        result += "\n### No events requiring attention.\n\nAll defense metrics are within normal ranges.\n"
+        status = "🟢 All systems nominal — no action required"
 
-    # WebACL config notes
-    no_logging = [s for s in webacl_summaries if s.get("logging") == "none"]
-    s3_logging = [s for s in webacl_summaries if s.get("logging") == "s3"]
-    if no_logging:
-        result += "\n### Configuration Notes\n\n"
-        for s in no_logging:
-            result += f"- **{s['name']}**: No logging configured. Enable AWS WAF logging for detailed analysis.\n"
-    if s3_logging:
-        if not no_logging:
-            result += "\n### Configuration Notes\n\n"
-        for s in s3_logging:
-            result += f"- **{s['name']}**: Logs in S3. Detailed IP/URI breakdown requires Athena (not queried in this scan). Use conversation mode for deep investigation.\n"
+    summary = f"**Patrol Report Generated**\n\n"
+    summary += f"Period: {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({days} days)\n"
+    summary += f"WebACLs scanned: {len(webacl_results)}\n"
+    summary += f"Status: {status}\n\n"
 
-    result += f"""
----
-**Instructions**: Write a natural language security patrol report based on the above data. Include:
-1. Executive summary (1-2 sentences: overall status)
-2. For each "Attention" or "Severe" event: what happened, source, target, recommendation
-3. For normal events: one line summary
-4. Configuration recommendations (if any)
-5. Conclusion
-6. End with a "Need more details?" section with 2-3 example questions the user can ask for deeper investigation
+    if all_action_items:
+        summary += "**Top Action Items:**\n"
+        for item in all_action_items[:5]:
+            icon = "🔴" if item["severity"] == "critical" else "⚠️" if item["severity"] == "moderate" else "💡"
+            summary += f"- {icon} [{item['rule']}] {item['text']}\n"
+        if len(all_action_items) > 5:
+            summary += f"- ... and {len(all_action_items) - 5} more (see full report)\n"
 
-Then call finalize_patrol_report(your_report_markdown) to generate the HTML report.
-"""
-    return result
+    summary += "\nFull HTML report is ready for download."
+    return summary
 
 
 @tool
+def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, days: int) -> str:
+    """Render deterministic patrol report HTML from structured data."""
+    now = datetime.now(timezone.utc)
+    n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
+    n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
+
+    if n_critical > 0:
+        banner_class = "banner-critical"
+        banner_text = f"🔴 {n_critical} critical + {n_moderate} moderate items need attention"
+    elif n_moderate > 0:
+        banner_class = "banner-warning"
+        banner_text = f"⚠️ {n_moderate} items need attention"
+    else:
+        banner_class = "banner-ok"
+        banner_text = "🟢 All systems nominal — no action required"
+
+    # Build sections per WebACL
+    webacl_sections = ""
+    for wr in webacl_results:
+        if "error" in wr:
+            webacl_sections += f'<h2>{wr["name"]} ({wr["scope"]})</h2><p class="muted">Error: {wr["error"]}</p>'
+            continue
+
+        # Detection Tools table
+        dt_rows = ""
+        for t in wr["detection_tools"]:
+            icon = "✅" if t["status"] == "ok" else "⚠️" if t["status"] == "warning" else "❌"
+            detail = f' <span class="muted">({t["detail"]})</span>' if t["detail"] else ""
+            dt_rows += f'<tr><td>{icon} {t["layer"]}</td><td>{t["rule_name"]}</td><td>{t["mode"]}{detail}</td></tr>\n'
+
+        # Per-rule table
+        rule_rows = ""
+        for r in wr["rules_table"]:
+            wow_str = f'{r["wow"]:.1f}x' if r["wow"] is not None else "new"
+            wow_class = "up" if r["wow"] and r["wow"] > 3 else ""
+            # Top IP/URI from log details
+            extra = ""
+            ld = r.get("log_detail", {})
+            if ld.get("ips"):
+                ip = ld["ips"][0].get("httpRequest.clientIp", "")
+                cnt = ld["ips"][0].get("cnt", "")
+                if ip:
+                    extra += f'<br><span class="muted">Top IP: {ip} ({cnt})</span>'
+            if ld.get("uris"):
+                uri = ld["uris"][0].get("httpRequest.uri", "")
+                if uri:
+                    extra += f'<br><span class="muted">Top URI: {uri}</span>'
+            rule_rows += (
+                f'<tr><td>{r["name"]}{extra}</td>'
+                f'<td>{r["blocked"]:,}</td><td>{r["challenge"]:,}</td>'
+                f'<td>{r["captcha"]:,}</td><td>{r["counted"]:,}</td>'
+                f'<td class="{wow_class}">{wow_str}</td></tr>\n'
+            )
+
+        # Totals
+        tot = wr["totals"]
+        total_reqs = tot["blocked"] + tot["challenge"] + tot["captcha"] + tot["counted"] + tot["allowed"]
+        mitigated = tot["blocked"] + tot["challenge"] + tot["captcha"]
+
+        webacl_sections += f'''
+<h2>{wr["name"]} <span class="muted">({wr["scope"]}, {wr["region"]})</span></h2>
+<div class="grid">
+  <div class="card"><div class="label">Total Requests</div><div class="value">{total_reqs:,}</div></div>
+  <div class="card"><div class="label">Mitigated</div><div class="value">{mitigated:,}</div><div class="muted">Block {tot["blocked"]:,} + Challenge {tot["challenge"]:,} + Captcha {tot["captcha"]:,}</div></div>
+  <div class="card"><div class="label">Counted</div><div class="value">{tot["counted"]:,}</div></div>
+  <div class="card"><div class="label">Allowed</div><div class="value">{tot["allowed"]:,}</div></div>
+</div>
+<h3>Detection Tools Status</h3>
+<table><tr><th>Layer</th><th>Rule</th><th>Mode</th></tr>{dt_rows}</table>
+<h3>Per-Rule Breakdown</h3>
+<table><tr><th>Rule</th><th>Blocked</th><th>Challenge</th><th>Captcha</th><th>Counted</th><th>WoW</th></tr>{rule_rows}</table>
+'''
+
+    # Action Items section
+    action_html = ""
+    if all_action_items:
+        action_html = '<div class="action-items">'
+        for item in all_action_items:
+            icon = "🔴" if item["severity"] == "critical" else "⚠️" if item["severity"] == "moderate" else "💡"
+            action_html += f'<div class="action-item {item["severity"]}"><strong>{icon} {item["rule"]}</strong>: {item["text"]}<br><span class="muted">→ {item["suggestion"]}</span></div>'
+        action_html += "</div>"
+    else:
+        action_html = '<p class="banner banner-ok">🟢 No action required this week</p>'
+
+    # Embedded JSON for programmatic access
+    report_json = json.dumps({
+        "version": "1.0",
+        "generated_at": now.isoformat(),
+        "period": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        "webacls": [{
+            "name": wr["name"], "scope": wr.get("scope", ""),
+            "action_items": [a for a in all_action_items if a.get("webacl") == wr["name"]],
+        } for wr in webacl_results if "error" not in wr],
+    }, default=str)
+
+    return f'''<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Security Patrol Report</title>
+<style>
+:root {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; }}
+body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; }}
+h1 {{ color: var(--accent); }} h2 {{ color: var(--accent); margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }} h3 {{ margin-top: 1.5rem; }}
+.muted {{ color: var(--muted); font-size: .85rem; }}
+.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0; }}
+.card {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }}
+.card .label {{ color: var(--muted); font-size: .85rem; }} .card .value {{ font-size: 1.5rem; font-weight: 700; }}
+table {{ width: 100%; border-collapse: collapse; margin: 1rem 0; background: var(--card); border-radius: 6px; overflow: hidden; font-size: .9rem; }}
+th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {{ padding: .4rem .7rem; border-top: 1px solid var(--border); }}
+.up {{ color: var(--red); font-weight: 600; }}
+.banner {{ padding: 1rem; border-radius: 8px; margin: 1rem 0; font-size: 1.1rem; font-weight: 600; }}
+.banner-ok {{ background: rgba(63,185,80,0.1); border: 1px solid var(--green); color: var(--green); }}
+.banner-warning {{ background: rgba(210,153,34,0.1); border: 1px solid #d29922; color: #d29922; }}
+.banner-critical {{ background: rgba(248,81,73,0.1); border: 1px solid var(--red); color: var(--red); }}
+.action-items {{ margin: 1rem 0; }} .action-item {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0; }}
+.action-item.critical {{ border-left: 3px solid var(--red); }} .action-item.moderate {{ border-left: 3px solid #d29922; }} .action-item.low {{ border-left: 3px solid var(--muted); }}
+.footer {{ color: var(--muted); font-size: .8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
+</style></head><body>
+<h1>🛡️ Security Patrol Report</h1>
+<p class="muted">{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({days} days) · Generated {now.strftime('%Y-%m-%d %H:%M UTC')}</p>
+<p class="muted">CloudWatch Metrics delay: ~5 min. Data may have changed since generation.</p>
+
+<div class="banner {banner_class}">{banner_text}</div>
+
+<h2>Action Items</h2>
+{action_html}
+
+{webacl_sections}
+
+<div class="footer">Generated by AWS WAF Agent · {now.strftime('%Y-%m-%d %H:%M UTC')}</div>
+<script type="application/json" id="report-data">{report_json}</script>
+</body></html>'''
+
+
 def finalize_patrol_report(report_md: str) -> str:
     """Finalize the security patrol report by rendering it as downloadable HTML.
     MUST be called after patrol_scan with your written report as the argument.
