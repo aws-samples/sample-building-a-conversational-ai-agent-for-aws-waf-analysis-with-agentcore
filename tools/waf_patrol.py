@@ -977,17 +977,18 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
             bar_challenge = json.dumps([r["challenge"] for r in rules_sorted])
             bar_captcha = json.dumps([r["captcha"] for r in rules_sorted])
             bar_counted = json.dumps([r["counted"] for r in rules_sorted])
+            bar_height = 40 * len(rules_sorted) + 50
             webacl_sections += f'''
 <h3>{L["per_rule"]} (Top 10)</h3>
-<div class="chart-wide"><canvas id="{bar_id}" height="250"></canvas></div>
+<div class="chart-wide"><canvas id="{bar_id}" height="{bar_height}"></canvas></div>
 <script>
 (function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
 new Chart(document.getElementById('{bar_id}'),{{type:'bar',data:{{labels:{bar_labels},datasets:[
-  {{label:"{L["blocked"]}",data:{bar_blocked},backgroundColor:"#f85149"}},
-  {{label:"{L["challenge"]}",data:{bar_challenge},backgroundColor:"#d29922"}},
-  {{label:"{L["captcha"]}",data:{bar_captcha},backgroundColor:"#e3b341"}},
-  {{label:"{L["counted"]}",data:{bar_counted},backgroundColor:"#8b949e"}}
-]}},options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
+  {{label:"{L["blocked"]}",data:{bar_blocked},backgroundColor:"#f85149",maxBarThickness:28}},
+  {{label:"{L["challenge"]}",data:{bar_challenge},backgroundColor:"#d29922",maxBarThickness:28}},
+  {{label:"{L["captcha"]}",data:{bar_captcha},backgroundColor:"#e3b341",maxBarThickness:28}},
+  {{label:"{L["counted"]}",data:{bar_counted},backgroundColor:"#8b949e",maxBarThickness:28}}
+]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
 </script>
 '''
             # WoW annotations
