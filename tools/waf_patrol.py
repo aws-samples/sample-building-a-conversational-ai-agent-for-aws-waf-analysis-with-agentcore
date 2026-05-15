@@ -1112,7 +1112,7 @@ new Chart(document.getElementById('{tgt_id}'),{{type:'bar',data:{{labels:{json.d
   {{label:"{L["blocked"]}",data:{json.dumps(tgt_blocked)},backgroundColor:"#f85149",maxBarThickness:28}},
   {{label:"{L["challenge"]}",data:{json.dumps(tgt_challenged)},backgroundColor:"#d29922",maxBarThickness:28}},
   {{label:"{L["captcha"]}",data:{json.dumps(tgt_captcha)},backgroundColor:"#e3b341",maxBarThickness:28}},
-  {{label:"{L["allowed"]}",data:{json.dumps(tgt_allowed)},backgroundColor:"#3fb950",maxBarThickness:28}}
+  {{label:"{L["allowed"]}",data:{json.dumps(tgt_allowed)},backgroundColor:"#8b949e",maxBarThickness:28}}
 ]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
 </script>
 '''
