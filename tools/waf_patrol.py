@@ -864,43 +864,37 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 "unverified_challenged": u_challenged,
                 "unverified_captchaed": u_captchaed,
             }
-            # Targeted bot: token_absent signal
+            # Targeted bot: use SEARCH to get all targeted signals
             try:
                 tgt_resp = cw.get_metric_data(MetricDataQueries=[
-                    {"Id": "ta", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                        {"Name": "LabelName", "Value": "token_absent"},
-                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip"},
-                        {"Name": "WebACL", "Value": webacl_name},
-                    ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum"}},
-                    {"Id": "tb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": [
-                        {"Name": "LabelName", "Value": "token_absent"},
-                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip"},
-                        {"Name": "WebACL", "Value": webacl_name},
-                    ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum"}},
+                    {"Id": "tgt_b", "Expression": f"SUM(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\" MetricName=\"BlockedRequests\"', 'Sum', {int(hours*3600)}))"},
+                    {"Id": "tgt_ch", "Expression": f"SUM(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\" MetricName=\"ChallengeRequests\"', 'Sum', {int(hours*3600)}))"},
+                    {"Id": "tgt_a", "Expression": f"SUM(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\" MetricName=\"AllowedRequests\"', 'Sum', {int(hours*3600)}))"},
                 ], StartTime=start, EndTime=end)
-                tgt_vals = {r["Id"]: int(sum(r.get("Values", []))) for r in tgt_resp.get("MetricDataResults", [])}
-                if tgt_vals.get("ta", 0) + tgt_vals.get("tb", 0) > 0:
-                    bot_data["targeted_token_absent_allowed"] = tgt_vals.get("ta", 0)
-                    bot_data["targeted_token_absent_blocked"] = tgt_vals.get("tb", 0)
+                tgt_vals = {}
+                for r in tgt_resp.get("MetricDataResults", []):
+                    tgt_vals[r["Id"]] = int(sum(r.get("Values", [])))
+                tgt_total = sum(tgt_vals.values())
+                if tgt_total > 0:
+                    bot_data["targeted_blocked"] = tgt_vals.get("tgt_b", 0)
+                    bot_data["targeted_challenged"] = tgt_vals.get("tgt_ch", 0)
+                    bot_data["targeted_allowed"] = tgt_vals.get("tgt_a", 0)
             except Exception:
                 pass
-            # Bot categories (top categories by volume)
+            # Bot categories: use SEARCH to discover all categories dynamically
             try:
                 cat_resp = cw.get_metric_data(MetricDataQueries=[
-                    {"Id": f"cat{i}", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                        {"Name": "LabelName", "Value": cat},
-                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
-                        {"Name": "WebACL", "Value": webacl_name},
-                    ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum"}}
-                    for i, cat in enumerate(["monitoring", "http_library", "search_engine", "social_media", "advertising", "scraping"])
+                    {"Id": "cats", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:category\"', 'Sum', {int(hours*3600)})"},
                 ], StartTime=start, EndTime=end)
                 categories = {}
-                cat_names = ["monitoring", "http_library", "search_engine", "social_media", "advertising", "scraping"]
                 for r in cat_resp.get("MetricDataResults", []):
-                    idx = int(r["Id"].replace("cat", ""))
+                    label = r.get("Label", "")
+                    # Label format: "LabelName MetricName" — extract category name
+                    parts = label.rsplit(" ", 1)
+                    cat_name = parts[0] if len(parts) == 2 else label
                     val = int(sum(r.get("Values", [])))
                     if val > 0:
-                        categories[cat_names[idx]] = val
+                        categories[cat_name] = categories.get(cat_name, 0) + val
                 if categories:
                     bot_data["categories"] = categories
             except Exception:
@@ -1020,10 +1014,13 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
             bd = wr["bot_data"]
             extra_bot = ""
             # Targeted bot signal
-            if bd.get("targeted_token_absent_allowed") or bd.get("targeted_token_absent_blocked"):
-                ta = bd.get("targeted_token_absent_allowed", 0)
-                tb = bd.get("targeted_token_absent_blocked", 0)
-                extra_bot += f'<div class="wow-notes"><strong>{L["bot_targeted"]}</strong>: {L["bot_token_absent"]} — {L["allowed"]} {ta:,} · {L["blocked"]} {tb:,}</div>\n'
+            if bd.get("targeted_blocked") or bd.get("targeted_challenged") or bd.get("targeted_allowed"):
+                tb = bd.get("targeted_blocked", 0)
+                tc = bd.get("targeted_challenged", 0)
+                ta = bd.get("targeted_allowed", 0)
+                tgt_total = tb + tc + ta
+                tgt_mitigated = tb + tc
+                extra_bot += f'<div class="wow-notes"><strong>{L["bot_targeted"]}</strong>: {tgt_total:,} — {L["blocked"]} {tb:,} · {L["challenge"]} {tc:,} · {L["allowed"]} {ta:,}</div>\n'
             # Category bar chart
             if bd.get("categories"):
                 cats = bd["categories"]
