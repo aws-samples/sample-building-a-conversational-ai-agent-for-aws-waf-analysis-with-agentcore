@@ -12,6 +12,7 @@ from strands.hooks import BeforeToolCallEvent, HookProvider, HookRegistry
 
 from tools.waf_config import list_webacls, get_waf_config
 from tools.waf_metrics import get_waf_metrics
+from tools.waf_overview import get_waf_overview
 from tools.waf_logs import run_logs_query, analyze_ip
 from tools.waf_athena import run_athena_query
 from tools.ja4 import lookup_ja4
@@ -46,6 +47,8 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - patrol_scan generates the report directly — do NOT call finalize_patrol_report afterward. Just present the summary to the user.
 - patrol_scan requires webacl_name and start_time. Ask the user: which WebACL and which date/time period (max 24h)?
 - run_logs_query and run_athena_query require start_time (max 6h window). Always ask the user for the time period before querying logs.
+- get_waf_overview: fast metrics-based answers (2-3s, no time limit). Use for "what happened", "which rules triggered", "bot situation", "any anomalies". No start_time needed — queries last N hours.
+- When user asks overview questions → get_waf_overview first. If they want IP/URI/request-level details → then query logs.
 
 ## Time range
 - Pass user's date directly: start_time="2026-05-09" or start_time="2026-05-09T14:00"
@@ -200,7 +203,7 @@ class PreQueryGuard(HookProvider):
 
 _agent = None
 _model = None
-_TOOLS = [list_webacls, get_waf_config, get_waf_metrics, run_logs_query, analyze_ip,
+_TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
           patrol_scan,
