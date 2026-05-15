@@ -1089,17 +1089,17 @@ new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_labe
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
 <style>
 :root {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; }}
-body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; }}
+body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; font-size: 1rem; }}
 h1 {{ color: var(--accent); }} h2 {{ color: var(--accent); margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }} h3 {{ margin-top: 1.5rem; }}
-.muted {{ color: var(--muted); font-size: .85rem; }}
-.chart-row {{ display: flex; gap: 2rem; flex-wrap: wrap; margin: 1rem 0; align-items: flex-start; }}
-.chart-box {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 260px; max-width: 400px; flex: 1; text-align: center; }}
+.muted {{ color: var(--muted); }}
+.chart-row {{ display: flex; gap: 1.5rem; margin: 1rem 0; align-items: stretch; }}
+.chart-box {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; flex: 1 1 0; text-align: center; min-width: 0; }}
 .chart-title {{ font-weight: 600; margin-bottom: .5rem; }}
 .chart-wide {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1rem 0; }}
-.donut-legend {{ font-size: .85rem; margin-top: .5rem; text-align: left; padding-left: 1rem; }}
+.donut-legend {{ margin-top: .5rem; text-align: left; padding-left: 1rem; }}
 .dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }}
-.wow-notes {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0; font-size: .85rem; }}
-table {{ width: 100%; border-collapse: collapse; margin: 1rem 0; background: var(--card); border-radius: 6px; overflow: hidden; font-size: .9rem; }}
+.wow-notes {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0; }}
+table {{ width: 100%; border-collapse: collapse; margin: 1rem 0; background: var(--card); border-radius: 6px; overflow: hidden; }}
 th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {{ padding: .4rem .7rem; border-top: 1px solid var(--border); }}
 .banner {{ padding: 1rem; border-radius: 8px; margin: 1rem 0; font-size: 1.1rem; font-weight: 600; }}
 .banner-ok {{ background: rgba(63,185,80,0.1); border: 1px solid var(--green); color: var(--green); }}
@@ -1107,7 +1107,7 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 .banner-critical {{ background: rgba(248,81,73,0.1); border: 1px solid var(--red); color: var(--red); }}
 .action-items {{ margin: 1rem 0; }} .action-item {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0; }}
 .action-item.critical {{ border-left: 3px solid var(--red); }} .action-item.moderate {{ border-left: 3px solid #d29922; }} .action-item.low {{ border-left: 3px solid var(--muted); }}
-.footer {{ color: var(--muted); font-size: .8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
+.footer {{ color: var(--muted); font-size: .85rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
 </style></head><body>
 <h1>🛡️ {L["title"]}</h1>
 <p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} — {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
