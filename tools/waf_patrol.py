@@ -638,188 +638,198 @@ def _assess_events(metrics: dict, rules: list[dict], days: int) -> list[dict]:
 
 
 @tool
-def patrol_scan(days: int = 7) -> str:
-    """Run a comprehensive security patrol scan across all WebACLs.
-    Produces a full security event summary with deterministic HTML report.
+def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> str:
+    """Run a security patrol scan for a specific WebACL.
+    Produces a deterministic HTML report with action items, detection tools status,
+    per-rule breakdown, and attack timeline chart.
 
     Use this ONLY when user asks for a patrol report, security summary, or weekly review.
     Do NOT use for specific questions about individual attacks, IPs, or rules.
 
     Args:
+        webacl_name: Name of the WebACL to scan.
+        scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
         days: Number of days to scan (default 7).
     """
-    from tools.session_state import get_state
+    from tools.session_state import get_metrics_region
 
+    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
     start_last = start - timedelta(days=days)  # WoW comparison period
 
-    # 1. Discover WebACLs
-    global _patrol_chart_data, _latest_patrol_html
-    _patrol_chart_data = {}
-    webacls_info = []
-    state = get_state()
-    agent_region = state.get("region", "ap-northeast-1") if state else "ap-northeast-1"
+    global _latest_patrol_html
 
-    for scope, region in [("CLOUDFRONT", "us-east-1"), ("REGIONAL", agent_region)]:
-        try:
-            waf = get_client("wafv2", region_name=region)
-            resp = waf.list_web_acls(Scope=scope, Limit=100)
-            for acl in resp.get("WebACLs", []):
-                webacls_info.append({"name": acl["Name"], "id": acl["Id"], "scope": scope, "region": region})
-        except Exception:
+    # 1. Get WebACL config
+    waf = get_client("wafv2", region_name=region)
+    try:
+        acls = waf.list_web_acls(Scope=scope)["WebACLs"]
+        acl = next((a for a in acls if a["Name"] == webacl_name), None)
+        if not acl:
+            return f"WebACL '{webacl_name}' not found (scope={scope}, region={region})"
+        acl_resp = waf.get_web_acl(Name=webacl_name, Scope=scope, Id=acl["Id"])
+        webacl_data = acl_resp.get("WebACL", {})
+    except Exception as e:
+        return f"Error getting WebACL config: {e}"
+
+    # 2. Check logging
+    log_dest = None
+    try:
+        log_resp = waf.get_logging_configuration(ResourceArn=webacl_data.get("ARN", ""))
+        log_dest = log_resp.get("LoggingConfiguration", {}).get("LogDestinationConfigs", [None])[0]
+    except Exception:
+        pass
+    logging_type = "none"
+    if log_dest and ":log-group:" in log_dest:
+        logging_type = "cwl"
+    elif log_dest and ("s3:" in log_dest or "firehose" in log_dest.lower()):
+        logging_type = "s3"
+
+    # 3. Detection Tools Status
+    detection_tools = _analyze_detection_tools(webacl_data, logging_type, log_dest)
+
+    # 4. Per-rule metrics (this week + last week)
+    cw = get_client("cloudwatch", region_name=region)
+    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=86400)
+    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, start, period=86400)
+
+    # 5. Challenge/Captcha solved
+    challenge_solved, captcha_solved = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
+
+    # 6. DDoS event detection + Action Items
+    ddos_windows = _detect_ddos_windows(cw, webacl_name, start, end)
+    action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None)
+
+    # 7. Top IPs/URIs for attention rules (CWL only)
+    log_details = {}
+    if logging_type == "cwl":
+        attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
+        if attention_rules:
+            log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+            logs_client = get_client("logs", region_name=region)
+            log_start = int(start.timestamp())
+            log_end = int(end.timestamp())
+            log_details = _get_log_details(logs_client, log_group, log_start, log_end, attention_rules)
+
+    # 8. Build per-rule table + rate-limit info
+    rules_table = []
+    rate_limit_info = []
+    skip = {"ALL", webacl_name}
+    for rule_name, data in this_week_metrics.items():
+        if rule_name in skip:
             continue
-
-    if not webacls_info:
-        return "No WebACLs found. Cannot perform patrol scan."
-
-    # 2. Analyze each WebACL using v2 functions
-    all_action_items = []
-    webacl_results = []
-
-    for acl_info in webacls_info:
-        waf = get_client("wafv2", region_name=acl_info["region"])
-        try:
-            acl_resp = waf.get_web_acl(Name=acl_info["name"], Scope=acl_info["scope"], Id=acl_info["id"])
-            webacl_data = acl_resp.get("WebACL", {})
-        except Exception:
-            webacl_results.append({"name": acl_info["name"], "scope": acl_info["scope"], "error": "Failed to get WebACL config"})
+        tw_b = sum(data.get("blocked", []))
+        tw_c = sum(data.get("counted", []))
+        tw_ch = sum(data.get("challenge", []))
+        tw_cap = sum(data.get("captcha", []))
+        tw_total = tw_b + tw_c + tw_ch + tw_cap
+        if tw_total == 0:
             continue
-
-        # Check logging
-        log_dest = None
-        try:
-            log_resp = waf.get_logging_configuration(ResourceArn=webacl_data.get("ARN", ""))
-            log_dest = log_resp.get("LoggingConfiguration", {}).get("LogDestinationConfigs", [None])[0]
-        except Exception:
-            pass
-        logging_type = "none"
-        if log_dest and ":log-group:" in log_dest:
-            logging_type = "cwl"
-        elif log_dest and ("s3:" in log_dest or "firehose" in log_dest.lower()):
-            logging_type = "s3"
-
-        # Section 2: Detection Tools Status
-        detection_tools = _analyze_detection_tools(webacl_data, logging_type, log_dest)
-
-        # Section 3-5: Per-rule metrics (this week + last week for WoW)
-        cw = get_client("cloudwatch", region_name=acl_info["region"])
-        this_week_metrics = _get_all_rules_metrics_search(cw, acl_info["name"], start, end, period=86400)
-        last_week_metrics = _get_all_rules_metrics_search(cw, acl_info["name"], start_last, start, period=86400)
-
-        # Challenge solved (WebACL level)
-        challenge_solved, captcha_solved = _get_challenge_solved(cw, acl_info["name"], acl_info["scope"], acl_info["region"], start, end)
-
-        # Section 1: Action Items (WoW anomaly detection)
-        ddos_windows = _detect_ddos_windows(cw, acl_info["name"], start, end)
-        action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None)
-
-        # Section 6: Top IPs/URIs for attention rules (CWL only)
-        log_details = {}
-        if logging_type == "cwl":
-            attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
-            if attention_rules:
-                log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
-                logs_client = get_client("logs", region_name=acl_info["region"])
-                log_start = int(start.timestamp())
-                log_end = int(end.timestamp())
-                log_details = _get_log_details(logs_client, log_group, log_start, log_end, attention_rules)
-
-        # Build per-rule table data
-        rules_table = []
-        rate_limit_info = []  # Section 7: Rate-Limit Effectiveness
-        skip = {"ALL", acl_info["name"]}
-        for rule_name, data in this_week_metrics.items():
-            if rule_name in skip:
-                continue
-            tw_b = sum(data.get("blocked", []))
-            tw_c = sum(data.get("counted", []))
-            tw_ch = sum(data.get("challenge", []))
-            tw_cap = sum(data.get("captcha", []))
-            tw_total = tw_b + tw_c + tw_ch + tw_cap
-            if tw_total == 0:
-                continue
-            # WoW
-            lw = last_week_metrics.get(rule_name, {})
-            lw_total = sum(lw.get("blocked", [])) + sum(lw.get("counted", [])) + sum(lw.get("challenge", [])) + sum(lw.get("captcha", []))
-            wow = tw_total / lw_total if lw_total > 0 else None
-            rules_table.append({
-                "name": rule_name, "blocked": tw_b, "counted": tw_c,
-                "challenge": tw_ch, "captcha": tw_cap, "total": tw_total,
-                "wow": wow, "log_detail": log_details.get(rule_name, {}),
-            })
-        rules_table.sort(key=lambda x: x["total"], reverse=True)
-
-        # Section 7: Rate-Limit Effectiveness
-        for rule in webacl_data.get("Rules", []):
-            stmt = rule.get("Statement", {})
-            if "RateBasedStatement" in stmt:
-                rbs = stmt["RateBasedStatement"]
-                rname = rule.get("Name", "")
-                limit = rbs.get("Limit", 0)
-                window = rbs.get("EvaluationWindowSec", 300)
-                # Get 15-min blocked data for this rule to estimate peak rate
-                rule_data = this_week_metrics.get(rname, {})
-                blocked_daily = rule_data.get("blocked", [])
-                triggered_days = sum(1 for v in blocked_daily if v > 0)
-                total_blocked = sum(blocked_daily)
-                # Peak estimation: max daily blocked / (86400/window) gives rough triggers per window
-                max_daily = max(blocked_daily) if blocked_daily else 0
-                rate_limit_info.append({
-                    "name": rname, "limit": limit, "window": window,
-                    "triggered_days": triggered_days, "total_blocked": total_blocked,
-                    "max_daily": max_daily,
-                })
-
-        # Totals from ALL
-        all_data = this_week_metrics.get("ALL", {})
-        totals = {
-            "blocked": sum(all_data.get("blocked", [])),
-            "counted": sum(all_data.get("counted", [])),
-            "challenge": sum(all_data.get("challenge", [])),
-            "captcha": sum(all_data.get("captcha", [])),
-            "allowed": sum(all_data.get("allowed", [])),
-            "challenge_solved": challenge_solved,
-            "captcha_solved": captcha_solved,
-        }
-
-        webacl_results.append({
-            "name": acl_info["name"], "scope": acl_info["scope"], "region": acl_info["region"],
-            "detection_tools": detection_tools, "action_items": action_items,
-            "rules_table": rules_table, "totals": totals, "logging": logging_type,
-            "rate_limits": rate_limit_info,
+        lw = last_week_metrics.get(rule_name, {})
+        lw_total = sum(lw.get("blocked", [])) + sum(lw.get("counted", [])) + sum(lw.get("challenge", [])) + sum(lw.get("captcha", []))
+        wow = tw_total / lw_total if lw_total > 0 else None
+        rules_table.append({
+            "name": rule_name, "blocked": tw_b, "counted": tw_c,
+            "challenge": tw_ch, "captcha": tw_cap, "total": tw_total,
+            "wow": wow, "log_detail": log_details.get(rule_name, {}),
         })
-        all_action_items.extend([{**a, "webacl": acl_info["name"]} for a in action_items])
+    rules_table.sort(key=lambda x: x["total"], reverse=True)
 
-    # 3. Generate deterministic HTML
-    _latest_patrol_html = _render_patrol_html_v2(webacl_results, all_action_items, start, end, days)
+    for rule in webacl_data.get("Rules", []):
+        stmt = rule.get("Statement", {})
+        if "RateBasedStatement" in stmt:
+            rbs = stmt["RateBasedStatement"]
+            rname = rule.get("Name", "")
+            limit = rbs.get("Limit", 0)
+            window = rbs.get("EvaluationWindowSec", 300)
+            rule_data = this_week_metrics.get(rname, {})
+            blocked_daily = rule_data.get("blocked", [])
+            rate_limit_info.append({
+                "name": rname, "limit": limit, "window": window,
+                "triggered_days": sum(1 for v in blocked_daily if v > 0),
+                "total_blocked": sum(blocked_daily),
+                "max_daily": max(blocked_daily) if blocked_daily else 0,
+            })
 
-    # 4. Return summary to user (short, for chat display)
-    n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
-    n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
-    n_low = sum(1 for a in all_action_items if a["severity"] == "low")
+    # 9. Totals
+    all_data = this_week_metrics.get("ALL", {})
+    totals = {
+        "blocked": sum(all_data.get("blocked", [])),
+        "counted": sum(all_data.get("counted", [])),
+        "challenge": sum(all_data.get("challenge", [])),
+        "captcha": sum(all_data.get("captcha", [])),
+        "allowed": sum(all_data.get("allowed", [])),
+        "challenge_solved": challenge_solved,
+        "captcha_solved": captcha_solved,
+    }
+
+    # 10. Attack chart data
+    chart_data = None
+    try:
+        chart_resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
+                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
+            ],
+            StartTime=start, EndTime=end, ScanBy="TimestampAscending",
+        )
+        labels = []
+        total_values = []
+        attack_raw = {}
+        for r in chart_resp.get("MetricDataResults", []):
+            if r["Id"] == "total_m":
+                labels = [t.strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                total_values = [int(v) for v in r.get("Values", [])]
+            elif r["Id"] == "attacks":
+                raw_label = r.get("Label", "Unknown")
+                atype = raw_label.split(" ")[0] if any(raw_label.endswith(m) for m in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests")) else raw_label
+                if atype not in attack_raw:
+                    attack_raw[atype] = {}
+                for t, v in zip(r.get("Timestamps", []), r.get("Values", [])):
+                    k = t.strftime("%m/%d %H:%M")
+                    attack_raw[atype][k] = attack_raw[atype].get(k, 0) + int(v)
+        if labels:
+            series = {a: [ts_map.get(l, 0) for l in labels] for a, ts_map in attack_raw.items()}
+            other = [max(0, total_values[i] - sum(s[i] for s in series.values())) for i in range(len(labels))]
+            if any(v > 0 for v in other):
+                series["Other"] = other
+            chart_data = {"labels": labels, "series": series}
+    except Exception:
+        pass
+
+    # 11. Render HTML
+    wr = {
+        "name": webacl_name, "scope": scope, "region": region,
+        "detection_tools": detection_tools, "action_items": action_items,
+        "rules_table": rules_table, "totals": totals, "logging": logging_type,
+        "rate_limits": rate_limit_info, "chart_data": chart_data,
+    }
+    all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
+    _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, days)
+
+    # 12. Return summary
+    n_critical = sum(1 for a in action_items if a["severity"] == "critical")
+    n_moderate = sum(1 for a in action_items if a["severity"] == "moderate")
 
     if n_critical > 0:
         status = f"🔴 {n_critical} critical + {n_moderate} moderate items need attention"
     elif n_moderate > 0:
         status = f"⚠️ {n_moderate} items need attention"
-    elif n_low > 0:
-        status = f"💡 {n_low} low-priority suggestions"
     else:
         status = "🟢 All systems nominal — no action required"
 
     summary = f"**Patrol Report Generated**\n\n"
+    summary += f"WebACL: {webacl_name} ({scope})\n"
     summary += f"Period: {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({days} days)\n"
-    summary += f"WebACLs scanned: {len(webacl_results)}\n"
     summary += f"Status: {status}\n\n"
 
-    if all_action_items:
+    if action_items:
         summary += "**Top Action Items:**\n"
-        for item in all_action_items[:5]:
+        for item in action_items[:5]:
             icon = "🔴" if item["severity"] == "critical" else "⚠️" if item["severity"] == "moderate" else "💡"
             summary += f"- {icon} [{item['rule']}] {item['text']}\n"
-        if len(all_action_items) > 5:
-            summary += f"- ... and {len(all_action_items) - 5} more (see full report)\n"
+        if len(action_items) > 5:
+            summary += f"- ... and {len(action_items) - 5} more (see full report)\n"
 
     summary += "\nFull HTML report is ready for download."
     return summary
@@ -899,6 +909,25 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
 <table><tr><th>Rule</th><th>Blocked</th><th>Challenge</th><th>Captcha</th><th>Counted</th><th>WoW</th></tr>{rule_rows}</table>
 '''
 
+        # Attack chart
+        if wr.get("chart_data") and wr["chart_data"].get("labels"):
+            cd = wr["chart_data"]
+            colors = {"Volumetric": "#f85149", "BadBots": "#d29922", "XSS": "#e3b341", "GenericLFI": "#a371f7", "KnownBadInputs": "#58a6ff", "Other": "#8b949e"}
+            datasets_js = ""
+            for atype, values in cd["series"].items():
+                color = colors.get(atype, "#79c0ff")
+                datasets_js += f'{{label:"{atype}",data:{json.dumps(values)},borderColor:"{color}",backgroundColor:"{color}99",fill:true,tension:0.2,pointRadius:0}},'
+            webacl_sections += f'''
+<h3>Threats Mitigated by Attack Type</h3>
+<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0">
+<canvas id="attackChart_{wr['name'].replace('-','_')}"></canvas>
+</div>
+<script>
+(function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
+new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{{type:'line',data:{{labels:{json.dumps(cd["labels"])},datasets:[{datasets_js}]}},options:{{responsive:true,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{labels:{{color:c}}}},zoom:{{zoom:{{wheel:{{enabled:true}},mode:'x'}},pan:{{enabled:true,mode:'x'}}}}}},scales:{{x:{{ticks:{{color:c,maxTicksLimit:14}}}},y:{{stacked:true,beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
+</script>
+'''
+
         # Rate-Limit Effectiveness
         if wr.get("rate_limits"):
             rl_rows = ""
@@ -931,6 +960,9 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
 
     return f'''<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Security Patrol Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
+<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
 <style>
 :root {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; }}
 body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; }}
