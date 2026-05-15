@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.6.0 (2026-05-15)
+
+### Security Patrol Report v2 — Complete Redesign
+
+- **Chart-first design**: Replaced tables with donut charts (traffic distribution, bot activity), horizontal stacked bar charts (per-rule Top 10, rate-limit, targeted signals), and stacked area timeline (attack types)
+- **Single WebACL mode**: Requires `webacl_name` + `start_time` (max 24h window) — no more scanning all WebACLs
+- **WoW anomaly detection**: 3x = moderate, 10x = critical, with cold-start fallback ("昨日无基线")
+- **Deep Bot Analysis**: Self-declared bot donut + targeted bot signals chart (TGT_VolumetricIpTokenAbsent, SignalNonBrowserUserAgent, CSP) + bot names bar chart. All via SEARCH (dynamic discovery, no hardcoded rules)
+- **Bot-derived action items**: Unverified bots allowed in Count mode, high CSP traffic, targeted rule triggers
+- **i18n (zh/en)**: All labels, action items, detection tools detail strings, footer
+- **Timezone support**: UTC+8 for zh, UTC for en (chart labels + header)
+- **Dark/Light theme toggle**: ☀️/🌙 button, CSS variables switch
+- **Deterministic**: Zero LLM involvement — pure metrics + config analysis
+- **S3/Athena adaptive**: Auto-creates permanent Athena table with partition pruning
+
+### New Tool: `get_waf_overview`
+
+- **Fast metrics-based answers** (2-4s, no log queries, up to 14 days)
+- **7 query types**: `top_rules`, `attack_types`, `bot_summary`, `bot_names`, `targeted_signals`, `rate_limits`, `challenge_solve_rate`
+- **Next-step hints**: Each response guides LLM to deeper log analysis when needed
+- **Bridges overview → investigation**: LLM uses this for triage, then logs for details
+
+### Time Range Enforcement (Breaking Change)
+
+- **All log-querying tools** now require `start_time` parameter:
+  - `run_logs_query`: max 6h
+  - `run_athena_query`: max 6h
+  - `analyze_ip`: max 6h
+  - `patrol_scan`: max 24h
+  - `generate_weekly_report`: max 7 days
+- **Prevents**: Expensive full-week scans, LLM defaulting to large ranges without user confirmation
+- **Athena**: Always creates permanent tables (removed temporary table logic, atexit cleanup)
+
+### Tool Chain Improvements
+
+- **Next-step hints** added to all investigation tools (run_athena_query, lookup_ja4, analyze_ip, get_waf_metrics)
+- **System prompt updated**: Reflects new tool signatures, guides LLM to use `get_waf_overview` for overview questions before querying logs
+- **Removed**: `finalize_patrol_report` (patrol_scan is now self-contained)
+
+### Code Quality
+
+- **Dead code removal**: -333 lines from waf_patrol.py (old v1 functions)
+- **Consistent i18n pattern**: `_PATROL_I18N` dict with `L[...]` references throughout
+
 ## 0.5.0 (2026-05-12)
 
 ### Deep WAF Review
