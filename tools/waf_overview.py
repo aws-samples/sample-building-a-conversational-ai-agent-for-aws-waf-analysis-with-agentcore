@@ -9,7 +9,7 @@ from tools.session_state import get_metrics_region, get_scope
 
 
 @tool
-def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24) -> str:
+def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, scope: str = "") -> str:
     """Fast metrics-based overview of WAF activity. No log queries — answers in 2-3 seconds.
 
     Use this for "what happened" questions. For "who did it" (IPs, URIs, request details),
@@ -26,12 +26,14 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24) -> str:
             - challenge_solve_rate: Challenge/CAPTCHA solve rates
         webacl_name: Name of the WebACL to query.
         hours: Time window in hours (default 24, max 336 = 14 days).
+        scope: "CLOUDFRONT" or "REGIONAL". Auto-detected from session if empty.
 
     Returns:
         Formatted overview data. For deeper analysis of specific IPs/URIs,
         use run_logs_query with start_time.
     """
-    scope = get_scope() or "CLOUDFRONT"
+    if not scope:
+        scope = get_scope() or "CLOUDFRONT"
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
 
@@ -51,7 +53,7 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24) -> str:
     elif query_type == "targeted_signals":
         return _targeted_signals(cw, webacl_name, start, end, hours)
     elif query_type == "rate_limits":
-        return _rate_limits(cw, webacl_name, start, end, hours)
+        return _rate_limits(cw, webacl_name, scope, start, end, hours)
     elif query_type == "challenge_solve_rate":
         return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours)
     else:
@@ -231,24 +233,41 @@ def _targeted_signals(cw, webacl_name, start, end, hours):
     return "\n".join(lines)
 
 
-def _rate_limits(cw, webacl_name, start, end, hours):
+def _rate_limits(cw, webacl_name, scope, start, end, hours):
     from tools.waf_patrol import _get_all_rules_metrics_search
     data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600))
 
-    # Rate-limit rules typically have "rate" in name — but we can't distinguish from metrics alone
-    # Show all rules that have blocked > 0 and name contains common rate-limit patterns
+    # Get rate-based rule names from WebACL config
+    rate_rule_names = set()
+    try:
+        region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+        waf = get_client("wafv2", region_name=region)
+        resp = waf.list_web_acls(Scope="CLOUDFRONT" if scope == "CLOUDFRONT" else "REGIONAL")
+        arn = next((w["ARN"] for w in resp.get("WebACLs", []) if w["Name"] == webacl_name), None)
+        if arn:
+            webacl_data = waf.get_web_acl(Name=webacl_name, Scope=scope, Id=arn.split("/")[-1])["WebACL"]
+            for rule in webacl_data.get("Rules", []):
+                if "RateBasedStatement" in rule.get("Statement", {}):
+                    rate_rule_names.add(rule.get("Name", ""))
+    except Exception:
+        pass
+
     lines = [f"Rate-Limit Rules (past {hours}h) for {webacl_name}:", ""]
     found = False
     for rule, metrics in sorted(data.items(), key=lambda x: sum(x[1].get("blocked", [])), reverse=True):
         if rule == "ALL":
             continue
         blocked = sum(metrics.get("blocked", []))
-        if blocked > 0 and any(kw in rule.lower() for kw in ("rate", "limit", "throttle")):
-            lines.append(f"  {rule}: {blocked:,} blocked")
+        challenged = sum(metrics.get("challenge", []))
+        total = blocked + challenged
+        if rule in rate_rule_names:
+            lines.append(f"  {rule}: {total:,} mitigated (blocked {blocked:,} + challenge {challenged:,})")
             found = True
     if not found:
-        lines.append("  No rate-limit rule activity detected (or rules don't contain 'rate'/'limit' in name).")
-        lines.append("  Use get_waf_overview(query_type='top_rules') for full rule breakdown.")
+        if rate_rule_names:
+            lines.append("  Rate-limit rules deployed but no triggers in this period.")
+        else:
+            lines.append("  No rate-limit rules detected in WebACL config.")
     return "\n".join(lines)
 
 
