@@ -902,7 +902,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
 
 def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int, lang: str = "en") -> str:
-    """Render deterministic patrol report HTML from structured data."""
+    """Render deterministic patrol report HTML — chart-first, minimal tables."""
     L = _PATROL_I18N.get(lang, _PATROL_I18N["en"])
     now = datetime.now(timezone.utc)
     tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
@@ -928,60 +928,80 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
             webacl_sections += f'<h2>{wr["name"]} ({wr["scope"]})</h2><p class="muted">Error: {wr["error"]}</p>'
             continue
 
-        # Detection Tools table
-        dt_rows = ""
-        for t in wr["detection_tools"]:
-            icon = "✅" if t["status"] == "ok" else "⚠️" if t["status"] == "warning" else "❌"
-            detail = f' <span class="muted">({t["detail"]})</span>' if t["detail"] else ""
-            dt_rows += f'<tr><td>{icon} {t["layer"]}</td><td>{t["rule_name"]}</td><td>{t["mode"]}{detail}</td></tr>\n'
-
-        # Per-rule table
-        rule_rows = ""
-        for r in wr["rules_table"]:
-            wow_str = f'{r["wow"]:.1f}x' if r["wow"] is not None else "new"
-            wow_class = "up" if r["wow"] and r["wow"] > 3 else ""
-            # Top IP/URI from log details
-            extra = ""
-            ld = r.get("log_detail", {})
-            if ld.get("ips"):
-                ip = ld["ips"][0].get("httpRequest.clientIp", "")
-                cnt = ld["ips"][0].get("cnt", "")
-                if ip:
-                    extra += f'<br><span class="muted">Top IP: {ip} ({cnt})</span>'
-            if ld.get("uris"):
-                uri = ld["uris"][0].get("httpRequest.uri", "")
-                if uri:
-                    extra += f'<br><span class="muted">Top URI: {uri}</span>'
-            rule_rows += (
-                f'<tr><td>{r["name"]}{extra}</td>'
-                f'<td>{r["blocked"]:,}</td><td>{r["challenge"]:,}</td>'
-                f'<td>{r["captcha"]:,}</td><td>{r["counted"]:,}</td>'
-                f'<td class="{wow_class}">{wow_str}</td></tr>\n'
-            )
-
-        # Totals
         tot = wr["totals"]
         total_reqs = tot["blocked"] + tot["challenge"] + tot["captcha"] + tot["counted"] + tot["allowed"]
         mitigated = tot["blocked"] + tot["challenge"] + tot["captcha"]
 
+        # --- 1. Traffic Distribution (donut) + Bot Activity (donut) side by side ---
+        donut_id = f'donut_{wr["name"].replace("-","_")}'
         webacl_sections += f'''
 <h2>{wr["name"]} <span class="muted">({wr["scope"]}, {wr["region"]})</span></h2>
-<div class="grid">
-  <div class="card"><div class="label">{L["total_requests"]}</div><div class="value">{total_reqs:,}</div></div>
-  <div class="card"><div class="label">{L["mitigated"]}</div><div class="value">{mitigated:,}</div><div class="muted">{L["blocked"]} {tot["blocked"]:,} + {L["challenge"]} {tot["challenge"]:,} + {L["captcha"]} {tot["captcha"]:,}</div></div>
-  <div class="card"><div class="label">{L["counted"]}</div><div class="value">{tot["counted"]:,}</div></div>
-  <div class="card"><div class="label">{L["allowed"]}</div><div class="value">{tot["allowed"]:,}</div></div>
-</div>
-<h3>{L["detection_tools"]}</h3>
-<table><tr><th>{L["layer"]}</th><th>{L["rule"]}</th><th>{L["mode"]}</th></tr>{dt_rows}</table>
-<h3>{L["per_rule"]}</h3>
-<table><tr><th>{L["rule"]}</th><th>{L["blocked"]}</th><th>{L["challenge"]}</th><th>{L["captcha"]}</th><th>{L["counted"]}</th><th>{L["wow"]}</th></tr>{rule_rows}</table>
+<div class="chart-row">
+  <div class="chart-box">
+    <div class="chart-title">{L["total_requests"]}: {total_reqs:,}</div>
+    <canvas id="{donut_id}" width="220" height="220"></canvas>
+    <div class="donut-legend">
+      <span class="dot" style="background:#f85149"></span>{L["mitigated"]}: {mitigated:,}<br>
+      <span class="dot" style="background:#d29922"></span>{L["counted"]}: {tot["counted"]:,}<br>
+      <span class="dot" style="background:#3fb950"></span>{L["allowed"]}: {tot["allowed"]:,}
+    </div>
+  </div>
 '''
+        if wr.get("bot_data"):
+            bd = wr["bot_data"]
+            u_mit = bd["unverified_blocked"] + bd["unverified_challenged"] + bd["unverified_captchaed"]
+            bot_id = f'bot_{wr["name"].replace("-","_")}'
+            bot_detail = (f'{L["blocked"]} {bd["unverified_blocked"]:,} · '
+                         f'{L["challenge"]} {bd["unverified_challenged"]:,} · '
+                         f'{L["captcha"]} {bd["unverified_captchaed"]:,}')
+            webacl_sections += f'''
+  <div class="chart-box">
+    <div class="chart-title">{L["bot_activity"]}</div>
+    <canvas id="{bot_id}" width="220" height="220"></canvas>
+    <div class="donut-legend">
+      <span class="dot" style="background:#3fb950"></span>{L["bot_verified"]}: {bd["verified_allowed"]:,}<br>
+      <span class="dot" style="background:#d29922"></span>{L["bot_unverified_allowed"]}: {bd["unverified_allowed"]:,}<br>
+      <span class="dot" style="background:#f85149"></span>{L["bot_unverified_mitigated"]}: {u_mit:,}
+    </div>
+    <div class="muted" style="text-align:center;margin-top:4px">{bot_detail}</div>
+  </div>
+'''
+        webacl_sections += '</div>\n'
 
-        # Attack chart
+        # --- 2. Top Rules (horizontal stacked bar) ---
+        rules_sorted = sorted(wr["rules_table"], key=lambda r: r["blocked"] + r["challenge"] + r["captcha"], reverse=True)[:10]
+        if rules_sorted:
+            bar_id = f'rules_{wr["name"].replace("-","_")}'
+            bar_labels = json.dumps([r["name"][:30] for r in rules_sorted])
+            bar_blocked = json.dumps([r["blocked"] for r in rules_sorted])
+            bar_challenge = json.dumps([r["challenge"] for r in rules_sorted])
+            bar_captcha = json.dumps([r["captcha"] for r in rules_sorted])
+            bar_counted = json.dumps([r["counted"] for r in rules_sorted])
+            webacl_sections += f'''
+<h3>{L["per_rule"]} (Top 10)</h3>
+<div class="chart-wide"><canvas id="{bar_id}" height="250"></canvas></div>
+<script>
+(function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
+new Chart(document.getElementById('{bar_id}'),{{type:'bar',data:{{labels:{bar_labels},datasets:[
+  {{label:"{L["blocked"]}",data:{bar_blocked},backgroundColor:"#f85149"}},
+  {{label:"{L["challenge"]}",data:{bar_challenge},backgroundColor:"#d29922"}},
+  {{label:"{L["captcha"]}",data:{bar_captcha},backgroundColor:"#e3b341"}},
+  {{label:"{L["counted"]}",data:{bar_counted},backgroundColor:"#8b949e"}}
+]}},options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
+</script>
+'''
+            # WoW annotations
+            wow_notes = []
+            for r in rules_sorted:
+                if r["wow"] is not None and r["wow"] >= WOW_ATTENTION:
+                    arrow = "🔴" if r["wow"] >= WOW_SEVERE else "⚠️"
+                    wow_notes.append(f'{arrow} <strong>{r["name"][:25]}</strong>: {L["wow"]} {r["wow"]:.1f}x')
+            if wow_notes:
+                webacl_sections += '<div class="wow-notes">' + '<br>'.join(wow_notes[:5]) + '</div>\n'
+
+        # --- 3. Attack Timeline (stacked area) ---
         if wr.get("chart_data") and wr["chart_data"].get("labels"):
             cd = wr["chart_data"]
-            chart_labels = cd["labels"]
             colors = {"Volumetric": "#f85149", "BadBots": "#d29922", "XSS": "#e3b341", "GenericLFI": "#a371f7", "KnownBadInputs": "#58a6ff", "Other": "#8b949e"}
             datasets_js = ""
             for atype, values in cd["series"].items():
@@ -989,39 +1009,41 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
                 datasets_js += f'{{label:"{atype}",data:{json.dumps(values)},borderColor:"{color}",backgroundColor:"{color}99",fill:true,tension:0.2,pointRadius:0}},'
             webacl_sections += f'''
 <h3>{L["attack_chart"]}</h3>
-<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0">
-<canvas id="attackChart_{wr['name'].replace('-','_')}"></canvas>
-</div>
+<div class="chart-wide"><canvas id="attackChart_{wr['name'].replace('-','_')}"></canvas></div>
 <p class="muted" style="text-align:center">{tz_label}</p>
 <script>
 (function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
-new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{{type:'line',data:{{labels:{json.dumps(chart_labels)},datasets:[{datasets_js}]}},options:{{responsive:true,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{labels:{{color:c}}}},zoom:{{zoom:{{wheel:{{enabled:true}},mode:'x'}},pan:{{enabled:true,mode:'x'}}}}}},scales:{{x:{{ticks:{{color:c,maxTicksLimit:14}}}},y:{{stacked:true,beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
+new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{{type:'line',data:{{labels:{json.dumps(cd["labels"])},datasets:[{datasets_js}]}},options:{{responsive:true,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{labels:{{color:c}}}},zoom:{{zoom:{{wheel:{{enabled:true}},mode:'x'}},pan:{{enabled:true,mode:'x'}}}}}},scales:{{x:{{ticks:{{color:c,maxTicksLimit:14}}}},y:{{stacked:true,beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
 </script>
 '''
 
-        # Rate-Limit Effectiveness
+        # --- 4. Rate-Limit (bar chart) ---
         if wr.get("rate_limits"):
-            rl_rows = ""
-            for rl in wr["rate_limits"]:
-                status = "✅ Active" if rl["triggered_days"] > 0 else "⚠️ Never triggered"
-                rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{hours}h</td><td>{status}</td></tr>\n'
-            webacl_sections += f'<h3>{L["rate_limit"]}</h3>\n<table><tr><th>{L["rule"]}</th><th>{L["threshold"]}</th><th>{L["total_blocked"]}</th><th>{L["hours_active"]}</th><th>{L["status"]}</th></tr>{rl_rows}</table>\n'
+            rl_id = f'rl_{wr["name"].replace("-","_")}'
+            rl_names = json.dumps([rl["name"][:25] for rl in wr["rate_limits"]])
+            rl_blocked = json.dumps([rl["total_blocked"] for rl in wr["rate_limits"]])
+            rl_thresholds = [f'{rl["name"][:15]}: {rl["limit"]:,}/{rl["window"]}s' for rl in wr["rate_limits"]]
+            webacl_sections += f'''
+<h3>{L["rate_limit"]}</h3>
+<div class="chart-wide"><canvas id="{rl_id}" height="120"></canvas></div>
+<script>
+(function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
+new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_names},datasets:[
+  {{label:"{L["total_blocked"]}",data:{rl_blocked},backgroundColor:"#f85149"}}
+]}},options:{{responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{color:c}}}},y:{{beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
+</script>
+<div class="muted">{L["threshold"]}: {" · ".join(rl_thresholds)}</div>
+'''
 
-        # Bot Activity
-        if wr.get("bot_data"):
-            bd = wr["bot_data"]
-            u_mitigated = bd["unverified_blocked"] + bd["unverified_challenged"] + bd["unverified_captchaed"]
-            webacl_sections += (
-                f'<h3>{L["bot_activity"]}</h3>'
-                f'<div class="grid">'
-                f'<div class="card"><div class="label">{L["bot_verified"]}</div><div class="value">{bd["verified_allowed"]:,}</div></div>'
-                f'<div class="card"><div class="label">{L["bot_unverified_allowed"]}</div><div class="value">{bd["unverified_allowed"]:,}</div></div>'
-                f'<div class="card"><div class="label">{L["bot_unverified_mitigated"]}</div><div class="value">{u_mitigated:,}</div>'
-                f'<div class="muted">B:{bd["unverified_blocked"]:,} Ch:{bd["unverified_challenged"]:,} Cap:{bd["unverified_captchaed"]:,}</div></div>'
-                f'</div>'
-            )
+        # --- 5. Detection Tools (compact table) ---
+        dt_rows = ""
+        for t in wr["detection_tools"]:
+            icon = "✅" if t["status"] == "ok" else "⚠️" if t["status"] == "warning" else "❌"
+            detail = f' ({t["detail"]})' if t["detail"] else ""
+            dt_rows += f'<tr><td>{icon} {t["layer"]}</td><td>{t["rule_name"]}</td><td>{t["mode"]}{detail}</td></tr>\n'
+        webacl_sections += f'<h3>{L["detection_tools"]}</h3>\n<table><tr><th>{L["layer"]}</th><th>{L["rule"]}</th><th>{L["mode"]}</th></tr>{dt_rows}</table>\n'
 
-    # Action Items section
+    # Action Items
     action_html = ""
     if all_action_items:
         action_html = '<div class="action-items">'
@@ -1032,9 +1054,9 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
     else:
         action_html = f'<p class="banner banner-ok">{L["no_action"]}</p>'
 
-    # Embedded JSON for programmatic access
+    # Embedded JSON
     report_json = json.dumps({
-        "version": "1.0",
+        "version": "2.0",
         "generated_at": now.isoformat(),
         "period": {"start": start.isoformat(), "end": end.isoformat(), "hours": hours},
         "webacls": [{
@@ -1043,8 +1065,24 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
         } for wr in webacl_results if "error" not in wr],
     }, default=str)
 
+    # Donut init script
+    donut_calls = []
+    for wr in webacl_results:
+        if "error" in wr:
+            continue
+        tot = wr["totals"]
+        mit = tot["blocked"] + tot["challenge"] + tot["captcha"]
+        did = f'donut_{wr["name"].replace("-","_")}'
+        donut_calls.append(f'donut("{did}",{json.dumps([mit, tot["counted"], tot["allowed"]])},{json.dumps([L["mitigated"], L["counted"], L["allowed"]])},["#f85149","#d29922","#3fb950"]);')
+        if wr.get("bot_data"):
+            bd = wr["bot_data"]
+            u_m = bd["unverified_blocked"] + bd["unverified_challenged"] + bd["unverified_captchaed"]
+            bid = f'bot_{wr["name"].replace("-","_")}'
+            donut_calls.append(f'donut("{bid}",{json.dumps([bd["verified_allowed"], bd["unverified_allowed"], u_m])},{json.dumps([L["bot_verified"], L["bot_unverified_allowed"], L["bot_unverified_mitigated"]])},["#3fb950","#d29922","#f85149"]);')
+    donut_script = f'<script>{" ".join(donut_calls)}</script>' if donut_calls else ""
+
     return f'''<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Security Patrol Report</title>
+<html><head><meta charset="utf-8"><title>{L["title"]}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
@@ -1053,12 +1091,15 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
 body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; }}
 h1 {{ color: var(--accent); }} h2 {{ color: var(--accent); margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }} h3 {{ margin-top: 1.5rem; }}
 .muted {{ color: var(--muted); font-size: .85rem; }}
-.grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0; }}
-.card {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }}
-.card .label {{ color: var(--muted); font-size: .85rem; }} .card .value {{ font-size: 1.5rem; font-weight: 700; }}
+.chart-row {{ display: flex; gap: 2rem; flex-wrap: wrap; margin: 1rem 0; align-items: flex-start; }}
+.chart-box {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 260px; flex: 1; text-align: center; }}
+.chart-title {{ font-weight: 600; margin-bottom: .5rem; }}
+.chart-wide {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1rem 0; }}
+.donut-legend {{ font-size: .85rem; margin-top: .5rem; text-align: left; padding-left: 1rem; }}
+.dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }}
+.wow-notes {{ background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .8rem 1rem; margin: .5rem 0; font-size: .85rem; }}
 table {{ width: 100%; border-collapse: collapse; margin: 1rem 0; background: var(--card); border-radius: 6px; overflow: hidden; font-size: .9rem; }}
 th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {{ padding: .4rem .7rem; border-top: 1px solid var(--border); }}
-.up {{ color: var(--red); font-weight: 600; }}
 .banner {{ padding: 1rem; border-radius: 8px; margin: 1rem 0; font-size: 1.1rem; font-weight: 600; }}
 .banner-ok {{ background: rgba(63,185,80,0.1); border: 1px solid var(--green); color: var(--green); }}
 .banner-warning {{ background: rgba(210,153,34,0.1); border: 1px solid #d29922; color: #d29922; }}
@@ -1068,7 +1109,7 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 .footer {{ color: var(--muted); font-size: .8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
 </style></head><body>
 <h1>🛡️ {L["title"]}</h1>
-<p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} to {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
+<p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} — {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
 <p class="muted">{L["delay_note"]}</p>
 
 <div class="banner {banner_class}">{banner_text}</div>
@@ -1079,6 +1120,9 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 {webacl_sections}
 
 <div class="footer">Generated by AWS WAF Agent · {now.strftime('%Y-%m-%d %H:%M UTC')}</div>
+<script>
+function donut(id,data,labels,colors){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';new Chart(document.getElementById(id),{{type:'doughnut',data:{{labels:labels,datasets:[{{data:data,backgroundColor:colors,borderWidth:0}}]}},options:{{responsive:false,cutout:'60%',plugins:{{legend:{{display:false}}}}}}}});}}
+</script>
+{donut_script}
 <script type="application/json" id="report-data">{report_json}</script>
 </body></html>'''
-
