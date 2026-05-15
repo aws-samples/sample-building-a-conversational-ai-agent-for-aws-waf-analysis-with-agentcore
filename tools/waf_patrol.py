@@ -43,6 +43,10 @@ _PATROL_I18N = {
         "moderate": "moderate",
         "items_attention": "items need attention",
         "all_nominal": "All systems nominal — no action required",
+        "bot_activity": "Bot Activity",
+        "bot_verified": "✅ Verified",
+        "bot_unverified_allowed": "⚠️ Unverified Allowed",
+        "bot_unverified_mitigated": "🚫 Unverified Mitigated",
     },
     "zh": {
         "title": "安全巡检报告",
@@ -74,6 +78,10 @@ _PATROL_I18N = {
         "moderate": "注意",
         "items_attention": "项需要关注",
         "all_nominal": "所有系统正常，无需操作",
+        "bot_activity": "Bot 活动",
+        "bot_verified": "✅ 已验证",
+        "bot_unverified_allowed": "⚠️ 未验证放行",
+        "bot_unverified_mitigated": "🚫 未验证拦截",
     },
 }
 
@@ -87,10 +95,6 @@ IP_CONCENTRATION_SEVERE = 0.60
 WOW_ATTENTION = 3.0   # 3x increase vs last week
 WOW_SEVERE = 10.0     # 10x increase
 SPIKE_RATIO_ATTENTION = 5.0  # max day / avg day
-
-# Legacy thresholds (used by _assess_events for backward compat)
-CHALLENGE_FAIL_ATTENTION = 0.40
-CHALLENGE_FAIL_SEVERE = 0.70
 
 
 def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None) -> list[dict]:
@@ -798,9 +802,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         labels = []
         total_values = []
         attack_raw = {}
+        _tz_off = timedelta(hours=8) if lang == "zh" else timedelta(0)
         for r in chart_resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
-                labels = [t.strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                labels = [(t + _tz_off).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 total_values = [int(v) for v in r.get("Values", [])]
             elif r["Id"] == "attacks":
                 raw_label = r.get("Label", "Unknown")
@@ -808,7 +813,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 if atype not in attack_raw:
                     attack_raw[atype] = {}
                 for t, v in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    k = t.strftime("%m/%d %H:%M")
+                    k = (t + _tz_off).strftime("%m/%d %H:%M")
                     attack_raw[atype][k] = attack_raw[atype].get(k, 0) + int(v)
         if labels:
             series = {a: [ts_map.get(l, 0) for l in labels] for a, ts_map in attack_raw.items()}
@@ -903,9 +908,6 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
     tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
     tz_label = "UTC+8" if lang == "zh" else "UTC"
 
-    def _fmt_time(dt):
-        return (dt + tz_offset).strftime("%m/%d %H:%M")
-
     n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
     n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
 
@@ -979,24 +981,7 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
         # Attack chart
         if wr.get("chart_data") and wr["chart_data"].get("labels"):
             cd = wr["chart_data"]
-            # Apply timezone offset to chart labels (stored as "MM/DD HH:MM" UTC)
-            if tz_offset and tz_offset.total_seconds() != 0:
-                offset_h = int(tz_offset.total_seconds() // 3600)
-                chart_labels = []
-                for lbl in cd["labels"]:
-                    try:
-                        parts = lbl.split(" ")
-                        md = parts[0].split("/")
-                        hm = parts[1].split(":")
-                        h = int(hm[0]) + offset_h
-                        d = int(md[1])
-                        if h >= 24: h -= 24; d += 1
-                        elif h < 0: h += 24; d -= 1
-                        chart_labels.append(f"{md[0]}/{d:02d} {h:02d}:{hm[1]}")
-                    except (IndexError, ValueError):
-                        chart_labels.append(lbl)
-            else:
-                chart_labels = cd["labels"]
+            chart_labels = cd["labels"]
             colors = {"Volumetric": "#f85149", "BadBots": "#d29922", "XSS": "#e3b341", "GenericLFI": "#a371f7", "KnownBadInputs": "#58a6ff", "Other": "#8b949e"}
             datasets_js = ""
             for atype, values in cd["series"].items():
@@ -1026,13 +1011,12 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
         if wr.get("bot_data"):
             bd = wr["bot_data"]
             u_mitigated = bd["unverified_blocked"] + bd["unverified_challenged"] + bd["unverified_captchaed"]
-            bot_total = bd["verified_allowed"] + bd["unverified_allowed"] + u_mitigated
             webacl_sections += (
-                f'<h3>Bot Activity</h3>'
+                f'<h3>{L["bot_activity"]}</h3>'
                 f'<div class="grid">'
-                f'<div class="card"><div class="label">✅ Verified</div><div class="value">{bd["verified_allowed"]:,}</div></div>'
-                f'<div class="card"><div class="label">⚠️ Unverified Allowed</div><div class="value">{bd["unverified_allowed"]:,}</div></div>'
-                f'<div class="card"><div class="label">🚫 Unverified Mitigated</div><div class="value">{u_mitigated:,}</div>'
+                f'<div class="card"><div class="label">{L["bot_verified"]}</div><div class="value">{bd["verified_allowed"]:,}</div></div>'
+                f'<div class="card"><div class="label">{L["bot_unverified_allowed"]}</div><div class="value">{bd["unverified_allowed"]:,}</div></div>'
+                f'<div class="card"><div class="label">{L["bot_unverified_mitigated"]}</div><div class="value">{u_mitigated:,}</div>'
                 f'<div class="muted">B:{bd["unverified_blocked"]:,} Ch:{bd["unverified_challenged"]:,} Cap:{bd["unverified_captchaed"]:,}</div></div>'
                 f'</div>'
             )
