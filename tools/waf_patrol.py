@@ -27,6 +27,7 @@ _PATROL_I18N = {
         "total_requests": "Total Requests",
         "mitigated": "Mitigated",
         "counted": "Counted",
+        "not_blocked": "Not Blocked",
         "allowed": "Allowed",
         "blocked": "Blocked",
         "challenge": "Challenge",
@@ -64,6 +65,7 @@ _PATROL_I18N = {
         "total_requests": "总请求量",
         "mitigated": "已拦截",
         "counted": "监控中",
+        "not_blocked": "未拦截",
         "allowed": "放行",
         "blocked": "拦截",
         "challenge": "质询",
@@ -1111,8 +1113,8 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
 new Chart(document.getElementById('{tgt_id}'),{{type:'bar',data:{{labels:{json.dumps(tgt_labels)},datasets:[
   {{label:"{L["blocked"]}",data:{json.dumps(tgt_blocked)},backgroundColor:"#f85149",maxBarThickness:28}},
   {{label:"{L["challenge"]}",data:{json.dumps(tgt_challenged)},backgroundColor:"#d29922",maxBarThickness:28}},
-  {{label:"{L["captcha"]}",data:{json.dumps(tgt_captcha)},backgroundColor:"#e3b341",maxBarThickness:28}},
-  {{label:"{L["allowed"]}",data:{json.dumps(tgt_allowed)},backgroundColor:"#8b949e",maxBarThickness:28}}
+  {{label:"{L["captcha"]}",data:{json.dumps(tgt_captcha)},backgroundColor:"#a371f7",maxBarThickness:28}},
+  {{label:"{L["not_blocked"]}",data:{json.dumps(tgt_allowed)},backgroundColor:"#8b949e",maxBarThickness:28}}
 ]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
 </script>
 '''
@@ -1156,8 +1158,8 @@ new Chart(document.getElementById('{cat_id}'),{{type:'bar',data:{{labels:{cat_la
 new Chart(document.getElementById('{bar_id}'),{{type:'bar',data:{{labels:{bar_labels},datasets:[
   {{label:"{L["blocked"]}",data:{bar_blocked},backgroundColor:"#f85149",maxBarThickness:28}},
   {{label:"{L["challenge"]}",data:{bar_challenge},backgroundColor:"#d29922",maxBarThickness:28}},
-  {{label:"{L["captcha"]}",data:{bar_captcha},backgroundColor:"#e3b341",maxBarThickness:28}},
-  {{label:"{L["counted"]}",data:{bar_counted},backgroundColor:"#8b949e",maxBarThickness:28}}
+  {{label:"{L["captcha"]}",data:{bar_captcha},backgroundColor:"#a371f7",maxBarThickness:28}},
+  {{label:"{L["not_blocked"]}",data:{bar_counted},backgroundColor:"#8b949e",maxBarThickness:28}}
 ]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
 </script>
 '''
