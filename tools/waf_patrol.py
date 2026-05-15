@@ -930,10 +930,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 "suggestion": "评估切换到 Block 模式以拦截未验证 bot" if lang == "zh" else "Evaluate switching to Block mode to mitigate unverified bots",
                 "source": "traffic",
             })
-        # High CSP traffic
+        # High CSP traffic (any label under cloud_service_provider namespace)
         tgt_sigs = bot_data.get("targeted_signals", {})
         for name, metrics in tgt_sigs.items():
-            if name in ("aws", "gcp", "azure", "oracle"):
+            if name.lower() in ("aws", "gcp", "azure", "oracle"):
                 csp_total = sum(metrics.values())
                 if csp_total > 1000:
                     action_items.append({
@@ -943,18 +943,19 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                         "suggestion": "确认是否为合法服务调用（监控、API），否则考虑拦截" if lang == "zh" else "Verify if legitimate service calls (monitoring, API); consider blocking otherwise",
                         "source": "traffic",
                     })
-        # High targeted challenge volume
+        # High targeted challenge/captcha volume
         for name, metrics in tgt_sigs.items():
             if name.startswith("TGT_"):
                 challenged = metrics.get("ChallengeRequests", 0) + metrics.get("ChallengeRuleMatch", 0)
+                captchaed = metrics.get("CaptchaRequests", 0) + metrics.get("CaptchaRuleMatch", 0)
                 blocked = metrics.get("BlockedRequests", 0) + metrics.get("BlockRuleMatch", 0)
-                mitigated = challenged + blocked
+                mitigated = challenged + captchaed + blocked
                 if mitigated > 5000:
                     action_items.append({
                         "severity": "moderate",
                         "rule": name,
-                        "text": f'高级 bot 检测触发 {mitigated:,} 次（质询 {challenged:,} + 拦截 {blocked:,}）' if lang == "zh" else f'Targeted bot detection triggered {mitigated:,} times (challenge {challenged:,} + block {blocked:,})',
-                        "suggestion": "检查是否为持续性爬虫攻击，评估是否需要升级为 Block" if lang == "zh" else "Check for persistent scraping; evaluate upgrading to Block action",
+                        "text": f'高级 bot 检测触发 {mitigated:,} 次（质询 {challenged:,} · 验证码 {captchaed:,} · 拦截 {blocked:,}）' if lang == "zh" else f'Targeted bot detection triggered {mitigated:,} times (challenge {challenged:,} · captcha {captchaed:,} · block {blocked:,})',
+                        "suggestion": "确认 challenge/captcha 解决率，判断是否为有效拦截" if lang == "zh" else "Check challenge/captcha solve rate to determine if mitigation is effective",
                         "source": "traffic",
                     })
 
