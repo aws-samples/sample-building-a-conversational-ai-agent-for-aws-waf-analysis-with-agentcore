@@ -1163,14 +1163,6 @@ new Chart(document.getElementById('{bar_id}'),{{type:'bar',data:{{labels:{bar_la
 ]}},options:{{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{{legend:{{labels:{{color:c}}}}}},scales:{{x:{{stacked:true,ticks:{{color:c}}}},y:{{stacked:true,ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
 </script>
 '''
-            # WoW annotations
-            wow_notes = []
-            for r in rules_sorted:
-                if r["wow"] is not None and r["wow"] >= WOW_ATTENTION:
-                    arrow = "🔴" if r["wow"] >= WOW_SEVERE else "⚠️"
-                    wow_notes.append(f'{arrow} <strong>{r["name"][:25]}</strong>: {L["wow"]} {r["wow"]:.1f}x')
-            if wow_notes:
-                webacl_sections += '<div class="wow-notes">' + '<br>'.join(wow_notes[:5]) + '</div>\n'
 
         # --- 3. Attack Timeline (stacked area) ---
         if wr.get("chart_data") and wr["chart_data"].get("labels"):
