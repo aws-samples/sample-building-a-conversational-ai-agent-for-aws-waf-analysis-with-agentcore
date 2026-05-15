@@ -1092,7 +1092,7 @@ body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--
 h1 {{ color: var(--accent); }} h2 {{ color: var(--accent); margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }} h3 {{ margin-top: 1.5rem; }}
 .muted {{ color: var(--muted); font-size: .85rem; }}
 .chart-row {{ display: flex; gap: 2rem; flex-wrap: wrap; margin: 1rem 0; align-items: flex-start; }}
-.chart-box {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 260px; flex: 1; text-align: center; }}
+.chart-box {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; min-width: 260px; max-width: 400px; flex: 1; text-align: center; }}
 .chart-title {{ font-weight: 600; margin-bottom: .5rem; }}
 .chart-wide {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1rem 0; }}
 .donut-legend {{ font-size: .85rem; margin-top: .5rem; text-align: left; padding-left: 1rem; }}
