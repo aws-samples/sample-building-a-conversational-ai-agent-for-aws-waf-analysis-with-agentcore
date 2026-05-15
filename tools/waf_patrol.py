@@ -97,7 +97,7 @@ WOW_SEVERE = 10.0     # 10x increase
 SPIKE_RATIO_ATTENTION = 5.0  # max day / avg day
 
 
-def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None) -> list[dict]:
+def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None, lang: str = "en") -> list[dict]:
     """Assess per-rule metrics with WoW comparison. Returns action_items list.
 
     Each item: {severity, rule, text, suggestion, context?}
@@ -113,24 +113,24 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
             action_items.append({
                 "severity": "moderate",
                 "rule": tool["rule_name"],
-                "text": f"{tool['layer']} in {tool['mode']} mode",
-                "suggestion": "Confirm whether this should be switched to Block",
+                "text": f"{tool['layer']} 处于 {tool['mode']} 模式" if lang == "zh" else f"{tool['layer']} in {tool['mode']} mode",
+                "suggestion": "确认是否应切换为 Block" if lang == "zh" else "Confirm whether this should be switched to Block",
                 "source": "config",
             })
         elif tool["status"] == "missing" and tool["layer"] != "Logging":
             action_items.append({
                 "severity": "low",
                 "rule": "—",
-                "text": f"{tool['layer']} not deployed",
-                "suggestion": "Consider deploying for additional protection",
+                "text": f"{tool['layer']} 未部署" if lang == "zh" else f"{tool['layer']} not deployed",
+                "suggestion": "建议部署以增强防护" if lang == "zh" else "Consider deploying for additional protection",
                 "source": "config",
             })
         elif tool["status"] == "missing" and tool["layer"] == "Logging":
             action_items.append({
                 "severity": "moderate",
                 "rule": "—",
-                "text": "WAF logging not configured",
-                "suggestion": "Enable CWL logging for IP-level analysis",
+                "text": "WAF 日志未配置" if lang == "zh" else "WAF logging not configured",
+                "suggestion": "启用 CWL 日志以支持 IP 级分析" if lang == "zh" else "Enable CWL logging for IP-level analysis",
                 "source": "config",
             })
 
@@ -156,12 +156,12 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
         # --- WoW change for mitigated (blocked + challenged) ---
         if tw_mitigated > 50:  # ignore noise
             if lw_mitigated == 0:
-                # First time this rule mitigated anything
+                # No baseline from previous period
                 action_items.append({
                     "severity": "moderate",
                     "rule": rule_name,
-                    "text": f"First-time mitigation: {tw_mitigated:,} requests (blocked+challenged)",
-                    "suggestion": "Verify this is expected — new attack pattern or new rule deployment?",
+                    "text": f"昨日无基线，本期拦截 {tw_mitigated:,} 次" if lang == "zh" else f"No baseline from previous period — {tw_mitigated:,} requests mitigated",
+                    "suggestion": "确认是否为新攻击模式或新规则部署" if lang == "zh" else "Verify: new attack pattern or new rule deployment?",
                 })
             elif lw_mitigated > 0:
                 wow = tw_mitigated / lw_mitigated
@@ -169,15 +169,15 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                     action_items.append({
                         "severity": "critical",
                         "rule": rule_name,
-                        "text": f"Mitigated requests surged {wow:.0f}x vs last week ({lw_mitigated:,} → {tw_mitigated:,})",
-                        "suggestion": "Investigate — possible new attack campaign",
+                        "text": f"拦截量环比暴增 {wow:.0f}x（{lw_mitigated:,} → {tw_mitigated:,}）" if lang == "zh" else f"Mitigated requests surged {wow:.0f}x vs previous period ({lw_mitigated:,} → {tw_mitigated:,})",
+                        "suggestion": "需要调查——可能是新攻击活动" if lang == "zh" else "Investigate — possible new attack campaign",
                     })
                 elif wow >= WOW_ATTENTION:
                     action_items.append({
                         "severity": "moderate",
                         "rule": rule_name,
-                        "text": f"Mitigated requests increased {wow:.1f}x vs last week ({lw_mitigated:,} → {tw_mitigated:,})",
-                        "suggestion": "Monitor — check if trend continues",
+                        "text": f"拦截量环比增长 {wow:.1f}x（{lw_mitigated:,} → {tw_mitigated:,}）" if lang == "zh" else f"Mitigated requests increased {wow:.1f}x vs previous period ({lw_mitigated:,} → {tw_mitigated:,})",
+                        "suggestion": "持续观察趋势" if lang == "zh" else "Monitor — check if trend continues",
                     })
 
         # --- Spike detection (max day vs avg) ---
@@ -198,13 +198,13 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 ts_list = data.get("timestamps", [])
                 spike_date = ts_list[spike_idx][:10] if spike_idx < len(ts_list) else "unknown"
                 # Don't duplicate if already flagged by WoW
-                existing = [a for a in action_items if a["rule"] == rule_name and "surge" in a.get("text", "")]
+                existing = [a for a in action_items if a["rule"] == rule_name and ("surge" in a.get("text", "") or "暴增" in a.get("text", ""))]
                 if not existing:
                     action_items.append({
                         "severity": "moderate",
                         "rule": rule_name,
-                        "text": f"Spike detected: peak day ({spike_date}) was {max_day/avg_day:.1f}x average",
-                        "suggestion": "Check if spike correlates with a specific event",
+                        "text": f"检测到尖峰：峰值时段（{spike_date}）为均值的 {max_day/avg_day:.1f}x" if lang == "zh" else f"Spike detected: peak ({spike_date}) was {max_day/avg_day:.1f}x average",
+                        "suggestion": "检查尖峰是否与特定事件相关" if lang == "zh" else "Check if spike correlates with a specific event",
                     })
 
         # --- Count rule went to zero ---
@@ -212,8 +212,8 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
             action_items.append({
                 "severity": "moderate",
                 "rule": rule_name,
-                "text": f"Count rule stopped triggering (last week: {lw_counted:,}, this week: 0)",
-                "suggestion": "Check if rule was deleted, disabled, or scope-down changed",
+                "text": f"Count 规则停止触发（上期: {lw_counted:,}，本期: 0）" if lang == "zh" else f"Count rule stopped triggering (previous: {lw_counted:,}, current: 0)",
+                "suggestion": "检查规则是否被删除、禁用或 scope-down 变更" if lang == "zh" else "Check if rule was deleted, disabled, or scope-down changed",
             })
 
         # --- Count rule spiked (potential new attack pattern) ---
@@ -223,8 +223,8 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 action_items.append({
                     "severity": "moderate",
                     "rule": rule_name,
-                    "text": f"Count rule hits increased {wow_count:.1f}x ({lw_counted:,} → {tw_counted:,})",
-                    "suggestion": "Review if this rule should be switched to Block",
+                    "text": f"Count 规则命中环比增长 {wow_count:.1f}x（{lw_counted:,} → {tw_counted:,}）" if lang == "zh" else f"Count rule hits increased {wow_count:.1f}x ({lw_counted:,} → {tw_counted:,})",
+                    "suggestion": "评估是否应将此规则切换为 Block" if lang == "zh" else "Review if this rule should be switched to Block",
                 })
 
     # --- Cold-start fallback (no last week data) ---
@@ -240,15 +240,15 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 action_items.append({
                     "severity": "critical",
                     "rule": rule_name,
-                    "text": f"High mitigation volume: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day) (baseline not yet established)",
-                    "suggestion": "Investigate top sources",
+                    "text": f"拦截量高: {tw_blocked + tw_challenge + tw_captcha:,}（均值 {daily_avg:,.0f}/时段），无历史基线" if lang == "zh" else f"High mitigation volume: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/period), no baseline",
+                    "suggestion": "调查主要来源" if lang == "zh" else "Investigate top sources",
                 })
             elif daily_avg >= DAILY_BLOCK_ATTENTION:
                 action_items.append({
                     "severity": "moderate",
                     "rule": rule_name,
-                    "text": f"Elevated mitigation: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day) (baseline not yet established)",
-                    "suggestion": "Monitor trend",
+                    "text": f"拦截量偏高: {tw_blocked + tw_challenge + tw_captcha:,}（均值 {daily_avg:,.0f}/时段），无历史基线" if lang == "zh" else f"Elevated mitigation: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/period), no baseline",
+                    "suggestion": "持续观察趋势" if lang == "zh" else "Monitor trend",
                 })
 
     # Sort: critical first, then moderate, then low
@@ -717,7 +717,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
     # 6. DDoS event detection + Action Items
     ddos_windows = _detect_ddos_windows(cw, webacl_name, start, end)
-    action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None)
+    action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None, lang)
 
     # 7. Top IPs/URIs for attention rules (CWL or Athena)
     # Only query logs for traffic anomalies (rules with actual metrics data), not config issues
