@@ -904,8 +904,9 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 bot_names = {}
                 for r in cat_resp.get("MetricDataResults", []):
                     label = r.get("Label", "")
-                    parts = label.rsplit(" ", 1)
-                    bot_name = parts[0] if len(parts) == 2 else label
+                    # Format: "LabelName LabelNamespace MetricName"
+                    parts = label.split(" ")
+                    bot_name = parts[0] if len(parts) >= 3 else label
                     val = int(sum(r.get("Values", [])))
                     if val > 0:
                         bot_names[bot_name] = bot_names.get(bot_name, 0) + val
@@ -1044,7 +1045,7 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
                     tgt_rows += f'<tr><td>{name}</td><td>{blocked:,}</td><td>{challenged:,}</td><td>{allowed:,}</td><td>{counted:,}</td></tr>\n'
                 if tgt_rows:
                     extra_bot += f'''<h3>{L["bot_targeted"]}</h3>
-<table><tr><th>Signal</th><th>{L["blocked"]}</th><th>{L["challenge"]}</th><th>{L["allowed"]}</th><th>{L["counted"]}</th></tr>{tgt_rows}</table>
+<table><tr><th>{L["rule"]}</th><th>{L["blocked"]}</th><th>{L["challenge"]}</th><th>{L["allowed"]}</th><th>{L["counted"]}</th></tr>{tgt_rows}</table>
 '''
             # Bot names bar chart
             if bd.get("bot_names"):
