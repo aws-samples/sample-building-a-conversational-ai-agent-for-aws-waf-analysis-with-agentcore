@@ -23,6 +23,10 @@ WOW_ATTENTION = 3.0   # 3x increase vs last week
 WOW_SEVERE = 10.0     # 10x increase
 SPIKE_RATIO_ATTENTION = 5.0  # max day / avg day
 
+# Legacy thresholds (used by _assess_events for backward compat)
+CHALLENGE_FAIL_ATTENTION = 0.40
+CHALLENGE_FAIL_SEVERE = 0.70
+
 
 def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None) -> list[dict]:
     """Assess per-rule metrics with WoW comparison. Returns action_items list.
@@ -946,7 +950,6 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     return summary
 
 
-@tool
 def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int) -> str:
     """Render deterministic patrol report HTML from structured data."""
     now = datetime.now(timezone.utc)
@@ -1045,7 +1048,7 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
             for rl in wr["rate_limits"]:
                 status = "✅ Active" if rl["triggered_days"] > 0 else "⚠️ Never triggered"
                 rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{hours}h</td><td>{status}</td></tr>\n'
-            webacl_sections += f'<h3>Rate-Limit Effectiveness</h3>\n<table><tr><th>Rule</th><th>Threshold</th><th>Total Blocked</th><th>Days Triggered</th><th>Status</th></tr>{rl_rows}</table>\n'
+            webacl_sections += f'<h3>Rate-Limit Effectiveness</h3>\n<table><tr><th>Rule</th><th>Threshold</th><th>Total Blocked</th><th>Hours Active</th><th>Status</th></tr>{rl_rows}</table>\n'
 
     # Action Items section
     action_html = ""

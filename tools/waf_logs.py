@@ -14,7 +14,7 @@ from tools.session_state import get_logs_region, get_log_destination
 MAX_RESULTS = 25
 POLL_INTERVAL = 2
 MAX_POLL = 600
-MAX_HOURS = 168  # 7 days max per query — use Athena for longer ranges
+MAX_HOURS = 6  # Hard cap for all investigation queries
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
 _cwl_semaphore = threading.Semaphore(8)
@@ -257,11 +257,7 @@ def run_logs_query(
     client = get_client("logs", region_name=region)
 
     if hours_ago > MAX_HOURS:
-        return f"Error: max time range is {MAX_HOURS} hours (7 days). For longer ranges, use Athena. Requested: {hours_ago}h"
-
-    # Hard cap: all queries max 6 hours
-    if hours_ago > 6:
-        hours_ago = 6
+        hours_ago = MAX_HOURS
 
     # Time range calculation
     if not start_time:
