@@ -42,6 +42,7 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 "rule": tool["rule_name"],
                 "text": f"{tool['layer']} in {tool['mode']} mode",
                 "suggestion": "Confirm whether this should be switched to Block",
+                "source": "config",
             })
         elif tool["status"] == "missing" and tool["layer"] != "Logging":
             action_items.append({
@@ -49,6 +50,7 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 "rule": "—",
                 "text": f"{tool['layer']} not deployed",
                 "suggestion": "Consider deploying for additional protection",
+                "source": "config",
             })
         elif tool["status"] == "missing" and tool["layer"] == "Logging":
             action_items.append({
@@ -56,6 +58,7 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
                 "rule": "—",
                 "text": "WAF logging not configured",
                 "suggestion": "Enable CWL logging for IP-level analysis",
+                "source": "config",
             })
 
     # --- From Per-Rule Metrics (WoW comparison) ---
@@ -707,7 +710,7 @@ def _assess_events(metrics: dict, rules: list[dict], days: int) -> list[dict]:
 
 
 @tool
-def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> str:
+def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "", hours: int = 24) -> str:
     """Run a security patrol scan for a specific WebACL.
     Produces a deterministic HTML report with action items, detection tools status,
     per-rule breakdown, and attack timeline chart.
@@ -715,17 +718,42 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
     Use this ONLY when user asks for a patrol report, security summary, or weekly review.
     Do NOT use for specific questions about individual attacks, IPs, or rules.
 
+    IMPORTANT: You MUST specify start_time. Ask the user which time period to scan.
+    The scan covers [start_time, start_time + hours]. Max hours is 24.
+    WoW comparison always uses the same duration from the previous week.
+
+    Examples:
+      patrol_scan(webacl_name="my-acl", start_time="2026-05-09", hours=24)  → scans May 9 full day
+      patrol_scan(webacl_name="my-acl", start_time="2026-05-09T14:00", hours=6)  → scans 14:00-20:00
+
     Args:
         webacl_name: Name of the WebACL to scan.
         scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
-        days: Number of days to scan (default 7).
+        start_time: Start date/time for the scan period (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
+        hours: Duration in hours from start_time (default 24, max 24). For weekly overview use 24 and check WoW comparison in the report.
     """
     from tools.session_state import get_metrics_region
 
+    # Validate start_time
+    if not start_time:
+        return "Error: start_time is required. Ask the user which time period to scan.\nExample: patrol_scan(webacl_name=\"...\", start_time=\"2026-05-09\", hours=24)"
+
+    # Parse start_time
+    try:
+        if "T" in start_time:
+            start = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
+        else:
+            start = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
+
+    # Cap hours at 24
+    hours = min(hours, 24)
+    end = start + timedelta(hours=hours)
+    start_last = start - timedelta(days=7)  # WoW: same day last week
+    end_last = end - timedelta(days=7)
+
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
-    start_last = start - timedelta(days=days)  # WoW comparison period
 
     global _latest_patrol_html
 
@@ -757,10 +785,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
     # 3. Detection Tools Status
     detection_tools = _analyze_detection_tools(webacl_data, logging_type, log_dest)
 
-    # 4. Per-rule metrics (this week + last week)
+    # 4. Per-rule metrics (this period + same period last week for WoW)
     cw = get_client("cloudwatch", region_name=region)
-    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=86400)
-    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, start, period=86400)
+    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600)
+    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, end_last, period=3600)
 
     # 5. Challenge/Captcha solved
     challenge_solved, captcha_solved = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
@@ -770,19 +798,21 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
     action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None)
 
     # 7. Top IPs/URIs for attention rules (CWL or Athena)
+    # Only query logs for traffic anomalies (rules with actual metrics data), not config issues
     log_details = {}
-    if logging_type == "cwl":
-        attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
-        if attention_rules:
-            log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
-            logs_client = get_client("logs", region_name=region)
-            log_start = int(start.timestamp())
-            log_end = int(end.timestamp())
-            log_details = _get_log_details(logs_client, log_group, log_start, log_end, attention_rules)
-    elif logging_type == "s3":
-        attention_rules = [a["rule"] for a in action_items if a["severity"] in ("critical", "moderate") and a["rule"] != "—"]
-        if attention_rules:
-            log_details = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, attention_rules)
+    traffic_attention_rules = [a["rule"] for a in action_items
+                               if a["severity"] in ("critical", "moderate")
+                               and a["rule"] != "—"
+                               and a.get("source") != "config"
+                               and a["rule"] in this_week_metrics]
+    if logging_type == "cwl" and traffic_attention_rules:
+        log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
+        logs_client = get_client("logs", region_name=region)
+        log_start = int(start.timestamp())
+        log_end = int(end.timestamp())
+        log_details = _get_log_details(logs_client, log_group, log_start, log_end, traffic_attention_rules)
+    elif logging_type == "s3" and traffic_attention_rules:
+        log_details = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, traffic_attention_rules)
 
     # 8. Build per-rule table + rate-limit info
     rules_table = []
@@ -878,7 +908,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
         "rate_limits": rate_limit_info, "chart_data": chart_data,
     }
     all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
-    _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, days)
+    _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours)
 
     # 12. Return summary
     n_critical = sum(1 for a in action_items if a["severity"] == "critical")
@@ -893,7 +923,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
 
     summary = f"**Patrol Report Generated**\n\n"
     summary += f"WebACL: {webacl_name} ({scope})\n"
-    summary += f"Period: {start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({days} days)\n"
+    summary += f"Period: {start.strftime('%Y-%m-%d %H:%M')} to {end.strftime('%Y-%m-%d %H:%M')} UTC ({hours}h)\n"
     summary += f"Status: {status}\n\n"
 
     if action_items:
@@ -909,7 +939,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", days: int = 7) -> s
 
 
 @tool
-def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, days: int) -> str:
+def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int) -> str:
     """Render deterministic patrol report HTML from structured data."""
     now = datetime.now(timezone.utc)
     n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
@@ -1006,7 +1036,7 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
             rl_rows = ""
             for rl in wr["rate_limits"]:
                 status = "✅ Active" if rl["triggered_days"] > 0 else "⚠️ Never triggered"
-                rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{days}d</td><td>{status}</td></tr>\n'
+                rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{hours}h</td><td>{status}</td></tr>\n'
             webacl_sections += f'<h3>Rate-Limit Effectiveness</h3>\n<table><tr><th>Rule</th><th>Threshold</th><th>Total Blocked</th><th>Days Triggered</th><th>Status</th></tr>{rl_rows}</table>\n'
 
     # Action Items section
@@ -1024,7 +1054,7 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
     report_json = json.dumps({
         "version": "1.0",
         "generated_at": now.isoformat(),
-        "period": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        "period": {"start": start.isoformat(), "end": end.isoformat(), "hours": hours},
         "webacls": [{
             "name": wr["name"], "scope": wr.get("scope", ""),
             "action_items": [a for a in all_action_items if a.get("webacl") == wr["name"]],
@@ -1056,7 +1086,7 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 .footer {{ color: var(--muted); font-size: .8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
 </style></head><body>
 <h1>🛡️ Security Patrol Report</h1>
-<p class="muted">{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({days} days) · Generated {now.strftime('%Y-%m-%d %H:%M UTC')}</p>
+<p class="muted">{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({hours}h) · Generated {now.strftime('%Y-%m-%d %H:%M UTC')}</p>
 <p class="muted">CloudWatch Metrics delay: ~5 min. Data may have changed since generation.</p>
 
 <div class="banner {banner_class}">{banner_text}</div>
