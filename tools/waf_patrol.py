@@ -49,7 +49,7 @@ _PATROL_I18N = {
         "bot_unverified_mitigated": "🚫 Unverified Mitigated",
         "bot_targeted": "Targeted Bot Detection",
         "bot_token_absent": "Token Absent",
-        "bot_category": "Bot Categories",
+        "bot_category": "Bot Names",
     },
     "zh": {
         "title": "安全巡检报告",
@@ -87,7 +87,7 @@ _PATROL_I18N = {
         "bot_unverified_mitigated": "🚫 未验证拦截",
         "bot_targeted": "Targeted Bot 检测",
         "bot_token_absent": "无 Token",
-        "bot_category": "Bot 类别分布",
+        "bot_category": "Bot 名称分布",
     },
 }
 
@@ -881,22 +881,21 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                     bot_data["targeted_allowed"] = tgt_vals.get("tgt_a", 0)
             except Exception:
                 pass
-            # Bot categories: use SEARCH to discover all categories dynamically
+            # Bot categories: use SEARCH to discover all bot names dynamically
             try:
                 cat_resp = cw.get_metric_data(MetricDataQueries=[
-                    {"Id": "cats", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:category\"', 'Sum', {int(hours*3600)})"},
+                    {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {int(hours*3600)})"},
                 ], StartTime=start, EndTime=end)
-                categories = {}
+                bot_names = {}
                 for r in cat_resp.get("MetricDataResults", []):
                     label = r.get("Label", "")
-                    # Label format: "LabelName MetricName" — extract category name
                     parts = label.rsplit(" ", 1)
-                    cat_name = parts[0] if len(parts) == 2 else label
+                    bot_name = parts[0] if len(parts) == 2 else label
                     val = int(sum(r.get("Values", [])))
                     if val > 0:
-                        categories[cat_name] = categories.get(cat_name, 0) + val
-                if categories:
-                    bot_data["categories"] = categories
+                        bot_names[bot_name] = bot_names.get(bot_name, 0) + val
+                if bot_names:
+                    bot_data["bot_names"] = bot_names
             except Exception:
                 pass
     except Exception:
@@ -1021,13 +1020,15 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
                 tgt_total = tb + tc + ta
                 tgt_mitigated = tb + tc
                 extra_bot += f'<div class="wow-notes"><strong>{L["bot_targeted"]}</strong>: {tgt_total:,} — {L["blocked"]} {tb:,} · {L["challenge"]} {tc:,} · {L["allowed"]} {ta:,}</div>\n'
-            # Category bar chart
-            if bd.get("categories"):
-                cats = bd["categories"]
+            # Bot names bar chart
+            if bd.get("bot_names"):
+                names = bd["bot_names"]
+                # Sort by volume, top 10
+                sorted_names = sorted(names.items(), key=lambda x: x[1], reverse=True)[:10]
                 cat_id = f'botcat_{wr["name"].replace("-","_")}'
-                cat_labels = json.dumps(list(cats.keys()))
-                cat_values = json.dumps(list(cats.values()))
-                cat_height = max(80, 35 * len(cats) + 40)
+                cat_labels = json.dumps([n for n, _ in sorted_names])
+                cat_values = json.dumps([v for _, v in sorted_names])
+                cat_height = max(80, 35 * len(sorted_names) + 40)
                 extra_bot += f'''
 <h3>{L["bot_category"]}</h3>
 <div class="chart-wide"><canvas id="{cat_id}" height="{cat_height}"></canvas></div>
