@@ -345,6 +345,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     _region_dim = [{"Name": "Region", "Value": region}] if scope != "CLOUDFRONT" else []
 
     end = min(_st + timedelta(days=days), datetime.now(timezone.utc))
+    actual_days = (end - _st).total_seconds() / 86400
     start_this_week = _st
     start_last_week = start_this_week - timedelta(days=days)
 
@@ -836,7 +837,11 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     data_lines.append("")
     data_lines.append(f"Then call set_report_summary(path='{output_path}', summary='your summary here')")
 
-    return "\n".join(data_lines)
+    truncation_note = ""
+    if actual_days < days - 0.1:
+        truncation_note = f"\n⚠️ Note: requested {days} days but only {actual_days:.1f} days of data available (end capped at current time). WoW comparison uses full {days}-day previous period."
+
+    return "\n".join(data_lines) + truncation_note
 
 
 
