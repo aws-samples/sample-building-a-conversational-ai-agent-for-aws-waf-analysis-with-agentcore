@@ -12,13 +12,172 @@ from tools.aws_session import get_client
 _latest_patrol_html: str | None = None
 _patrol_chart_data: dict = {}  # Stored between patrol_scan and finalize_patrol_report
 
-# Thresholds for anomaly detection
+# Thresholds for anomaly detection (v1 — absolute, used as cold-start fallback)
 DAILY_BLOCK_ATTENTION = 500
 DAILY_BLOCK_SEVERE = 5000
 IP_CONCENTRATION_ATTENTION = 0.30
 IP_CONCENTRATION_SEVERE = 0.60
-CHALLENGE_FAIL_ATTENTION = 0.40
-CHALLENGE_FAIL_SEVERE = 0.70
+
+# WoW anomaly detection thresholds (v2)
+WOW_ATTENTION = 3.0   # 3x increase vs last week
+WOW_SEVERE = 10.0     # 10x increase
+SPIKE_RATIO_ATTENTION = 5.0  # max day / avg day
+
+
+def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict]) -> list[dict]:
+    """Assess per-rule metrics with WoW comparison. Returns action_items list.
+
+    Each item: {severity, rule, text, suggestion, context?}
+    severity: "critical" | "moderate" | "low"
+    """
+    action_items = []
+    skip_rules = {"ALL", "shield-sample-webacl"}  # WebACL-level aggregates
+
+    # --- From Detection Tools (config issues) ---
+    for tool in detection_tools:
+        if tool["status"] == "warning":
+            action_items.append({
+                "severity": "moderate",
+                "rule": tool["rule_name"],
+                "text": f"{tool['layer']} in {tool['mode']} mode",
+                "suggestion": "Confirm whether this should be switched to Block",
+            })
+        elif tool["status"] == "missing" and tool["layer"] != "Logging":
+            action_items.append({
+                "severity": "low",
+                "rule": "—",
+                "text": f"{tool['layer']} not deployed",
+                "suggestion": "Consider deploying for additional protection",
+            })
+        elif tool["status"] == "missing" and tool["layer"] == "Logging":
+            action_items.append({
+                "severity": "moderate",
+                "rule": "—",
+                "text": "WAF logging not configured",
+                "suggestion": "Enable CWL logging for IP-level analysis",
+            })
+
+    # --- From Per-Rule Metrics (WoW comparison) ---
+    for rule_name, data in this_week.items():
+        if rule_name in skip_rules:
+            continue
+
+        tw_blocked = sum(data.get("blocked", []))
+        tw_counted = sum(data.get("counted", []))
+        tw_challenge = sum(data.get("challenge", []))
+        tw_captcha = sum(data.get("captcha", []))
+        tw_mitigated = tw_blocked + tw_challenge + tw_captcha
+
+        # Last week comparison
+        lw_data = last_week.get(rule_name, {})
+        lw_blocked = sum(lw_data.get("blocked", []))
+        lw_challenge = sum(lw_data.get("challenge", []))
+        lw_captcha = sum(lw_data.get("captcha", []))
+        lw_mitigated = lw_blocked + lw_challenge + lw_captcha
+        lw_counted = sum(lw_data.get("counted", []))
+
+        # --- WoW change for mitigated (blocked + challenged) ---
+        if tw_mitigated > 50:  # ignore noise
+            if lw_mitigated == 0:
+                # First time this rule mitigated anything
+                action_items.append({
+                    "severity": "moderate",
+                    "rule": rule_name,
+                    "text": f"First-time mitigation: {tw_mitigated:,} requests (blocked+challenged)",
+                    "suggestion": "Verify this is expected — new attack pattern or new rule deployment?",
+                })
+            elif lw_mitigated > 0:
+                wow = tw_mitigated / lw_mitigated
+                if wow >= WOW_SEVERE:
+                    action_items.append({
+                        "severity": "critical",
+                        "rule": rule_name,
+                        "text": f"Mitigated requests surged {wow:.0f}x vs last week ({lw_mitigated:,} → {tw_mitigated:,})",
+                        "suggestion": "Investigate — possible new attack campaign",
+                    })
+                elif wow >= WOW_ATTENTION:
+                    action_items.append({
+                        "severity": "moderate",
+                        "rule": rule_name,
+                        "text": f"Mitigated requests increased {wow:.1f}x vs last week ({lw_mitigated:,} → {tw_mitigated:,})",
+                        "suggestion": "Monitor — check if trend continues",
+                    })
+
+        # --- Spike detection (max day vs avg) ---
+        blocked_daily = data.get("blocked", [])
+        challenge_daily = data.get("challenge", [])
+        captcha_daily = data.get("captcha", [])
+        n = max(len(blocked_daily), len(challenge_daily), len(captcha_daily))
+        blocked_daily += [0] * (n - len(blocked_daily))
+        challenge_daily += [0] * (n - len(challenge_daily))
+        captcha_daily += [0] * (n - len(captcha_daily))
+        daily_mitigated = [b + c + p for b, c, p in zip(blocked_daily, challenge_daily, captcha_daily)]
+        if daily_mitigated and len(daily_mitigated) > 1:
+            avg_day = sum(daily_mitigated) / len(daily_mitigated)
+            max_day = max(daily_mitigated)
+            if avg_day > 0 and max_day / avg_day >= SPIKE_RATIO_ATTENTION and max_day > 100:
+                # Find which day had the spike
+                spike_idx = daily_mitigated.index(max_day)
+                ts_list = data.get("timestamps", [])
+                spike_date = ts_list[spike_idx][:10] if spike_idx < len(ts_list) else "unknown"
+                # Don't duplicate if already flagged by WoW
+                existing = [a for a in action_items if a["rule"] == rule_name and "surge" in a.get("text", "")]
+                if not existing:
+                    action_items.append({
+                        "severity": "moderate",
+                        "rule": rule_name,
+                        "text": f"Spike detected: peak day ({spike_date}) was {max_day/avg_day:.1f}x average",
+                        "suggestion": "Check if spike correlates with a specific event",
+                    })
+
+        # --- Count rule went to zero ---
+        if tw_counted == 0 and lw_counted > 100:
+            action_items.append({
+                "severity": "moderate",
+                "rule": rule_name,
+                "text": f"Count rule stopped triggering (last week: {lw_counted:,}, this week: 0)",
+                "suggestion": "Check if rule was deleted, disabled, or scope-down changed",
+            })
+
+        # --- Count rule spiked (potential new attack pattern) ---
+        if tw_counted > 100 and lw_counted > 0:
+            wow_count = tw_counted / lw_counted
+            if wow_count >= WOW_ATTENTION:
+                action_items.append({
+                    "severity": "moderate",
+                    "rule": rule_name,
+                    "text": f"Count rule hits increased {wow_count:.1f}x ({lw_counted:,} → {tw_counted:,})",
+                    "suggestion": "Review if this rule should be switched to Block",
+                })
+
+    # --- Cold-start fallback (no last week data) ---
+    if not last_week:
+        for rule_name, data in this_week.items():
+            if rule_name in skip_rules:
+                continue
+            tw_blocked = sum(data.get("blocked", []))
+            tw_challenge = sum(data.get("challenge", []))
+            tw_captcha = sum(data.get("captcha", []))
+            daily_avg = (tw_blocked + tw_challenge + tw_captcha) / max(len(data.get("blocked", [1])), 1)
+            if daily_avg >= DAILY_BLOCK_SEVERE:
+                action_items.append({
+                    "severity": "critical",
+                    "rule": rule_name,
+                    "text": f"High mitigation volume: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day)",
+                    "suggestion": "Investigate top sources",
+                })
+            elif daily_avg >= DAILY_BLOCK_ATTENTION:
+                action_items.append({
+                    "severity": "moderate",
+                    "rule": rule_name,
+                    "text": f"Elevated mitigation: {tw_blocked + tw_challenge + tw_captcha:,} (avg {daily_avg:,.0f}/day)",
+                    "suggestion": "Monitor trend",
+                })
+
+    # Sort: critical first, then moderate, then low
+    severity_order = {"critical": 0, "moderate": 1, "low": 2}
+    action_items.sort(key=lambda x: severity_order.get(x["severity"], 9))
+    return action_items
 
 
 def _get_metric_sum(cw, webacl_name: str, metric: str, rule: str, start, end, region: str = "us-east-1", scope: str = "REGIONAL", period: int = 86400) -> list[float]:
@@ -108,6 +267,71 @@ def _get_category_timeseries(cw, webacl_name: str, rules: list[dict], start, end
     return {"timestamps": sorted_timestamps, "categories": category_ts}
 
 
+def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int = 86400) -> dict:
+    """Get per-rule metrics for all rules using SEARCH (single API call).
+
+    Returns: {rule_name: {blocked: [daily], counted: [daily], challenge: [daily], captcha: [daily]}}
+    Also returns 'ALL' key for WebACL-level totals.
+    """
+    resp = cw.get_metric_data(
+        MetricDataQueries=[
+            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"BlockedRequests\"', 'Sum', {period})"},
+            {"Id": "counted", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"CountedRequests\"', 'Sum', {period})"},
+            {"Id": "challenge", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"ChallengeRequests\"', 'Sum', {period})"},
+            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"CaptchaRequests\"', 'Sum', {period})"},
+            {"Id": "allowed", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"AllowedRequests\"', 'Sum', {period})"},
+        ],
+        StartTime=start, EndTime=end, ScanBy="TimestampAscending",
+    )
+
+    rules = {}  # {rule_name: {blocked: [...], counted: [...], challenge: [...], captcha: [...], allowed: [...]}}
+    metric_map = {"blocked": "blocked", "counted": "counted", "challenge": "challenge", "captcha": "captcha", "allowed": "allowed"}
+
+    for r in resp.get("MetricDataResults", []):
+        qid = r["Id"]
+        if qid not in metric_map:
+            continue
+        label = r.get("Label", "")
+        # Label format: "{RuleName} {MetricName}" — parse rule name
+        parts = label.rsplit(" ", 1)
+        rule_name = parts[0] if len(parts) == 2 else label
+        values = [int(v) for v in r.get("Values", [])]
+        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+
+        if rule_name not in rules:
+            rules[rule_name] = {"blocked": [], "counted": [], "challenge": [], "captcha": [], "allowed": [], "timestamps": []}
+        rules[rule_name][metric_map[qid]] = values
+        if timestamps and not rules[rule_name]["timestamps"]:
+            rules[rule_name]["timestamps"] = timestamps
+
+    return rules
+
+
+def _get_challenge_solved(cw, webacl_name: str, scope: str, region: str, start, end) -> tuple[int, int]:
+    """Get ChallengesSolved and CaptchasSolved (WebACL level). Returns (challenge_solved, captcha_solved)."""
+    dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+    if scope != "CLOUDFRONT":
+        dims.append({"Name": "Region", "Value": region})
+    try:
+        resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {"Id": "cs", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengesSolved", "Dimensions": dims}, "Period": 604800, "Stat": "Sum"}},
+                {"Id": "cas", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchasSolved", "Dimensions": dims}, "Period": 604800, "Stat": "Sum"}},
+            ],
+            StartTime=start, EndTime=end,
+        )
+        cs = cas = 0
+        for r in resp.get("MetricDataResults", []):
+            val = int(sum(r.get("Values", [])))
+            if r["Id"] == "cs":
+                cs = val
+            elif r["Id"] == "cas":
+                cas = val
+        return cs, cas
+    except Exception:
+        return 0, 0
+
+
 def _get_all_metrics(cw, webacl_name: str, rules: list[dict], start, end, region: str = "us-east-1", scope: str = "REGIONAL") -> dict:
     """Get Block/Count/Challenge metrics for all rules over the period."""
     results = {}
@@ -126,6 +350,118 @@ def _get_all_metrics(cw, webacl_name: str, rules: list[dict], start, end, region
         vals = _get_metric_sum(cw, webacl_name, metric_pair[0], "ALL", start, end, region, scope)
         results[metric_pair[1]] = int(sum(vals))
     return results
+
+
+# Known AMR rule groups and their expected deployment
+_EXPECTED_AMRS = {
+    "AWSManagedRulesCommonRuleSet": "Web Exploits (CRS)",
+    "AWSManagedRulesKnownBadInputsRuleSet": "Known Bad Inputs",
+    "AWSManagedRulesBotControlRuleSet": "Bot Control",
+    "AWSManagedRulesAntiDDoSRuleSet": "Anti-DDoS",
+    "AWSManagedRulesAnonymousIpList": "IP Reputation",
+    "AWSManagedRulesAmazonIpReputationList": "IP Reputation (Amazon)",
+    "AWSManagedRulesSQLiRuleSet": "SQL Injection",
+    "AWSManagedRulesLinuxRuleSet": "Linux OS",
+    "AWSManagedRulesAdminProtectionRuleSet": "Admin Protection",
+}
+
+
+def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str | None) -> list[dict]:
+    """Analyze WebACL config to produce Detection Tools Status table.
+
+    Returns list of dicts: {layer, rule_name, mode, status, detail}
+    - status: "ok" | "warning" | "missing"
+    """
+    tools = []
+    deployed_amrs = set()
+
+    for rule in webacl_data.get("Rules", []):
+        name = rule.get("Name", "")
+        stmt = rule.get("Statement", {})
+        override = rule.get("OverrideAction", {})
+        action = rule.get("Action", {})
+
+        # Managed Rule Group
+        if "ManagedRuleGroupStatement" in stmt:
+            mrg = stmt["ManagedRuleGroupStatement"]
+            mrg_name = mrg.get("Name", "")
+            vendor = mrg.get("VendorName", "AWS")
+            deployed_amrs.add(mrg_name)
+
+            # Determine mode
+            if "Count" in override:
+                mode = "Count"
+                status = "warning"
+                detail = "Override to Count — not actively blocking"
+            elif "None" in override:
+                mode = "Block"
+                status = "ok"
+                detail = ""
+            else:
+                mode = "Block"
+                status = "ok"
+                detail = ""
+
+            # Check excluded rules
+            excluded = mrg.get("ExcludedRules", [])
+            if excluded:
+                excluded_names = [r.get("Name", "") for r in excluded]
+                detail = f"Excluded: {', '.join(excluded_names[:3])}" + (f" +{len(excluded_names)-3} more" if len(excluded_names) > 3 else "")
+
+            layer = _EXPECTED_AMRS.get(mrg_name, f"{vendor}/{mrg_name}")
+            tools.append({"layer": layer, "rule_name": name, "mode": mode, "status": status, "detail": detail})
+
+        # Rate-based rule
+        elif "RateBasedStatement" in stmt:
+            rbs = stmt["RateBasedStatement"]
+            limit = rbs.get("Limit", 0)
+            window = rbs.get("EvaluationWindowSec", 300)
+            agg = rbs.get("AggregateKeyType", "IP")
+
+            # Determine action
+            if "Block" in action:
+                mode = f"Block ({limit}/{window}s, {agg})"
+                status = "ok"
+            elif "Count" in action:
+                mode = f"Count ({limit}/{window}s)"
+                status = "warning"
+            elif "Challenge" in action:
+                mode = f"Challenge ({limit}/{window}s)"
+                status = "ok"
+            elif "Captcha" in action:
+                mode = f"Captcha ({limit}/{window}s)"
+                status = "ok"
+            else:
+                mode = f"Block ({limit}/{window}s)"
+                status = "ok"
+
+            tools.append({"layer": "Rate Limiting", "rule_name": name, "mode": mode, "status": status, "detail": ""})
+
+        # Custom rule with Challenge/Captcha action
+        elif "Challenge" in action:
+            tools.append({"layer": "Custom (Challenge)", "rule_name": name, "mode": "Challenge", "status": "ok", "detail": ""})
+        elif "Captcha" in action:
+            tools.append({"layer": "Custom (Captcha)", "rule_name": name, "mode": "Captcha", "status": "ok", "detail": ""})
+
+    # Check for missing common AMRs
+    for amr_name, layer in _EXPECTED_AMRS.items():
+        if amr_name not in deployed_amrs and amr_name in (
+            "AWSManagedRulesCommonRuleSet", "AWSManagedRulesKnownBadInputsRuleSet",
+            "AWSManagedRulesBotControlRuleSet", "AWSManagedRulesAntiDDoSRuleSet",
+            "AWSManagedRulesAnonymousIpList",
+        ):
+            tools.append({"layer": layer, "rule_name": "—", "mode": "Not deployed", "status": "missing", "detail": ""})
+
+    # Logging status
+    if logging_type == "cwl":
+        log_name = log_dest.split(":log-group:")[-1].rstrip(":*") if log_dest else ""
+        tools.append({"layer": "Logging", "rule_name": f"CWL: {log_name}", "mode": "—", "status": "ok", "detail": ""})
+    elif logging_type == "s3":
+        tools.append({"layer": "Logging", "rule_name": "S3/Firehose", "mode": "—", "status": "ok", "detail": "IP-level analysis requires Athena"})
+    else:
+        tools.append({"layer": "Logging", "rule_name": "—", "mode": "Not configured", "status": "missing", "detail": "Enable logging for detailed analysis"})
+
+    return tools
 
 
 def _classify_rules(webacl_data: dict) -> list[dict]:
