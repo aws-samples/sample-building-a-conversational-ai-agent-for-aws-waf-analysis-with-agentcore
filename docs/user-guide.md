@@ -2,7 +2,7 @@
 
 [中文版](user-guide_zh.md)
 
-WAF Agent is an AI assistant that helps security engineers investigate AWS WAF incidents, detect bypasses, and generate ROI reports. It works best when you give it **specific, concrete questions**.
+WAF Agent is an AI assistant that helps security engineers investigate AWS WAF incidents, detect bypasses, and generate weekly summarys. It works best when you give it **specific, concrete questions**.
 
 ## Core Principle: Be Specific
 
@@ -12,7 +12,7 @@ The agent has access to your AWS WAF configuration, CloudWatch Metrics, CloudWat
 |---|---|
 | "Check my AWS WAF" | "Check my-webacl for bypass traffic on May 9 afternoon" |
 | "Any attacks?" | "IP 54.254.254.234 hit my site hard yesterday around 6am UTC" |
-| "Generate a report" | "Generate ROI report for my-production-webacl" |
+| "Generate a report" | "Generate weekly summary for my-production-webacl" |
 
 ## Capabilities
 
@@ -82,17 +82,17 @@ Comprehensive security event summary across all WebACLs — designed for operati
 
 **What the agent does:** Scans all WebACLs → collects 7 days of metrics per rule → detects anomalies (concentration, spikes) → queries logs for top IPs/URIs on flagged rules → generates HTML report with 3 charts (Traffic, Threats by Category, Challenge Effectiveness).
 
-### 7. ROI Report Generation
+### 7. Weekly Summary Generation
 
 HTML report with charts showing AWS WAF protection value — designed for management.
 
 **Good prompts:**
-- "Generate ROI report for my-webacl"
-- "Generate ROI report" (agent will ask which WebACL)
+- "Generate weekly summary for my-webacl"
+- "Generate weekly summary" (agent will ask which WebACL)
 
 **What the agent does:** Collects 7 days of metrics → generates HTML with Chart.js charts (blocked vs allowed, daily breakdown, top rules, top countries) → asks LLM for executive summary.
 
-> **Note:** ROI report uses CloudWatch Metrics + CloudWatch Logs Insights only (no Athena). Management reports only need aggregate numbers — not IP/URI-level details. If your WAF logs go to S3 via Firehose, the report still works (metrics for charts, CWL for bot/DDoS classification). If CWL is not configured, bot details are omitted but the report is still generated. For detailed attack source analysis, use Security Patrol or ask the agent directly.
+> **Note:** weekly summary uses CloudWatch Metrics + CloudWatch Logs Insights only (no Athena). Management reports only need aggregate numbers — not IP/URI-level details. If your WAF logs go to S3 via Firehose, the report still works (metrics for charts, CWL for bot/DDoS classification). If CWL is not configured, bot details are omitted but the report is still generated. For detailed attack source analysis, use Security Patrol or ask the agent directly.
 
 ### 8. Metrics Query
 

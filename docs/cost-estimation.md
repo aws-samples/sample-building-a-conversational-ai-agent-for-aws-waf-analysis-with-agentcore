@@ -50,7 +50,7 @@ Claude Sonnet 4 on Amazon Bedrock (approximate pricing):
 | Simple query (list WebACLs, metrics) | ~5K | ~2K | **$0.045** |
 | Investigation (bypass detection, 10 tool calls) | ~30K | ~5K | **$0.165** |
 | Deep analysis (13 tool calls + report) | ~50K | ~8K | **$0.270** |
-| ROI report generation | ~40K | ~10K | **$0.270** |
+| weekly summary generation | ~40K | ~10K | **$0.270** |
 
 **Monthly estimates:**
 

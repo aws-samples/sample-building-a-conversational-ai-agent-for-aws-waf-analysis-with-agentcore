@@ -17,8 +17,8 @@ function ReportDownload({ sessionId, type = 'roi' }) {
   const fetched = useRef(false);
 
   const prompts = { roi: '__get_report__', review: '__get_review_report__', patrol: '__get_patrol_report__' };
-  const titles = { roi: '📊 WAF ROI Report', review: '🔍 WAF Review Report', patrol: '🛡️ Security Patrol Report' };
-  const filenames = { roi: 'waf-roi-report.html', review: 'waf-review-report.html', patrol: 'waf-patrol-report.html' };
+  const titles = { roi: '📊 WAF Weekly Summary', review: '🔍 WAF Review Report', patrol: '🛡️ Security Patrol Report' };
+  const filenames = { roi: 'waf-weekly-summary.html', review: 'waf-review-report.html', patrol: 'waf-patrol-report.html' };
   const prompt = prompts[type] || prompts.roi;
   const title = titles[type] || titles.roi;
   const filename = filenames[type] || filenames.roi;

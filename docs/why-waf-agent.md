@@ -16,7 +16,7 @@ As of May 2026, no AWS-native service addresses WAF log investigation and operat
 | DDoS event investigation | ❌ | △ | ❌ | ❌ | ✅ |
 | Weekly security patrol report | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Deep WAF rule configuration review | ❌ | ❌ | ❌ | ❌ | ✅ |
-| ROI report for management | ❌ | ❌ | ❌ | ❌ | ✅ |
+| weekly summary for management | ❌ | ❌ | ❌ | ❌ | ✅ |
 | WAF best practices knowledge base | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ## How Other Services Differ
@@ -61,7 +61,7 @@ Conversational, iterative investigation of security events:
 | Report Type | Audience | Content |
 |------------|----------|---------|
 | Security Patrol | Operations engineers | 7-day full scan, anomaly detection, 15-min charts, top attack sources |
-| ROI Report | Management | Block counts, trend comparison, bot classification, country distribution, protection value |
+| Weekly Summary | Management | Block counts, trend comparison, bot classification, country distribution, protection value |
 | Rule Review | Security architects | 10 deterministic checks + LLM deep analysis, rule interaction diagram, fix recommendations |
 
 ### 3. Domain Knowledge

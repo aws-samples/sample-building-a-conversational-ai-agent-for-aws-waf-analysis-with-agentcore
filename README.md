@@ -2,14 +2,14 @@
 
 English | [中文](README_zh.md)
 
-An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates ROI reports for management. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
+An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates weekly summarys for management. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
 
 ## What It Does
 
 - **Investigate AWS WAF incidents** — "What happened on May 9th?" → identifies attack sources, correlates IPs, explains AWS WAF rule behavior
 - **Detect bypasses** — finds crawlers and bots that evade AWS WAF rules using frequency analysis
 - **Security patrol** — one-click weekly summary across all WebACLs with anomaly detection and interactive charts
-- **Generate ROI reports** — HTML business reports proving AWS WAF value for management
+- **Generate weekly summarys** — HTML business reports proving AWS WAF value for management
 - **Deep WAF rules review** — comprehensive security audit with 18+ automated checks, label dependency analysis, Mermaid flow diagram, and downloadable HTML report
 
 ## Quick Start
@@ -141,7 +141,7 @@ python agent.py "Any traffic bypassing my-webacl?"
 │   ├── waf_metrics.py    # CloudWatch Metrics (free, fast)
 │   ├── waf_logs.py       # CWL Insights queries (22 templates + analyze_ip)
 │   ├── waf_review_deep.py # Comprehensive rules audit pipeline
-│   ├── report.py         # ROI HTML report generation
+│   ├── report.py         # Weekly summary HTML generation
 │   ├── ja4.py            # JA4 TLS fingerprint lookup
 │   ├── finding.py        # Investigation findings accumulator
 │   └── ask_user.py       # Human-in-the-loop (CLI input / AG-UI event)

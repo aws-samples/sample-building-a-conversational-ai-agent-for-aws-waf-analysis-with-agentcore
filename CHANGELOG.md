@@ -28,7 +28,7 @@
 - **CWL log details**: Parallel Logs Insights queries for top IPs/URIs on flagged rules
 - **HTML report**: Downloadable dark-themed report with Chart.js zoom/pan
 
-### ROI Report Improvements
+### Weekly Summary Improvements
 
 - **Simplified Traffic chart**: 8 lines → 2 (Allowed + Blocked), cleaner for management
 - **New Daily Protection chart**: Stacked bar (Blocked + Challenged + CAPTCHA per day) — ROI visual anchor

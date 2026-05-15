@@ -26,7 +26,7 @@ MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "jp.anthropic.claude-sonnet-4-6"
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "ap-northeast-1")
 
 SYSTEM_PROMPT = """\
-You are an AWS WAF Analysis Agent. You help security engineers investigate AWS WAF issues, generate ROI reports, and produce comprehensive rule review reports.
+You are an AWS WAF Analysis Agent. You help security engineers investigate AWS WAF issues, generate weekly summaries, and produce comprehensive rule review reports.
 
 ## Behavior
 - Respond in the same language as the user's message

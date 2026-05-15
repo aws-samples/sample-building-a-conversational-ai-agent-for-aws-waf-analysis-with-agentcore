@@ -9,7 +9,7 @@
 - **调查 AWS WAF 事件** — "5月9号发生了什么？" → 定位攻击源、关联 IP、解释规则行为
 - **检测绕过攻击** — 通过频率分析发现绕过 AWS WAF 规则的爬虫和自动化工具
 - **安全巡检** — 一键生成所有 WebACL 的周度安全摘要，含异常检测和交互式图表
-- **生成价值报告** — 面向管理层的 HTML 报告，证明 AWS WAF 投入的 ROI
+- **生成周报摘要** — 面向管理层的 HTML 安全态势周报
 - **审查 AWS WAF 规则** — 全面安全审计：18+ 项自动化检查、标签依赖分析、Mermaid 流程图、可下载 HTML 报告
 
 ## 快速开始
@@ -142,7 +142,7 @@ python agent.py "my-webacl 有没有流量绕过了 WAF？"
 │   ├── waf_logs.py       # CWL Insights 查询（22 个模板 + analyze_ip）
 │   ├── waf_athena.py     # Athena 查询（S3 日志，自动建表）
 │   ├── waf_review_deep.py # 全面规则审计管线
-│   ├── report.py         # ROI 报告 HTML 生成
+│   ├── report.py         # 周报摘要 HTML 生成
 │   ├── ja4.py            # JA4 TLS 指纹查询
 │   ├── finding.py        # 调查发现累积器
 │   └── ask_user.py       # 人机交互（CLI 输入 / AG-UI 事件）

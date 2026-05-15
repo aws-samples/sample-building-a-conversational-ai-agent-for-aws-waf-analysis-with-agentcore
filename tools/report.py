@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""WAF ROI Report generation tool."""
+"""WAF Weekly Summary generation tool."""
 
 import json
 import re
@@ -11,6 +11,76 @@ from tools.aws_session import get_client
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
 
+# i18n strings
+_I18N = {
+    "en": {
+        "title": "AWS WAF Weekly Summary",
+        "exec_summary": "Executive Summary",
+        "highlights": "Weekly Highlights",
+        "total_requests": "Total Requests",
+        "threats_mitigated": "Threats Mitigated",
+        "ddos_protection": "DDoS Protection",
+        "common_bot": "Declared Bot Requests",
+        "of_traffic": "of traffic",
+        "of_total_traffic": "of total traffic",
+        "top_attack": "Top Attack Sources",
+        "attack_chart_note": "15-minute sum · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included",
+        "country_note": "Blocked requests by country · Does not include Anti-DDoS challenged requests",
+        "attack_chart_title": "Threats Mitigated by Attack Type",
+        "antiddos": "Anti-DDoS Protection",
+        "antiddos_chart_note": "15-minute sum · DDoS requests identified by Anti-DDoS AMR",
+        "antiddos_no_data": "No Anti-DDoS AMR metrics available.",
+        "antiddos_not_deployed": "Anti-DDoS AMR not deployed.",
+        "antiddos_title": "Anti-DDoS: Requests Identified",
+        "bot_control": "Bot Control",
+        "good_bots": "✅ Verified (Declared)",
+        "unverified_bots": "⚠️ Unverified (Declared)",
+        "counted": "Counted",
+        "mitigated": "Mitigated",
+        "targeted": "🎯 Advanced Bot Detection",
+        "targeted_mitigated": "🚫 Mitigated",
+        "targeted_counted": "👁️ Counted",
+        "requests": "requests",
+        "bot_disclaimer": "Note: Per-bot distribution charts are based on sampled data. Relative proportions are indicative; absolute numbers may differ from actual counts. Summary totals (card numbers) are exact.",
+        "no_events": "🟢 No events",
+        "events": "event(s)",
+        "blocked": "blocked",
+    },
+    "zh": {
+        "title": "AWS WAF 安全周报",
+        "exec_summary": "摘要",
+        "highlights": "本周概览",
+        "total_requests": "总请求量",
+        "threats_mitigated": "威胁拦截",
+        "ddos_protection": "DDoS 防护",
+        "common_bot": "自声明机器人请求",
+        "of_traffic": "占总流量",
+        "of_total_traffic": "占总流量",
+        "top_attack": "攻击来源",
+        "attack_chart_note": "15 分钟粒度 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则",
+        "country_note": "按国家统计的拦截请求 · 不含 Anti-DDoS 质询请求",
+        "attack_chart_title": "按攻击类型拦截分布",
+        "antiddos": "Anti-DDoS 防护",
+        "antiddos_chart_note": "15 分钟粒度 · Anti-DDoS AMR 识别的 DDoS 请求",
+        "antiddos_no_data": "无 Anti-DDoS AMR 指标数据。",
+        "antiddos_not_deployed": "未部署 Anti-DDoS AMR。",
+        "antiddos_title": "Anti-DDoS：识别的 DDoS 请求",
+        "bot_control": "Bot Control",
+        "good_bots": "✅ 已验证（自声明）",
+        "unverified_bots": "⚠️ 未验证（自声明）",
+        "counted": "监控中",
+        "mitigated": "已拦截",
+        "targeted": "🎯 高级机器人检测",
+        "targeted_mitigated": "🚫 已拦截",
+        "targeted_counted": "👁️ 监控中",
+        "requests": "次请求",
+        "bot_disclaimer": "注：机器人分布图表基于采样数据，比例关系仅供参考，绝对数字可能与实际有偏差。卡片上的汇总数字为精确值。",
+        "no_events": "🟢 本周无事件",
+        "events": "次事件",
+        "blocked": "次拦截",
+    },
+}
+
 
 def _dims(webacl: str, scope: str, region: str, rule: str = "ALL") -> list[dict]:
     """Build CloudWatch metric dimensions. Omit Region for CLOUDFRONT scope."""
@@ -18,6 +88,47 @@ def _dims(webacl: str, scope: str, region: str, rule: str = "ALL") -> list[dict]
     if scope != "CLOUDFRONT":
         d.append({"Name": "Region", "Value": region})
     return d
+
+
+def _build_country_map_svg(countries: list) -> str:
+    """Build inline SVG world map with countries colored by blocked request count."""
+    import os
+    map_path = os.path.join(os.path.dirname(__file__), "world_map_paths.json")
+    try:
+        with open(map_path) as f:
+            map_data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return ""
+    
+    viewbox = map_data["viewBox"]
+    paths = map_data["paths"]
+    
+    # Color scale: top country = darkest red, others proportional
+    max_count = countries[0]["count"] if countries else 1
+    
+    colored = {c["country"].upper() for c in countries[:10] if c["country"].upper() in paths}
+    
+    neutral_paths = []
+    colored_paths = []
+    for cc, d in paths.items():
+        if cc in colored:
+            continue
+        neutral_paths.append(f'<path d="{d}" fill="var(--border)" stroke="var(--card)" stroke-width="0.3" data-tip="{cc}"/>')
+    
+    for c in countries[:10]:
+        cc = c["country"].upper()
+        if cc in paths:
+            intensity = c["count"] / max_count
+            alpha = 0.3 + 0.7 * intensity
+            colored_paths.append(f'<path d="{paths[cc]}" fill="rgba(248,81,73,{alpha:.2f})" stroke="var(--card)" stroke-width="0.3" data-tip="{cc}: {c["count"]:,} blocked"/>')
+    
+    all_paths = neutral_paths + colored_paths
+    
+    svg = f'<svg viewBox="{viewbox}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">{"".join(all_paths)}</svg>'
+    return (
+        f'<div class="map-wrap">{svg}<div class="map-tooltip" id="mapTip"></div></div>'
+        f'<script>document.querySelectorAll("svg path[data-tip]").forEach(p=>{{p.onmouseenter=e=>{{const t=document.getElementById("mapTip");t.textContent=p.dataset.tip;t.style.opacity=1}};p.onmouseleave=()=>{{document.getElementById("mapTip").style.opacity=0}}}})</script>'
+    )
 
 # Human-readable names for AWS WAF rule labels (management-friendly)
 _FRIENDLY_NAMES = {
@@ -66,7 +177,7 @@ REPORT_TEMPLATE = """\
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>WAF ROI Report — {webacl_name}</title>
+<title>{L_title} — {webacl_name}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
@@ -81,9 +192,9 @@ h2 {{ color: var(--accent); margin: 2rem 0 1rem; border-bottom: 1px solid var(--
 .theme-toggle {{ position: fixed; top: 1rem; right: 1rem; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .4rem .8rem; cursor: pointer; color: var(--fg); font-size: .85rem; }}
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1rem 0; }}
 .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; }}
-.card .label {{ color: var(--muted); font-size: .85rem; margin-bottom: .3rem; }}
+.card .label {{ color: var(--muted); font-size: 1rem; margin-bottom: .3rem; }}
 .card .value {{ font-size: 1.8rem; font-weight: 700; }}
-.card .change {{ font-size: .85rem; margin-top: .3rem; }}
+.card .change {{ font-size: 1rem; margin-top: .3rem; }}
 .up {{ color: var(--red); }}
 .down {{ color: var(--green); }}
 .neutral {{ color: var(--muted); }}
@@ -93,122 +204,85 @@ td {{ padding: .5rem .8rem; border-top: 1px solid var(--border); }}
 .chart-container {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1rem 0; }}
 canvas {{ max-height: 300px; }}
 .highlight {{ background: var(--accent); color: #fff; padding: .1rem .4rem; border-radius: 3px; font-weight: 600; }}
+svg path[data-tip]:hover {{ opacity: 0.8; cursor: pointer; }}
+.map-wrap {{ position: relative; }}
+.map-tooltip {{ position: absolute; top: 8px; right: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: .3rem .6rem; font-size: 1rem; color: var(--fg); pointer-events: none; opacity: 0; transition: opacity .15s; }}
+.map-wrap:has(path:hover) .map-tooltip {{ opacity: 1; }}
 .summary p {{ margin-bottom: 1rem; line-height: 1.8; }}
 .summary strong {{ color: var(--accent); }}
-.roi-box {{ background: var(--card); border: 2px solid var(--green); border-radius: 8px; padding: 1.5rem; margin: 1rem 0; text-align: center; }}
-.roi-box .value {{ font-size: 2.5rem; font-weight: 700; color: var(--green); }}
+.roi-box {{ background: var(--card); border: 2px solid var(--green); border-radius: 8px; padding: 1.2rem; }}
+.roi-box .value {{ font-size: 1.8rem; font-weight: 700; color: var(--green); }}
 @media print {{ .theme-toggle {{ display: none; }} }}
 </style>
 </head>
 <body>
 <button class="theme-toggle" onclick="toggleTheme()">🌓 Toggle Theme</button>
-<h1>AWS WAF Weekly Business Report</h1>
+<h1>{L_title}</h1>
 <p class="subtitle">{webacl_name} — {date_range}</p>
 
-<h2>Executive Summary</h2>
-<div class="summary">{executive_summary}</div>
+<h2>{L_exec_summary}</h2>
+<div class="summary"><p>{executive_summary}</p></div>
 
-<h2>Weekly Highlights</h2>
+<h2>{L_highlights}</h2>
 <div class="grid">
-  <div class="roi-box"><div class="label">Threats Mitigated</div><div class="value">{threats_mitigated}</div><div class="change">Blocked + Challenged</div></div>
-  <div class="card"><div class="label">Challenges Issued</div><div class="value">{challenge_total}</div><div class="change">{challenge_effectiveness}</div></div>
-  <div class="card"><div class="label">Bot Requests Identified</div><div class="value">{bot_requests}</div><div class="change">{bot_pct}% of total traffic</div></div>
-  <div class="card"><div class="label">Attack Requests Blocked</div><div class="value">{blocked_requests}</div><div class="change">{block_rate}% block rate</div></div>
+  <div class="roi-box"><div class="label">{L_total_requests}</div><div class="value">{total_requests}</div><div class="change {total_change_class}">{total_change}</div></div>
+  <div class="roi-box"><div class="label">{L_threats_mitigated}</div><div class="value">{threats_mitigated}</div><div class="change">{mitigated_pct}% {L_of_traffic}</div></div>
+  <div class="card"><div class="label">{L_ddos_protection}</div><div class="value">{ddos_status}</div></div>
+  <div class="card"><div class="label">{L_common_bot}</div><div class="value">{bot_requests}</div><div class="change">{bot_pct}% {L_of_total_traffic}</div></div>
 </div>
 
+<div class="chart-container"><canvas id="attackChart"></canvas></div>
+<p style="color:var(--muted);font-size:1rem;text-align:center;">{L_attack_chart_note}</p>
+
+<h2>{L_top_attack}</h2>
+<div class="chart-container">{country_map_svg}</div>
+<p style="color:var(--muted);font-size:1rem;text-align:center;">{L_country_note}</p>
+
 {antiddos_section}
+{antiddos_chart_section}
 
 {bot_section}
 
-<h2>Traffic Overview</h2>
-<div class="grid">
-  <div class="card"><div class="label">Total Requests</div><div class="value">{total_requests}</div><div class="change {total_change_class}">{total_change}</div></div>
-  <div class="card"><div class="label">Allowed</div><div class="value">{allowed_requests}</div></div>
-  <div class="card"><div class="label">Blocked</div><div class="value">{blocked_requests}</div><div class="change {blocked_change_class}">{blocked_change}</div></div>
-  <div class="card"><div class="label">Challenged</div><div class="value">{challenge_count}</div></div>
-  <div class="card"><div class="label">CAPTCHA</div><div class="value">{captcha_count}</div></div>
-</div>
-
-<div class="chart-container"><canvas id="dailyChart"></canvas></div>
-<p style="color:var(--muted);font-size:.8rem;text-align:center;">15-minute sum · Scroll to zoom, drag to pan</p>
-
-<div class="chart-container"><canvas id="protectionChart"></canvas></div>
-<p style="color:var(--muted);font-size:.8rem;text-align:center;">Daily totals · Threats mitigated by AWS WAF</p>
-
-<h2>Top Attack Sources (Countries)</h2>
-<table>
-<tr><th>Country</th><th>Blocked Requests</th><th>% of Total Blocked</th></tr>
-{country_rows}
-</table>
-
-<h2>Protection Breakdown (Rules)</h2>
-<table>
-<tr><th>Rule</th><th>Requests Handled</th><th>Action</th></tr>
-{rule_rows}
-</table>
-
 <script>
-const thisWeek = {daily_data_json};
+const attackData = {attack_data_json};
 const chartTextColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-text').trim() || '#e6edf3';
 
-const trafficChart = new Chart(document.getElementById('dailyChart'), {{
-  type: 'line',
-  data: {{
-    labels: thisWeek.map(d => d.date),
-    datasets: [
-      {{ label: 'Allowed', data: thisWeek.map(d => d.allowed || 0), borderColor: '#3fb950', borderWidth: 1.5, backgroundColor: 'rgba(63,185,80,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-      {{ label: 'Blocked', data: thisWeek.map(d => d.blocked || 0), borderColor: '#f85149', borderWidth: 1.5, backgroundColor: 'rgba(248,81,73,0.1)', fill: true, tension: 0.3, pointRadius: 0 }},
-    ]
-  }},
-  options: {{
-    responsive: true,
-    interaction: {{ mode: 'index', intersect: false }},
-    plugins: {{
-      title: {{ display: true, text: 'Traffic Overview ({webacl_name})', color: chartTextColor }},
-      legend: {{ labels: {{ color: chartTextColor }} }},
-      tooltip: {{ mode: 'index', intersect: false, callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }},
-      zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }}
-    }},
-    scales: {{
-      x: {{ ticks: {{ color: chartTextColor, maxTicksLimit: 14 }} }},
-      y: {{ type: 'logarithmic', ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests (log scale)', color: chartTextColor }} }}
-    }}
-  }}
-}});
+// Attack type color palette
+const attackColors = {{
+  'Volumetric': {{ border: '#f85149', bg: 'rgba(248,81,73,0.6)' }},
+  'BadBots': {{ border: '#d29922', bg: 'rgba(210,153,34,0.6)' }},
+  'XSS': {{ border: '#e3b341', bg: 'rgba(227,179,65,0.6)' }},
+  'GenericLFI': {{ border: '#a371f7', bg: 'rgba(163,113,247,0.6)' }},
+  'KnownBadInputs': {{ border: '#58a6ff', bg: 'rgba(88,166,255,0.6)' }},
+  'Other': {{ border: '#8b949e', bg: 'rgba(139,148,158,0.4)' }},
+}};
+const defaultColor = {{ border: '#79c0ff', bg: 'rgba(121,192,255,0.5)' }};
 
-// Daily Protection chart — aggregate by day
-const dailyMap = {{}};
-thisWeek.forEach(d => {{
-  const day = d.date.substring(0, 5);
-  if (!dailyMap[day]) dailyMap[day] = {{ blocked: 0, challenged: 0, captcha: 0 }};
-  dailyMap[day].blocked += (d.blocked || 0);
-  dailyMap[day].challenged += (d.challenged || 0);
-  dailyMap[day].captcha += (d.captcha || 0);
-}});
-const dailyDays = Object.keys(dailyMap).sort();
-new Chart(document.getElementById('protectionChart'), {{
-  type: 'bar',
-  data: {{
-    labels: dailyDays,
-    datasets: [
-      {{ label: 'Blocked', data: dailyDays.map(d => dailyMap[d].blocked), backgroundColor: 'rgba(248,81,73,0.8)' }},
-      {{ label: 'Challenged', data: dailyDays.map(d => dailyMap[d].challenged), backgroundColor: 'rgba(210,153,34,0.8)' }},
-      {{ label: 'CAPTCHA', data: dailyDays.map(d => dailyMap[d].captcha), backgroundColor: 'rgba(163,113,247,0.8)' }},
-    ]
-  }},
-  options: {{
-    responsive: true,
-    plugins: {{
-      title: {{ display: true, text: 'Daily Protection (Threats Mitigated)', color: chartTextColor }},
-      legend: {{ labels: {{ color: chartTextColor }} }},
-      tooltip: {{ mode: 'index', intersect: false, callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }}
-    }},
-    scales: {{
-      x: {{ stacked: true, ticks: {{ color: chartTextColor }} }},
-      y: {{ stacked: true, beginAtZero: true, ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests', color: chartTextColor }} }}
+// Chart 1: Attack Types stacked area
+if (attackData.labels && attackData.labels.length > 0) {{
+  const datasets = Object.entries(attackData.series).map(([name, values]) => {{
+    const c = attackColors[name] || defaultColor;
+    return {{ label: name, data: values, borderColor: c.border, backgroundColor: c.bg, borderWidth: 1, fill: true, tension: 0.2, pointRadius: 0 }};
+  }});
+  new Chart(document.getElementById('attackChart'), {{
+    type: 'line',
+    data: {{ labels: attackData.labels, datasets: datasets }},
+    options: {{
+      responsive: true,
+      interaction: {{ mode: 'index', intersect: false }},
+      plugins: {{
+        title: {{ display: true, text: '{L_attack_chart_title} ({webacl_name})', color: chartTextColor }},
+        legend: {{ labels: {{ color: chartTextColor }} }},
+        tooltip: {{ mode: 'index', intersect: false, callbacks: {{ label: function(ctx) {{ return ctx.dataset.label + ': ' + ctx.raw.toLocaleString(); }} }} }},
+        zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: 'x' }}, pan: {{ enabled: true, mode: 'x' }} }}
+      }},
+      scales: {{
+        x: {{ ticks: {{ color: chartTextColor, maxTicksLimit: 14 }} }},
+        y: {{ stacked: true, beginAtZero: true, ticks: {{ color: chartTextColor }}, title: {{ display: true, text: 'Requests', color: chartTextColor }} }}
+      }}
     }}
-  }}
-}});
+  }});
+}}
 
 function toggleTheme() {{
   const root = document.documentElement;
@@ -217,7 +291,7 @@ function toggleTheme() {{
   const c = getComputedStyle(root).getPropertyValue('--chart-text').trim() || '#1f2328';
   Chart.helpers.each(Chart.instances, function(chart) {{
     chart.options.plugins.title.color = c;
-    chart.options.plugins.legend.labels.color = c;
+    if (chart.options.plugins.legend.labels) chart.options.plugins.legend.labels.color = c;
     chart.options.scales.x.ticks.color = c;
     chart.options.scales.y.ticks.color = c;
     if (chart.options.scales.y.title) chart.options.scales.y.title.color = c;
@@ -232,21 +306,19 @@ document.documentElement.classList.add('{default_theme}');
 
 
 @tool
-def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: str = "dark") -> str:
-    """Generate an AWS WAF ROI report as HTML with charts showing protection value (ROI).
-
-    Queries CloudWatch Metrics for the past 7 days and produces an HTML report
-    focused on demonstrating AWS WAF value: threats mitigated, challenge effectiveness,
-    bot detection rates, and week-over-week trends.
+def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: str = "dark", lang: str = "zh") -> str:
+    """Generate an AWS WAF Weekly Summary as HTML with charts showing security posture.
 
     Args:
         webacl_name: Name of the WebACL to report on.
         scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
-        theme: Default theme — "dark" (for projection) or "light" (for PDF). User can toggle in browser.
+        theme: Default theme — "dark" (for projection) or "light" (for PDF).
+        lang: Language for report labels — "zh" (Chinese) or "en" (English).
 
     Returns:
         Path to the generated HTML file, or error message.
     """
+    L = _I18N.get(lang, _I18N["en"])
     from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
@@ -260,9 +332,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region)
     last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region)
     daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end, scope, region)
-    daily_last_week = _get_daily_breakdown(cw, webacl_name, start_last_week, start_this_week, scope, region)
 
-    # 5-min resolution traffic for chart (this week + last week)
+    # Traffic timeseries (kept for data_lines spike detection)
     traffic_5min = _get_traffic_timeseries(cw, webacl_name, start_this_week, end)
     countries = _get_top_countries(cw, webacl_name, start_this_week, end)
     rules = _get_top_rules(cw, webacl_name, start_this_week, end)
@@ -298,13 +369,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         except Exception:
             pass
 
-    # Bot requests — narrow matching to avoid false matches (e.g., VulnerabilityCategory)
-    bot_keywords = ("CategoryHttpLibrary", "CategoryBot", "CategorySocialMedia", "CategorySearchEngine",
-                    "CategorySeo", "CategoryAdvertising", "CategoryArchiver", "CategoryContentFetcher",
-                    "SignalNonBrowserUserAgent", "SignalAutomatedBrowser", "TGT_")
-    bot_rules = [r for r in rules if any(k in r["rule"] for k in bot_keywords) and r["action"] == "COUNT"]
-    bot_requests = bot_rules[0]["count"] if bot_rules else 0
-    bot_pct = f"{(bot_requests / total_this * 100):.1f}" if total_this > 0 else "0"
+    # Bot requests — will be computed in bot section below, default to 0
+    bot_requests = 0
 
     # Threats mitigated = blocked + challenged
     threats_mitigated = this_week["blocked"] + challenge_total
@@ -438,7 +504,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     if ddos_chart_data["labels"]:
                         antiddos_section += (
                             f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
-                            f'<p style="color:var(--muted);font-size:.8rem;text-align:center;">15-minute sum · Scroll to zoom, drag to pan</p>'
+                            f'<p style="color:var(--muted);font-size:1rem;text-align:center;">15-minute sum · Scroll to zoom, drag to pan</p>'
                             f'<script>'
                             f'(function(){{'
                             f'const ddosData = {_json.dumps(ddos_chart_data)};'
@@ -467,344 +533,257 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         except Exception:
             pass
 
-    # Bot Control section — query label metrics for bot classification
+    # Bot Control section — Free Bot Visibility metrics + label metrics
     bot_section = ""
-    bot_data = {}
-    bot_orgs = {}
-    bot_categories = {}
-    bot_names = {}
-    bot_names_detail = {}
+    bot_requests = 0
     overridden_bots = []
-    common_total_blocked = 0
-    common_total_allowed = 0
-    targeted_total_blocked = 0
-    targeted_total_counted = 0
     if caps.get("bot_control") != "none":
         try:
-            # Query main bot-control namespace (has multiple LabelNames → SEARCH label = "{LabelName} {MetricName}")
-            bot_label_resp = cw.get_metric_data(
-                MetricDataQueries=[{"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"}],
-                StartTime=start_this_week, EndTime=end,
-            )
-
-            # Parse: label format is "{LabelName} {MetricName}" e.g. "CategoryHttpLibrary AllowedRequests"
-            bot_data = {}
-            for r in bot_label_resp.get("MetricDataResults", []):
-                total = int(sum(r.get("Values", [])))
-                if total <= 0:
-                    continue
-                label = r.get("Label", "")
-                parts = label.split()
-                if len(parts) < 2:
-                    continue
-                name = parts[0]
-                metric = parts[1]  # e.g. AllowedRequests, BlockedRequests, BlockRuleMatch, ChallengeRequests, CountRuleMatch
-                # Normalize metric to action
-                if "Block" in metric:
-                    action = "Blocked"
-                elif "Challenge" in metric:
-                    action = "Challenge"
-                elif "Count" in metric:
-                    action = "Count"
-                else:
-                    action = "Allowed"
-                if name not in bot_data:
-                    bot_data[name] = {}
-                bot_data[name][action] = bot_data[name].get(action, 0) + total
-
-            # Discover bot organizations via list_metrics (SEARCH unreliable for single-LabelName namespaces)
-            bot_orgs = {}
-            org_metrics = cw.list_metrics(
-                Namespace="AWS/WAFV2",
-                Dimensions=[
-                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:organization"},
-                    {"Name": "WebACL", "Value": webacl_name},
-                ],
-            ).get("Metrics", [])
-            # Get unique org names
-            org_names = set()
-            for m in org_metrics:
-                for d in m["Dimensions"]:
-                    if d["Name"] == "LabelName":
-                        org_names.add(d["Value"])
-            # Query each org's total
-            if org_names:
-                org_queries = []
-                for i, org_name in enumerate(list(org_names)[:10]):
-                    org_queries.append({"Id": f"org{i}", "MetricStat": {
-                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                            {"Name": "LabelName", "Value": org_name},
-                            {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:organization"},
-                            {"Name": "WebACL", "Value": webacl_name},
-                        ] + _region_dim}, "Period": 604800, "Stat": "Sum",
-                    }})
-                org_resp = cw.get_metric_data(MetricDataQueries=org_queries, StartTime=start_this_week, EndTime=end)
-                for i, org_name in enumerate(list(org_names)[:10]):
-                    for r in org_resp.get("MetricDataResults", []):
-                        if r.get("Id") == f"org{i}":
-                            total = int(sum(r.get("Values", [])))
-                            if total > 0:
-                                bot_orgs[org_name] = total
-
-            # Human-readable names for bot rules
-            # Detect overridden bot rules (set to Count instead of Block)
-            overridden_bots = []
-            for name, d in bot_data.items():
-                if not (name.startswith("Category") or name.startswith("Signal")):
-                    continue
-                allowed = d.get("Allowed", 0) + d.get("Count", 0)
-                blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
-                if allowed > 0 and blocked == 0:
-                    overridden_bots.append(name)
-                elif allowed > blocked * 5:
-                    overridden_bots.append(name)
-
-            # Classify by prefix: Category*/Signal* = Common, TGT_* = Targeted
-            common_rows = ""
-            common_total_blocked = 0
-            common_total_allowed = 0
-            targeted_rows = ""
-            targeted_total_blocked = 0
-            targeted_total_counted = 0
-
-            for rule_name, d in sorted(bot_data.items(), key=lambda x: sum(x[1].values()), reverse=True):
-                blocked = d.get("Blocked", 0) + d.get("Challenge", 0)
-                counted = d.get("Count", 0)
-                allowed = d.get("Allowed", 0)
-                total_hits = blocked + counted + allowed
-                if total_hits == 0:
-                    continue
-                display_name = _FRIENDLY_NAMES.get(rule_name, rule_name)
-
-                if rule_name.startswith("TGT_"):
-                    targeted_total_blocked += blocked
-                    targeted_total_counted += counted
-                    action_str = f"🚫 {blocked:,} blocked" if blocked > 0 else f"👁️ {counted:,} monitored"
-                    targeted_rows += f"<tr><td>{display_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
-                elif rule_name.startswith("Category") or rule_name.startswith("Signal"):
-                    common_total_blocked += blocked
-                    common_total_allowed += allowed + counted
-                    action_str = "🚫 Blocked" if blocked > 0 else "👁️ Monitored"
-                    common_rows += f"<tr><td>{display_name}</td><td>{total_hits:,}</td><td>{action_str}</td></tr>\n"
-
-            # Bot organizations detected
-            org_rows = ""
-            for org, count in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:10]:
-                org_rows += f"<tr><td>{org}</td><td>{count:,}</td></tr>\n"
-
-            # Discover bot categories via list_metrics (bot:category namespace)
-            bot_categories = {}
-            cat_metrics = cw.list_metrics(
-                Namespace="AWS/WAFV2",
-                Dimensions=[
-                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
-                    {"Name": "WebACL", "Value": webacl_name},
-                ],
-            ).get("Metrics", [])
-            cat_names = set()
-            for m in cat_metrics:
-                for d in m["Dimensions"]:
-                    if d["Name"] == "LabelName":
-                        cat_names.add(d["Value"])
-            if cat_names:
-                cat_queries = []
-                for i, cat_name in enumerate(list(cat_names)[:20]):
-                    cat_queries.append({"Id": f"cat{i}", "MetricStat": {
-                        "Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                            {"Name": "LabelName", "Value": cat_name},
-                            {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:category"},
-                            {"Name": "WebACL", "Value": webacl_name},
-                        ] + _region_dim}, "Period": 604800, "Stat": "Sum",
-                    }})
-                cat_resp = cw.get_metric_data(MetricDataQueries=cat_queries, StartTime=start_this_week, EndTime=end)
-                for i, cat_name in enumerate(list(cat_names)[:20]):
-                    for r in cat_resp.get("MetricDataResults", []):
-                        if r.get("Id") == f"cat{i}":
-                            total = int(sum(r.get("Values", [])))
-                            if total > 0:
-                                bot_categories[cat_name] = total
-
-            # Discover bot names via list_metrics (bot:name namespace)
-            bot_names_detail = {}  # {name: {allowed: N, blocked: N, challenged: N}}
-            name_metrics = cw.list_metrics(
-                Namespace="AWS/WAFV2",
-                Dimensions=[
-                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
-                    {"Name": "WebACL", "Value": webacl_name},
-                ],
-            ).get("Metrics", [])
-            # Group by bot name and metric
-            name_metric_map = {}  # {(name, metric): True}
-            for m in name_metrics:
-                dims = {d["Name"]: d["Value"] for d in m["Dimensions"]}
-                bn = dims.get("LabelName", "")
-                if bn:
-                    name_metric_map[(bn, m["MetricName"])] = True
-            # Query all
-            name_queries = []
-            name_query_keys = []
-            for (bn, metric), _ in list(name_metric_map.items())[:30]:
-                qid = f"bn{len(name_queries)}"
-                name_queries.append({"Id": qid, "MetricStat": {
+            # 1. Precise totals from label metrics
+            verified_allowed = 0
+            unverified_allowed = 0
+            unverified_blocked = 0
+            unverified_challenged = 0
+            unverified_captchaed = 0
+            label_queries = []
+            for i, (label, metric) in enumerate([
+                ("verified", "AllowedRequests"), ("unverified", "AllowedRequests"),
+                ("unverified", "BlockedRequests"), ("unverified", "ChallengeRequests"),
+                ("unverified", "CaptchaRequests"),
+            ]):
+                label_queries.append({"Id": f"bl{i}", "MetricStat": {
                     "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric, "Dimensions": [
-                        {"Name": "LabelName", "Value": bn},
-                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot:name"},
+                        {"Name": "LabelName", "Value": label},
+                        {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
                         {"Name": "WebACL", "Value": webacl_name},
                     ] + _region_dim}, "Period": 604800, "Stat": "Sum",
                 }})
-                name_query_keys.append((qid, bn, metric))
-            if name_queries:
-                name_resp = cw.get_metric_data(MetricDataQueries=name_queries, StartTime=start_this_week, EndTime=end)
-                for r in name_resp.get("MetricDataResults", []):
-                    for qid, bn, metric in name_query_keys:
-                        if r.get("Id") == qid:
-                            total = int(sum(r.get("Values", [])))
-                            if total > 0:
-                                if bn not in bot_names_detail:
-                                    bot_names_detail[bn] = {"allowed": 0, "blocked": 0, "challenged": 0}
-                                if "Allowed" in metric:
-                                    bot_names_detail[bn]["allowed"] += total
-                                elif "Blocked" in metric:
-                                    bot_names_detail[bn]["blocked"] += total
-                                elif "Challenge" in metric:
-                                    bot_names_detail[bn]["challenged"] += total
-            # For backward compat (data_lines uses bot_names)
-            bot_names = {bn: sum(d.values()) for bn, d in bot_names_detail.items()}
+            bl_resp = cw.get_metric_data(MetricDataQueries=label_queries, StartTime=start_this_week, EndTime=end)
+            for r in bl_resp.get("MetricDataResults", []):
+                val = int(sum(r.get("Values", [])))
+                if r["Id"] == "bl0": verified_allowed = val
+                elif r["Id"] == "bl1": unverified_allowed = val
+                elif r["Id"] == "bl2": unverified_blocked = val
+                elif r["Id"] == "bl3": unverified_challenged = val
+                elif r["Id"] == "bl4": unverified_captchaed = val
 
-            if common_rows or targeted_rows:
-                bot_section = '<h2>Bot Control</h2>'
+            # 2. Targeted bot control totals from label metrics
+            targeted_blocked = 0
+            targeted_challenged = 0
+            targeted_counted = 0
+            tgt_resp = cw.get_metric_data(
+                MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"}],
+                StartTime=start_this_week, EndTime=end,
+            )
+            tgt_rules = {}  # {rule_name: {blocked, challenged, captchaed, counted}}
+            for r in tgt_resp.get("MetricDataResults", []):
+                total = int(sum(r.get("Values", [])))
+                if total <= 0:
+                    continue
+                parts = r.get("Label", "").split()
+                if len(parts) < 2 or not parts[0].startswith("TGT_"):
+                    continue
+                rule_name = parts[0]
+                metric = parts[1]
+                if rule_name not in tgt_rules:
+                    tgt_rules[rule_name] = {"blocked": 0, "challenged": 0, "captchaed": 0, "counted": 0}
+                if "Block" in metric and "Match" not in metric:
+                    tgt_rules[rule_name]["blocked"] += total
+                elif "Challenge" in metric and "Match" not in metric:
+                    tgt_rules[rule_name]["challenged"] += total
+                elif "Captcha" in metric and "Match" not in metric:
+                    tgt_rules[rule_name]["captchaed"] += total
+                elif "Count" in metric:
+                    tgt_rules[rule_name]["counted"] += total
+            targeted_mitigated = 0
+            targeted_counted = 0
+            for d in tgt_rules.values():
+                targeted_mitigated += d["blocked"] + d["challenged"] + d["captchaed"]
+                targeted_counted += d["counted"]
 
-                # Query verified/unverified totals from metrics
-                verified_total = 0
-                unverified_total = 0
-                try:
-                    vu_resp = cw.get_metric_data(
-                        MetricDataQueries=[
-                            {"Id": "vf", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                                {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
-                                {"Name": "LabelName", "Value": "verified"},
-                                {"Name": "WebACL", "Value": webacl_name},
-                            ] + _region_dim}, "Period": 604800, "Stat": "Sum"}},
-                            {"Id": "uv", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
-                                {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
-                                {"Name": "LabelName", "Value": "unverified"},
-                                {"Name": "WebACL", "Value": webacl_name},
-                            ] + _region_dim}, "Period": 604800, "Stat": "Sum"}},
-                        ],
-                        StartTime=start_this_week, EndTime=end,
-                    )
-                    for r in vu_resp.get("MetricDataResults", []):
-                        val = int(sum(r.get("Values", [])))
-                        if r["Id"] == "vf":
-                            verified_total = val
-                        elif r["Id"] == "uv":
-                            unverified_total = val
-                except Exception:
-                    pass
+            # 3. Free Bot Visibility (sampled) — per-bot classification
+            fbv_resp = cw.get_metric_data(
+                MetricDataQueries=[
+                    {"Id": "ba", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleAllowedRequest\"', 'Sum', 604800)"},
+                    {"Id": "bb", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleBlockedRequest\"', 'Sum', 604800)"},
+                    {"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleChallengeRequest\"', 'Sum', 604800)"},
+                    {"Id": "bd", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleCaptchaRequest\"', 'Sum', 604800)"},
+                ],
+                StartTime=start_this_week, EndTime=end,
+            )
+            bots = {}
+            for r in fbv_resp.get("MetricDataResults", []):
+                total = int(sum(r.get("Values", [])))
+                if total <= 0:
+                    continue
+                parts = r.get("Label", "").split()
+                if len(parts) < 6:
+                    continue
+                bot_name = parts[1]
+                if bot_name in ("ALL_BOTS", "NON_BOT"):
+                    continue
+                if bot_name not in bots:
+                    bots[bot_name] = {"category": parts[0].replace("bot:category:", ""), "org": parts[3],
+                                      "verified": parts[4] == "bot:verified",
+                                      "s_allowed": 0, "s_blocked": 0, "s_challenged": 0}
+                if r["Id"] == "ba": bots[bot_name]["s_allowed"] += total
+                elif r["Id"] in ("bb",): bots[bot_name]["s_blocked"] += total
+                elif r["Id"] in ("bc", "bd"): bots[bot_name]["s_challenged"] += total
 
-                # Query per-bot-name verification + category from logs
-                bot_verification = {}  # {name: {"vs": ..., "category": ...}}
-                if log_group:
-                    try:
-                        bot_ver_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                            'filter @message like "bot-control:bot:name:" | parse @message /bot:name:(?<botName>[a-z0-9_]+)/ | parse @message /bot:(?<vs>verified|unverified)/ | parse @message /bot:category:(?<category>[a-z_]+)/ | stats count(*) as cnt by botName, vs, category | sort cnt desc',
-                            return_rows=True)
-                        for row in bot_ver_result or []:
-                            d = {f["field"]: f["value"] for f in row}
-                            bn = d.get("botName", "")
-                            if bn:
-                                bot_verification[bn] = {"vs": d.get("vs", ""), "category": d.get("category", "")}
-                    except Exception:
-                        pass
+            # 4. Group bots
+            good_bots = [(n, b) for n, b in bots.items() if b["verified"] and b["s_blocked"] == 0]
+            bad_bots = [(n, b) for n, b in bots.items() if (b["s_blocked"] > 0 or b["s_challenged"] > 0) and b["s_allowed"] == 0 and not b["verified"]]
+            counted_bots = [(n, b) for n, b in bots.items() if not b["verified"] and b["s_allowed"] > 0]
+            good_bots.sort(key=lambda x: x[1]["s_allowed"], reverse=True)
+            bad_bots.sort(key=lambda x: x[1]["s_blocked"] + x[1]["s_challenged"], reverse=True)
+            counted_bots.sort(key=lambda x: x[1]["s_allowed"], reverse=True)
 
-                # Summary cards
+            # 5. Compute percentages for counted bots
+            counted_sampled_total = sum(b["s_allowed"] for _, b in counted_bots)
+
+            mitigated_bot_total = unverified_blocked + unverified_challenged + unverified_captchaed
+            bot_requests = verified_allowed + unverified_allowed + mitigated_bot_total
+
+            # 6. Build HTML
+            def _bot_display(name, b):
+                display = name.replace("_", " ").title()
+                org = f" ({b['org']})" if b["org"] != "UNSPECIFIED" else ""
+                return f"{display}{org}"
+
+            good_list = ", ".join(_bot_display(n, b) for n, b in good_bots[:3])
+            bad_list = ", ".join(_bot_display(n, b) for n, b in bad_bots[:5])
+
+            # Counted bots chart data (horizontal bar with percentages)
+            counted_chart = {"labels": [], "values": []}
+            for n, b in counted_bots[:6]:
+                pct = round(b["s_allowed"] / max(counted_sampled_total, 1) * 100)
+                counted_chart["labels"].append(n.replace("_", " ").title())
+                counted_chart["values"].append(pct)
+
+            bot_section = f'<h2>{L["bot_control"]}</h2>'
+            bot_section += '<div class="grid" style="grid-template-columns: 1fr 1fr; align-items: stretch; overflow: hidden;">'
+
+            # Good Bots doughnut chart
+            good_chart = {"labels": [], "values": []}
+            for n, b in good_bots[:8]:
+                good_chart["labels"].append(n.replace("_", " ").title())
+                good_chart["values"].append(b["s_allowed"])
+            bot_section += (
+                f'<div class="card" style="border-left:3px solid var(--green)">'
+                f'<div class="label">{L["good_bots"]} — <strong>{verified_allowed:,}</strong></div>'
+                f'<div class="chart-container" style="padding:0.5rem"><canvas id="goodBotChart"></canvas></div>'
+                f'</div>'
+            )
+
+            # Unverified Bots stacked horizontal bar (counted + mitigated per bot)
+            unverified_total_all = unverified_allowed + mitigated_bot_total
+            all_unverified = {}
+            for n, b in counted_bots + bad_bots:
+                if n not in all_unverified:
+                    all_unverified[n] = {"s_allowed": 0, "s_blocked": 0, "s_challenged": 0}
+                all_unverified[n]["s_allowed"] += b["s_allowed"]
+                all_unverified[n]["s_blocked"] += b["s_blocked"]
+                all_unverified[n]["s_challenged"] += b["s_challenged"]
+            sorted_unverified = sorted(all_unverified.items(), key=lambda x: sum(x[1].values()), reverse=True)[:8]
+
+            unverified_chart = {"labels": [], "counted": [], "mitigated": []}
+            for n, b in sorted_unverified:
+                bot_total = b["s_allowed"] + b["s_blocked"] + b["s_challenged"]
+                counted_pct = round(b["s_allowed"] / max(bot_total, 1) * 100)
+                mitigated_pct_bot = 100 - counted_pct
+                unverified_chart["labels"].append(f'{n.replace("_", " ").title()}')
+                unverified_chart["counted"].append(b["s_allowed"])
+                unverified_chart["mitigated"].append(b["s_blocked"] + b["s_challenged"])
+
+            bot_section += (
+                f'<div class="card" style="border-left:3px solid var(--accent);overflow:hidden">'
+                f'<div class="label">{L["unverified_bots"]} — <strong>{unverified_total_all:,}</strong></div>'
+                f'<div class="chart-container" style="padding:0.5rem;overflow:hidden"><canvas id="unverifiedBotChart"></canvas></div>'
+                f'</div>'
+            )
+
+            bot_section += '</div>'
+
+            # Charts JS
+            bot_section += (
+                f'<script>(function(){{'
+                f'const c = getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#e6edf3";'
+                f'const colors = ["#3fb950","#58a6ff","#d29922","#a371f7","#79c0ff","#f0883e","#8b949e","#db61a2"];'
+                f'const gbd = {json.dumps(good_chart)};'
+                f'new Chart(document.getElementById("goodBotChart"), {{'
+                f'  type: "doughnut",'
+                f'  data: {{ labels: gbd.labels, datasets: [{{ data: gbd.values, backgroundColor: colors.slice(0, gbd.labels.length), borderWidth: 0 }}] }},'
+                f'  options: {{ responsive: true, plugins: {{ legend: {{ position: "right", labels: {{ color: c, boxWidth: 12 }} }}, tooltip: {{ enabled: false }} }} }}'
+                f'}});'
+                f'const ubd = {json.dumps(unverified_chart)};'
+                f'new Chart(document.getElementById("unverifiedBotChart"), {{'
+                f'  type: "bar",'
+                f'  data: {{ labels: ubd.labels, datasets: ['
+                f'    {{ label: "{L["counted"]}", data: ubd.counted, backgroundColor: "rgba(210,153,34,0.7)" }},'
+                f'    {{ label: "{L["mitigated"]}", data: ubd.mitigated, backgroundColor: "rgba(248,81,73,0.7)" }}'
+                f'  ] }},'
+                f'  options: {{ indexAxis: "y", responsive: true, plugins: {{ legend: {{ labels: {{ color: c, boxWidth: 12 }} }}, tooltip: {{ callbacks: {{ label: function(ctx) {{ return ctx.dataset.label; }} }} }} }}, scales: {{ x: {{ stacked: true, ticks: {{ color: c }} }}, y: {{ stacked: true, ticks: {{ color: c }} }} }} }}'
+                f'}});'
+                f'}})();</script>'
+            )
+
+            # Disclaimer for sampled charts (between common bots and targeted)
+            bot_section += f'<p style="color:var(--muted);font-size:1rem;margin:1rem 0 2rem">{L["bot_disclaimer"]}</p>'
+
+            # Targeted Bot Detection section — progress bar style
+            if targeted_mitigated + targeted_counted > 0:
+                tgt_total = targeted_mitigated + targeted_counted
+                tgt_pct = round(targeted_mitigated / max(tgt_total, 1) * 100)
                 bot_section += (
-                    f'<div class="grid">'
-                    f'<div class="card"><div class="label">Verified Bots (legitimate)</div><div class="value">{verified_total:,}</div></div>'
-                    f'<div class="card"><div class="label">Unverified Bots</div><div class="value">{unverified_total:,}</div></div>'
-                    f'<div class="card"><div class="label">Illegitimate Bots Blocked</div><div class="value">{common_total_blocked:,}</div></div>'
+                    f'<div class="card" style="margin-top:1rem;padding:5rem 1.5rem">'
+                    f'<div class="label" style="font-size:1rem">{L["targeted"]} — <strong>{tgt_total:,}</strong> {L["requests"]}</div>'
+                    f'<div style="background:var(--border);border-radius:6px;height:40px;margin:1rem 0;overflow:hidden;display:flex">'
+                    f'<div style="width:{tgt_pct}%;background:#f85149;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;font-weight:600">{targeted_mitigated:,}</div>'
+                    f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1rem">{targeted_counted:,}</div>'
+                    f'</div>'
+                    f'<div style="display:flex;justify-content:space-between;font-size:1rem;color:var(--muted)">'
+                    f'<span>{L["targeted_mitigated"]} ({tgt_pct}%)</span>'
+                    f'<span>{L["targeted_counted"]} ({100-tgt_pct}%)</span>'
+                    f'</div>'
                     f'</div>'
                 )
-
-                # Build unified bot table: Name / Category / Verification / Requests / Action
-                _CAT_FRIENDLY = {"http_library": "HTTP Library", "monitoring": "Monitoring",
-                                 "search_engine": "Search Engine", "seo": "SEO", "advertising": "Advertising",
-                                 "social_media": "Social Media", "ai": "AI Crawler", "content_fetcher": "Content Fetcher",
-                                 "scraping_framework": "Scraper", "security": "Security Scanner",
-                                 "archiver": "Archiver", "link_checker": "Link Checker", "miscellaneous": "Misc"}
-                name_rows = ""
-                if bot_names_detail:
-                    for bn, d in sorted(bot_names_detail.items(), key=lambda x: sum(x[1].values()), reverse=True)[:15]:
-                        total = d["allowed"] + d["blocked"] + d["challenged"]
-                        display = bn.replace("_", " ").title()
-                        info = bot_verification.get(bn, {})
-                        vs = info.get("vs", "")
-                        cat = info.get("category", "")
-                        vs_badge = "✅ Verified" if vs == "verified" else ("⚠️ Unverified" if vs == "unverified" else "—")
-                        cat_display = _CAT_FRIENDLY.get(cat, cat.replace("_", " ").title()) if cat else "—"
-                        if d["blocked"] > 0 and d["allowed"] == 0:
-                            action = "🚫 Blocked"
-                        elif d["blocked"] > 0 and d["allowed"] > 0:
-                            action = f"🚫 {d['blocked']:,} blocked, ✅ {d['allowed']:,} allowed"
-                        elif d["challenged"] > 0:
-                            action = "⚡ Challenged"
-                        else:
-                            action = "✅ Allowed"
-                        name_rows += f"<tr><td>{display}</td><td>{cat_display}</td><td>{vs_badge}</td><td>{total:,}</td><td>{action}</td></tr>\n"
-
-                # Add NonBrowserUA without bot:name (the "neither" case — fake bot UAs)
-                if log_group:
-                    try:
-                        nb_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                            'filter @message like "SignalNonBrowserUserAgent" | parse @message /bot:name:(?<bn>[a-z0-9_]+)/ | stats count(*) as total, sum(strlen(bn) > 0) as named',
-                            return_full=True)
-                        nb_total_log = int(float(nb_result.get("total", 0))) if nb_result else 0
-                        nb_named = int(float(nb_result.get("named", 0))) if nb_result else 0
-                        nonbrowser_unnamed = nb_total_log - nb_named
-                    except Exception:
-                        nonbrowser_unnamed = 0
-                else:
-                    nonbrowser_unnamed = 0
-                if nonbrowser_unnamed > 0:
-                    name_rows += f'<tr><td><em>Unknown Non-Browser UA</em></td><td>Non-Browser</td><td>— (neither)</td><td>{nonbrowser_unnamed:,}</td><td>👁️ Monitored</td></tr>\n'
-
-                if name_rows:
-                    bot_section += (
-                        f'<h3>Individual Bots</h3>'
-                        f'<table><tr><th>Bot Name</th><th>Category</th><th>Verification</th><th>Requests</th><th>Action</th></tr>{name_rows}</table>'
-                    )
-
-                # Targeted detection rules
-                if targeted_rows:
-                    bot_section += (
-                        f'<h3>Targeted Detection (behavioral analysis)</h3>'
-                        f'<div class="grid">'
-                        f'<div class="card"><div class="label">Advanced Bots Blocked/Challenged</div><div class="value">{targeted_total_blocked:,}</div></div>'
-                        f'<div class="card"><div class="label">Suspicious (Counted)</div><div class="value">{targeted_total_counted:,}</div></div>'
-                        f'</div>'
-                        f'<table><tr><th>Detection Rule</th><th>Requests</th><th>Action</th></tr>{targeted_rows}</table>'
-                    )
         except Exception:
             pass
 
-    country_rows = ""
-    for c in countries[:10]:
-        pct = f"{c['count'] / max(this_week['blocked'], 1) * 100:.1f}"
-        country_rows += f"<tr><td>{c['country']}</td><td>{c['count']:,}</td><td>{pct}%</td></tr>\n"
+    # Attack type timeseries for stacked area chart
+    attack_ts = _get_attack_timeseries(cw, webacl_name, start_this_week, end)
 
-    # Separate BLOCK rules from COUNT rules for clarity
-    rule_rows = ""
-    block_rules = [r for r in rules if r["action"] == "BLOCK"]
-    count_rules = [r for r in rules if r["action"] == "COUNT"]
-    challenge_rules = [r for r in rules if r["action"] == "CHALLENGE"]
-    for r in block_rules[:5]:
-        rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>🚫 Block</td></tr>\n"
-    for r in challenge_rules[:5]:
-        rule_rows += f"<tr><td>{r['rule']}</td><td>{r['count']:,}</td><td>⚡ Challenge</td></tr>\n"
-    for r in count_rules[:5]:
-        name = _FRIENDLY_NAMES.get(r["rule"], r["rule"])
-        rule_rows += f"<tr><td>{name}</td><td>{r['count']:,}</td><td>👁️ Monitored</td></tr>\n"
+    # DDoS chart (always rendered)
+    antiddos_chart_section = _get_ddos_chart_data(cw, webacl_name, start_this_week, end, L)
 
+    # Country map SVG
+    country_map_svg = _build_country_map_svg(countries)
+
+    # DDoS event count from metrics — count distinct events by looking for gaps in event-detected label
+    ddos_event_count = 0
+    try:
+        _ddos_resp = cw.get_metric_data(
+            MetricDataQueries=[{"Id": "evt", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 900),0))"}],
+            StartTime=start_this_week, EndTime=end, ScanBy="TimestampAscending",
+        )
+        for r in _ddos_resp.get("MetricDataResults", []):
+            values = r.get("Values", [])
+            # Count events: consecutive non-zero windows = 1 event, gap = new event
+            in_event = False
+            for v in values:
+                if v > 0:
+                    if not in_event:
+                        ddos_event_count += 1
+                        in_event = True
+                else:
+                    in_event = False
+    except Exception:
+        pass
+    ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else L["no_events"]
+
+    # Executive Summary — LLM generates, limited to 3-5 sentences
+    mitigated_pct = f"{(threats_mitigated/total_this*100):.1f}" if total_this > 0 else "0"
+    bot_pct = f"{(bot_requests / total_this * 100):.1f}" if total_this > 0 else "0"
     executive_summary = "{{EXECUTIVE_SUMMARY}}"
 
     date_range = f"{start_this_week.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
@@ -815,28 +794,35 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         default_theme=theme,
         executive_summary=executive_summary,
         total_requests=f"{total_this:,}",
-        allowed_requests=f"{this_week['allowed']:,}",
         total_change=total_change,
         total_change_class=total_change_class,
-        blocked_requests=f"{this_week['blocked']:,}",
-        blocked_change=blocked_change,
-        blocked_change_class=blocked_change_class,
-        block_rate=block_rate,
         threats_mitigated=f"{threats_mitigated:,}",
-        challenge_total=f"{challenge_total:,}",
-        challenge_count=f"{this_week['challenge']:,}",
-        captcha_count=f"{this_week['captcha']:,}",
-        challenge_effectiveness=f"Solved: {challenge_solved:,}" if challenge_solved > 0 else "All blocked (automation)",
+        mitigated_pct=mitigated_pct,
+        ddos_status=ddos_status,
         antiddos_section=antiddos_section,
+        antiddos_chart_section=antiddos_chart_section,
         bot_section=bot_section,
         bot_requests=f"{bot_requests:,}",
         bot_pct=bot_pct,
-        country_rows=country_rows,
-        rule_rows=rule_rows,
-        daily_data_json=json.dumps(traffic_5min),
+        top_country_count=len(countries),
+        country_map_svg=country_map_svg,
+        attack_data_json=json.dumps(attack_ts),
+        L_title=L["title"],
+        L_exec_summary=L["exec_summary"],
+        L_highlights=L["highlights"],
+        L_total_requests=L["total_requests"],
+        L_threats_mitigated=L["threats_mitigated"],
+        L_ddos_protection=L["ddos_protection"],
+        L_common_bot=L["common_bot"],
+        L_of_traffic=L["of_traffic"],
+        L_of_total_traffic=L["of_total_traffic"],
+        L_top_attack=L["top_attack"],
+        L_attack_chart_note=L["attack_chart_note"],
+        L_country_note=L["country_note"],
+        L_attack_chart_title=L["attack_chart_title"],
     )
 
-    output_path = f"waf-roi-report-{webacl_name}-{end.strftime('%Y%m%d')}.html"
+    output_path = f"waf-weekly-summary-{webacl_name}-{end.strftime('%Y%m%d')}.html"
     with open(output_path, "w") as f:
         f.write(html)
 
@@ -859,36 +845,15 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
 
     # Bot Control data
     if bot_section:
-        common_labels = [name for name in bot_data if name.startswith("Category") or name.startswith("Signal")]
-        targeted_labels = [name for name in bot_data if name.startswith("TGT_")]
-        data_lines.append(f"- Bot Control Common: {len(common_labels)} categories detected, {common_total_blocked:,} blocked, {common_total_allowed:,} monitored/allowed")
-        data_lines.append(f"- Bot verification: {verified_total:,} verified (legitimate, allowed by design), {unverified_total:,} unverified")
-        data_lines.append(f"- Bot Control Targeted: {len(targeted_labels)} rules triggered, {targeted_total_blocked:,} blocked/challenged, {targeted_total_counted:,} counted")
-        if bot_orgs:
-            data_lines.append(f"- Bot organizations: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_orgs.items(), key=lambda x: x[1], reverse=True)[:5])}")
-        if bot_categories:
-            data_lines.append(f"- Bot categories visiting site: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_categories.items(), key=lambda x: x[1], reverse=True))}")
-        if bot_names:
-            data_lines.append(f"- Individual bots identified: {', '.join(f'{k}={v:,}' for k,v in sorted(bot_names.items(), key=lambda x: x[1], reverse=True)[:10])}")
-        if overridden_bots:
-            friendly = [_FRIENDLY_NAMES.get(b, b) for b in overridden_bots]
-            data_lines.append(f"- ⚠️ IMPORTANT: These bot rules are set to Count/Allow (NOT blocking): {', '.join(friendly)}. Bots matching these rules (curl, python-requests, okhttp, etc.) are being ALLOWED through. This is either intentional or a misconfiguration — do NOT describe this as 'correctly handled'.")
+        data_lines.append(f"- Bot requests: {bot_requests:,} ({bot_pct}% of traffic)")
+        data_lines.append(f"- Verified bots: {verified_allowed:,}, Unverified allowed: {unverified_allowed:,}, Unverified mitigated: {mitigated_bot_total:,}")
 
-    data_lines.append(f"- Bot/suspicious requests: {bot_requests:,} ({bot_pct}% of traffic)")
     data_lines.append("")
     data_lines.append("## Instructions")
-    data_lines.append("Write an executive summary for management (4-5 paragraphs). Use **bold** for key numbers. Do NOT use bullet lists (- or *) — use flowing prose paragraphs only.")
-    data_lines.append("Required paragraph structure:")
-    data_lines.append("1. Overview: What happened this week? (traffic volume, trends, anomalies)")
-    data_lines.append("2. DDoS/Attacks: What attacks were detected and blocked? (specific numbers)")
-    data_lines.append("3. Bot Traffic (MUST be a separate paragraph): What bots are visiting? Include both illegitimate bots blocked AND legitimate bots allowed (search engines, monitoring, AI crawlers). Management cares about WHO is crawling their site.")
-    data_lines.append("4. Risks/Recommendations: Anything to worry about?")
-    data_lines.append("5. ROI conclusion: Is the money well spent?")
-    data_lines.append("")
-    data_lines.append("## Domain knowledge (use when writing about DDoS/Bot)")
-    data_lines.append("- Anti-DDoS AMR DDoSRequests rule blocks ANY high-frequency IP (including JS-capable browser automation like Playwright) as long as per-IP volume deviates significantly from baseline.")
-    data_lines.append("- Only highly distributed attacks (tens of thousands of IPs, each sending low volume indistinguishable from baseline) can evade Anti-DDoS AMR. ONLY in that scenario is Targeted Bot Control needed as a complement.")
-    data_lines.append("- Do NOT suggest 'attackers upgrading to browser automation' as a risk if Anti-DDoS AMR is deployed — AMR handles high-volume automation regardless of JS capability.")
+    data_lines.append("Write 3-5 sentences for management. Use **bold** for key numbers. Flowing prose, no bullet lists.")
+    data_lines.append("Cover: 1) traffic volume + week-over-week trend, 2) DDoS/attacks blocked, 3) bot situation, 4) brief conclusion on overall security posture.")
+    data_lines.append("Tone: factual and concise. State what happened and what was protected. Do NOT use phrases like 'money well spent', 'ROI', or 'worth the investment'.")
+    data_lines.append("Language: match user's language.")
     data_lines.append("")
     data_lines.append(f"Then call set_report_summary(path='{output_path}', summary='your summary here')")
 
@@ -974,6 +939,109 @@ def _get_traffic_timeseries(cw, webacl_name: str, start, end) -> list:
         return []
 
 
+def _get_attack_timeseries(cw, webacl_name: str, start, end) -> dict:
+    """Get 15-min resolution attack type breakdown using {Attack, WebACL} dimension.
+
+    Returns: {"labels": [...], "series": {"BadBots": [...], "XSS": [...], ...}}
+    DDoS (Anti-DDoS AMR challenge) is excluded — shown separately in DDoS chart.
+    """
+    try:
+        resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
+                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
+                {"Id": "ddos_c", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
+            ],
+            StartTime=start, EndTime=end, ScanBy="TimestampAscending",
+        )
+        # Build time axis from total_m (has all timestamps via FILL)
+        labels = []
+        total_values = []
+        ddos_values = []
+        attack_raw = {}  # {attack_type: {timestamp_str: value}}
+        for r in resp.get("MetricDataResults", []):
+            if r["Id"] == "total_m":
+                for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
+                    key = ts.strftime("%m/%d %H:%M")
+                    labels.append(key)
+                    total_values.append(int(val))
+            elif r["Id"] == "ddos_c":
+                for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
+                    ddos_values.append(int(val))
+            elif r["Id"] == "attacks":
+                raw_label = r.get("Label", "Unknown")
+                # Strip trailing MetricName if present (e.g. "BadBots BlockedRequests" → "BadBots")
+                attack_type = raw_label.split(" ")[0] if any(raw_label.endswith(m) for m in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests")) else raw_label
+                if attack_type not in attack_raw:
+                    attack_raw[attack_type] = {}
+                for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
+                    key = ts.strftime("%m/%d %H:%M")
+                    attack_raw[attack_type][key] = attack_raw[attack_type].get(key, 0) + int(val)
+
+        if not labels:
+            return {"labels": [], "series": {}}
+
+        # Pad ddos_values if needed
+        if len(ddos_values) < len(labels):
+            ddos_values.extend([0] * (len(labels) - len(ddos_values)))
+
+        # Align attack series to labels, fill missing with 0
+        series = {}
+        for atype, ts_map in attack_raw.items():
+            series[atype] = [ts_map.get(lbl, 0) for lbl in labels]
+
+        # Compute "Other" = total - known_attack_types - DDoS_challenge
+        other = []
+        for i in range(len(labels)):
+            known_sum = sum(s[i] for s in series.values())
+            other.append(max(0, total_values[i] - known_sum - ddos_values[i]))
+        if any(v > 0 for v in other):
+            series["Other"] = other
+
+        return {"labels": labels, "series": series}
+    except Exception:
+        return {"labels": [], "series": {}}
+
+
+def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict) -> str:
+    """Build DDoS chart HTML section. Always renders (flat line if no events)."""
+    import json as _json
+    try:
+        resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 900),0))"},
+            ],
+            StartTime=start, EndTime=end, ScanBy="TimestampAscending",
+        )
+        ddos_chart_data = {"labels": [], "ddos": []}
+        for r in resp.get("MetricDataResults", []):
+            if r["Id"] == "ddosreq":
+                ddos_chart_data["labels"] = [t.strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
+        if not ddos_chart_data["labels"]:
+            return f'<h2>{L["antiddos"]}</h2><p style="color:var(--muted)">{L["antiddos_no_data"]}</p>'
+        return (
+            f'<h2>{L["antiddos"]}</h2>'
+            f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
+            f'<p style="color:var(--muted);font-size:1rem;text-align:center;">{L["antiddos_chart_note"]}</p>'
+            f'<script>'
+            f'(function(){{'
+            f'const ddosData = {_json.dumps(ddos_chart_data)};'
+            f'const c = getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#e6edf3";'
+            f'new Chart(document.getElementById("ddosChart"), {{'
+            f'  type: "line",'
+            f'  data: {{ labels: ddosData.labels, datasets: ['
+            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", borderWidth: 1.5, fill: true, backgroundColor: "rgba(248,81,73,0.25)", tension: 0.2, pointRadius: 0 }},'
+            f'  ] }},'
+            f'  options: {{ responsive: true, interaction: {{ mode: "index", intersect: false }}, plugins: {{ title: {{ display: true, text: "{L["antiddos_title"]}", color: c }}, legend: {{ labels: {{ color: c }} }}, tooltip: {{ mode: "index", intersect: false }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ beginAtZero: true, ticks: {{ color: c }} }} }} }}'
+            f'}});'
+            f'}})();'
+            f'</script>'
+        )
+    except Exception:
+        return f'<h2>{L["antiddos"]}</h2><p style="color:var(--muted);">{L["antiddos_not_deployed"]}</p>'
+
+
 def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "us-east-1") -> list:
     """Get daily allowed/blocked/challenged/captcha counts."""
     queries = []
@@ -1014,28 +1082,28 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFR
 
 
 def _get_top_countries(cw, webacl_name: str, start, end) -> list:
-    """Get top countries by blocked requests using SEARCH."""
+    """Get top countries by blocked requests using SEARCH + SORT."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
-    expression = (
-        f"SEARCH('{{AWS/WAFV2,Country,WebACL}} "
-        f"MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"
-    )
     resp = cw.get_metric_data(
-        MetricDataQueries=[{"Id": "countries", "Expression": expression}],
-        StartTime=start,
-        EndTime=end,
+        MetricDataQueries=[
+            {"Id": "raw", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            {"Id": "sorted", "Expression": "SORT(raw, SUM, DESC, 10)"},
+        ],
+        StartTime=start, EndTime=end,
     )
-
     results = []
     for r in resp.get("MetricDataResults", []):
+        if r["Id"] != "sorted":
+            continue
         total = sum(r.get("Values", []))
         if total > 0:
             label = r.get("Label", "")
-            country = _extract_dimension_from_label(label, "Country") or label
+            # Label format: "{rank} - {CountryCode}" e.g. "1 - US"
+            parts = label.split(" - ", 1)
+            country = parts[1] if len(parts) == 2 else label
             results.append({"country": country, "count": int(total)})
-
-    return sorted(results, key=lambda x: x["count"], reverse=True)
+    return results
 
 
 def _get_top_rules(cw, webacl_name: str, start, end) -> list:
