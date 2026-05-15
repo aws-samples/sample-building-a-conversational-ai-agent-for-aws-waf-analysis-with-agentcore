@@ -1089,6 +1089,7 @@ new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_labe
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
 <style>
 :root {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; }}
+:root.light {{ --bg: #ffffff; --fg: #1f2328; --card: #f6f8fa; --border: #d0d7de; --accent: #0969da; --green: #1a7f37; --red: #cf222e; --muted: #656d76; }}
 body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; font-size: 1rem; }}
 h1 {{ color: var(--accent); }} h2 {{ color: var(--accent); margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }} h3 {{ margin-top: 1.5rem; }}
 .muted {{ color: var(--muted); }}
@@ -1110,6 +1111,7 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 .footer {{ color: var(--muted); font-size: .85rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
 </style></head><body>
 <h1>🛡️ {L["title"]}</h1>
+<button onclick="document.documentElement.classList.toggle('light');this.textContent=document.documentElement.classList.contains('light')?'🌙':'☀️'" style="position:fixed;top:1rem;right:1rem;font-size:1.5rem;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;cursor:pointer;z-index:99">☀️</button>
 <p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} — {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
 <p class="muted">{L["delay_note"]}</p>
 
