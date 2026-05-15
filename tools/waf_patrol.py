@@ -1017,22 +1017,22 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
 </script>
 '''
 
-        # --- 4. Rate-Limit (bar chart) ---
+        # --- 4. Rate-Limit (horizontal bar with threshold in label) ---
         if wr.get("rate_limits"):
             rl_id = f'rl_{wr["name"].replace("-","_")}'
-            rl_names = json.dumps([rl["name"][:25] for rl in wr["rate_limits"]])
+            # Label format: "rule-name (100/300s)" — threshold embedded in label
+            rl_labels = json.dumps([f'{rl["name"][:20]} ({rl["limit"]:,}/{rl["window"]}s)' for rl in wr["rate_limits"]])
             rl_blocked = json.dumps([rl["total_blocked"] for rl in wr["rate_limits"]])
-            rl_thresholds = [f'{rl["name"][:15]}: {rl["limit"]:,}/{rl["window"]}s' for rl in wr["rate_limits"]]
+            rl_height = max(80, 40 * len(wr["rate_limits"]) + 40)
             webacl_sections += f'''
 <h3>{L["rate_limit"]}</h3>
-<div class="chart-wide"><canvas id="{rl_id}" height="120"></canvas></div>
+<div class="chart-wide"><canvas id="{rl_id}" height="{rl_height}"></canvas></div>
 <script>
 (function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
-new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_names},datasets:[
-  {{label:"{L["total_blocked"]}",data:{rl_blocked},backgroundColor:"#f85149"}}
-]}},options:{{responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{ticks:{{color:c}}}},y:{{beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
+new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_labels},datasets:[
+  {{label:"{L["total_blocked"]}",data:{rl_blocked},backgroundColor:"#f85149",maxBarThickness:36}}
+]}},options:{{indexAxis:'y',responsive:true,plugins:{{legend:{{display:false}}}},scales:{{x:{{beginAtZero:true,ticks:{{color:c}}}},y:{{ticks:{{color:c,font:{{size:11}}}}}}}}}}}});}})();
 </script>
-<div class="muted">{L["threshold"]}: {" · ".join(rl_thresholds)}</div>
 '''
 
         # --- 5. Detection Tools (compact table) ---
