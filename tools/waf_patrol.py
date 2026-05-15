@@ -819,12 +819,49 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     except Exception:
         pass
 
+    # 10b. Bot Activity (label metrics — precise, not sampled)
+    bot_data = None
+    try:
+        _region_dim = [{"Name": "Region", "Value": region}] if scope != "CLOUDFRONT" else []
+        bot_queries = []
+        for i, (lbl, metric) in enumerate([
+            ("verified", "AllowedRequests"), ("unverified", "AllowedRequests"),
+            ("unverified", "BlockedRequests"), ("unverified", "ChallengeRequests"),
+            ("unverified", "CaptchaRequests"),
+        ]):
+            bot_queries.append({"Id": f"b{i}", "MetricStat": {
+                "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric, "Dimensions": [
+                    {"Name": "LabelName", "Value": lbl},
+                    {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
+                    {"Name": "WebACL", "Value": webacl_name},
+                ] + _region_dim}, "Period": int(hours * 3600), "Stat": "Sum",
+            }})
+        bot_resp = cw.get_metric_data(MetricDataQueries=bot_queries, StartTime=start, EndTime=end)
+        vals = {}
+        for r in bot_resp.get("MetricDataResults", []):
+            vals[r["Id"]] = int(sum(r.get("Values", [])))
+        v_allowed = vals.get("b0", 0)
+        u_allowed = vals.get("b1", 0)
+        u_blocked = vals.get("b2", 0)
+        u_challenged = vals.get("b3", 0)
+        u_captchaed = vals.get("b4", 0)
+        if v_allowed + u_allowed + u_blocked + u_challenged + u_captchaed > 0:
+            bot_data = {
+                "verified_allowed": v_allowed,
+                "unverified_allowed": u_allowed,
+                "unverified_blocked": u_blocked,
+                "unverified_challenged": u_challenged,
+                "unverified_captchaed": u_captchaed,
+            }
+    except Exception:
+        pass
+
     # 11. Render HTML
     wr = {
         "name": webacl_name, "scope": scope, "region": region,
         "detection_tools": detection_tools, "action_items": action_items,
         "rules_table": rules_table, "totals": totals, "logging": logging_type,
-        "rate_limits": rate_limit_info, "chart_data": chart_data,
+        "rate_limits": rate_limit_info, "chart_data": chart_data, "bot_data": bot_data,
     }
     all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
     _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours, lang)
@@ -984,6 +1021,21 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
                 status = "✅ Active" if rl["triggered_days"] > 0 else "⚠️ Never triggered"
                 rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{hours}h</td><td>{status}</td></tr>\n'
             webacl_sections += f'<h3>{L["rate_limit"]}</h3>\n<table><tr><th>{L["rule"]}</th><th>{L["threshold"]}</th><th>{L["total_blocked"]}</th><th>{L["hours_active"]}</th><th>{L["status"]}</th></tr>{rl_rows}</table>\n'
+
+        # Bot Activity
+        if wr.get("bot_data"):
+            bd = wr["bot_data"]
+            u_mitigated = bd["unverified_blocked"] + bd["unverified_challenged"] + bd["unverified_captchaed"]
+            bot_total = bd["verified_allowed"] + bd["unverified_allowed"] + u_mitigated
+            webacl_sections += (
+                f'<h3>Bot Activity</h3>'
+                f'<div class="grid">'
+                f'<div class="card"><div class="label">✅ Verified</div><div class="value">{bd["verified_allowed"]:,}</div></div>'
+                f'<div class="card"><div class="label">⚠️ Unverified Allowed</div><div class="value">{bd["unverified_allowed"]:,}</div></div>'
+                f'<div class="card"><div class="label">🚫 Unverified Mitigated</div><div class="value">{u_mitigated:,}</div>'
+                f'<div class="muted">B:{bd["unverified_blocked"]:,} Ch:{bd["unverified_challenged"]:,} Cap:{bd["unverified_captchaed"]:,}</div></div>'
+                f'</div>'
+            )
 
     # Action Items section
     action_html = ""
