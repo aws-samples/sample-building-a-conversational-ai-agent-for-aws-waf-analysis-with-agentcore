@@ -117,4 +117,6 @@ def lookup_ja4(fingerprints: str) -> str:
         else:
             lines.append(f"  {fp} → Unknown (not in ja4db)")
 
+    lines.append("")
+    lines.append("→ If fingerprint is unknown/suspicious, investigate the source IP: analyze_ip(ip='...', start_time='...')")
     return f"JA4 Lookup ({len(fps)} fingerprint(s)):\n" + "\n".join(lines)

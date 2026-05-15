@@ -118,7 +118,7 @@ def get_waf_metrics(
         for ts, val in zip(timestamps[-MAX_RESULTS:], values[-MAX_RESULTS:]):
             lines.append(f"  {ts.strftime('%m-%d %H:%M')}  {val:,.0f}")
 
-    lines.append("\n---\nCall ask_user() tool to confirm the time window before deep-diving into logs (show the spike you found).")
+    lines.append("\n---\nFor quick overview: get_waf_overview(query_type='top_rules', webacl_name='...')\nFor IP/URI details: ask user for time period, then use run_logs_query with start_time.")
 
     return "\n".join(lines)
 
@@ -149,6 +149,6 @@ def _search_metrics(client, expression: str, start_time, end_time) -> str:
     if len(results) > MAX_RESULTS:
         lines.append(f"\n  ... and {len(results) - MAX_RESULTS} more (truncated)")
 
-    lines.append("\n---\nCall ask_user() tool to confirm: which peak day/hour to investigate? If user hasn't specified a domain/host, ask that too.")
+    lines.append("\n---\nFor quick overview: get_waf_overview(query_type='top_rules', webacl_name='...')\nFor IP/URI details: ask user which peak day/hour to investigate, then use run_logs_query with start_time.")
 
     return "\n".join(lines)

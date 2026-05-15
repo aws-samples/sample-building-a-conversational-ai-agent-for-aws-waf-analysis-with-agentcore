@@ -687,6 +687,17 @@ def run_athena_query(
     for row in rows:
         values = [row.get(col, "") for col in columns]
         lines.append("| " + " | ".join(values) + " |")
+
+    # Hints for next steps
+    lines.append("")
+    if "ip" in query_type or "top_ips" in query_type:
+        top_ip = rows[0].get("clientIp", rows[0].get("httpRequest.clientIp", ""))
+        if top_ip:
+            lines.append(f"→ To investigate top IP: analyze_ip(ip='{top_ip}', start_time='{start_time}')")
+    elif "uri" in query_type:
+        lines.append("→ To check which IPs hit these URIs: run_athena_query(query_type='top_blocked_ips', start_time='...')")
+    elif "ja4" in query_type or "fingerprint" in query_type:
+        lines.append("→ To identify fingerprints: lookup_ja4(fingerprints=[...])")
     return "\n".join(lines)
 
 

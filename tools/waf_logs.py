@@ -683,4 +683,7 @@ def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
         except (ValueError, TypeError):
             pass
 
+    lines.append("")
+    lines.append("→ If malicious: suggest user add IP to block list or adjust rate-limit threshold.")
+    lines.append("→ For JA4 fingerprint identification: lookup_ja4(fingerprints=[...])")
     return "\n".join(lines)
