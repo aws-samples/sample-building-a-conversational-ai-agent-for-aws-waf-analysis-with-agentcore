@@ -24,11 +24,11 @@ _I18N = {
         "of_traffic": "of traffic",
         "of_total_traffic": "of total traffic",
         "top_attack": "Top Attack Sources",
-        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included",
+        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · UTC",
         "country_note": "Blocked requests by country · Does not include Anti-DDoS challenged requests",
         "attack_chart_title": "Threats Mitigated by Attack Type",
         "antiddos": "Anti-DDoS Protection",
-        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR",
+        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · UTC",
         "antiddos_no_data": "No Anti-DDoS AMR metrics available.",
         "antiddos_not_deployed": "Anti-DDoS AMR not deployed.",
         "antiddos_title": "Anti-DDoS: Requests Identified",
@@ -57,11 +57,11 @@ _I18N = {
         "of_traffic": "占总流量",
         "of_total_traffic": "占总流量",
         "top_attack": "攻击来源",
-        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则",
+        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · UTC+8",
         "country_note": "按国家统计的拦截请求 · 不含 Anti-DDoS 质询请求",
         "attack_chart_title": "按攻击类型拦截分布",
         "antiddos": "Anti-DDoS 防护",
-        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求",
+        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · UTC+8",
         "antiddos_no_data": "无 Anti-DDoS AMR 指标数据。",
         "antiddos_not_deployed": "未部署 Anti-DDoS AMR。",
         "antiddos_title": "Anti-DDoS：识别的 DDoS 请求",
@@ -319,6 +319,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
         Path to the generated HTML file, or error message.
     """
     L = _I18N.get(lang, _I18N["en"])
+    _tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
     from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
@@ -711,10 +712,10 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
             pass
 
     # Attack type timeseries for stacked area chart
-    attack_ts = _get_attack_timeseries(cw, webacl_name, start_this_week, end)
+    attack_ts = _get_attack_timeseries(cw, webacl_name, start_this_week, end, tz_offset=_tz_offset)
 
     # DDoS chart (always rendered)
-    antiddos_chart_section = _get_ddos_chart_data(cw, webacl_name, start_this_week, end, L)
+    antiddos_chart_section = _get_ddos_chart_data(cw, webacl_name, start_this_week, end, L, tz_offset=_tz_offset)
 
     # Country map SVG
     country_map_svg = _build_country_map_svg(countries)
@@ -899,7 +900,7 @@ def _get_traffic_timeseries(cw, webacl_name: str, start, end) -> list:
         return []
 
 
-def _get_attack_timeseries(cw, webacl_name: str, start, end) -> dict:
+def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None) -> dict:
     """Get 15-min resolution attack type breakdown using {Attack, WebACL} dimension.
 
     Returns: {"labels": [...], "series": {"BadBots": [...], "XSS": [...], ...}}
@@ -919,10 +920,11 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end) -> dict:
         total_values = []
         ddos_values = []
         attack_raw = {}  # {attack_type: {timestamp_str: value}}
+        _off = tz_offset or timedelta(0)
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = ts.strftime("%m/%d %H:%M")
+                    key = (ts + _off).strftime("%m/%d %H:%M")
                     labels.append(key)
                     total_values.append(int(val))
             elif r["Id"] == "ddos_c":
@@ -935,7 +937,7 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end) -> dict:
                 if attack_type not in attack_raw:
                     attack_raw[attack_type] = {}
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = ts.strftime("%m/%d %H:%M")
+                    key = (ts + _off).strftime("%m/%d %H:%M")
                     attack_raw[attack_type][key] = attack_raw[attack_type].get(key, 0) + int(val)
 
         if not labels:
@@ -963,7 +965,7 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end) -> dict:
         return {"labels": [], "series": {}}
 
 
-def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict) -> str:
+def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=None) -> str:
     """Build DDoS chart HTML section. Always renders (flat line if no events)."""
     import json as _json
     try:
@@ -976,7 +978,7 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict) -> str:
         ddos_chart_data = {"labels": [], "ddos": []}
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "ddosreq":
-                ddos_chart_data["labels"] = [t.strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                ddos_chart_data["labels"] = [(t + (tz_offset or timedelta(0))).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
         if not ddos_chart_data["labels"]:
             return f'<h2>{L["antiddos"]}</h2><p style="color:var(--muted)">{L["antiddos_no_data"]}</p>'
