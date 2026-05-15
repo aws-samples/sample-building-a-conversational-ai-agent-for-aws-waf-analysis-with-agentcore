@@ -11,6 +11,72 @@ from tools.aws_session import get_client
 
 _latest_patrol_html: str | None = None
 
+# i18n for patrol report
+_PATROL_I18N = {
+    "en": {
+        "title": "Security Patrol Report",
+        "period": "Period",
+        "generated": "Generated",
+        "delay_note": "CloudWatch Metrics delay: ~5 min. Data may have changed since generation.",
+        "action_items": "Action Items",
+        "no_action": "🟢 No action required",
+        "detection_tools": "Detection Tools Status",
+        "per_rule": "Per-Rule Breakdown",
+        "rate_limit": "Rate-Limit Effectiveness",
+        "attack_chart": "Threats Mitigated by Attack Type",
+        "total_requests": "Total Requests",
+        "mitigated": "Mitigated",
+        "counted": "Counted",
+        "allowed": "Allowed",
+        "blocked": "Blocked",
+        "challenge": "Challenge",
+        "captcha": "Captcha",
+        "wow": "WoW",
+        "rule": "Rule",
+        "layer": "Layer",
+        "mode": "Mode",
+        "threshold": "Threshold",
+        "total_blocked": "Total Blocked",
+        "hours_active": "Hours Active",
+        "status": "Status",
+        "critical": "critical",
+        "moderate": "moderate",
+        "items_attention": "items need attention",
+        "all_nominal": "All systems nominal — no action required",
+    },
+    "zh": {
+        "title": "安全巡检报告",
+        "period": "巡检周期",
+        "generated": "生成时间",
+        "delay_note": "CloudWatch 指标延迟约 5 分钟，数据可能在报告生成后有变化。",
+        "action_items": "待办事项",
+        "no_action": "🟢 本周期无需操作",
+        "detection_tools": "防护层状态",
+        "per_rule": "规则明细",
+        "rate_limit": "限速规则效果",
+        "attack_chart": "按攻击类型拦截分布",
+        "total_requests": "总请求量",
+        "mitigated": "已拦截",
+        "counted": "监控中",
+        "allowed": "放行",
+        "blocked": "拦截",
+        "challenge": "质询",
+        "captcha": "验证码",
+        "wow": "环比",
+        "rule": "规则",
+        "layer": "防护层",
+        "mode": "模式",
+        "threshold": "阈值",
+        "total_blocked": "拦截总量",
+        "hours_active": "触发时段",
+        "status": "状态",
+        "critical": "严重",
+        "moderate": "注意",
+        "items_attention": "项需要关注",
+        "all_nominal": "所有系统正常，无需操作",
+    },
+}
+
 # Thresholds for anomaly detection (v1 — absolute, used as cold-start fallback)
 DAILY_BLOCK_ATTENTION = 500
 DAILY_BLOCK_SEVERE = 5000
@@ -561,7 +627,7 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
 
 
 @tool
-def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "", hours: int = 24) -> str:
+def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "", hours: int = 24, lang: str = "zh") -> str:
     """Run a security patrol scan for a specific WebACL.
     Produces a deterministic HTML report with action items, detection tools status,
     per-rule breakdown, and attack timeline chart.
@@ -582,6 +648,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         scope: AWS WAF scope — "CLOUDFRONT" or "REGIONAL".
         start_time: Start date/time for the scan period (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
         hours: Duration in hours from start_time (default 24, max 24). For weekly overview use 24 and check WoW comparison in the report.
+        lang: Language for report — "zh" (Chinese) or "en" (English). Match user's language.
     """
     from tools.session_state import get_metrics_region
 
@@ -760,7 +827,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         "rate_limits": rate_limit_info, "chart_data": chart_data,
     }
     all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
-    _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours)
+    _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours, lang)
 
     # 12. Return summary
     n_critical = sum(1 for a in action_items if a["severity"] == "critical")
@@ -792,21 +859,28 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     return summary
 
 
-def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int) -> str:
+def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int, lang: str = "en") -> str:
     """Render deterministic patrol report HTML from structured data."""
+    L = _PATROL_I18N.get(lang, _PATROL_I18N["en"])
     now = datetime.now(timezone.utc)
+    tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
+    tz_label = "UTC+8" if lang == "zh" else "UTC"
+
+    def _fmt_time(dt):
+        return (dt + tz_offset).strftime("%m/%d %H:%M")
+
     n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
     n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
 
     if n_critical > 0:
         banner_class = "banner-critical"
-        banner_text = f"🔴 {n_critical} critical + {n_moderate} moderate items need attention"
+        banner_text = f"🔴 {n_critical} {L['critical']} + {n_moderate} {L['moderate']} {L['items_attention']}"
     elif n_moderate > 0:
         banner_class = "banner-warning"
-        banner_text = f"⚠️ {n_moderate} items need attention"
+        banner_text = f"⚠️ {n_moderate} {L['items_attention']}"
     else:
         banner_class = "banner-ok"
-        banner_text = "🟢 All systems nominal — no action required"
+        banner_text = f"🟢 {L['all_nominal']}"
 
     # Build sections per WebACL
     webacl_sections = ""
@@ -854,33 +928,52 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
         webacl_sections += f'''
 <h2>{wr["name"]} <span class="muted">({wr["scope"]}, {wr["region"]})</span></h2>
 <div class="grid">
-  <div class="card"><div class="label">Total Requests</div><div class="value">{total_reqs:,}</div></div>
-  <div class="card"><div class="label">Mitigated</div><div class="value">{mitigated:,}</div><div class="muted">Block {tot["blocked"]:,} + Challenge {tot["challenge"]:,} + Captcha {tot["captcha"]:,}</div></div>
-  <div class="card"><div class="label">Counted</div><div class="value">{tot["counted"]:,}</div></div>
-  <div class="card"><div class="label">Allowed</div><div class="value">{tot["allowed"]:,}</div></div>
+  <div class="card"><div class="label">{L["total_requests"]}</div><div class="value">{total_reqs:,}</div></div>
+  <div class="card"><div class="label">{L["mitigated"]}</div><div class="value">{mitigated:,}</div><div class="muted">{L["blocked"]} {tot["blocked"]:,} + {L["challenge"]} {tot["challenge"]:,} + {L["captcha"]} {tot["captcha"]:,}</div></div>
+  <div class="card"><div class="label">{L["counted"]}</div><div class="value">{tot["counted"]:,}</div></div>
+  <div class="card"><div class="label">{L["allowed"]}</div><div class="value">{tot["allowed"]:,}</div></div>
 </div>
-<h3>Detection Tools Status</h3>
-<table><tr><th>Layer</th><th>Rule</th><th>Mode</th></tr>{dt_rows}</table>
-<h3>Per-Rule Breakdown</h3>
-<table><tr><th>Rule</th><th>Blocked</th><th>Challenge</th><th>Captcha</th><th>Counted</th><th>WoW</th></tr>{rule_rows}</table>
+<h3>{L["detection_tools"]}</h3>
+<table><tr><th>{L["layer"]}</th><th>{L["rule"]}</th><th>{L["mode"]}</th></tr>{dt_rows}</table>
+<h3>{L["per_rule"]}</h3>
+<table><tr><th>{L["rule"]}</th><th>{L["blocked"]}</th><th>{L["challenge"]}</th><th>{L["captcha"]}</th><th>{L["counted"]}</th><th>{L["wow"]}</th></tr>{rule_rows}</table>
 '''
 
         # Attack chart
         if wr.get("chart_data") and wr["chart_data"].get("labels"):
             cd = wr["chart_data"]
+            # Apply timezone offset to chart labels (stored as "MM/DD HH:MM" UTC)
+            if tz_offset and tz_offset.total_seconds() != 0:
+                offset_h = int(tz_offset.total_seconds() // 3600)
+                chart_labels = []
+                for lbl in cd["labels"]:
+                    try:
+                        parts = lbl.split(" ")
+                        md = parts[0].split("/")
+                        hm = parts[1].split(":")
+                        h = int(hm[0]) + offset_h
+                        d = int(md[1])
+                        if h >= 24: h -= 24; d += 1
+                        elif h < 0: h += 24; d -= 1
+                        chart_labels.append(f"{md[0]}/{d:02d} {h:02d}:{hm[1]}")
+                    except (IndexError, ValueError):
+                        chart_labels.append(lbl)
+            else:
+                chart_labels = cd["labels"]
             colors = {"Volumetric": "#f85149", "BadBots": "#d29922", "XSS": "#e3b341", "GenericLFI": "#a371f7", "KnownBadInputs": "#58a6ff", "Other": "#8b949e"}
             datasets_js = ""
             for atype, values in cd["series"].items():
                 color = colors.get(atype, "#79c0ff")
                 datasets_js += f'{{label:"{atype}",data:{json.dumps(values)},borderColor:"{color}",backgroundColor:"{color}99",fill:true,tension:0.2,pointRadius:0}},'
             webacl_sections += f'''
-<h3>Threats Mitigated by Attack Type</h3>
+<h3>{L["attack_chart"]}</h3>
 <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1rem;margin:1rem 0">
 <canvas id="attackChart_{wr['name'].replace('-','_')}"></canvas>
 </div>
+<p class="muted" style="text-align:center">{tz_label}</p>
 <script>
 (function(){{const c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim()||'#e6edf3';
-new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{{type:'line',data:{{labels:{json.dumps(cd["labels"])},datasets:[{datasets_js}]}},options:{{responsive:true,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{labels:{{color:c}}}},zoom:{{zoom:{{wheel:{{enabled:true}},mode:'x'}},pan:{{enabled:true,mode:'x'}}}}}},scales:{{x:{{ticks:{{color:c,maxTicksLimit:14}}}},y:{{stacked:true,beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
+new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{{type:'line',data:{{labels:{json.dumps(chart_labels)},datasets:[{datasets_js}]}},options:{{responsive:true,interaction:{{mode:'index',intersect:false}},plugins:{{legend:{{labels:{{color:c}}}},zoom:{{zoom:{{wheel:{{enabled:true}},mode:'x'}},pan:{{enabled:true,mode:'x'}}}}}},scales:{{x:{{ticks:{{color:c,maxTicksLimit:14}}}},y:{{stacked:true,beginAtZero:true,ticks:{{color:c}}}}}}}}}});}})();
 </script>
 '''
 
@@ -890,7 +983,7 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
             for rl in wr["rate_limits"]:
                 status = "✅ Active" if rl["triggered_days"] > 0 else "⚠️ Never triggered"
                 rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{hours}h</td><td>{status}</td></tr>\n'
-            webacl_sections += f'<h3>Rate-Limit Effectiveness</h3>\n<table><tr><th>Rule</th><th>Threshold</th><th>Total Blocked</th><th>Hours Active</th><th>Status</th></tr>{rl_rows}</table>\n'
+            webacl_sections += f'<h3>{L["rate_limit"]}</h3>\n<table><tr><th>{L["rule"]}</th><th>{L["threshold"]}</th><th>{L["total_blocked"]}</th><th>{L["hours_active"]}</th><th>{L["status"]}</th></tr>{rl_rows}</table>\n'
 
     # Action Items section
     action_html = ""
@@ -901,7 +994,7 @@ new Chart(document.getElementById('attackChart_{wr["name"].replace("-","_")}'),{
             action_html += f'<div class="action-item {item["severity"]}"><strong>{icon} {item["rule"]}</strong>: {item["text"]}<br><span class="muted">→ {item["suggestion"]}</span></div>'
         action_html += "</div>"
     else:
-        action_html = '<p class="banner banner-ok">🟢 No action required this week</p>'
+        action_html = f'<p class="banner banner-ok">{L["no_action"]}</p>'
 
     # Embedded JSON for programmatic access
     report_json = json.dumps({
@@ -938,13 +1031,13 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 .action-item.critical {{ border-left: 3px solid var(--red); }} .action-item.moderate {{ border-left: 3px solid #d29922; }} .action-item.low {{ border-left: 3px solid var(--muted); }}
 .footer {{ color: var(--muted); font-size: .8rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
 </style></head><body>
-<h1>🛡️ Security Patrol Report</h1>
-<p class="muted">{start.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')} ({hours}h) · Generated {now.strftime('%Y-%m-%d %H:%M UTC')}</p>
-<p class="muted">CloudWatch Metrics delay: ~5 min. Data may have changed since generation.</p>
+<h1>🛡️ {L["title"]}</h1>
+<p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} to {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
+<p class="muted">{L["delay_note"]}</p>
 
 <div class="banner {banner_class}">{banner_text}</div>
 
-<h2>Action Items</h2>
+<h2>{L["action_items"]}</h2>
 {action_html}
 
 {webacl_sections}
