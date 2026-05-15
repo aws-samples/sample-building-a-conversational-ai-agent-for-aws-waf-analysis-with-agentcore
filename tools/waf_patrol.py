@@ -501,8 +501,12 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
     return tools
 
 
-def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region: str, start, end, attention_rules: list[str]) -> dict:
-    """Query top IPs/URIs via Athena for S3-stored logs. Auto-creates permanent table."""
+def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region: str, start, end, attention_rules: list[str]) -> tuple[dict, str | None]:
+    """Query top IPs/URIs via Athena for S3-stored logs. Auto-creates permanent table.
+
+    Returns: (details_dict, table_created_msg or None)
+    """
+    table_msg = None
     try:
         from tools.waf_athena import _resolve_s3_path, _try_standard_path, _get_account_id, \
             _find_existing_table, _validate_waf_log, _detect_partitions, _create_named_table, \
@@ -524,11 +528,12 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
         part_fmt = None
         if not full_table:
             if not _validate_waf_log(s3_path):
-                return {}
+                return {}, None
             storage_template, part_fmt, part_unit = _detect_partitions(s3_path)
             _ensure_database(region, "primary")
             safe_name = _re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
             full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, "primary", f"waf_logs_{safe_name}")
+            table_msg = f"Created permanent Athena table: {full_table} (reusable for future queries)"
         else:
             # Detect partition format from existing table's S3 path
             _, part_fmt, _ = _detect_partitions(s3_path)
@@ -565,9 +570,9 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                     details[rule_name][qtype] = result
                 except Exception:
                     pass
-        return details
+        return details, table_msg
     except Exception:
-        return {}
+        return {}, None
 
 
 def _classify_rules(webacl_data: dict) -> list[dict]:
@@ -800,6 +805,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     # 7. Top IPs/URIs for attention rules (CWL or Athena)
     # Only query logs for traffic anomalies (rules with actual metrics data), not config issues
     log_details = {}
+    table_msg = None
     traffic_attention_rules = [a["rule"] for a in action_items
                                if a["severity"] in ("critical", "moderate")
                                and a["rule"] != "—"
@@ -812,7 +818,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         log_end = int(end.timestamp())
         log_details = _get_log_details(logs_client, log_group, log_start, log_end, traffic_attention_rules)
     elif logging_type == "s3" and traffic_attention_rules:
-        log_details = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, traffic_attention_rules)
+        log_details, table_msg = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, traffic_attention_rules)
 
     # 8. Build per-rule table + rate-limit info
     rules_table = []
@@ -934,6 +940,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         if len(action_items) > 5:
             summary += f"- ... and {len(action_items) - 5} more (see full report)\n"
 
+    if table_msg:
+        summary += f"\n📋 {table_msg}\n"
     summary += "\nFull HTML report is ready for download."
     return summary
 
