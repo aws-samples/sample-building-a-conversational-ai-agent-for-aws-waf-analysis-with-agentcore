@@ -518,6 +518,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
 
         # Find or create table
         full_table = _find_existing_table(s3_path, region)
+        part_fmt = None
         if not full_table:
             if not _validate_waf_log(s3_path):
                 return {}
@@ -525,11 +526,22 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             _ensure_database(region, "primary")
             safe_name = _re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
             full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, "primary", f"waf_logs_{safe_name}")
+        else:
+            # Detect partition format from existing table's S3 path
+            _, part_fmt, _ = _detect_partitions(s3_path)
 
-        # Build time filter
-        start_str = start.strftime("%Y-%m-%d %H:%M:%S")
-        end_str = end.strftime("%Y-%m-%d %H:%M:%S")
-        time_cond = f"from_unixtime(\"timestamp\"/1000) BETWEEN TIMESTAMP '{start_str}' AND TIMESTAMP '{end_str}'"
+        # Build time filter WITH partition pruning (critical for performance)
+        start_ms = int(start.timestamp()) * 1000
+        end_ms = int(end.timestamp()) * 1000
+        time_cond = f'"timestamp" BETWEEN {start_ms} AND {end_ms}'
+        if part_fmt:
+            if "mm" in part_fmt:
+                sp = start.strftime("%Y/%m/%d/%H/%M")
+                ep = end.strftime("%Y/%m/%d/%H/%M")
+            else:
+                sp = start.strftime("%Y/%m/%d/%H")
+                ep = end.strftime("%Y/%m/%d/%H")
+            time_cond += f" AND log_time >= '{sp}' AND log_time <= '{ep}'"
 
         # Query top IPs and URIs per rule (parallel)
         details = {}
@@ -537,8 +549,8 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             futures = {}
             for rule_name in attention_rules[:5]:
                 safe_rule = rule_name.replace("'", "''")
-                ip_sql = f"SELECT httprequest.clientip AS \"httpRequest.clientIp\", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = '{safe_rule}' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT 5"
-                uri_sql = f"SELECT httprequest.uri AS \"httpRequest.uri\", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = '{safe_rule}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT 5"
+                ip_sql = f'SELECT httprequest.clientip AS "httpRequest.clientIp", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = \'{safe_rule}\' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT 5'
+                uri_sql = f'SELECT httprequest.uri AS "httpRequest.uri", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = \'{safe_rule}\' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT 5'
                 futures[executor.submit(_run_athena_select, ip_sql, region)] = (rule_name, "ips")
                 futures[executor.submit(_run_athena_select, uri_sql, region)] = (rule_name, "uris")
             for future in concurrent.futures.as_completed(futures, timeout=120):
