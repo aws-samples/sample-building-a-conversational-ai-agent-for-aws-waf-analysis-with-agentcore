@@ -24,11 +24,12 @@ WOW_SEVERE = 10.0     # 10x increase
 SPIKE_RATIO_ATTENTION = 5.0  # max day / avg day
 
 
-def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict]) -> list[dict]:
+def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None) -> list[dict]:
     """Assess per-rule metrics with WoW comparison. Returns action_items list.
 
     Each item: {severity, rule, text, suggestion, context?}
     severity: "critical" | "moderate" | "low"
+    ddos_event_windows: list of (start_idx, end_idx) tuples indicating DDoS event periods in daily data
     """
     action_items = []
     skip_rules = {"ALL", "shield-sample-webacl"}  # WebACL-level aggregates
@@ -177,7 +178,31 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
     # Sort: critical first, then moderate, then low
     severity_order = {"critical": 0, "moderate": 1, "low": 2}
     action_items.sort(key=lambda x: severity_order.get(x["severity"], 9))
+
+    # DDoS context tag: if spike coincides with DDoS event, add context
+    if ddos_event_windows:
+        for item in action_items:
+            if "spike" in item.get("text", "").lower() or "surge" in item.get("text", "").lower():
+                item["context"] = "⚡ May coincide with DDoS event — verify independently"
+
     return action_items
+
+
+def _detect_ddos_windows(cw, webacl_name: str, start, end) -> list[int]:
+    """Detect DDoS event windows from event-detected label metric.
+
+    Returns list of day indices (0-based) where DDoS event was active.
+    """
+    try:
+        resp = cw.get_metric_data(
+            MetricDataQueries=[{"Id": "evt", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 86400),0))"}],
+            StartTime=start, EndTime=end, ScanBy="TimestampAscending",
+        )
+        for r in resp.get("MetricDataResults", []):
+            return [i for i, v in enumerate(r.get("Values", [])) if v > 0]
+    except Exception:
+        pass
+    return []
 
 
 def _get_metric_sum(cw, webacl_name: str, metric: str, rule: str, start, end, region: str = "us-east-1", scope: str = "REGIONAL", period: int = 86400) -> list[float]:
@@ -686,7 +711,8 @@ def patrol_scan(days: int = 7) -> str:
         challenge_solved, captcha_solved = _get_challenge_solved(cw, acl_info["name"], acl_info["scope"], acl_info["region"], start, end)
 
         # Section 1: Action Items (WoW anomaly detection)
-        action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools)
+        ddos_windows = _detect_ddos_windows(cw, acl_info["name"], start, end)
+        action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None)
 
         # Section 6: Top IPs/URIs for attention rules (CWL only)
         log_details = {}
@@ -701,6 +727,7 @@ def patrol_scan(days: int = 7) -> str:
 
         # Build per-rule table data
         rules_table = []
+        rate_limit_info = []  # Section 7: Rate-Limit Effectiveness
         skip = {"ALL", acl_info["name"]}
         for rule_name, data in this_week_metrics.items():
             if rule_name in skip:
@@ -723,6 +750,27 @@ def patrol_scan(days: int = 7) -> str:
             })
         rules_table.sort(key=lambda x: x["total"], reverse=True)
 
+        # Section 7: Rate-Limit Effectiveness
+        for rule in webacl_data.get("Rules", []):
+            stmt = rule.get("Statement", {})
+            if "RateBasedStatement" in stmt:
+                rbs = stmt["RateBasedStatement"]
+                rname = rule.get("Name", "")
+                limit = rbs.get("Limit", 0)
+                window = rbs.get("EvaluationWindowSec", 300)
+                # Get 15-min blocked data for this rule to estimate peak rate
+                rule_data = this_week_metrics.get(rname, {})
+                blocked_daily = rule_data.get("blocked", [])
+                triggered_days = sum(1 for v in blocked_daily if v > 0)
+                total_blocked = sum(blocked_daily)
+                # Peak estimation: max daily blocked / (86400/window) gives rough triggers per window
+                max_daily = max(blocked_daily) if blocked_daily else 0
+                rate_limit_info.append({
+                    "name": rname, "limit": limit, "window": window,
+                    "triggered_days": triggered_days, "total_blocked": total_blocked,
+                    "max_daily": max_daily,
+                })
+
         # Totals from ALL
         all_data = this_week_metrics.get("ALL", {})
         totals = {
@@ -739,6 +787,7 @@ def patrol_scan(days: int = 7) -> str:
             "name": acl_info["name"], "scope": acl_info["scope"], "region": acl_info["region"],
             "detection_tools": detection_tools, "action_items": action_items,
             "rules_table": rules_table, "totals": totals, "logging": logging_type,
+            "rate_limits": rate_limit_info,
         })
         all_action_items.extend([{**a, "webacl": acl_info["name"]} for a in action_items])
 
@@ -849,6 +898,14 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
 <h3>Per-Rule Breakdown</h3>
 <table><tr><th>Rule</th><th>Blocked</th><th>Challenge</th><th>Captcha</th><th>Counted</th><th>WoW</th></tr>{rule_rows}</table>
 '''
+
+        # Rate-Limit Effectiveness
+        if wr.get("rate_limits"):
+            rl_rows = ""
+            for rl in wr["rate_limits"]:
+                status = "✅ Active" if rl["triggered_days"] > 0 else "⚠️ Never triggered"
+                rl_rows += f'<tr><td>{rl["name"]}</td><td>{rl["limit"]:,} / {rl["window"]}s</td><td>{rl["total_blocked"]:,}</td><td>{rl["triggered_days"]}/{days}d</td><td>{status}</td></tr>\n'
+            webacl_sections += f'<h3>Rate-Limit Effectiveness</h3>\n<table><tr><th>Rule</th><th>Threshold</th><th>Total Blocked</th><th>Days Triggered</th><th>Status</th></tr>{rl_rows}</table>\n'
 
     # Action Items section
     action_html = ""
