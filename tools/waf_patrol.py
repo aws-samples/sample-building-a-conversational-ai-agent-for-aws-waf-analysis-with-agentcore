@@ -885,7 +885,9 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                         lbl_name, _, metric_name = parts[0], parts[1], parts[2]
                     else:
                         continue
-                    # Only include TGT_ rules and signals, skip Category* (already in bot names)
+                    # Skip low-severity informational signals (only show medium/high)
+                    if lbl_name.endswith("Low") or lbl_name == "TGT_TokenAbsent":
+                        continue
                     if lbl_name.startswith("TGT_") or lbl_name.startswith("Signal") or lbl_name in ("token_absent", "non_browser_user_agent") or parts[1].endswith("cloud_service_provider"):
                         if lbl_name not in targeted_signals:
                             targeted_signals[lbl_name] = {}
