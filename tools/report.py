@@ -333,9 +333,8 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
     last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region)
     daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end, scope, region)
 
-    # Traffic timeseries (kept for data_lines spike detection)
-    traffic_5min = _get_traffic_timeseries(cw, webacl_name, start_this_week, end)
     countries = _get_top_countries(cw, webacl_name, start_this_week, end)
+    # rules: used in data_lines for LLM summary context (not rendered in HTML)
     rules = _get_top_rules(cw, webacl_name, start_this_week, end)
 
     total_this = this_week["allowed"] + this_week["blocked"] + this_week["challenge"]
@@ -481,46 +480,7 @@ def generate_weekly_report(webacl_name: str, scope: str = "CLOUDFRONT", theme: s
                     f'</div>'
                 )
 
-                # DDoS timeline chart (full week, 5-min sum)
-                try:
-                    import json as _json
-                    ddos_chart_resp = cw.get_metric_data(
-                        MetricDataQueries=[
-                            {"Id": "total", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"AllowedRequests\" OR \"BlockedRequests\" OR \"ChallengeRequests\")', 'Sum', 900),0))"},
-                            {"Id": "evtdet", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 900),0))"},
-                            {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 900),0))"},
-                        ],
-                        StartTime=start_this_week, EndTime=end, ScanBy="TimestampAscending",
-                    )
-                    ddos_chart_data = {"labels": [], "total": [], "event": [], "ddos": []}
-                    for r in ddos_chart_resp.get("MetricDataResults", []):
-                        if r["Id"] == "total":
-                            ddos_chart_data["labels"] = [t.strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
-                            ddos_chart_data["total"] = [int(v) for v in r.get("Values", [])]
-                        elif r["Id"] == "evtdet":
-                            ddos_chart_data["event"] = [int(v) for v in r.get("Values", [])]
-                        elif r["Id"] == "ddosreq":
-                            ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
-                    if ddos_chart_data["labels"]:
-                        antiddos_section += (
-                            f'<div class="chart-container"><canvas id="ddosChart"></canvas></div>'
-                            f'<p style="color:var(--muted);font-size:1rem;text-align:center;">15-minute sum · Scroll to zoom, drag to pan</p>'
-                            f'<script>'
-                            f'(function(){{'
-                            f'const ddosData = {_json.dumps(ddos_chart_data)};'
-                            f'const c = getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#e6edf3";'
-                            f'new Chart(document.getElementById("ddosChart"), {{'
-                            f'  type: "line",'
-                            f'  data: {{ labels: ddosData.labels, datasets: ['
-                            f'    {{ label: "DDoS Requests", data: ddosData.ddos, borderColor: "#f85149", borderWidth: 1.5, fill: true, backgroundColor: "rgba(248,81,73,0.25)", tension: 0.2, pointRadius: 0 }},'
-                            f'  ] }},'
-                            f'  options: {{ responsive: true, interaction: {{ mode: "index", intersect: false }}, plugins: {{ title: {{ display: true, text: "Anti-DDoS: DDoS Requests Identified (full week)", color: c }}, legend: {{ labels: {{ color: c }} }}, tooltip: {{ mode: "index", intersect: false }}, zoom: {{ zoom: {{ wheel: {{ enabled: true }}, pinch: {{ enabled: true }}, mode: "x" }}, pan: {{ enabled: true, mode: "x" }} }} }}, scales: {{ x: {{ ticks: {{ color: c, maxTicksLimit: 14 }} }}, y: {{ beginAtZero: true, ticks: {{ color: c }} }} }} }}'
-                            f'}});'
-                            f'}})();'
-                            f'</script>'
-                        )
-                except Exception:
-                    pass
+                # DDoS chart is rendered by _get_ddos_chart_data() (antiddos_chart_section)
                 ddos_num_events = num_events
                 ddos_event_first = event_first
                 ddos_event_last = event_last
