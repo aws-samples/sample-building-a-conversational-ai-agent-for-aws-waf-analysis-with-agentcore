@@ -1,10 +1,11 @@
 {
   "name": "waf-agent-frontend",
-  "version": "0.1.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node -e \"const fs=require('fs');const v=fs.readFileSync('../CHANGELOG.md','utf-8').match(/^## (\\d+\\.\\d+\\.\\d+)/m)?.[1]||'0.0.0';const p=JSON.parse(fs.readFileSync('./package.json','utf-8'));if(p.version!==v){p.version=v;fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\\n')}\"",
     "build": "vite build",
     "preview": "vite preview"
   },

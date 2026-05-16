@@ -242,6 +242,9 @@ VITE_AGENT_RUNTIME_ARN=<AgentRuntimeArn from Step 2>
 VITE_SESSIONS_API_URL=<SessionsApiUrl from Step 3>
 EOF
 
+# Optional: customize the agent name shown in the UI
+# echo 'VITE_BRAND_NAME=My Company WAF Agent' >> .env
+
 # Build
 npm install
 npm run build

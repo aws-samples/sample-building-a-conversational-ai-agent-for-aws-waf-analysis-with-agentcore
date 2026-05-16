@@ -80,6 +80,9 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 .sidebar-close:hover { color: var(--fg); }
 .sidebar-top { display: flex; justify-content: flex-end; gap: 0.5rem; margin-bottom: 0.5rem; }
 .sidebar-lang-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 0 0.6rem; color: var(--fg); cursor: pointer; font-size: 0.75rem; font-weight: 500; height: 2rem; }
+.sidebar-footer { margin-top: auto; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: var(--muted); }
+.sidebar-footer a { color: var(--accent); text-decoration: none; }
+.sidebar-footer a:hover { text-decoration: underline; }
 .sidebar-lang-btn:hover { border-color: var(--accent); color: var(--accent); }
 .sidebar-open { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; color: var(--fg); cursor: pointer; font-size: 1rem; margin-right: 0.75rem; }
 .new-session-btn { width: 100%; padding: 0.6rem; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.75rem; }

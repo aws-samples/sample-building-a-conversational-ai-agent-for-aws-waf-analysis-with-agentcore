@@ -132,6 +132,17 @@ python agent.py "List all WebACLs"
 python agent.py "Any traffic bypassing my-webacl?"
 ```
 
+## Customization
+
+The frontend agent name can be customized via environment variable — no code changes needed:
+
+```bash
+# In frontend/.env
+VITE_BRAND_NAME=My Company WAF Agent
+```
+
+This changes the header, browser tab title, and conversation exports. Defaults to "AWS WAF Agent" if not set.
+
 ## Project Structure
 
 ```

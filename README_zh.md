@@ -132,6 +132,17 @@ python agent.py "列出所有 WebACL"
 python agent.py "my-webacl 有没有流量绕过了 WAF？"
 ```
 
+## 自定义
+
+前端显示的 Agent 名称可通过环境变量自定义，无需改代码：
+
+```bash
+# 在 frontend/.env 中
+VITE_BRAND_NAME=我的公司 WAF Agent
+```
+
+会影响页面标题、浏览器标签页和对话导出。未设置时默认为 "AWS WAF Agent"。
+
 ## 项目结构
 
 ```
