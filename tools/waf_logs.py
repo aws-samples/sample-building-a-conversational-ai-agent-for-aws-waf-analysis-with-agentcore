@@ -152,11 +152,26 @@ def _sanitize_param(value: str) -> str:
 
 
 def _parse_start_time(value: str) -> int | None:
-    """Parse a date/datetime string to epoch seconds using user's timezone. Returns None on failure."""
+    """Parse a date/datetime string to epoch seconds. Supports explicit offset or falls back to env var. Returns None on failure."""
     from datetime import datetime, timezone, timedelta
-    tz_offset = int(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "8"))  # default UTC+8
-    user_tz = timezone(timedelta(hours=tz_offset))
     value = value.strip()
+    # If value contains explicit offset (e.g., +08:00, Z), use it directly
+    for fmt in ("%Y-%m-%dT%H:%M%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M%z"):
+        try:
+            dt = datetime.strptime(value, fmt)
+            return int(dt.timestamp())
+        except ValueError:
+            continue
+    # Also try Python's fromisoformat for "+08:00" style
+    try:
+        if "+" in value[10:] or value.endswith("Z"):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+    except (ValueError, IndexError):
+        pass
+    # No explicit offset — use WAF_AGENT_TIMEZONE_OFFSET env var (default UTC+0)
+    tz_offset = int(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
+    user_tz = timezone(timedelta(hours=tz_offset))
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:
             dt = datetime.strptime(value, fmt).replace(tzinfo=user_tz)

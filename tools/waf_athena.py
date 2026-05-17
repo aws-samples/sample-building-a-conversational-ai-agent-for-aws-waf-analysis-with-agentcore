@@ -641,15 +641,11 @@ def run_athena_query(
     # Cap at 6 hours
     hours_ago = min(hours_ago, 6)
 
-    # Parse start_time
-    try:
-        if "T" in start_time:
-            _st = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
-        else:
-            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
-        start_epoch = int(_st.timestamp())
-    except ValueError:
-        return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
+    # Parse start_time (reuse same logic as run_logs_query)
+    from tools.waf_logs import _parse_start_time
+    start_epoch = _parse_start_time(start_time)
+    if start_epoch is None:
+        return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM (with optional +HH:MM offset)."
 
     # Sanitize params
     ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
