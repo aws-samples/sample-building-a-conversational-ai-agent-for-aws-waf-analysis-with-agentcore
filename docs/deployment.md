@@ -51,6 +51,16 @@ Choose a backend region based on:
 
 Override via environment variable `WAF_AGENT_MODEL_ID` if needed.
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WAF_AGENT_MODEL_ID` | Region-based (see above) | Bedrock model ID |
+| `WAF_AGENT_MODEL_REGION` | Stack region | Region for Bedrock model invocation |
+| `WAF_AGENT_TIMEZONE_OFFSET` | `0` (UTC) | Fallback timezone offset (hours) for date parsing when user doesn't specify. Set to `8` for UTC+8 (China/Singapore/etc.) |
+
+These are set in the Dockerfile or CloudFormation template. To override, add to `deploy/backend.yaml` Environment section.
+
 ## Step 1: Build and Push Container Image
 
 The agent runs as a container on AWS. This step packages the agent code into a container image and uploads it to Amazon ECR (a private container registry in your AWS account).
