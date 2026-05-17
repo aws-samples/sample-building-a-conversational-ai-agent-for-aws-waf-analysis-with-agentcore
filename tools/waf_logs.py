@@ -152,13 +152,18 @@ def _sanitize_param(value: str) -> str:
 
 
 def _parse_start_time(value: str) -> int | None:
-    """Parse a date/datetime string to epoch seconds. Supports explicit offset or falls back to env var. Returns None on failure."""
+    """Parse a date/datetime string to epoch seconds. Supports explicit offset or falls back to session/env. Returns None on failure."""
     from datetime import datetime, timezone, timedelta
+    from tools.session_state import get_user_timezone
     value = value.strip()
     # If value contains explicit offset (e.g., +08:00, Z), use it directly
     for fmt in ("%Y-%m-%dT%H:%M%z", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M%z"):
         try:
             dt = datetime.strptime(value, fmt)
+            # Auto-remember timezone from first explicit offset
+            if get_user_timezone() is None:
+                from tools.session_state import set_user_timezone
+                set_user_timezone(int(dt.utcoffset().total_seconds() // 3600))
             return int(dt.timestamp())
         except ValueError:
             continue
@@ -166,11 +171,15 @@ def _parse_start_time(value: str) -> int | None:
     try:
         if "+" in value[10:] or value.endswith("Z"):
             dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if get_user_timezone() is None:
+                from tools.session_state import set_user_timezone
+                set_user_timezone(int(dt.utcoffset().total_seconds() // 3600))
             return int(dt.timestamp())
     except (ValueError, IndexError):
         pass
-    # No explicit offset — use WAF_AGENT_TIMEZONE_OFFSET env var (default UTC+0)
-    tz_offset = int(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
+    # No explicit offset — use session state > env var > UTC+0
+    session_tz = get_user_timezone()
+    tz_offset = session_tz if session_tz is not None else int(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
     user_tz = timezone(timedelta(hours=tz_offset))
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:

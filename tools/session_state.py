@@ -50,6 +50,16 @@ def is_log_filter_active() -> bool:
     return _state.get("log_filter_active", False)
 
 
+def set_user_timezone(offset: int):
+    """Store user's timezone offset (hours from UTC)."""
+    _state["user_tz_offset"] = offset
+
+
+def get_user_timezone() -> int | None:
+    """Get user's timezone offset. Returns None if not yet determined."""
+    return _state.get("user_tz_offset")
+
+
 def get_webacl_name() -> str | None:
     return _state.get("webacl_name")
 
