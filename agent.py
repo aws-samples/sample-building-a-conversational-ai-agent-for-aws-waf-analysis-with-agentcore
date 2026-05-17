@@ -68,7 +68,7 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - hours_ago controls duration from start (default 6). Example: start_time="2026-05-09T14:00", hours_ago=2 → queries 14:00-16:00
 - If user says "last 6 hours" → calculate start_time = now - 6h, pass that as start_time.
 - get_waf_overview does NOT need start_time — it always queries from now backwards (hours parameter).
-- Timezone: dates without explicit offset are interpreted using WAF_AGENT_TIMEZONE_OFFSET (default UTC+0). When passing start_time to tools, ALWAYS include an explicit offset (e.g., "2026-05-09T14:00+08:00"). To determine the user's timezone: if the user writes in Chinese → assume UTC+8; if in Japanese → UTC+9; otherwise ask on first time-related query. Once confirmed, remember it for the rest of the session and always include the offset.
+- Timezone: automatically detected from user's browser. When passing start_time to tools, you may omit the offset — the system uses the user's local timezone as fallback. For CLI users without browser detection, WAF_AGENT_TIMEZONE_OFFSET env var applies.
 
 ## Athena vs CloudWatch Logs
 - If get_waf_config shows log destination is S3 or Firehose: use run_athena_query (not run_logs_query).
@@ -548,6 +548,13 @@ def create_app():
             return StreamingResponse(patrol_report_generator(), media_type="text/event-stream")
 
         # --- Stream agent execution ---
+        # Inject user timezone from frontend (browser-detected)
+        forwarded = input_data.get("forwardedProps", {})
+        tz_offset = forwarded.get("userTimezoneOffset")
+        if tz_offset is not None:
+            from tools.session_state import set_user_timezone
+            set_user_timezone(int(tz_offset))
+
         msg_seq = int(time.time() * 1000)  # timestamp-based seq for DDB ordering
         return StreamingResponse(
             _stream_agent(agent, prompt, thread_id, user_id=user_id, session_id=session_id, msg_seq=msg_seq),

@@ -35,7 +35,9 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
       ],
       tools: [],
       context: [],
-      forwardedProps: {},
+      forwardedProps: {
+        userTimezoneOffset: -(new Date().getTimezoneOffset() / 60),
+      },
     };
   }
 
