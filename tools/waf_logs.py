@@ -9,7 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_logs_region, get_log_destination
+from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active
 
 MAX_RESULTS = 25
 POLL_INTERVAL = 2
@@ -295,7 +295,10 @@ def run_logs_query(
     stats = result.get("statistics", {})
 
     if not results:
-        return f"Query returned 0 results. (scanned {stats.get('bytesScanned', 0) / 1e6:.1f} MB, query: {query_type})"
+        msg = f"Query returned 0 results. (scanned {stats.get('bytesScanned', 0) / 1e6:.1f} MB, query: {query_type})"
+        if is_log_filter_active():
+            msg += "\n⚠️  A Log Filter is active on this WebACL — 0 results may be due to filtered-out log entries, not absence of traffic. Cross-check with get_waf_overview metrics."
+        return msg
 
     # Format as table
     columns = [f["field"] for f in results[0] if not f["field"].startswith("@ptr")]
@@ -686,4 +689,6 @@ def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
     lines.append("")
     lines.append("→ If malicious: suggest user add IP to block list or adjust rate-limit threshold.")
     lines.append("→ For JA4 fingerprint identification: lookup_ja4(fingerprints=[...])")
+    if is_log_filter_active():
+        lines.append("\n⚠️  Log Filter active — this analysis only covers logged actions. ALLOW or COUNT requests may be filtered out, making the IP appear more malicious than it actually is.")
     return "\n".join(lines)

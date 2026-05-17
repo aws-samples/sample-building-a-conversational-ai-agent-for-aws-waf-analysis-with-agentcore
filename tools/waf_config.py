@@ -94,6 +94,7 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     # Get logging config
     lines.append("\n## Logging Configuration")
     log_dest = None
+    log_filter = None
     try:
         log_resp = client.get_logging_configuration(ResourceArn=webacl["ARN"])
         log_config = log_resp["LoggingConfiguration"]
@@ -101,6 +102,26 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         for dest in destinations:
             lines.append(f"  Destination: {dest}")
             log_dest = dest
+        # Log filter detection
+        log_filter = log_config.get("LoggingFilter")
+        if log_filter:
+            default = log_filter.get("DefaultBehavior", "KEEP")
+            filters = log_filter.get("Filters", [])
+            lines.append(f"\n  ⚠️  Log Filter ACTIVE (default: {default})")
+            for f in filters:
+                behavior = f.get("Behavior")
+                conditions = f.get("Conditions", [])
+                cond_strs = []
+                for c in conditions:
+                    if "ActionCondition" in c:
+                        cond_strs.append(f"action={c['ActionCondition']['Action']}")
+                    if "LabelNameCondition" in c:
+                        cond_strs.append(f"label={c['LabelNameCondition']['LabelName']}")
+                req = f.get("Requirement", "MEETS_ALL")
+                joiner = " AND " if req == "MEETS_ALL" else " OR "
+                lines.append(f"    Filter: {joiner.join(cond_strs)} → {behavior}")
+            lines.append("    ⚠️  Log queries may return incomplete results! Actions not matching KEEP filters are not logged.")
+            lines.append("    Note: COUNT = custom rule Count or rule group override to Count; EXCLUDED_AS_COUNT = individual rule override within a managed rule group.")
     except client.exceptions.WAFNonexistentItemException:
         lines.append("  ⚠️  Logging NOT enabled for this WebACL")
 
@@ -111,6 +132,8 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         scope=scope,
         region=region,
         log_destination=log_dest,
+        log_filter_active=bool(log_filter),
+        log_filter_default=log_filter.get("DefaultBehavior") if log_filter else None,
     )
 
     # Detect capabilities from rules

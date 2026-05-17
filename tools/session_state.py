@@ -6,7 +6,8 @@
 _state: dict = {}
 
 
-def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destination: str | None = None):
+def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destination: str | None = None,
+                       log_filter_active: bool = False, log_filter_default: str | None = None):
     """Store current WebACL context."""
     _state["webacl_name"] = name
     _state["webacl_arn"] = arn
@@ -14,6 +15,8 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["waf_region"] = region
     _state["metrics_region"] = "us-east-1" if scope == "CLOUDFRONT" else region
     _state["log_destination"] = log_destination
+    _state["log_filter_active"] = log_filter_active
+    _state["log_filter_default"] = log_filter_default
     _state["findings"] = []
 
 
@@ -40,6 +43,11 @@ def get_logs_region() -> str:
 def get_log_destination() -> str | None:
     """Get the discovered log destination (CW Logs group or S3 bucket)."""
     return _state.get("log_destination")
+
+
+def is_log_filter_active() -> bool:
+    """Check if a log filter is active (logs may be incomplete)."""
+    return _state.get("log_filter_active", False)
 
 
 def get_webacl_name() -> str | None:
