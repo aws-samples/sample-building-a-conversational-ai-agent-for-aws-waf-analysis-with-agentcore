@@ -189,7 +189,8 @@ def _step_volume_anomaly() -> str:
     lines.append("## Your Next Action")
     lines.append("")
     lines.append("Always ask: \"Is this expected traffic growth (marketing campaign, product launch, seasonal event)?\"")
-    lines.append("If user confirms unexpected → proceed with scan for detailed per-IP analysis.")
+    lines.append("If user confirms unexpected → ask which day/hour was worst, then call detect_bypass(step='scan', start_time='...', hours_ago=1).")
+    lines.append("Use a 1-2 hour window around the peak for best signal-to-noise ratio.")
 
     lines.append("")
     lines.append(CONFIDENCE_RULES)
@@ -381,14 +382,15 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("## Your Next Action")
     lines.append("")
-    if crawlers or repeaters:
+    if crawlers or repeaters or datacenter or auto_ua:
         lines.append("Present candidates to user. For each:")
         lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
         lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")
         lines.append("- For deeper analysis → call detect_bypass(step='investigate_ip', ip='...', start_time='...')")
     else:
         lines.append("Tell user: no obvious bypass detected in this window.")
-        lines.append("If user still suspects bypass, suggest trying a different time window or checking volume_anomaly.")
+        lines.append("If user still suspects bypass, try a shorter/different time window (1-2h around the suspected incident).")
+        lines.append("Tip: use get_waf_overview or volume_anomaly to identify peak traffic hours first.")
 
     return "\n".join(lines)
 
