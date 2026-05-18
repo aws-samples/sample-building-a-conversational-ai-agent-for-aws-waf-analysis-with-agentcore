@@ -530,7 +530,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             min(from_unixtime("timestamp"/1000)) as first_seen, max(from_unixtime("timestamp"/1000)) as last_seen
             FROM {table} WHERE {tf} AND action = 'ALLOW'
             AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')
-            AND NOT any_match(labels, l -> l.name LIKE '%bot:verified%')
+            AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )
             GROUP BY httprequest.clientip
             HAVING count(DISTINCT httprequest.uri) > 50
             ORDER BY unique_uris DESC LIMIT {limit}""",
@@ -540,7 +540,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             min(from_unixtime("timestamp"/1000)) as first_seen, max(from_unixtime("timestamp"/1000)) as last_seen
             FROM {table} WHERE {tf} AND action = 'ALLOW'
             AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')
-            AND NOT any_match(labels, l -> l.name LIKE '%bot:verified%')
+            AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )
             GROUP BY httprequest.clientip
             HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10
             ORDER BY total DESC LIMIT {limit}""",
