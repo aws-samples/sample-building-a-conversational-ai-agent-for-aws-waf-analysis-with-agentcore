@@ -355,7 +355,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
     countries = _get_top_countries(cw, webacl_name, start_this_week, end)
     # rules: used in data_lines for LLM summary context (not rendered in HTML)
-    rules = _get_top_rules(cw, webacl_name, start_this_week, end)
+    rules = _get_top_rules(cw, webacl_name, start_this_week, end, scope, region)
 
     total_this = this_week["allowed"] + this_week["blocked"] + this_week["challenge"]
     total_last = last_week["allowed"] + last_week["blocked"] + last_week["challenge"]
@@ -731,7 +731,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             pass
 
     # Attack type timeseries for stacked area chart
-    attack_ts = _get_attack_timeseries(cw, webacl_name, start_this_week, end, tz_offset=_tz_offset)
+    attack_ts = _get_attack_timeseries(cw, webacl_name, start_this_week, end, tz_offset=_tz_offset, scope=scope, region=region)
 
     # DDoS chart (always rendered)
     antiddos_chart_section = _get_ddos_chart_data(cw, webacl_name, start_this_week, end, L, tz_offset=_tz_offset)
@@ -899,15 +899,21 @@ def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRON
     }
 
 
-def _get_traffic_timeseries(cw, webacl_name: str, start, end) -> list:
+def _get_traffic_timeseries(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "") -> list:
     """Get 15-min resolution traffic data using SEARCH."""
+    if scope == "REGIONAL" and region:
+        dim_set = "{AWS/WAFV2,Rule,WebACL,Region}"
+        extra_filter = f' Region="{region}"'
+    else:
+        dim_set = "{AWS/WAFV2,Rule,WebACL}"
+        extra_filter = ""
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"AllowedRequests\"', 'Sum', 900),0))"},
-                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"BlockedRequests\"', 'Sum', 900),0))"},
-                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
-                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=\"CaptchaRequests\"', 'Sum', 900),0))"},
+                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"AllowedRequests\"', 'Sum', 900),0))"},
+                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', 900),0))"},
+                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
+                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"CaptchaRequests\"', 'Sum', 900),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
@@ -923,17 +929,23 @@ def _get_traffic_timeseries(cw, webacl_name: str, start, end) -> list:
         return []
 
 
-def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None) -> dict:
+def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, scope: str = "CLOUDFRONT", region: str = "") -> dict:
     """Get 15-min resolution attack type breakdown using {Attack, WebACL} dimension.
 
     Returns: {"labels": [...], "series": {"BadBots": [...], "XSS": [...], ...}}
     DDoS (Anti-DDoS AMR challenge) is excluded — shown separately in DDoS chart.
     """
+    if scope == "REGIONAL" and region:
+        rule_dim_set = "{AWS/WAFV2,Rule,WebACL,Region}"
+        rule_extra = f' Region="{region}"'
+    else:
+        rule_dim_set = "{AWS/WAFV2,Rule,WebACL}"
+        rule_extra = ""
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
-                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
+                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{rule_dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{rule_extra} MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
                 {"Id": "ddos_c", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
@@ -1091,15 +1103,22 @@ def _get_top_countries(cw, webacl_name: str, start, end) -> list:
     return results
 
 
-def _get_top_rules(cw, webacl_name: str, start, end) -> list:
+def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "") -> list:
     """Get top rules by hit count using SEARCH."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
+    # CLOUDFRONT uses {Rule,WebACL}; REGIONAL uses {Rule,WebACL,Region}
+    if scope == "REGIONAL" and region:
+        dim_set = "{AWS/WAFV2,Rule,WebACL,Region}"
+        extra_filter = f' Region="{region}"'
+    else:
+        dim_set = "{AWS/WAFV2,Rule,WebACL}"
+        extra_filter = ""
     results = []
     for action in ["BlockedRequests", "CountedRequests", "ChallengeRequests"]:
         expression = (
-            f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} "
-            f"MetricName=\"{action}\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"
+            f"SEARCH('{dim_set} "
+            f"MetricName=\"{action}\" WebACL=\"{webacl_name}\"{extra_filter}', 'Sum', 604800)"
         )
         resp = cw.get_metric_data(
             MetricDataQueries=[{"Id": f"rules_{action}", "Expression": expression}],

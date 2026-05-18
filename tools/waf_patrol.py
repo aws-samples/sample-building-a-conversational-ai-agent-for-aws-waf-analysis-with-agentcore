@@ -292,19 +292,28 @@ def _detect_ddos_windows(cw, webacl_name: str, start, end) -> list[int]:
 
 
 
-def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int = 86400) -> dict:
+def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int = 86400,
+                                   scope: str = "CLOUDFRONT", region: str = "") -> dict:
     """Get per-rule metrics for all rules using SEARCH (single API call).
 
     Returns: {rule_name: {blocked: [daily], counted: [daily], challenge: [daily], captcha: [daily]}}
     Also returns 'ALL' key for WebACL-level totals.
     """
+    # CLOUDFRONT uses {Rule,WebACL}; REGIONAL uses {Rule,WebACL,Region}
+    if scope == "REGIONAL" and region:
+        dim_set = "{AWS/WAFV2,Rule,WebACL,Region}"
+        extra_filter = f' Region="{region}"'
+    else:
+        dim_set = "{AWS/WAFV2,Rule,WebACL}"
+        extra_filter = ""
+
     resp = cw.get_metric_data(
         MetricDataQueries=[
-            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"BlockedRequests\"', 'Sum', {period})"},
-            {"Id": "counted", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"CountedRequests\"', 'Sum', {period})"},
-            {"Id": "challenge", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"ChallengeRequests\"', 'Sum', {period})"},
-            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"CaptchaRequests\"', 'Sum', {period})"},
-            {"Id": "allowed", "Expression": f"SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"AllowedRequests\"', 'Sum', {period})"},
+            {"Id": "blocked", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', {period})"},
+            {"Id": "counted", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CountedRequests\"', 'Sum', {period})"},
+            {"Id": "challenge", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', {period})"},
+            {"Id": "captcha", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CaptchaRequests\"', 'Sum', {period})"},
+            {"Id": "allowed", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"AllowedRequests\"', 'Sum', {period})"},
         ],
         StartTime=start, EndTime=end, ScanBy="TimestampAscending",
     )
@@ -723,8 +732,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
     # 4. Per-rule metrics (this period + same period last week for WoW)
     cw = get_client("cloudwatch", region_name=region)
-    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600)
-    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, end_last, period=3600)
+    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600, scope=scope, region=region)
+    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, end_last, period=3600, scope=scope, region=region)
 
     # 5. Challenge/Captcha solved
     challenge_solved, captcha_solved = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
@@ -804,12 +813,18 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     }
 
     # 10. Attack chart data
+    if scope == "REGIONAL" and region:
+        _rule_dim = "{AWS/WAFV2,Rule,WebACL,Region}"
+        _rule_extra = f' Region="{region}"'
+    else:
+        _rule_dim = "{AWS/WAFV2,Rule,WebACL}"
+        _rule_extra = ""
     chart_data = None
     try:
         chart_resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
-                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,Rule,WebACL}} WebACL=\"{webacl_name}\" Rule=\"ALL\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
+                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{_rule_dim} WebACL=\"{webacl_name}\" Rule=\"ALL\"{_rule_extra} MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )

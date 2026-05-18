@@ -103,7 +103,7 @@ def _step_init(rule_name: str = "") -> str:
     cw = get_client("cloudwatch", region_name="us-east-1" if scope == "CLOUDFRONT" else region)
     end_dt = dt.now(tz.utc)
     start_dt = end_dt - timedelta(days=14)
-    metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=14 * 86400)
+    metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=14 * 86400, scope=scope, region=region)
 
     # Build hit count map from metrics
     found_rules = {}

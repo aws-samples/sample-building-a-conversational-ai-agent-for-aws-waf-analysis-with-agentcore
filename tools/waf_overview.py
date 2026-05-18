@@ -43,7 +43,7 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, scope: 
     prev_start = start - timedelta(hours=hours)
 
     if query_type == "top_rules":
-        return _top_rules(cw, webacl_name, start, end, prev_start, hours)
+        return _top_rules(cw, webacl_name, start, end, prev_start, hours, scope, region)
     elif query_type == "attack_types":
         return _attack_types(cw, webacl_name, start, end, hours)
     elif query_type == "bot_summary":
@@ -60,10 +60,10 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, scope: 
         return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate"
 
 
-def _top_rules(cw, webacl_name, start, end, prev_start, hours):
+def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT", region=""):
     from tools.waf_patrol import _get_all_rules_metrics_search
-    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600))
-    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=int(hours * 3600))
+    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600), scope=scope, region=region)
+    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=int(hours * 3600), scope=scope, region=region)
 
     rows = []
     for rule, data in this_week.items():
@@ -235,7 +235,8 @@ def _targeted_signals(cw, webacl_name, start, end, hours):
 
 def _rate_limits(cw, webacl_name, scope, start, end, hours):
     from tools.waf_patrol import _get_all_rules_metrics_search
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600))
+    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600), scope=scope, region=region)
 
     # Get rate-based rule names from WebACL config
     rate_rule_names = set()
@@ -274,7 +275,7 @@ def _rate_limits(cw, webacl_name, scope, start, end, hours):
 def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours):
     from tools.waf_patrol import _get_challenge_solved, _get_all_rules_metrics_search
     cs, cas = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600))
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600), scope=scope, region=region)
     all_data = data.get("ALL", {})
     tot_ch = sum(all_data.get("challenge", []))
     tot_cap = sum(all_data.get("captcha", []))
