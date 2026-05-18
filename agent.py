@@ -14,7 +14,6 @@ from tools.waf_config import list_webacls, get_waf_config
 from tools.waf_metrics import get_waf_metrics
 from tools.waf_overview import get_waf_overview
 from tools.waf_logs import run_logs_query, analyze_ip
-from tools.waf_athena import run_athena_query
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
@@ -65,7 +64,7 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - patrol_scan generates the report directly — just present the summary to the user.
 - patrol_scan requires webacl_name and start_time. Ask the user: which WebACL and which date/time period (max 24h)?
 - generate_weekly_report requires webacl_name and start_time. Ask the user: which WebACL and which start date (max 7 days)?
-- run_logs_query and run_athena_query require start_time (max 6h window). Always ask the user for the time period before querying logs.
+- run_logs_query requires start_time (max 6h window). Always ask the user for the time period before querying logs.
 - get_waf_overview: fast metrics-based answers (2-3s, up to 14 days). Use for "what happened", "which rules triggered", "bot situation". No start_time needed.
 - When user asks overview questions → get_waf_overview first. If they want IP/URI/request-level details → then query logs.
 
@@ -85,10 +84,19 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - Timezone: automatically detected from user's browser. When passing start_time to tools, you may omit the offset — the system uses the user's local timezone as fallback. For CLI users without browser detection, WAF_AGENT_TIMEZONE_OFFSET env var applies.
 
 ## Athena vs CloudWatch Logs
-- If get_waf_config shows log destination is S3 or Firehose: use run_athena_query (not run_logs_query).
+- run_logs_query works for BOTH CWL and S3/Athena users (auto-routes based on log destination).
 - First Athena query may be slow (~30s) due to automatic table creation. Warn the user.
 - Athena charges per TB scanned (~$5/TB). For repeated queries, mention potential cost.
 - Athena has the same 6-hour query window cap as CWL. For broader trends, use get_waf_overview (metrics-based, free).
+- First Athena query may be slow (~30s) due to automatic table creation. Warn the user.
+- Athena charges per TB scanned (~$5/TB). For repeated queries, mention potential cost.
+- Athena has the same 6-hour query window cap as CWL. For broader trends, use get_waf_overview (metrics-based, free).
+
+## Tool Disambiguation: analyze_ip vs detect_bypass(step='investigate_ip')
+- **analyze_ip**: General-purpose IP profiling. Looks at ALL actions (BLOCK + ALLOW + COUNT). Includes NAT detection. Use when user says "check IP X" without specifying direction (FP or bypass).
+- **detect_bypass(step='investigate_ip')**: Bypass-specific. Focuses on ALLOW traffic anomalies. Includes confidence judgment + remediation suggestions. Use when already in bypass investigation context.
+- If analyze_ip reveals the IP is mostly ALLOW'd with suspicious patterns → suggest detect_bypass for deeper bypass analysis.
+- If analyze_ip reveals the IP is mostly BLOCK'd → suggest investigate_block_fp for FP analysis.
 
 ## No-Logging Degradation
 
@@ -100,7 +108,7 @@ If WAF logging is not configured (get_waf_config shows no logging destination):
 - For false positive / bypass investigation: you CANNOT help at all. Tell the user to enable logging and come back.
 - Tell the user explicitly: "Without WAF logging, I can only provide aggregate metrics. For IP-level investigation, please enable logging first."
 - Do NOT fabricate IP addresses, URIs, or request details from metrics alone
-- Do NOT call run_logs_query, run_athena_query, or analyze_ip — they will fail. Skip directly to your conclusion based on available metrics.
+- Do NOT call run_logs_query or analyze_ip — they will fail. Skip directly to your conclusion based on available metrics.
 
 ## Log Filter Awareness
 
@@ -245,12 +253,12 @@ def _build_system_prompt() -> str:
 
 
 class PreQueryGuard(HookProvider):
-    """Blocks run_logs_query/analyze_ip/run_athena_query unless get_waf_config has been called.
+    """Blocks run_logs_query/analyze_ip unless get_waf_config has been called.
 
     This is a code-level enforcement — LLM cannot bypass it regardless of system prompt compliance.
     """
 
-    GUARDED_TOOLS = {"run_logs_query", "analyze_ip", "run_athena_query"}
+    GUARDED_TOOLS = {"run_logs_query", "analyze_ip"}
 
     def register_hooks(self, registry: HookRegistry, **kwargs):
         registry.add_callback(BeforeToolCallEvent, self.check_prerequisites)
@@ -268,7 +276,7 @@ class PreQueryGuard(HookProvider):
 _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
-          run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
+          lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
           patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,
           record_finding, ask_user]
