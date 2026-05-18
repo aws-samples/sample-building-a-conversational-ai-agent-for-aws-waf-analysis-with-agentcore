@@ -364,34 +364,42 @@ def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
             "Consider scanning a different time window (e.g., business hours)."
         )
 
-    # For each candidate, check Allow Ratio
+    # Batch query: get ALLOW counts for all candidate IPs in one query
+    candidate_ips = [r.get("httpRequest.clientIp", "") for r in block_results[:10] if r.get("httpRequest.clientIp")]
+    if not candidate_ips:
+        return (
+            "## Proactive FP Scan — No Candidates Found\n\n"
+            "No valid IPs in block results.\n"
+        )
+
+    ip_list_cwl = " or ".join(f"httpRequest.clientIp = '{ip}'" for ip in candidate_ips)
+    ip_list_athena = ", ".join(f"'{ip}'" for ip in candidate_ips)
+
+    allow_cwl = (
+        f"filter ({ip_list_cwl}) and action = 'ALLOW'"
+        " | stats count(*) as allow_hits by httpRequest.clientIp"
+    )
+    allow_athena = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as allow_hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND action = 'ALLOW' AND httprequest.clientip IN ({ip_list_athena})"
+        f" GROUP BY httprequest.clientip"
+    )
+    allow_results = _run_query(allow_cwl, allow_athena, start_epoch, end_epoch)
+    allow_map = {r.get("httpRequest.clientIp", ""): int(r.get("allow_hits", 0)) for r in allow_results}
+
+    # Build candidates
     candidates = []
-    for r in block_results[:10]:  # Check top 10 low-block IPs
-        candidate_ip = r.get("httpRequest.clientIp", "")
-        block_hits = int(r.get("block_hits", 0))
-        if not candidate_ip:
-            continue
-
-        # Check ALLOW count for this IP
-        allow_cwl = (
-            f"filter httpRequest.clientIp = '{candidate_ip}' and action = 'ALLOW'"
-            " | stats count(*) as allow_hits"
-        )
-        allow_athena = (
-            f"SELECT count(*) as allow_hits FROM {{TABLE}}"
-            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
-            f" AND httprequest.clientip = '{candidate_ip}' AND action = 'ALLOW'"
-        )
-        allow_r = _run_query(allow_cwl, allow_athena, start_epoch, end_epoch)
-        allow_hits = int(allow_r[0].get("allow_hits", 0)) if allow_r else 0
-
+    block_map = {r.get("httpRequest.clientIp", ""): int(r.get("block_hits", 0)) for r in block_results[:10]}
+    for ip in candidate_ips:
+        allow_hits = allow_map.get(ip, 0)
+        block_hits = block_map.get(ip, 0)
         if allow_hits == 0:
-            continue  # No ALLOW = can't determine, skip
-
+            continue
         ratio = allow_hits / max(block_hits, 1)
-        if ratio > 5:  # Allow Ratio > 5:1 = candidate
+        if ratio > 5:
             candidates.append({
-                "ip": candidate_ip,
+                "ip": ip,
                 "allow": allow_hits,
                 "block": block_hits,
                 "ratio": f"{ratio:.0f}:1",
