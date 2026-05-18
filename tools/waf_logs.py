@@ -6,7 +6,6 @@ import time
 import re
 import os
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active
@@ -574,17 +573,15 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 
 @tool
 def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
-    """Analyze a single IP address with parallel queries. Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
+    """Analyze a single IP address — full behavioral profile across all actions.
 
-    This is a composite tool that runs multiple queries in one call to minimize
-    LLM round-trips. Use this instead of calling run_logs_query multiple times for the same IP.
-
-    IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
-    Max query window is 6 hours.
+    Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
+    Use this for general IP investigation (any action). For bypass-specific analysis
+    (ALLOW-only), use detect_bypass(step='investigate_ip').
 
     Args:
         ip: IP address to analyze.
-        start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
+        start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED.
         hours_ago: Duration in hours from start_time (default 6, max 6).
 
     Returns:
@@ -599,124 +596,190 @@ def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
 
-    # Hard cap at 6 hours
-    hours_ago = min(hours_ago, MAX_HOURS)
-
-    log_dest = get_log_destination()
-    if not log_dest:
+    from tools.waf_query import query_logs, get_log_type
+    if get_log_type() == "none":
         return "Error: no logging configured. Run get_waf_config first."
-    if ":log-group:" not in log_dest:
-        return ("Error: analyze_ip currently requires CloudWatch Logs. Your logs are stored in S3.\n"
-                "Use run_athena_query with query_type='ip_cross_query' and query_type='ip_request_rate' instead.\n"
-                "Example: run_athena_query(query_type='ip_cross_query', ip='" + ip + "', start_time='" + start_time + "')")
-    log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
 
-    region = get_logs_region()
-    client = get_client("logs", region_name=region)
-
+    hours_ago = min(hours_ago, MAX_HOURS)
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
     end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
-    # Phase 1: Diversity check (NAT vs UA-rotation detection)
-    diversity_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count_distinct(ua) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
-    diversity = _execute_query_internal(client, log_group, start_epoch, end_epoch, diversity_query, 1)
+    # Phase 1: Diversity check (NAT detection)
+    div_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | parse @message /(?i)\\{"name":"user-agent","value":"(?<ua>.*?)"\\}/'
+        ' | stats count_distinct(ua) as ua_count, count_distinct(ja4Fingerprint) as ja4_count, count(*) as total'
+    )
+    div_athena = (
+        f"SELECT count(DISTINCT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value) as ua_count,"
+        f" count(DISTINCT ja4fingerprint) as ja4_count, count(*) as total"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
+    )
+    diversity = query_logs(div_cwl, div_athena, start_epoch, end_epoch, limit=1)
 
     if not diversity:
-        return f"Error: diversity query returned no results for {ip}"
+        return f"No log records found for {ip} in this time window."
 
     d = diversity[0]
     ua_count = int(d.get("ua_count", "0"))
     ja4_count = int(d.get("ja4_count", "0"))
     total = int(d.get("total", "0"))
 
-    # High diversity → could be NAT or UA rotation. Need deeper check.
+    # High diversity → check if NAT or UA rotation
     if ua_count > 3 and ja4_count > 3:
-        # Fetch actual UAs to detect rotation pattern
-        ua_list_query = f'filter httpRequest.clientIp = "{safe_ip}" | parse @message /(?i)\\{{"name":"user-agent","value":"(?<ua>.*?)"\\}}/ | stats count(*) as cnt by ua | sort cnt desc | limit 20'
-        ua_rows = _execute_query_internal(client, log_group, start_epoch, end_epoch, ua_list_query, 20)
+        ua_list_cwl = (
+            f'filter httpRequest.clientIp = "{safe_ip}"'
+            ' | parse @message /(?i)\\{"name":"user-agent","value":"(?<ua>.*?)"\\}/'
+            ' | stats count(*) as cnt by ua | sort cnt desc | limit 20'
+        )
+        ua_list_athena = (
+            f"SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua,"
+            f" count(*) as cnt"
+            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+            f" AND httprequest.clientip = '{safe_ip}'"
+            f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
+            f" ORDER BY cnt DESC LIMIT 20"
+        )
+        ua_rows = query_logs(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20)
         if not ua_rows or _is_nat_traffic(ua_rows):
-            return f"## {ip} — NAT/Shared IP (skipped)\n\nMultiple UAs ({ua_count}) + multiple JA4s ({ja4_count}) = shared IP (NAT gateway).\nTotal requests: {total}\n\nNo further analysis needed."
+            lines = [
+                f"## {ip} — NAT/Shared IP (skipped)",
+                "",
+                f"Multiple UAs ({ua_count}) + multiple JA4s ({ja4_count}) = shared IP (NAT gateway).",
+                f"Total requests: {total}",
+                "",
+                "**Confidence: HIGH** — genuine OS/browser diversity confirms multiple real users behind this IP.",
+                "No further analysis needed — blocking this IP would affect multiple legitimate users.",
+            ]
+            if is_log_filter_active():
+                lines.append("\n⚠️  Log Filter active — diversity counts may be incomplete.")
+            return "\n".join(lines)
 
-    # Phase 2: Parallel queries (only if not NAT)
-    queries = {
-        "cross_query": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc | limit 15',
-        "request_rate": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as req_per_min by bin(1m) | stats avg(req_per_min) as avg_rpm, max(req_per_min) as peak_rpm, count(*) as active_minutes',
-        "ja4": f'filter httpRequest.clientIp = "{safe_ip}" | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit 5',
-        "uri_diversity": f'filter httpRequest.clientIp = "{safe_ip}" and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static',
-    }
+    # Phase 2: Full analysis (not NAT)
+    cross_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc | limit 15'
+    )
+    cross_athena = (
+        f"SELECT action, terminatingruleid as \"terminatingRuleId\", count(*) as cnt"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
+        f" GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT 15"
+    )
 
-    results = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(_execute_query_internal, client, log_group, start_epoch, end_epoch, q, 25): name
-            for name, q in queries.items()
-        }
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                results[name] = future.result()
-            except Exception:
-                results[name] = []
+    rate_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | stats count(*) as req_per_min by bin(1m)'
+        ' | stats avg(req_per_min) as avg_rpm, max(req_per_min) as peak_rpm, count(*) as active_minutes'
+    )
+    rate_athena = (
+        f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm, count(*) as active_minutes FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{safe_ip}'"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+
+    ja4_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit 5'
+    )
+    ja4_athena = (
+        f"SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as cnt"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
+        f" GROUP BY ja4fingerprint ORDER BY cnt DESC LIMIT 5"
+    )
+
+    uri_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/'
+        ' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static'
+    )
+    uri_athena = (
+        f"SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_non_static"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
+        f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+    )
+
+    # Run queries (sequential via unified layer — each is fast with IP filter)
+    cross = query_logs(cross_cwl, cross_athena, start_epoch, end_epoch, limit=15) or []
+    rate = query_logs(rate_cwl, rate_athena, start_epoch, end_epoch, limit=1) or []
+    ja4 = query_logs(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5) or []
+    uri_div = query_logs(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1) or []
 
     # Format output
-    lines = [f"## IP Analysis: {ip}", f"Time window: last {hours_ago} hours", ""]
+    lines = [f"## IP Analysis: {ip}", f"Time window: {hours_ago}h from {start_time}", ""]
 
     # Diversity summary
     lines.append(f"**Diversity**: {ua_count} UAs, {ja4_count} JA4 fingerprints, {total} total requests")
     if ua_count > 1 and ja4_count == 1:
-        lines.append("⚠️ Multiple UAs but single JA4 = likely UA spoofing (same tool)")
+        lines.append("⚠️ Multiple UAs but single JA4 = likely UA spoofing (same TLS stack)")
     elif ua_count == 1 and ja4_count == 1:
         lines.append("Single UA + single JA4 = single client")
     lines.append("")
 
     # Action breakdown
     lines.append("**Action breakdown**:")
-    for row in results.get("cross_query", [])[:10]:
+    for row in cross[:10]:
         lines.append(f"  {row.get('action', '?')} / {row.get('terminatingRuleId', 'default')} : {row.get('cnt', '0')}")
     lines.append("")
 
     # Request rate
-    rate = results.get("request_rate", [{}])
     if rate:
         r = rate[0]
         avg_rpm = r.get("avg_rpm", "0")
         peak_rpm = r.get("peak_rpm", "0")
         active_min = r.get("active_minutes", "0")
         lines.append(f"**Request rate**: avg {avg_rpm} req/min, peak {peak_rpm} req/min, active {active_min} minutes")
-        try:
-            if float(peak_rpm) > 200:
-                lines.append("🚨 Peak > 200 req/min — likely automation")
-        except (ValueError, TypeError):
-            pass
     lines.append("")
 
     # JA4 fingerprints
     lines.append("**JA4 fingerprints**:")
-    for row in results.get("ja4", [])[:5]:
+    for row in ja4[:5]:
         lines.append(f"  {row.get('ja4Fingerprint', 'N/A')} : {row.get('cnt', '0')} requests")
     lines.append("")
 
-    # URI diversity (crawler indicator)
-    uri_div = results.get("uri_diversity", [{}])
+    # URI diversity
     if uri_div and uri_div[0]:
         u = uri_div[0]
         unique = u.get("unique_uris", "0")
         total_ns = u.get("total_non_static", "0")
         lines.append(f"**URI diversity** (non-static): {unique} unique URIs out of {total_ns} requests")
-        try:
-            if int(unique) > 200:
-                lines.append("🚨 >200 unique URIs — very likely crawler/scraper")
-            elif int(unique) > 50:
-                lines.append("⚠️ >50 unique URIs — suspicious, may be crawler")
-        except (ValueError, TypeError):
-            pass
+    lines.append("")
+
+    # Confidence assessment
+    lines.append("---")
+    lines.append("## Assessment")
+    try:
+        peak_val = float(rate[0].get("peak_rpm", "0")) if rate else 0
+    except (ValueError, TypeError):
+        peak_val = 0
+    try:
+        uri_val = int(uri_div[0].get("unique_uris", "0")) if uri_div else 0
+    except (ValueError, TypeError):
+        uri_val = 0
+
+    if ua_count > 1 and ja4_count == 1 and peak_val > 50:
+        lines.append("**HIGH CONFIDENCE: Bot with UA rotation.** Multiple UAs but single JA4 fingerprint = same TLS client spoofing User-Agent.")
+    elif peak_val > 200 and uri_val > 50:
+        lines.append("**HIGH CONFIDENCE: Automated scraper.** Peak >200 req/min + >50 unique URIs.")
+    elif peak_val > 200 and uri_val < 10:
+        lines.append("**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 req/min concentrated on few URIs.")
+    elif uri_val > 50:
+        lines.append("**LIKELY: Probable crawler/scraper.** High URI diversity but moderate frequency. Needs user confirmation.")
+    else:
+        lines.append("**CANNOT DETERMINE** — signals are mixed. Ask user for business context on this IP.")
 
     lines.append("")
     lines.append("→ If malicious: suggest user add IP to block list or adjust rate-limit threshold.")
     lines.append("→ For JA4 fingerprint identification: lookup_ja4(fingerprints=[...])")
     if is_log_filter_active():
-        lines.append("\n⚠️  Log Filter active — this analysis only covers logged actions. ALLOW or COUNT requests may be filtered out, making the IP appear more malicious than it actually is.")
+        lines.append("\n⚠️  Log Filter active — this analysis only covers logged actions. Some requests may be filtered out.")
     return "\n".join(lines)
