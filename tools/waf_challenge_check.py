@@ -56,7 +56,7 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
     )
     athena = (
         f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = '{action}'"
         f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 25"
     )
@@ -75,7 +75,7 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
         ddos_cwl = "filter @message like 'anti-ddos' | stats count(*) as hits"
         ddos_athena = (
             "SELECT count(*) as hits FROM {TABLE}"
-            " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS}"
+            " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
             " AND EXISTS(SELECT 1 FROM UNNEST(labels) AS t(l) WHERE l.name LIKE '%anti-ddos%')"
         )
         ddos_results = _run_q(ddos_cwl, ddos_athena, start_epoch, end_epoch)

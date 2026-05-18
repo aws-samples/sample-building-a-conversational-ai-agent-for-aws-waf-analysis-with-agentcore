@@ -63,7 +63,7 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     # Check ALLOW log availability for both steps
     if is_log_filter_active():
         test_cwl = "filter action = 'ALLOW' | stats count(*) as cnt"
-        test_athena = "SELECT count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} AND action = 'ALLOW'"
+        test_athena = "SELECT count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'"
         test_results = _run_query(test_cwl, test_athena, start_epoch, end_epoch)
         allow_count = int(test_results[0].get("cnt", 0)) if test_results else 0
         if allow_count == 0:
@@ -100,7 +100,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     block_athena = (
         f"SELECT terminatingruleid as \"terminatingRuleId\", terminatingruletype as \"terminatingRuleType\", count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
         f" GROUP BY terminatingruleid, terminatingruletype ORDER BY hits DESC LIMIT 10"
     )
@@ -127,7 +127,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         sub_athena = (
             f"SELECT rg.terminatingrule.ruleid as sub_rule, count(*) as hits"
             f" FROM {{TABLE}} CROSS JOIN UNNEST(rulegrouplist) AS t(rg)"
-            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
             f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
             f" AND rg.terminatingrule.ruleid IS NOT NULL"
             f" GROUP BY rg.terminatingrule.ruleid ORDER BY hits DESC LIMIT 5"
@@ -144,7 +144,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     ratio_athena = (
         f"SELECT action, count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY action ORDER BY hits DESC"
     )
@@ -163,7 +163,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     freq_athena = (
         f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm FROM ("
         f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
-        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f"  AND httprequest.clientip = '{ip}'"
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
@@ -180,7 +180,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     multi_athena = (
         f"SELECT terminatingruleid as \"terminatingRuleId\", count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action != 'ALLOW'"
         f" GROUP BY terminatingruleid ORDER BY hits DESC LIMIT 10"
     )
@@ -195,7 +195,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     uri_athena = (
         f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
         f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 10"
     )
@@ -212,7 +212,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         )
         md_athena = (
             f"SELECT CAST(terminatingrulematchdetails AS VARCHAR) as md"
-            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
             f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
             f" AND cardinality(terminatingrulematchdetails) > 0"
             f" LIMIT 3"
@@ -347,7 +347,7 @@ def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
     )
     block_athena = (
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as block_hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = 'BLOCK'{rule_filter_athena}"
         f" GROUP BY httprequest.clientip HAVING count(*) < 10"
         f" ORDER BY block_hits ASC LIMIT 25"
@@ -381,7 +381,7 @@ def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
     )
     allow_athena = (
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as allow_hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = 'ALLOW' AND httprequest.clientip IN ({ip_list_athena})"
         f" GROUP BY httprequest.clientip"
     )

@@ -45,6 +45,23 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))
         sql = sql.replace("{LIMIT}", str(limit))
+        # Inject partition pruning
+        from tools.waf_athena import _athena_state
+        from datetime import datetime, timezone as tz
+        part_fmt = _athena_state.get("partition_format")
+        if part_fmt:
+            start_dt = datetime.fromtimestamp(start_epoch, tz=tz.utc)
+            end_dt = datetime.fromtimestamp(end_epoch, tz=tz.utc)
+            if "mm" in part_fmt:
+                sp = start_dt.strftime("%Y/%m/%d/%H/%M")
+                ep = end_dt.strftime("%Y/%m/%d/%H/%M")
+            else:
+                sp = start_dt.strftime("%Y/%m/%d/%H")
+                ep = end_dt.strftime("%Y/%m/%d/%H")
+            partition_clause = f"AND log_time >= '{sp}' AND log_time <= '{ep}'"
+        else:
+            partition_clause = ""
+        sql = sql.replace("{PARTITION_FILTER}", partition_clause)
         return _run_athena(sql)
     return None
 
