@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.7.0 (2026-05-18)
+
+### New Tool: `detect_bypass` — Bypass/Evasion Detection
+
+- **3-step workflow**: `scan` (proactive anomaly detection), `investigate_ip` (single IP behavioral profile), `volume_anomaly` (WoW metrics comparison)
+- **Anomaly-based filtering**: Crawlers (>50 unique URIs), repeaters (>200 req, <10 URIs), data-center IPs without bot labels, automation UAs (curl/python-requests/wget)
+- **Coverage gap detection**: Auto-checks if Bot Control, rate-based rules, Anti-DDoS AMR are deployed
+- **Volume anomaly classification**: Distinguishes classic DDoS vs cache-bypass DDoS vs scraper based on IP distribution + URI patterns
+- **Confidence levels**: HIGH / LIKELY / CANNOT DETERMINE embedded in every output
+- **Step flow guidance**: volume_anomaly → scan → investigate_ip, with reverse flow hints
+
+### New Tool: `evaluate_count_rules` — COUNT-to-Block Workflow
+
+- **Metrics-based init**: Uses CloudWatch Metrics (accurate, free) instead of CWL parse for hit counts
+- **Rule classification**: Permanent-count / zero-hit / low-FP / needs-analysis
+- **Peak hour detection**: Finds optimal analysis window
+- **Client distribution analysis**: Top/bottom IPs, unique IP count
+
+### New Tool: `investigate_block_fp` — False Positive Investigation
+
+- **Two modes**: `investigate` (specific IP) and `scan` (proactive FP audit)
+- **8-dimension analysis**: Block rule, sub-rule extraction, allow ratio, frequency, multi-rule check, URI distribution, match detail, text transformations
+- **Batch ALLOW query**: Single query for all candidate IPs (not N queries)
+
+### New Tool: `check_challenge_compatibility` — Challenge/CAPTCHA Analysis
+
+- **URI/method distribution**: Shows which endpoints are being challenged
+- **Anti-DDoS event detection**: Flags ChallengeAllDuringEvent activity
+- **Incompatibility warnings**: API endpoints, native apps
+
+### Unified Query Layer (`waf_query.py`)
+
+- **Dual backend**: All log-querying tools now support both CWL and Athena (S3)
+- **Auto-routing**: Detects log destination, routes to correct backend
+- **Partition pruning**: Auto-injects `log_time` partition filter for Athena queries
+- **`run_logs_query` upgraded**: All 20 templates now have Athena SQL versions
+- **`analyze_ip` upgraded**: Migrated from CWL-only to unified query layer
+
+### Athena Query Fixes (verified against live data)
+
+- **`EXISTS(SELECT 1 FROM UNNEST(...))` → `any_match()`**: Athena doesn't support correlated subqueries with UNNEST in WHERE + GROUP BY. Replaced with `any_match(array, predicate)` (26 occurrences across 6 files)
+- **`NOT EXISTS` → `none_match` + NULL guard**: `NOT any_match(NULL, ...)` returns NULL (filters out rows). Fixed to `(labels IS NULL OR none_match(labels, ...))` (8 occurrences)
+- **`CROSS JOIN UNNEST` → `EXISTS` for single-rule queries**: 6 queries in waf_count_eval.py optimized (init query keeps CROSS JOIN for GROUP BY)
+
+### CWL Query Fixes (verified against live data)
+
+- **Removed `.*?` non-greedy regex**: CWL Insights doesn't support non-greedy quantifiers in `parse`. Removed redundant parse lines, rely on `filter @message like` (5 occurrences)
+
+### CloudWatch Metrics Fixes (verified against live data)
+
+- **REGIONAL scope dimension set**: `{Rule,WebACL}` → `{Rule,WebACL,Region}` for REGIONAL WebACLs. CLOUDFRONT keeps `{Rule,WebACL}`. Cannot use unified set (verified with live API).
+- **All callers updated**: `_get_all_rules_metrics_search`, `_get_top_rules`, `_get_traffic_timeseries`, `_get_attack_timeseries`, patrol_scan attack chart
+
+### Knowledge Base
+
+- **`kb-docs/fraud-control-atp-acfp.md`**: ATP and ACFP managed rule groups — detection capabilities, JS SDK telemetry, pricing, cost control, limitations
+
+### System Prompt
+
+- **All trigger patterns in English**: Removed Chinese from system prompt (LLM auto-detects user language)
+- **Bypass detection triggers**: "any bypass" / "traffic spike" / "suspected DDoS" → detect_bypass
+- **Clean stop guidance**: Credential stuffing / API abuse / backend compromise → do NOT call detect_bypass
+- **Volume-first priority**: If user mentions both traffic anomaly AND bypass → volume_anomaly first
+
+### Performance
+
+- **Partition pruning**: All Athena queries include `{PARTITION_FILTER}` — 14-day scans go from full-table to partition-pruned
+- **Batch queries**: scan step uses single batch query instead of per-IP loops
+- **Narrow window guidance**: Tool output guides LLM to use 1-2h windows for best signal-to-noise
+
 ## 0.6.0 (2026-05-15)
 
 ### Security Patrol Report v2 — Complete Redesign
