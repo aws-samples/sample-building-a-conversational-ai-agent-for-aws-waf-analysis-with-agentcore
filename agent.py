@@ -20,6 +20,7 @@ from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
 from tools.waf_knowledge import search_waf_knowledge
 from tools.waf_patrol import patrol_scan
+from tools.waf_count_eval import evaluate_count_rules
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -46,6 +47,7 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - "周报/weekly report/管理层报告" → call generate_weekly_report (HTML with charts + LLM executive summary)
 - AWS WAF best practice / configuration guidance questions → call search_waf_knowledge first, then answer based on results
 - Single rule question ("is this rule safe?") → use get_waf_config + your own reasoning (no need for deep review)
+- "evaluate COUNT rules" / "should I switch to Block" / "COUNT转BLOCK" / "观察期评估" / "规则能不能开启" / "COUNT rules ready" / any question about whether COUNT rules are safe to enforce → call evaluate_count_rules(step="init") — it handles the full workflow
 - Specific attack/IP/URI question ("check IP 1.2.3.4" / "any SQLi yesterday") → use run_logs_query/analyze_ip (targeted, fast)
 - After review_waf_rules_deep completes your analysis → MUST call finalize_review_report with your findings
 - patrol_scan generates the report directly — just present the summary to the user.
@@ -102,22 +104,23 @@ Key rules:
 
 ## Investigation: COUNT Rule Evaluation
 
-**Scope limitation**: Log-level analysis is limited to a 6-hour window (production logs can exceed 1 billion entries/day). You CANNOT evaluate an entire observation period (weeks/months). If the user asks to evaluate multiple COUNT rules across a long observation period (>24 hours), or asks a broad "should I switch to Block" question without specifying a single rule:
-1. Explain: "I can analyze up to 6 hours of logs at a time. For a full observation-period assessment, I recommend picking a peak-traffic window (e.g., a weekday afternoon) and focusing on 1-2 rules at a time. This gives a representative sample."
-2. Use get_waf_overview(hours=336) first to identify which COUNT rules have the highest volume — prioritize those.
-3. Ask the user: "Which rule would you like me to evaluate first? And which day/time had the most traffic?" (or suggest the highest-volume rule yourself).
-4. For rules with known low false-positive rates (Log4JRCE, JavaDeserializationRCE, CVE-* rules), you can recommend Block based on rule-type prior alone — no log sampling needed.
-5. Never claim to have evaluated "the full observation period" — always state the specific time window you analyzed.
-6. Do NOT attempt to evaluate all COUNT rules sequentially. Limit to the 1-2 highest-volume rules per conversation round. If the user wants all rules evaluated, explain that this requires offline batch analysis.
+**Use the evaluate_count_rules tool** for this workflow. It handles rule inventory, classification, and peak-hour detection automatically.
 
-**If scope limitation above applies, stop here and guide the user. Otherwise proceed with single-rule evaluation:**
+- User asks about ALL COUNT rules / broad "should I switch to Block": call evaluate_count_rules(step="init")
+- User asks about specific rule(s): call evaluate_count_rules(step="init", rule_name="RuleName") or evaluate_count_rules(step="analyze_rule", rule_name="RuleName")
 
-Step 1: get_waf_overview(query_type='top_rules') → see which COUNT rules have traffic
-Step 2: get_waf_config() for rule details
-Step 3: Ask user for time window, then run_logs_query(query_type="count_rule_top_ips", rule_name="...")
-Step 4: Cross-validate top 3-5 IPs with ip_cross_query
-Step 5: Check URI + UA patterns (count_rule_top_uris, count_rule_top_uas)
-Step 6: Conclude using evaluation logic below
+The tool will:
+1. Identify rules that must NEVER leave Count (SizeRestrictions_BODY, HostingProviderIPList, SignalNonBrowserUserAgent)
+2. Find rules with 0 hits (safe to switch immediately)
+3. Identify low-FP rules (Log4JRCE, CVE-*) that are safe to switch based on rule-type prior
+4. Rank remaining rules by hit volume and find peak hours for analysis
+5. Guide you through client-level analysis for rules that need it
+
+**Scope limitation**: Log-level analysis is limited to a 6-hour window (production logs can exceed 1 billion entries/day). You CANNOT evaluate an entire observation period (weeks/months). The tool automatically selects the peak 1-hour window for each rule — this gives the most representative sample.
+
+If the user asks to evaluate multiple rules, the tool handles prioritization. Follow its step-by-step instructions. Do NOT attempt to evaluate all rules sequentially in one conversation — limit to 1-2 rules requiring deep analysis per round.
+
+**After the tool provides client IPs**, use run_logs_query to cross-validate each IP, then conclude using the evaluation logic below:
 
 ## False Positive Investigation ("my customer got blocked")
 
@@ -255,7 +258,7 @@ _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
-          patrol_scan,
+          patrol_scan, evaluate_count_rules,
           record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
