@@ -15,7 +15,7 @@ export const config = {
   sessionsApiUrl: import.meta.env.VITE_SESSIONS_API_URL || '',
 
   // Branding (override via env for demos without affecting repo)
-  brandName: import.meta.env.VITE_BRAND_NAME || 'AWS WAF Agent',
+  brandName: import.meta.env.VITE_BRAND_NAME || 'Amazon WAF Agent',
   version: import.meta.env.VITE_VERSION || __APP_VERSION__,
   repoUrl: import.meta.env.VITE_REPO_URL || 'https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore',
 };
