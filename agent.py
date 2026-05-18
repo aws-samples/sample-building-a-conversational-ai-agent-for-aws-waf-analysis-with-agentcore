@@ -21,6 +21,8 @@ from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
 from tools.waf_knowledge import search_waf_knowledge
 from tools.waf_patrol import patrol_scan
 from tools.waf_count_eval import evaluate_count_rules
+from tools.waf_block_fp import investigate_block_fp
+from tools.waf_challenge_check import check_challenge_compatibility
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -48,6 +50,10 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - AWS WAF best practice / configuration guidance questions → call search_waf_knowledge first, then answer based on results
 - Single rule question ("is this rule safe?") → use get_waf_config + your own reasoning (no need for deep review)
 - "evaluate COUNT rules" / "should I switch to Block" / "COUNT转BLOCK" / "观察期评估" / "规则能不能开启" / "COUNT rules ready" / any question about whether COUNT rules are safe to enforce → call evaluate_count_rules(step="init") — it handles the full workflow
+- "is this a false positive" / "IP被误杀" / "customer got blocked" / "check if blocked correctly" → call investigate_block_fp(step="investigate", ip="...", start_time="...")
+- "any false positives" / "check for FPs" / "有没有误杀" / proactive FP audit without specific IP → call investigate_block_fp(step="scan", start_time="...")
+- "challenge not working" / "API被challenge" / "CAPTCHA问题" / "native app blocked by challenge" → call check_challenge_compatibility(start_time="...")
+- User already confirmed FP and wants fix → do NOT call investigate tools. Ask which rule/URI, then use search_waf_knowledge for scope-down best practices.
 - Specific attack/IP/URI question ("check IP 1.2.3.4" / "any SQLi yesterday") → use run_logs_query/analyze_ip (targeted, fast)
 - After review_waf_rules_deep completes your analysis → MUST call finalize_review_report with your findings
 - patrol_scan generates the report directly — just present the summary to the user.
@@ -258,7 +264,7 @@ _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
-          patrol_scan, evaluate_count_rules,
+          patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility,
           record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
