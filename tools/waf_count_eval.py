@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, is_log_filter_active
+from tools.session_state import get_logs_region, get_webacl_name, get_scope, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
 # Rules that should NEVER be recommended to switch from Count.
@@ -75,55 +75,16 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
 def _step_init(rule_name: str = "") -> str:
     """Step 0+1+2: Inventory COUNT rules, classify, find peak hours.
     If rule_name is provided, only evaluate that specific rule (or comma-separated list)."""
-    if not _has_logging():
-        return _init_metrics_only()
-
-    if is_log_filter_active():
-        return _init_with_filter_warning()
 
     # If user specified specific rules, filter to just those
     target_rules = set()
     if rule_name:
         target_rules = {r.strip() for r in rule_name.split(",") if r.strip()}
 
-    # Query last 14 days for rule inventory (use full window for stats aggregation)
-    end_epoch = int(time.time())
-    start_epoch = end_epoch - (14 * 86400)
-
-    # Get all COUNT rule hits with counts
-    cwl = (
-        "filter @message like 'COUNT'"
-        " | parse @message /\"nonTerminatingMatchingRules\":\\[\\{\"ruleId\":\"(?<rule_id>[^\"]+)\",\"action\":\"COUNT\"/"
-        " | filter ispresent(rule_id)"
-        " | stats count(*) as hits by rule_id"
-        " | sort hits desc"
-    )
-    athena = (
-        "SELECT t.ruleid as rule_id, count(*) as hits"
-        " FROM {TABLE} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
-        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
-        " AND t.action = 'COUNT'"
-        " GROUP BY t.ruleid ORDER BY hits DESC LIMIT 100"
-    )
-    results = _run_log_query(cwl, athena, start_epoch, end_epoch, limit=100)
-
-    if not results:
-        return ("Query returned 0 COUNT rule hits in the past 14 days.\n"
-                "Either no COUNT rules are active, or a Log Filter is dropping COUNT logs.\n"
-                "Cross-check with get_waf_overview(query_type='top_rules') to verify.")
-
-    # Classify rules
-    permanent_count = []
-    zero_hit = []
-    low_fp_nonzero = []
-    needs_analysis = []
-
-    found_rules = {r.get("rule_id"): int(r.get("hits", 0)) for r in results}
-
-    # Also check for rules with 0 hits — query the WebACL config to find all COUNT rules
-    # (rules with 0 hits won't appear in log results)
+    # Get all COUNT rules from WebACL config
     webacl_name = get_webacl_name()
     scope = get_scope()
+    region = get_logs_region()
     waf_region = "us-east-1" if scope == "CLOUDFRONT" else region
     all_count_rules = _get_all_count_rules(waf_region, scope)
 
@@ -132,6 +93,30 @@ def _step_init(rule_name: str = "") -> str:
         all_count_rules = [r for r in all_count_rules if r in target_rules]
         if not all_count_rules:
             return f"Error: specified rule(s) {target_rules} not found in COUNT mode. Available COUNT rules: use step='init' without rule_name to see all."
+
+    if not all_count_rules:
+        return "No COUNT rules found in this WebACL."
+
+    # Get hit counts from CloudWatch Metrics (accurate, works for both CWL and S3 users)
+    from datetime import datetime as dt, timedelta, timezone as tz
+    from tools.waf_patrol import _get_all_rules_metrics_search
+    cw = get_client("cloudwatch", region_name="us-east-1" if scope == "CLOUDFRONT" else region)
+    end_dt = dt.now(tz.utc)
+    start_dt = end_dt - timedelta(days=14)
+    metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=14 * 86400)
+
+    # Build hit count map from metrics
+    found_rules = {}
+    for rule_id in all_count_rules:
+        rule_metrics = metrics.get(rule_id, {})
+        counted = sum(rule_metrics.get("counted", []))
+        found_rules[rule_id] = counted
+
+    # Classify rules
+    permanent_count = []
+    zero_hit = []
+    low_fp_nonzero = []
+    needs_analysis = []
 
     for rule_id in all_count_rules:
         hits = found_rules.get(rule_id, 0)
@@ -144,16 +129,18 @@ def _step_init(rule_name: str = "") -> str:
         else:
             needs_analysis.append((rule_id, hits))
 
-    # For top rule needing analysis, find peak hour
+    # For top rule needing analysis, find peak hour (requires logging)
     peak_info = ""
-    if needs_analysis:
+    if needs_analysis and _has_logging() and not is_log_filter_active():
         top_rule = needs_analysis[0][0]
-        peak_info = _find_peak_hour(log_group, region, top_rule, start_epoch, end_epoch)
+        end_epoch = int(time.time())
+        start_epoch = end_epoch - (14 * 86400)
+        peak_info = _find_peak_hour(top_rule, start_epoch, end_epoch)
 
     # Build response
     lines = [
         "## COUNT Rule Evaluation — Inventory Complete",
-        f"Analyzed 14 days of logs. Found {len(all_count_rules)} COUNT rules total.",
+        f"Analyzed 14 days of CloudWatch Metrics. Found {len(all_count_rules)} COUNT rules total.",
         "",
         "### Step 0: Permanent COUNT (never switch — known high FP)",
     ]
@@ -554,46 +541,4 @@ def _get_all_count_rules(waf_region: str, scope: str) -> list[str]:
     return count_rules
 
 
-def _init_metrics_only() -> str:
-    """Fallback when no CWL logs available — metrics-only assessment."""
-    lines = [
-        "## COUNT Rule Evaluation — Metrics Only (No Logs Available)",
-        "",
-        "⚠️  No CloudWatch Logs destination detected. Cannot perform log-level analysis.",
-        "Falling back to metrics-based assessment + rule-type priors.",
-        "",
-        "### What I CAN determine without logs:",
-        "- Which COUNT rules have hits (via CloudWatch Metrics)",
-        "- Rules with 0 hits → safe to switch",
-        "- Rules with known low-FP (Log4JRCE, CVE-*) → safe to switch",
-        "- Rules that must stay Count (SizeRestrictions_BODY, HostingProviderIPList, SignalNonBrowserUserAgent)",
-        "",
-        "### What I CANNOT determine without logs:",
-        "- Whether hits are from legitimate users or attackers",
-        "- IP-level analysis, URI patterns, false positive signals",
-        "",
-        "## Your Next Action",
-        "Call get_waf_overview(query_type='top_rules') to see which COUNT rules have volume.",
-        "Then classify using the rule-type priors above.",
-        "For rules that need deeper analysis, tell the user to enable WAF logging first.",
-    ]
-    return "\n".join(lines)
 
-
-def _init_with_filter_warning() -> str:
-    """Handle case where log filter may drop COUNT logs."""
-    lines = [
-        "## COUNT Rule Evaluation — Log Filter Warning",
-        "",
-        "⚠️  A Log Filter is active on this WebACL.",
-        "COUNT or EXCLUDED_AS_COUNT logs may be filtered out.",
-        "",
-        "Attempting to query COUNT rule hits — if results are empty or suspiciously low,",
-        "the filter is likely dropping them. In that case, fall back to metrics-only assessment.",
-        "",
-        "## Your Next Action",
-        "Proceed with get_waf_overview(query_type='top_rules') to cross-validate.",
-        "If overview shows COUNT hits but log queries return 0, confirm filter is the cause.",
-        "Then use the metrics-only classification (rule-type priors + zero-hit detection via metrics).",
-    ]
-    return "\n".join(lines)
