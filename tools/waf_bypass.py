@@ -186,6 +186,12 @@ def _step_volume_anomaly() -> str:
         lines.append("  → Recommend: Bot Control (Targeted), custom rate-based rule")
 
     lines.append("")
+    lines.append("## Your Next Action")
+    lines.append("")
+    lines.append("Always ask: \"Is this expected traffic growth (marketing campaign, product launch, seasonal event)?\"")
+    lines.append("If user confirms unexpected → proceed with scan for detailed per-IP analysis.")
+
+    lines.append("")
     lines.append(CONFIDENCE_RULES)
     return "\n".join(lines)
 
@@ -285,6 +291,31 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     repeaters = query_logs(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10) or []
     datacenter = query_logs(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10) or []
 
+    # Automation UA filter (curl, python-requests, wget, etc. that are ALLOW'd)
+    auto_ua_cwl = (
+        "filter action = 'ALLOW'"
+        " | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/"
+        " | filter ua like /(?i)(curl|python-requests|wget|httpie|go-http-client|java\\/|okhttp|libwww-perl)/"
+        " | stats count(*) as total by httpRequest.clientIp, ua"
+        " | filter total > 10"
+        " | sort total desc | limit 10"
+    )
+    auto_ua_athena = (
+        "SELECT httprequest.clientip as \"httpRequest.clientIp\","
+        " element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua,"
+        " count(*) as total"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        " AND regexp_like(element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value,"
+        " '(?i)(curl|python-requests|wget|httpie|go-http-client|java/|okhttp|libwww-perl)')"
+        " GROUP BY httprequest.clientip,"
+        " element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
+        " HAVING count(*) > 10"
+        " ORDER BY total DESC LIMIT 10"
+    )
+    auto_ua = query_logs(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10) or []
+
     # Build output
     lines = ["## Bypass Scan Results", ""]
 
@@ -328,7 +359,17 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append("  (none found)")
 
-    if not crawlers and not repeaters and not datacenter:
+    lines.append("")
+    lines.append("### Automation User-Agents Allowed Through")
+    if auto_ua:
+        lines.append(f"| {'IP':<15} | {'UA':<30} | {'Requests':>8} |")
+        lines.append(f"| {'-'*15} | {'-'*30} | {'-'*8} |")
+        for r in auto_ua:
+            lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {str(r.get('ua', '?'))[:30]:<30} | {r.get('total', '?'):>8} |")
+    else:
+        lines.append("  (none found)")
+
+    if not crawlers and not repeaters and not datacenter and not auto_ua:
         lines.append("")
         lines.append("### No Obvious Bypass Candidates Found")
         lines.append("No IPs matched the anomaly filters in this time window.")
