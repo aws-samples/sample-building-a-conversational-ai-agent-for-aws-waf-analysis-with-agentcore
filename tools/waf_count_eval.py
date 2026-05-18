@@ -285,7 +285,6 @@ def _step_analyze_rule(rule_name: str) -> str:
     # Query: client IP distribution in peak hour (both top and bottom)
     cwl_top = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 10"
     )
@@ -298,7 +297,6 @@ def _step_analyze_rule(rule_name: str) -> str:
     )
     cwl_bottom = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 10"
     )
@@ -311,7 +309,6 @@ def _step_analyze_rule(rule_name: str) -> str:
     )
     cwl_total = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as total_hits, count_distinct(httpRequest.clientIp) as unique_ips"
     )
     athena_total = (
@@ -389,7 +386,6 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
     # Get both ends of client distribution
     cwl_bottom = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 5"
     )
@@ -402,7 +398,6 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
     )
     cwl_top = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 5"
     )
