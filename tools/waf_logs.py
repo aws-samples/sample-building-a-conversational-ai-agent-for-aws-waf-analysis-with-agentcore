@@ -21,115 +21,136 @@ _cwl_semaphore = threading.Semaphore(8)
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
     "count_rule_top_ips": {
-        "query": "filter @message like '{rule_name}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter @message like '{rule_name}' and @message like 'COUNT' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
-        "description": "Top IPs triggering a specific COUNT rule",
+        "description": "Top IPs triggering a COUNT rule",
     },
     "count_rule_top_uris": {
-        "query": "filter @message like '{rule_name}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "filter @message like '{rule_name}' and @message like 'COUNT' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
-        "query": "parse @message /(?i)\\{{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}}/ | filter @message like '{rule_name}' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '{rule_name}' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
+        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
     },
     "ip_cross_query": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc | limit {limit}",
+        "athena": "SELECT action, terminatingruleid as \"terminatingRuleId\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["ip"],
         "description": "All actions/rules for a specific IP (cross-validation)",
     },
     "ip_uri_breakdown": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["ip"],
         "description": "URI breakdown for a specific IP",
     },
     "top_blocked_ips": {
         "query": "filter action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'BLOCK' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top IPs being blocked",
     },
     "top_blocked_rules": {
         "query": "filter action = 'BLOCK' | stats count(*) as cnt by terminatingRuleId | sort cnt desc | limit {limit}",
+        "athena": "SELECT terminatingruleid as \"terminatingRuleId\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'BLOCK' GROUP BY terminatingruleid ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top rules doing the blocking",
     },
     "top_allowed_ips": {
         "query": "filter action = 'ALLOW' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top IPs being allowed (find potential attack traffic)",
     },
     "top_countries_blocked": {
         "query": "filter action = 'BLOCK' | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'BLOCK' GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top countries being blocked",
     },
     "ip_ja4_fingerprints": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit {limit}",
+        "athena": "SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY ja4fingerprint ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["ip"],
         "description": "JA4 fingerprints for a specific IP",
     },
     "label_top_ips": {
         "query": "filter @message like '{label}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%{label}%') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["label"],
         "description": "Top IPs matching a specific AWS WAF label",
     },
     "ip_labels": {
         "query": "filter httpRequest.clientIp = '{ip}' | parse @message '\"labels\":[*]' as Labels | filter ispresent(Labels) | stats count(*) as cnt by Labels | sort cnt desc | limit {limit}",
+        "athena": "SELECT json_format(cast(labels as json)) as \"Labels\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND labels IS NOT NULL AND cardinality(labels) > 0 GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["ip"],
-        "description": "All AWS WAF labels applied to a specific IP — shows Bot Control, Anti-DDoS, and other managed rule detections",
+        "description": "All AWS WAF labels applied to a specific IP",
     },
     "action_timeline": {
         "query": "filter action = '{action}' | stats count(*) as cnt by bin(5m) | sort @timestamp asc | limit {limit}",
+        "athena": "SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as time_bucket, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = '{action}' GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') ORDER BY time_bucket ASC LIMIT {LIMIT}",
         "params": ["action"],
         "description": "Timeline of a specific action (5-min buckets)",
     },
     "ip_request_rate": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by bin(1m) | sort @timestamp asc | limit {limit}",
+        "athena": "SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') ORDER BY minute ASC LIMIT {LIMIT}",
         "params": ["ip"],
         "description": "Per-minute request rate for a specific IP (detect automation)",
     },
     "ip_unique_uris": {
         "query": "filter httpRequest.clientIp = '{ip}' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
+        "athena": "SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_requests, min(from_unixtime(\"timestamp\"/1000)) as first_seen, max(from_unixtime(\"timestamp\"/1000)) as last_seen FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')",
         "params": ["ip"],
-        "description": "Unique non-static URI count and time span for an IP (excludes JS/CSS/images)",
+        "description": "Unique non-static URI count and time span for an IP",
     },
-    # ip_diversity intentionally NOT exposed — use analyze_ip which has proper NAT detection logic
     "top_allowed_by_volume": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Top ALLOW IPs with unique non-static URI count (find high-volume bypasses)",
+        "description": "Top ALLOW IPs with unique non-static URI count",
     },
     "top_allowed_crawlers": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%') GROUP BY httprequest.clientip HAVING count(DISTINCT httprequest.uri) > 50 ORDER BY unique_uris DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Find IPs with high URI diversity (likely content crawlers) — excludes verified bots and static resources",
+        "description": "Find IPs with high URI diversity (likely crawlers)",
     },
     "top_allowed_repeaters": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 200 and unique_uris < 10 | sort total desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%') GROUP BY httprequest.clientip HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10 ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Find IPs hitting few URIs at high frequency (ticket scalpers, flash sale bots, quant trading) — excludes verified bots",
+        "description": "Find IPs hitting few URIs at high frequency",
     },
     "token_reuse_ips": {
         "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
+        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value as cookie, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%token:accepted%') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value ORDER BY ip_count DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Detect token reuse — same session cookie used from multiple IPs (approximate)",
+        "description": "Detect token reuse across multiple IPs",
     },
     "host_traffic_profile": {
-        "query": "parse @message /\\{{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
+        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
+        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value as host, count(*) as total, count(DISTINCT httprequest.uri) as unique_uris, sum(CASE WHEN httprequest.httpmethod IN ('POST','PUT','DELETE') THEN 1 ELSE 0 END) as write_requests FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Traffic profile per Host header — identify frontend vs backend/API domains",
+        "description": "Traffic profile per Host header",
     },
     "host_uri_pattern": {
-        "query": "parse @message /\\{{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
-        "description": "Top URIs for a specific host — determine if frontend (HTML pages) or backend (API endpoints)",
+        "description": "Top URIs for a specific host",
     },
     "host_method_distribution": {
-        "query": "parse @message /\\{{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
+        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.httpmethod ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
-        "description": "HTTP method distribution for a host — high POST/PUT = API, mostly GET = frontend",
+        "description": "HTTP method distribution for a host",
     },
 }
 
@@ -264,25 +285,20 @@ def run_logs_query(
     # Resolve log group
     if not log_group:
         dest = get_log_destination()
-        if dest and ":log-group:" in dest:
-            # Extract log group name from ARN
-            log_group = dest.split(":log-group:")[-1].rstrip(":*")
-        elif dest:
-            return f"Log destination is not CW Logs (found: {dest}). Use Athena for S3 logs."
-        else:
-            return "No log group specified and none auto-detected. Run get_waf_config first."
+        if not dest:
+            return "No logging configured. Run get_waf_config first."
+    else:
+        dest = None  # explicit log_group provided
 
-    # Build query
+    # Build CWL query
     query = template["query"].format(**params)
 
-    # Execute
-    region = get_logs_region()
-    client = get_client("logs", region_name=region)
+    # Execute via unified query layer (routes to CWL or Athena automatically)
+    from tools.waf_query import query_logs, get_log_type
 
     if hours_ago > MAX_HOURS:
         hours_ago = MAX_HOURS
 
-    # Time range calculation
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
 
@@ -291,48 +307,52 @@ def run_logs_query(
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
     end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
 
-    with _cwl_semaphore:
-        resp = client.start_query(
-            logGroupName=log_group,
-            startTime=start_epoch,
-            endTime=end_epoch,
-            queryString=query,
-            limit=params["limit"],
-        )
-        query_id = resp["queryId"]
+    # Build Athena query with params substituted
+    athena_query = template.get("athena", "")
+    if athena_query:
+        athena_query = athena_query.format(**{k: v for k, v in params.items() if k != "limit"}, LIMIT=params["limit"])
 
-        # Poll
-        elapsed = 0
-        while elapsed < MAX_POLL:
-            time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for CWL query
-            elapsed += POLL_INTERVAL
-            result = client.get_query_results(queryId=query_id)
-            status = result["status"]
-            if status in ("Complete", "Failed", "Cancelled", "Timeout"):
-                break
-
-    if status != "Complete":
-        return f"Query {status}. QueryId: {query_id}"
-
-    results = result.get("results", [])
-    stats = result.get("statistics", {})
+    # If explicit log_group provided, force CWL path
+    if log_group:
+        region = get_logs_region()
+        client = get_client("logs", region_name=region)
+        with _cwl_semaphore:
+            resp = client.start_query(
+                logGroupName=log_group, startTime=start_epoch, endTime=end_epoch,
+                queryString=query, limit=params["limit"],
+            )
+            query_id = resp["queryId"]
+            elapsed = 0
+            while elapsed < MAX_POLL:
+                time.sleep(POLL_INTERVAL)
+                elapsed += POLL_INTERVAL
+                result = client.get_query_results(queryId=query_id)
+                if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
+                    break
+        if result["status"] != "Complete":
+            return f"Query {result['status']}. QueryId: {query_id}"
+        results = [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
+    else:
+        # Use unified query layer (auto-routes to CWL or Athena)
+        results = query_logs(query, athena_query, start_epoch, end_epoch, limit=params["limit"])
+        if results is None:
+            results = []
 
     if not results:
-        msg = f"Query returned 0 results. (scanned {stats.get('bytesScanned', 0) / 1e6:.1f} MB, query: {query_type})"
+        msg = f"Query returned 0 results. (query: {query_type})"
         if is_log_filter_active():
             msg += "\n⚠️  A Log Filter is active on this WebACL — 0 results may be due to filtered-out log entries, not absence of traffic. Cross-check with get_waf_overview metrics."
         return msg
 
-    # Format as table
-    columns = [f["field"] for f in results[0] if not f["field"].startswith("@ptr")]
+    # Format as table (results is list[dict] from unified query layer)
+    columns = [k for k in results[0].keys() if not k.startswith("@ptr")]
     lines = [
-        f"Query '{query_type}' returned {len(results)} results (scanned {stats.get('bytesScanned', 0) / 1e6:.1f} MB)\n",
+        f"Query '{query_type}' returned {len(results)} results\n",
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join(["---"] * len(columns)) + " |",
     ]
     for row in results[:MAX_RESULTS]:
-        row_dict = {f["field"]: f["value"] for f in row}
-        values = [row_dict.get(col, "") for col in columns]
+        values = [str(row.get(col, "")) for col in columns]
         lines.append("| " + " | ".join(values) + " |")
 
     # Append deterministic interpretation for specific query types
