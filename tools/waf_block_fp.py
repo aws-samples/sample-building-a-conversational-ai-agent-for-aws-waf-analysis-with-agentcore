@@ -11,6 +11,7 @@ from tools.session_state import (
     get_log_destination, get_logs_region, get_webacl_name, get_scope,
     is_log_filter_active,
 )
+from tools.waf_query import query_logs, get_log_type
 
 _cwl_semaphore = threading.Semaphore(8)
 MAX_POLL = 120
@@ -45,13 +46,9 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     from tools.waf_logs import _parse_start_time
 
     # Validate logging
-    dest = get_log_destination()
-    if not dest or ":log-group:" not in dest:
-        return ("Error: No CloudWatch Logs destination configured. "
+    if get_log_type() == "none":
+        return ("Error: No logging configured (neither CWL nor S3/Firehose). "
                 "Cannot investigate block FPs without logs. Enable WAF logging first.")
-
-    log_group = dest.split(":log-group:")[-1].rstrip(":*")
-    region = get_logs_region()
 
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate."
@@ -65,9 +62,9 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
 
     # Check ALLOW log availability for both steps
     if is_log_filter_active():
-        # Test if ALLOW logs exist
-        test_query = "filter action = 'ALLOW' | stats count(*) as cnt"
-        test_results = _run_query(log_group, region, test_query, start_epoch, end_epoch)
+        test_cwl = "filter action = 'ALLOW' | stats count(*) as cnt"
+        test_athena = "SELECT count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} AND action = 'ALLOW'"
+        test_results = _run_query(test_cwl, test_athena, start_epoch, end_epoch)
         allow_count = int(test_results[0].get("cnt", 0)) if test_results else 0
         if allow_count == 0:
             return (
@@ -85,23 +82,29 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     if step == "investigate":
         if not ip:
             return "Error: ip is required for step='investigate'. Ask the user which IP to check."
-        return _step_investigate(log_group, region, ip, start_epoch, end_epoch, rule_name)
+        return _step_investigate(ip, start_epoch, end_epoch, rule_name)
     elif step == "scan":
-        return _step_scan(log_group, region, start_epoch, end_epoch, rule_name)
+        return _step_scan(start_epoch, end_epoch, rule_name)
     else:
         return f"Error: unknown step '{step}'. Available: investigate, scan"
 
 
-def _step_investigate(log_group: str, region: str, ip: str, start_epoch: int, end_epoch: int, rule_name: str) -> str:
+def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str) -> str:
     """Targeted investigation of a specific blocked IP."""
 
     # 1. Find what blocked this IP
-    block_query = (
+    block_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
         " | stats count(*) as hits by terminatingRuleId, terminatingRuleType"
         " | sort hits desc | limit 10"
     )
-    block_results = _run_query(log_group, region, block_query, start_epoch, end_epoch)
+    block_athena = (
+        f"SELECT terminatingruleid as \"terminatingRuleId\", terminatingruletype as \"terminatingRuleType\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
+        f" GROUP BY terminatingruleid, terminatingruletype ORDER BY hits DESC LIMIT 10"
+    )
+    block_results = _run_query(block_cwl, block_athena, start_epoch, end_epoch)
 
     if not block_results:
         return (f"No BLOCK records found for IP {ip} in this time window.\n"
@@ -114,71 +117,107 @@ def _step_investigate(log_group: str, region: str, ip: str, start_epoch: int, en
     sub_rule = ""
 
     if rule_type == "MANAGED_RULE_GROUP":
-        sub_query = (
+        sub_cwl = (
             f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
             " | parse @message /\"ruleGroupList\":\\[.*?\"terminatingRule\":\\{\"ruleId\":\"(?<sub_rule>[^\"]+)\"/"
             " | filter ispresent(sub_rule)"
             " | stats count(*) as hits by sub_rule"
             " | sort hits desc | limit 5"
         )
-        sub_results = _run_query(log_group, region, sub_query, start_epoch, end_epoch)
+        sub_athena = (
+            f"SELECT rg.terminatingrule.ruleid as sub_rule, count(*) as hits"
+            f" FROM {{TABLE}} CROSS JOIN UNNEST(rulegrouplist) AS t(rg)"
+            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+            f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
+            f" AND rg.terminatingrule.ruleid IS NOT NULL"
+            f" GROUP BY rg.terminatingrule.ruleid ORDER BY hits DESC LIMIT 5"
+        )
+        sub_results = _run_query(sub_cwl, sub_athena, start_epoch, end_epoch)
         if sub_results:
             sub_rule = sub_results[0].get("sub_rule", "")
 
     # 3. Allow Ratio
-    allow_query = (
-        f"filter httpRequest.clientIp = '{ip}'"
-        " | stats sum(action='ALLOW') as allow_count, sum(action='BLOCK') as block_count, count(*) as total"
-    )
-    # CWL doesn't support sum(condition), use different approach
-    ratio_query = (
+    ratio_cwl = (
         f"filter httpRequest.clientIp = '{ip}'"
         " | stats count(*) as hits by action"
         " | sort hits desc"
     )
-    ratio_results = _run_query(log_group, region, ratio_query, start_epoch, end_epoch)
+    ratio_athena = (
+        f"SELECT action, count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" GROUP BY action ORDER BY hits DESC"
+    )
+    ratio_results = _run_query(ratio_cwl, ratio_athena, start_epoch, end_epoch)
     action_counts = {r.get("action", ""): int(r.get("hits", 0)) for r in ratio_results}
     allow_count = action_counts.get("ALLOW", 0)
     block_count = action_counts.get("BLOCK", 0)
     total = sum(action_counts.values())
 
     # 4. Request frequency
-    freq_query = (
+    freq_cwl = (
         f"filter httpRequest.clientIp = '{ip}'"
         " | stats count(*) as hits by bin(1m)"
         " | stats max(hits) as peak_rpm, avg(hits) as avg_rpm"
     )
-    freq_results = _run_query(log_group, region, freq_query, start_epoch, end_epoch)
+    freq_athena = (
+        f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f"  AND httprequest.clientip = '{ip}'"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    freq_results = _run_query(freq_cwl, freq_athena, start_epoch, end_epoch)
     peak_rpm = freq_results[0].get("peak_rpm", "?") if freq_results else "?"
     avg_rpm = freq_results[0].get("avg_rpm", "?") if freq_results else "?"
 
     # 5. Multi-rule check
-    multi_query = (
+    multi_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action != 'ALLOW'"
         " | stats count(*) as hits by terminatingRuleId"
         " | sort hits desc | limit 10"
     )
-    multi_results = _run_query(log_group, region, multi_query, start_epoch, end_epoch)
+    multi_athena = (
+        f"SELECT terminatingruleid as \"terminatingRuleId\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND httprequest.clientip = '{ip}' AND action != 'ALLOW'"
+        f" GROUP BY terminatingruleid ORDER BY hits DESC LIMIT 10"
+    )
+    multi_results = _run_query(multi_cwl, multi_athena, start_epoch, end_epoch)
     rules_triggered = len(multi_results)
 
     # 6. URI distribution for blocked requests
-    uri_query = (
+    uri_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
         " | stats count(*) as hits by httpRequest.uri, httpRequest.httpMethod"
         " | sort hits desc | limit 10"
     )
-    uri_results = _run_query(log_group, region, uri_query, start_epoch, end_epoch)
+    uri_athena = (
+        f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
+        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 10"
+    )
+    uri_results = _run_query(uri_cwl, uri_athena, start_epoch, end_epoch)
 
-    # 7. Match detail (SQLi/XSS only)
+    # 7. Match detail (SQLi/XSS only) — CWL only (Athena struct access is complex)
     match_detail = ""
     if sub_rule and ("SQLi" in sub_rule or "XSS" in sub_rule or "CrossSiteScripting" in sub_rule):
-        md_query = (
+        md_cwl = (
             f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
             " | parse @message /\"terminatingRuleMatchDetails\":\\[(?<md>.*?)\\]/"
             " | filter ispresent(md) and md != ''"
             " | limit 3"
         )
-        md_results = _run_query(log_group, region, md_query, start_epoch, end_epoch)
+        md_athena = (
+            f"SELECT CAST(terminatingrulematchdetails AS VARCHAR) as md"
+            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+            f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
+            f" AND cardinality(terminatingrulematchdetails) > 0"
+            f" LIMIT 3"
+        )
+        md_results = _run_query(md_cwl, md_athena, start_epoch, end_epoch)
         if md_results:
             match_detail = "\n".join(r.get("md", "") for r in md_results[:3])
 
@@ -294,25 +333,26 @@ def _step_investigate(log_group: str, region: str, ip: str, start_epoch: int, en
     return "\n".join(lines)
 
 
-def _step_scan(log_group: str, region: str, start_epoch: int, end_epoch: int, rule_name: str) -> str:
+def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
     """Proactive scan: find blocked IPs that don't look like attackers."""
 
-    # Find IPs with both BLOCK and ALLOW (high Allow Ratio = suspected FP)
-    rule_filter = f" and terminatingRuleId = '{rule_name}'" if rule_name else ""
-    scan_query = (
-        f"filter action in ['ALLOW', 'BLOCK']{rule_filter}"
-        " | stats sum(action='ALLOW') as allow_n, sum(action='BLOCK') as block_n by httpRequest.clientIp"
-        " | filter block_n > 0 and allow_n > 0"
-        " | sort allow_n desc | limit 25"
-    )
-    # CWL doesn't support sum(condition) — use two queries
-    block_ips_query = (
-        f"filter action = 'BLOCK'{rule_filter}"
+    rule_filter_cwl = f" and terminatingRuleId = '{rule_name}'" if rule_name else ""
+    rule_filter_athena = f" AND terminatingruleid = '{rule_name}'" if rule_name else ""
+
+    block_cwl = (
+        f"filter action = 'BLOCK'{rule_filter_cwl}"
         " | stats count(*) as block_hits by httpRequest.clientIp"
         " | filter block_hits < 10"
         " | sort block_hits asc | limit 25"
     )
-    block_results = _run_query(log_group, region, block_ips_query, start_epoch, end_epoch)
+    block_athena = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as block_hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND action = 'BLOCK'{rule_filter_athena}"
+        f" GROUP BY httprequest.clientip HAVING count(*) < 10"
+        f" ORDER BY block_hits ASC LIMIT 25"
+    )
+    block_results = _run_query(block_cwl, block_athena, start_epoch, end_epoch)
 
     if not block_results:
         return (
@@ -333,11 +373,16 @@ def _step_scan(log_group: str, region: str, start_epoch: int, end_epoch: int, ru
             continue
 
         # Check ALLOW count for this IP
-        allow_q = (
+        allow_cwl = (
             f"filter httpRequest.clientIp = '{candidate_ip}' and action = 'ALLOW'"
             " | stats count(*) as allow_hits"
         )
-        allow_r = _run_query(log_group, region, allow_q, start_epoch, end_epoch)
+        allow_athena = (
+            f"SELECT count(*) as allow_hits FROM {{TABLE}}"
+            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+            f" AND httprequest.clientip = '{candidate_ip}' AND action = 'ALLOW'"
+        )
+        allow_r = _run_query(allow_cwl, allow_athena, start_epoch, end_epoch)
         allow_hits = int(allow_r[0].get("allow_hits", 0)) if allow_r else 0
 
         if allow_hits == 0:
@@ -450,22 +495,7 @@ def _extract_transforms_from_statement(stmt: dict) -> list[str]:
     return transforms
 
 
-def _run_query(log_group: str, region: str, query: str, start_epoch: int, end_epoch: int) -> list[dict]:
-    """Execute CWL query and return parsed results."""
-    client = get_client("logs", region_name=region)
-    with _cwl_semaphore:
-        resp = client.start_query(
-            logGroupName=log_group, startTime=start_epoch, endTime=end_epoch,
-            queryString=query, limit=25,
-        )
-        query_id = resp["queryId"]
-        elapsed = 0
-        while elapsed < MAX_POLL:
-            time.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
-            result = client.get_query_results(queryId=query_id)
-            if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
-                break
-    if result["status"] != "Complete":
-        return []
-    return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
+def _run_query(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict]:
+    """Execute log query via unified layer (CWL or Athena)."""
+    results = query_logs(cwl, athena, start_epoch, end_epoch, limit=25)
+    return results if results is not None else []

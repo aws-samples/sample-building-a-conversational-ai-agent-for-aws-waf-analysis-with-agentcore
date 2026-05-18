@@ -603,8 +603,12 @@ def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
     hours_ago = min(hours_ago, MAX_HOURS)
 
     log_dest = get_log_destination()
-    if not log_dest or ":log-group:" not in log_dest:
-        return "Error: no CWL log group configured. Run get_waf_config first."
+    if not log_dest:
+        return "Error: no logging configured. Run get_waf_config first."
+    if ":log-group:" not in log_dest:
+        return ("Error: analyze_ip currently requires CloudWatch Logs. Your logs are stored in S3.\n"
+                "Use run_athena_query with query_type='ip_cross_query' and query_type='ip_request_rate' instead.\n"
+                "Example: run_athena_query(query_type='ip_cross_query', ip='" + ip + "', start_time='" + start_time + "')")
     log_group = log_dest.split(":log-group:")[-1].rstrip(":*")
 
     region = get_logs_region()

@@ -7,6 +7,7 @@ import threading
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_logs_region, is_log_filter_active
+from tools.waf_query import query_logs, get_log_type
 
 _cwl_semaphore = threading.Semaphore(8)
 MAX_POLL = 120
@@ -32,13 +33,9 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
     """
     from tools.waf_logs import _parse_start_time
 
-    dest = get_log_destination()
-    if not dest or ":log-group:" not in dest:
-        return ("Error: No CloudWatch Logs destination configured. "
+    if get_log_type() == "none":
+        return ("Error: No logging configured. "
                 "Cannot query Challenge/CAPTCHA logs. Enable WAF logging first.")
-
-    log_group = dest.split(":log-group:")[-1].rstrip(":*")
-    region = get_logs_region()
 
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
@@ -52,13 +49,19 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
         return f"Error: action_type must be 'CHALLENGE' or 'CAPTCHA', got '{action_type}'."
 
     # Query: URI + method distribution for challenged/captcha'd requests
-    query = (
+    cwl = (
         f"filter action = '{action}'"
         " | stats count(*) as hits by httpRequest.uri, httpRequest.httpMethod"
         " | sort hits desc | limit 25"
     )
+    athena = (
+        f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND action = '{action}'"
+        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 25"
+    )
 
-    results = _run_query(log_group, region, query, start_epoch, end_epoch)
+    results = _run_q(cwl, athena, start_epoch, end_epoch)
 
     if not results:
         msg = f"No {action} requests found in this time window."
@@ -69,11 +72,13 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
     # Check for anti-ddos event (ChallengeAllDuringEvent)
     antiddos_note = ""
     if action == "CHALLENGE":
-        ddos_query = (
-            "filter @message like 'anti-ddos'"
-            " | stats count(*) as hits"
+        ddos_cwl = "filter @message like 'anti-ddos' | stats count(*) as hits"
+        ddos_athena = (
+            "SELECT count(*) as hits FROM {TABLE}"
+            " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS}"
+            " AND EXISTS(SELECT 1 FROM UNNEST(labels) AS t(l) WHERE l.name LIKE '%anti-ddos%')"
         )
-        ddos_results = _run_query(log_group, region, ddos_query, start_epoch, end_epoch)
+        ddos_results = _run_q(ddos_cwl, ddos_athena, start_epoch, end_epoch)
         if ddos_results and int(ddos_results[0].get("hits", 0)) > 0:
             antiddos_note = (
                 "\n⚠️  Anti-DDoS event detected in this time window. "
@@ -139,22 +144,7 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
     return "\n".join(lines)
 
 
-def _run_query(log_group: str, region: str, query: str, start_epoch: int, end_epoch: int) -> list[dict]:
-    """Execute CWL query and return parsed results."""
-    client = get_client("logs", region_name=region)
-    with _cwl_semaphore:
-        resp = client.start_query(
-            logGroupName=log_group, startTime=start_epoch, endTime=end_epoch,
-            queryString=query, limit=25,
-        )
-        query_id = resp["queryId"]
-        elapsed = 0
-        while elapsed < MAX_POLL:
-            time.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
-            result = client.get_query_results(queryId=query_id)
-            if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
-                break
-    if result["status"] != "Complete":
-        return []
-    return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
+def _run_q(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict]:
+    """Execute log query via unified layer (CWL or Athena)."""
+    results = query_logs(cwl, athena, start_epoch, end_epoch, limit=25)
+    return results if results is not None else []

@@ -5,11 +5,11 @@
 import json
 import time
 import os
-import threading
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, is_log_filter_active
+from tools.waf_query import query_logs, get_log_type
 
 # Rules that should NEVER be recommended to switch from Count.
 # These have known high false-positive rates in production environments.
@@ -28,38 +28,16 @@ LOW_FP_RULES = {
     "JavaDeserializationRCE_HEADER", "JavaDeserializationRCE_BODY", "JavaDeserializationRCE_QUERYSTRING", "JavaDeserializationRCE_URI",
 }
 
-MAX_POLL = 120
-POLL_INTERVAL = 2
-_cwl_semaphore = threading.Semaphore(8)
+
+def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict]:
+    """Execute a log query via unified layer (CWL or Athena)."""
+    results = query_logs(query_cwl, query_athena, start_epoch, end_epoch, limit)
+    return results if results is not None else []
 
 
-def _run_cwl_query(log_group: str, region: str, query: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict]:
-    """Execute a CWL Insights query and return parsed results."""
-    client = get_client("logs", region_name=region)
-    with _cwl_semaphore:
-        resp = client.start_query(
-            logGroupName=log_group, startTime=start_epoch, endTime=end_epoch,
-            queryString=query, limit=limit,
-        )
-        query_id = resp["queryId"]
-        elapsed = 0
-        while elapsed < MAX_POLL:
-            time.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
-            result = client.get_query_results(queryId=query_id)
-            if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
-                break
-    if result["status"] != "Complete":
-        return []
-    return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
-
-
-def _resolve_log_group() -> str | None:
-    """Resolve CWL log group from session state."""
-    dest = get_log_destination()
-    if dest and ":log-group:" in dest:
-        return dest.split(":log-group:")[-1].rstrip(":*")
-    return None
+def _has_logging() -> bool:
+    """Check if any logging (CWL or S3) is configured."""
+    return get_log_type() != "none"
 
 
 @tool
@@ -97,32 +75,37 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
 def _step_init(rule_name: str = "") -> str:
     """Step 0+1+2: Inventory COUNT rules, classify, find peak hours.
     If rule_name is provided, only evaluate that specific rule (or comma-separated list)."""
-    log_group = _resolve_log_group()
-    if not log_group:
+    if not _has_logging():
         return _init_metrics_only()
 
     if is_log_filter_active():
-        return _init_with_filter_warning(log_group)
+        return _init_with_filter_warning()
 
     # If user specified specific rules, filter to just those
     target_rules = set()
     if rule_name:
         target_rules = {r.strip() for r in rule_name.split(",") if r.strip()}
 
-    region = get_logs_region()
     # Query last 14 days for rule inventory (use full window for stats aggregation)
     end_epoch = int(time.time())
     start_epoch = end_epoch - (14 * 86400)
 
     # Get all COUNT rule hits with counts
-    query = (
+    cwl = (
         "filter @message like 'COUNT'"
         " | parse @message /\"nonTerminatingMatchingRules\":\\[\\{\"ruleId\":\"(?<rule_id>[^\"]+)\",\"action\":\"COUNT\"/"
         " | filter ispresent(rule_id)"
         " | stats count(*) as hits by rule_id"
         " | sort hits desc"
     )
-    results = _run_cwl_query(log_group, region, query, start_epoch, end_epoch, limit=100)
+    athena = (
+        "SELECT t.ruleid as rule_id, count(*) as hits"
+        " FROM {TABLE} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS}"
+        " AND t.action = 'COUNT'"
+        " GROUP BY t.ruleid ORDER BY hits DESC LIMIT 100"
+    )
+    results = _run_log_query(cwl, athena, start_epoch, end_epoch, limit=100)
 
     if not results:
         return ("Query returned 0 COUNT rule hits in the past 14 days.\n"
@@ -264,13 +247,12 @@ def _step_analyze_rule(rule_name: str) -> str:
             f"recommendation='Switch to Block')."
         )
 
-    log_group = _resolve_log_group()
-    if not log_group:
+    if not _has_logging():
         # Give what we can without logs: rule-type prior assessment
         prior = _get_rule_type_prior(rule_name)
         return (
             f"## Rule: {rule_name} — No Logging Available\n\n"
-            f"⚠️  Cannot perform log-level analysis (no CWL log group configured).\n\n"
+            f"⚠️  Cannot perform log-level analysis (no logging configured).\n\n"
             f"**Rule-type assessment**: {prior}\n\n"
             f"**What I can still check**: Use get_waf_overview(query_type='top_rules') to see this rule's "
             f"hit volume and week-over-week trend. Stable low volume with no spikes suggests low risk.\n\n"
@@ -296,12 +278,11 @@ def _step_analyze_rule(rule_name: str) -> str:
             f"evaluate_count_rules(step='check_low_volume_clients', rule_name='{rule_name}', start_time='<peak_time>')"
         )
 
-    region = get_logs_region()
     end_epoch = int(time.time())
     start_epoch = end_epoch - (14 * 86400)
 
     # Find peak hour
-    peak_hour_str = _find_peak_hour(log_group, region, rule_name, start_epoch, end_epoch)
+    peak_hour_str = _find_peak_hour(rule_name, start_epoch, end_epoch)
     if not peak_hour_str:
         return (f"Could not find peak hour for rule '{rule_name}'. "
                 "The rule may have very sparse hits. Ask the user for a specific time window, "
@@ -315,28 +296,48 @@ def _step_analyze_rule(rule_name: str) -> str:
         return f"Error parsing peak hour '{peak_hour_str}'."
 
     # Query: client IP distribution in peak hour (both top and bottom)
-    query_top = (
+    cwl_top = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 10"
     )
-    query_bottom = (
+    athena_top = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND t.ruleid = '{rule_name}' AND t.action = 'COUNT'"
+        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
+    )
+    cwl_bottom = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 10"
     )
-    query_total = (
+    athena_bottom = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND t.ruleid = '{rule_name}' AND t.action = 'COUNT'"
+        f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 10"
+    )
+    cwl_total = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as total_hits, count_distinct(httpRequest.clientIp) as unique_ips"
     )
+    athena_total = (
+        f"SELECT count(*) as total_hits, count(DISTINCT httprequest.clientip) as unique_ips"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND t.ruleid = '{rule_name}' AND t.action = 'COUNT'"
+    )
 
     peak_end = peak_epoch + 3600  # 1 hour window
-    top_clients = _run_cwl_query(log_group, region, query_top, peak_epoch, peak_end, limit=10)
-    bottom_clients = _run_cwl_query(log_group, region, query_bottom, peak_epoch, peak_end, limit=10)
-    totals = _run_cwl_query(log_group, region, query_total, peak_epoch, peak_end, limit=1)
+    top_clients = _run_log_query(cwl_top, athena_top, peak_epoch, peak_end, limit=10)
+    bottom_clients = _run_log_query(cwl_bottom, athena_bottom, peak_epoch, peak_end, limit=10)
+    totals = _run_log_query(cwl_total, athena_total, peak_epoch, peak_end, limit=1)
 
     total_hits = totals[0].get("total_hits", "?") if totals else "?"
     unique_ips = totals[0].get("unique_ips", "?") if totals else "?"
@@ -388,11 +389,9 @@ def _step_analyze_rule(rule_name: str) -> str:
 
 def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
     """Step 6: Detailed client check for a specific time window."""
-    log_group = _resolve_log_group()
-    if not log_group:
-        return "Error: No CWL log group available."
+    if not _has_logging():
+        return "Error: No logging configured. Cannot perform log-level analysis."
 
-    region = get_logs_region()
     from tools.waf_logs import _parse_start_time
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
@@ -401,21 +400,35 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
     end_epoch = start_epoch + (hours_ago * 3600)
 
     # Get both ends of client distribution
-    query_bottom = (
+    cwl_bottom = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 5"
     )
-    query_top = (
+    athena_bottom = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND t.ruleid = '{rule_name}' AND t.action = 'COUNT'"
+        f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 5"
+    )
+    cwl_top = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         f" | parse @message /\"nonTerminatingMatchingRules\":\\[.*?\\{{\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"/"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 5"
     )
+    athena_top = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND t.ruleid = '{rule_name}' AND t.action = 'COUNT'"
+        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 5"
+    )
 
-    bottom = _run_cwl_query(log_group, region, query_bottom, start_epoch, end_epoch, limit=5)
-    top = _run_cwl_query(log_group, region, query_top, start_epoch, end_epoch, limit=5)
+    bottom = _run_log_query(cwl_bottom, athena_bottom, start_epoch, end_epoch, limit=5)
+    top = _run_log_query(cwl_top, athena_top, start_epoch, end_epoch, limit=5)
 
     lines = [
         f"## Client Distribution: {rule_name}",
@@ -477,18 +490,27 @@ def _get_rule_type_prior(rule_name: str) -> str:
     return "No specific prior available for this rule. Log analysis recommended before switching."
 
 
-def _find_peak_hour(log_group: str, region: str, rule_name: str, start_epoch: int, end_epoch: int) -> str:
+def _find_peak_hour(rule_name: str, start_epoch: int, end_epoch: int) -> str:
     """Find the hour with most hits for a given rule in the time range."""
-    query = (
+    cwl = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         " | stats count(*) as hits by bin(1h)"
         " | sort hits desc | limit 1"
     )
-    results = _run_cwl_query(log_group, region, query, start_epoch, end_epoch, limit=1)
+    athena = (
+        f"SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%dT%H:00') as hour, count(*) as hits"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+        f" AND t.ruleid = '{rule_name}' AND t.action = 'COUNT'"
+        f" GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%dT%H:00')"
+        f" ORDER BY hits DESC LIMIT 1"
+    )
+    results = _run_log_query(cwl, athena, start_epoch, end_epoch, limit=1)
     if results:
-        ts = results[0].get("bin(1h)", "")
+        # CWL returns "bin(1h)" key, Athena returns "hour" key
+        ts = results[0].get("bin(1h)", "") or results[0].get("hour", "")
         if ts:
-            # CWL returns ISO format like "2026-05-14 14:00:00.000"
+            # Normalize to YYYY-MM-DDTHH:MM format
             return ts[:16].replace(" ", "T")
     return ""
 
@@ -558,7 +580,7 @@ def _init_metrics_only() -> str:
     return "\n".join(lines)
 
 
-def _init_with_filter_warning(log_group: str) -> str:
+def _init_with_filter_warning() -> str:
     """Handle case where log filter may drop COUNT logs."""
     lines = [
         "## COUNT Rule Evaluation — Log Filter Warning",
