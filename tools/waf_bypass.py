@@ -1,0 +1,503 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+"""Bypass/evasion detection tool — find malicious traffic that WAF is allowing through."""
+
+from datetime import datetime, timedelta, timezone
+from strands import tool
+from tools.aws_session import get_client
+from tools.session_state import get_webacl_name, get_scope, get_logs_region, is_log_filter_active
+from tools.waf_query import query_logs, get_log_type
+
+CONFIDENCE_RULES = """\
+## Confidence Rules
+- HIGH: automation UA + ALLOW, data-center IP + high freq + no bot labels → state directly
+- LIKELY: high URI diversity + no bot labels, regular intervals → "probable bot, needs confirmation"
+- CANNOT DETERMINE: browser UA + browser JA4 + moderate frequency → ask user
+- PRESENT-ONLY: volume trends, IP distribution → show data, user decides if expected
+"""
+
+# Anomaly thresholds (hardcoded, not LLM judgment)
+WOW_ANOMALY_MODERATE = 2.0
+WOW_ANOMALY_SIGNIFICANT = 3.0
+UNIQUE_IP_ANOMALY = 2.0
+
+
+@tool
+def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", hours_ago: int = 6) -> str:
+    """Detect potential WAF bypass — find malicious traffic in ALLOW logs.
+
+    This tool provides evidence for human judgment. It does NOT make definitive
+    bypass verdicts without quantifiable signal support.
+
+    Steps:
+    - "scan": Proactive check — run anomaly filters on ALLOW traffic to find suspicious IPs.
+    - "investigate_ip": Deep-dive a specific IP's behavior in ALLOW logs.
+    - "volume_anomaly": Check for traffic volume anomalies (DDoS/scraping indicators).
+
+    Args:
+        step: "scan", "investigate_ip", or "volume_anomaly".
+        ip: Client IP (required for investigate_ip).
+        start_time: Start time for log queries (required for scan and investigate_ip).
+        hours_ago: Duration in hours (default 6, max 6).
+    """
+    from tools.waf_logs import _parse_start_time
+
+    if step == "volume_anomaly":
+        return _step_volume_anomaly()
+
+    # scan and investigate_ip require logging
+    if get_log_type() == "none":
+        return ("Error: No logging configured. Cannot analyze ALLOW traffic without logs.\n"
+                "Enable WAF logging (S3 or CloudWatch Logs) first.\n"
+                "For a metrics-only volume check, call detect_bypass(step='volume_anomaly').")
+
+    if is_log_filter_active():
+        # Check if ALLOW logs are available
+        test_cwl = "filter action = 'ALLOW' | stats count(*) as cnt"
+        test_athena = "SELECT count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'"
+        if start_time:
+            start_epoch = _parse_start_time(start_time)
+            if start_epoch:
+                end_epoch = start_epoch + (min(hours_ago, 6) * 3600)
+                results = query_logs(test_cwl, test_athena, start_epoch, end_epoch, limit=1)
+                if not results or int(results[0].get("cnt", 0)) == 0:
+                    return ("## Cannot Proceed — ALLOW Logs Unavailable\n\n"
+                            "⚠️  Log Filter is active and ALLOW logs appear filtered out.\n"
+                            "Bypass detection requires ALLOW logs. Remove the filter or add ALLOW to KEEP filters.\n"
+                            "For a metrics-only volume check, call detect_bypass(step='volume_anomaly').")
+
+    if not start_time:
+        return "Error: start_time is required. Ask the user which time period to analyze."
+
+    start_epoch = _parse_start_time(start_time)
+    if start_epoch is None:
+        return f"Error: cannot parse start_time '{start_time}'."
+
+    hours_ago = min(hours_ago, 6)
+    end_epoch = start_epoch + (hours_ago * 3600)
+
+    if step == "scan":
+        return _step_scan(start_epoch, end_epoch)
+    elif step == "investigate_ip":
+        if not ip:
+            return "Error: ip is required for step='investigate_ip'. Ask the user which IP to check."
+        return _step_investigate_ip(ip, start_epoch, end_epoch)
+    else:
+        return f"Error: unknown step '{step}'. Available: scan, investigate_ip, volume_anomaly"
+
+
+def _step_volume_anomaly() -> str:
+    """Metrics-based volume anomaly detection. No logs needed."""
+    webacl_name = get_webacl_name()
+    if not webacl_name:
+        return "Error: No WebACL configured. Call get_waf_config first."
+
+    scope = get_scope()
+    region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    cw = get_client("cloudwatch", region_name=region)
+
+    from tools.waf_patrol import _get_all_rules_metrics_search
+
+    # This week vs last week (7 days each)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=7)
+    prev_start = start - timedelta(days=7)
+
+    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region)
+    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=7 * 86400, scope=scope, region=region)
+
+    # Extract totals
+    tw_all = this_week.get("ALL", {})
+    lw_all = last_week.get("ALL", {})
+    tw_allowed = sum(tw_all.get("allowed", []))
+    lw_allowed = sum(lw_all.get("allowed", []))
+    tw_blocked = sum(tw_all.get("blocked", [])) + sum(tw_all.get("challenge", [])) + sum(tw_all.get("captcha", []))
+    lw_blocked = sum(lw_all.get("blocked", [])) + sum(lw_all.get("challenge", [])) + sum(lw_all.get("captcha", []))
+
+    wow_allowed = tw_allowed / max(lw_allowed, 1)
+    wow_blocked = tw_blocked / max(lw_blocked, 1)
+
+    # Check Anti-DDoS event
+    antiddos_detected = False
+    try:
+        evt_resp = cw.get_metric_data(
+            MetricDataQueries=[{"Id": "evt", "Expression":
+                f"SUM(FILL(SEARCH('{_label_dim_set()} WebACL=\"{webacl_name}\" "
+                f"LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 86400),0))"}],
+            StartTime=start, EndTime=end,
+        )
+        for r in evt_resp.get("MetricDataResults", []):
+            if sum(r.get("Values", [])) > 0:
+                antiddos_detected = True
+    except Exception:
+        pass
+
+    # Build output
+    lines = [
+        "## Volume Anomaly Analysis",
+        f"**Period**: last 7 days vs previous 7 days",
+        f"**WebACL**: {webacl_name}",
+        "",
+        "### Traffic Comparison",
+        f"| Metric | This Week | Last Week | WoW Ratio |",
+        f"| ------ | --------- | --------- | --------- |",
+        f"| ALLOW | {tw_allowed:,.0f} | {lw_allowed:,.0f} | {wow_allowed:.1f}x |",
+        f"| Mitigated (Block+Challenge+Captcha) | {tw_blocked:,.0f} | {lw_blocked:,.0f} | {wow_blocked:.1f}x |",
+        "",
+    ]
+
+    if antiddos_detected:
+        lines.append("⚠️  **Anti-DDoS event-detected label appeared this week** — DDoS event was active.")
+        lines.append("")
+
+    # Classify
+    if wow_allowed < WOW_ANOMALY_MODERATE:
+        lines.append("### Assessment: No Significant Volume Anomaly")
+        lines.append(f"ALLOW traffic is {wow_allowed:.1f}x last week — within normal range.")
+        lines.append("")
+        lines.append("## Your Next Action")
+        lines.append("If user still suspects bypass, run detect_bypass(step='scan', start_time='...') for per-IP analysis.")
+    elif wow_allowed < WOW_ANOMALY_SIGNIFICANT:
+        lines.append("### Assessment: Moderate Increase")
+        lines.append(f"ALLOW traffic is {wow_allowed:.1f}x last week. Could be legitimate growth or early-stage attack.")
+        lines.append("")
+        lines.append("## Your Next Action")
+        lines.append("Ask user: \"Is this expected growth (marketing campaign, product launch, seasonal event)?\"")
+        lines.append("If unexpected → run detect_bypass(step='scan', start_time='...') to identify suspicious IPs.")
+    else:
+        lines.append("### Assessment: Significant Anomaly")
+        lines.append(f"⚠️  ALLOW traffic is **{wow_allowed:.1f}x** last week — significant deviation from baseline.")
+        lines.append("")
+        lines.append("To classify the attack type, I need log-level analysis.")
+        lines.append("Ask user for a time window, then call detect_bypass(step='scan', start_time='...').")
+        lines.append("")
+        lines.append("**Preliminary classification hints (from metrics only):**")
+        if antiddos_detected:
+            lines.append("- Anti-DDoS event detected → DDoS attack confirmed by AMR")
+        if wow_blocked > WOW_ANOMALY_SIGNIFICANT:
+            lines.append(f"- Mitigated traffic also spiked ({wow_blocked:.1f}x) → WAF IS catching some of it")
+        else:
+            lines.append(f"- Mitigated traffic did NOT spike ({wow_blocked:.1f}x) → traffic is bypassing WAF rules")
+
+    lines.append("")
+    lines.append(CONFIDENCE_RULES)
+    return "\n".join(lines)
+
+
+def _step_scan(start_epoch: int, end_epoch: int) -> str:
+    """Proactive scan: find suspicious IPs in ALLOW traffic."""
+
+    # 0. Quick coverage check (config-based)
+    coverage_gaps = _check_coverage_gaps()
+
+    # 1. Run anomaly filters (exclusions built into queries)
+    # Filter: exclude verified bots, exclude static resources, exclude low-freq
+    crawlers_cwl = (
+        "filter action = 'ALLOW'"
+        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        " and @message not like 'bot:verified'"
+        " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"
+        " | filter unique_uris > 50"
+        " | sort unique_uris desc | limit 10"
+    )
+    crawlers_athena = (
+        "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total,"
+        " count(DISTINCT httprequest.uri) as unique_uris"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        " AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        " AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%')"
+        " GROUP BY httprequest.clientip"
+        " HAVING count(DISTINCT httprequest.uri) > 50"
+        " ORDER BY unique_uris DESC LIMIT 10"
+    )
+
+    repeaters_cwl = (
+        "filter action = 'ALLOW'"
+        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        " and @message not like 'bot:verified'"
+        " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"
+        " | filter total > 200 and unique_uris < 10"
+        " | sort total desc | limit 10"
+    )
+    repeaters_athena = (
+        "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total,"
+        " count(DISTINCT httprequest.uri) as unique_uris"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        " AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        " AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%')"
+        " GROUP BY httprequest.clientip"
+        " HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10"
+        " ORDER BY total DESC LIMIT 10"
+    )
+
+    crawlers = query_logs(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10) or []
+    repeaters = query_logs(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10) or []
+
+    # Build output
+    lines = ["## Bypass Scan Results", ""]
+
+    if coverage_gaps:
+        lines.append("### ⚠️ Coverage Gaps Detected")
+        for gap in coverage_gaps:
+            lines.append(f"  - {gap}")
+        lines.append("")
+
+    lines.append("### High URI Diversity (probable scrapers/crawlers)")
+    if crawlers:
+        lines.append(f"| {'IP':<15} | {'Requests':>8} | {'Unique URIs':>11} |")
+        lines.append(f"| {'-'*15} | {'-'*8} | {'-'*11} |")
+        for r in crawlers:
+            lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} | {r.get('unique_uris', '?'):>11} |")
+    else:
+        lines.append("  (none found)")
+
+    lines.append("")
+    lines.append("### High Frequency + Low URI Diversity (endpoint hammering)")
+    if repeaters:
+        lines.append(f"| {'IP':<15} | {'Requests':>8} | {'Unique URIs':>11} |")
+        lines.append(f"| {'-'*15} | {'-'*8} | {'-'*11} |")
+        for r in repeaters:
+            lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} | {r.get('unique_uris', '?'):>11} |")
+    else:
+        lines.append("  (none found)")
+
+    if not crawlers and not repeaters:
+        lines.append("")
+        lines.append("### No Obvious Bypass Candidates Found")
+        lines.append("No IPs matched the anomaly filters in this time window.")
+        lines.append("⚠️  This does NOT guarantee no bypass exists — only that no IP exceeded the detection thresholds.")
+
+    lines.append("")
+    lines.append("---")
+    lines.append(CONFIDENCE_RULES)
+    lines.append("")
+    lines.append("## Your Next Action")
+    lines.append("")
+    if crawlers or repeaters:
+        lines.append("Present candidates to user. For each:")
+        lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
+        lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")
+        lines.append("- For deeper analysis → call detect_bypass(step='investigate_ip', ip='...', start_time='...')")
+    else:
+        lines.append("Tell user: no obvious bypass detected in this window.")
+        lines.append("If user still suspects bypass, suggest trying a different time window or checking volume_anomaly.")
+
+    return "\n".join(lines)
+
+
+def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
+    """Deep-dive a specific IP's behavior in ALLOW logs."""
+
+    # 1. Frequency
+    freq_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | stats count(*) as hits by bin(1m)"
+        " | stats max(hits) as peak_rpm, avg(hits) as avg_rpm, count(*) as active_minutes"
+    )
+    freq_athena = (
+        f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm, count(*) as active_minutes FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{ip}'"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    freq = query_logs(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1) or []
+    peak_rpm = freq[0].get("peak_rpm", "?") if freq else "?"
+    avg_rpm = freq[0].get("avg_rpm", "?") if freq else "?"
+
+    # 2. URI diversity
+    uri_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        " | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total"
+    )
+    uri_athena = (
+        f"SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+    )
+    uri_data = query_logs(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1) or []
+    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"
+    total_reqs = uri_data[0].get("total", "?") if uri_data else "?"
+
+    # 3. Action breakdown
+    action_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | stats count(*) as hits by action"
+    )
+    action_athena = (
+        f"SELECT action, count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" GROUP BY action"
+    )
+    actions = query_logs(action_cwl, action_athena, start_epoch, end_epoch, limit=10) or []
+    action_map = {r.get("action", ""): int(r.get("hits", 0)) for r in actions}
+
+    # 4. Labels (bot detection)
+    labels_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and @message like 'labels'"
+        " | parse @message '\"labels\":[*]' as Labels"
+        " | filter ispresent(Labels)"
+        " | stats count(*) as cnt by Labels"
+        " | sort cnt desc | limit 5"
+    )
+    labels_athena = (
+        f"SELECT json_format(cast(labels as json)) as Labels, count(*) as cnt"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" AND labels IS NOT NULL AND cardinality(labels) > 0"
+        f" GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT 5"
+    )
+    labels = query_logs(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5) or []
+
+    # 5. Country
+    country_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | stats count(*) as hits by httpRequest.country"
+        " | limit 1"
+    )
+    country_athena = (
+        f"SELECT httprequest.country as \"httpRequest.country\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" GROUP BY httprequest.country LIMIT 1"
+    )
+    country_data = query_logs(country_cwl, country_athena, start_epoch, end_epoch, limit=1) or []
+    country = country_data[0].get("httpRequest.country", "?") if country_data else "?"
+
+    # Build output
+    lines = [
+        f"## Bypass Investigation: {ip}",
+        f"**Country**: {country}",
+        f"**Total requests (non-static)**: {total_reqs}",
+        f"**Unique URIs**: {unique_uris}",
+        f"**Peak frequency**: {peak_rpm} req/min (avg {avg_rpm})",
+        "",
+        "### Action Breakdown",
+    ]
+    for action, count in sorted(action_map.items(), key=lambda x: x[1], reverse=True):
+        lines.append(f"  {action}: {count:,}")
+
+    lines.append("")
+    lines.append("### Bot Control Labels")
+    if labels:
+        has_bot_labels = False
+        for r in labels:
+            label_str = r.get("Labels", "")
+            if "bot:" in label_str or "signal:" in label_str:
+                has_bot_labels = True
+            lines.append(f"  {label_str} ({r.get('cnt', '?')} requests)")
+        if not has_bot_labels:
+            lines.append("  ⚠️  No bot detection labels — Bot Control did not classify this IP")
+    else:
+        lines.append("  (no labels found — Bot Control may not be deployed or IP has no label matches)")
+
+    # Directional judgment
+    lines.append("")
+    lines.append("---")
+    lines.append("## Directional Judgment")
+    lines.append("")
+
+    try:
+        peak_val = float(peak_rpm)
+    except (ValueError, TypeError):
+        peak_val = 0
+    try:
+        uri_val = int(unique_uris)
+    except (ValueError, TypeError):
+        uri_val = 0
+
+    has_bot_label = any("bot:" in r.get("Labels", "") for r in labels)
+    has_datacenter = any("known_bot_data_center" in r.get("Labels", "") for r in labels)
+
+    if has_datacenter and peak_val > 50 and not has_bot_label:
+        lines.append("**HIGH CONFIDENCE: Undetected bot from data center.**")
+        lines.append("Evidence: data-center IP (signal:known_bot_data_center) + high frequency + no bot classification.")
+        lines.append("→ Bot Control is not catching this IP.")
+    elif peak_val > 200 and uri_val > 50:
+        lines.append("**HIGH CONFIDENCE: Automated scraper/crawler.**")
+        lines.append(f"Evidence: {peak_rpm} req/min + {unique_uris} unique URIs — far exceeds human behavior.")
+    elif peak_val > 200 and uri_val < 10:
+        lines.append("**HIGH CONFIDENCE: Endpoint hammering (possible DDoS participant or brute-force).**")
+        lines.append(f"Evidence: {peak_rpm} req/min concentrated on few URIs.")
+    elif uri_val > 50 and not has_bot_label:
+        lines.append("**LIKELY: Probable scraper** (needs user confirmation).")
+        lines.append(f"Evidence: {unique_uris} unique URIs, no bot labels. Frequency moderate ({peak_rpm}/min).")
+        lines.append("→ Ask user if this IP is a known partner/crawler.")
+    else:
+        lines.append("**CANNOT DETERMINE** — signals are mixed or insufficient.")
+        lines.append(f"Evidence: {peak_rpm} req/min, {unique_uris} URIs, country={country}.")
+        lines.append("→ Ask user: is this IP expected? Is this a known service/partner?")
+
+    lines.append("")
+    lines.append(CONFIDENCE_RULES)
+    lines.append("")
+    lines.append("## Your Next Action")
+    lines.append("")
+    lines.append("Present findings to user.")
+    lines.append("If HIGH CONFIDENCE → call record_finding, then suggest remediation:")
+    lines.append("  - Bot Control not deployed → 'Deploy Bot Control'")
+    lines.append("  - Bot Control deployed but missed → 'Upgrade to Targeted level'")
+    lines.append("  - High frequency → 'Add rate-based rule'")
+    lines.append("")
+    lines.append("If this IP has high URI diversity but moderate frequency:")
+    lines.append("  → 'This IP may be part of a distributed scraping operation.")
+    lines.append("     Want me to scan for more IPs with similar patterns?'")
+    lines.append("  → If yes, call detect_bypass(step='scan', start_time='...')")
+
+    return "\n".join(lines)
+
+
+def _check_coverage_gaps() -> list[str]:
+    """Quick config check for missing protection layers."""
+    gaps = []
+    webacl_name = get_webacl_name()
+    scope = get_scope()
+    if not webacl_name:
+        return gaps
+
+    region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    waf = get_client("wafv2", region_name=region)
+
+    try:
+        acls = waf.list_web_acls(Scope=scope).get("WebACLs", [])
+        match = next((a for a in acls if a["Name"].lower() == webacl_name.lower()), None)
+        if not match:
+            return gaps
+        resp = waf.get_web_acl(Name=webacl_name, Scope=scope, Id=match["Id"])
+        rules = resp["WebACL"].get("Rules", [])
+
+        has_bot_control = False
+        has_rate_based = False
+        has_antiddos = False
+        for r in rules:
+            stmt = r.get("Statement", {})
+            mgr = stmt.get("ManagedRuleGroupStatement", {})
+            if mgr.get("Name") == "AWSManagedRulesBotControlRuleSet":
+                has_bot_control = True
+            if mgr.get("Name") == "AWSManagedRulesAntiDDoSRuleSet":
+                has_antiddos = True
+            if "RateBasedStatement" in stmt:
+                has_rate_based = True
+
+        if not has_bot_control:
+            gaps.append("Bot Control not deployed — automated traffic may not be detected")
+        if not has_rate_based:
+            gaps.append("No rate-based rules — high-frequency IPs are not throttled")
+        if not has_antiddos:
+            gaps.append("Anti-DDoS AMR not deployed — DDoS attacks may not be mitigated")
+    except Exception:
+        pass
+    return gaps
+
+
+def _label_dim_set() -> str:
+    """Return correct dimension set for label metrics (no Region needed)."""
+    return "{AWS/WAFV2,LabelName,LabelNamespace,WebACL}"

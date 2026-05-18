@@ -23,6 +23,7 @@ from tools.waf_patrol import patrol_scan
 from tools.waf_count_eval import evaluate_count_rules
 from tools.waf_block_fp import investigate_block_fp
 from tools.waf_challenge_check import check_challenge_compatibility
+from tools.waf_bypass import detect_bypass
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
@@ -43,17 +44,22 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - Log query results are capped at 25 rows. If you see exactly 25 results, there are likely more. Do NOT state "only 25 IPs triggered this rule" — say "at least 25 IPs (results capped)."
 
 ## Tool Usage Strategy
-- "最近情况怎么样/what's happening/any anomalies/bot situation" → get_waf_overview (fast, 2-3s, no time limit)
-- "review/audit/检查 my WAF rules" or "generate review report" → call review_waf_rules_deep (produces full HTML report)
-- "安全巡检/patrol/运维报告/daily report" → call patrol_scan (produces deterministic HTML report, no LLM writing needed)
-- "周报/weekly report/管理层报告" → call generate_weekly_report (HTML with charts + LLM executive summary)
+- "what's happening" / "any anomalies" / "bot situation" / "overview" → get_waf_overview (fast, 2-3s, no time limit)
+- "review" / "audit" / "check my WAF rules" / "generate review report" → call review_waf_rules_deep (produces full HTML report)
+- "patrol" / "security scan" / "daily report" / "ops report" → call patrol_scan (produces deterministic HTML report, no LLM writing needed)
+- "weekly report" / "management report" / "executive summary" → call generate_weekly_report (HTML with charts + LLM executive summary)
 - AWS WAF best practice / configuration guidance questions → call search_waf_knowledge first, then answer based on results
 - Single rule question ("is this rule safe?") → use get_waf_config + your own reasoning (no need for deep review)
-- "evaluate COUNT rules" / "should I switch to Block" / "COUNT转BLOCK" / "观察期评估" / "规则能不能开启" / "COUNT rules ready" / any question about whether COUNT rules are safe to enforce → call evaluate_count_rules(step="init") — it handles the full workflow
-- "is this a false positive" / "IP被误杀" / "customer got blocked" / "check if blocked correctly" → call investigate_block_fp(step="investigate", ip="...", start_time="...")
-- "any false positives" / "check for FPs" / "有没有误杀" / proactive FP audit without specific IP → call investigate_block_fp(step="scan", start_time="...")
-- "challenge not working" / "API被challenge" / "CAPTCHA问题" / "native app blocked by challenge" → call check_challenge_compatibility(start_time="...")
+- "evaluate COUNT rules" / "should I switch to Block" / "COUNT rules ready" / any question about whether COUNT rules are safe to enforce → call evaluate_count_rules(step="init") — it handles the full workflow
+- "is this a false positive" / "customer got blocked" / "check if blocked correctly" → call investigate_block_fp(step="investigate", ip="...", start_time="...")
+- "any false positives" / "check for FPs" / proactive FP audit without specific IP → call investigate_block_fp(step="scan", start_time="...")
+- "challenge not working" / "native app blocked by challenge" / "API requests failing after challenge" → call check_challenge_compatibility(start_time="...")
 - User already confirmed FP and wants fix → do NOT call investigate tools. Ask which rule/URI, then use search_waf_knowledge for scope-down best practices.
+- "any bypass" / "is anything getting through" / "check for evasion" / "scraper detection" → call detect_bypass(step="scan", start_time="...")
+- "traffic spike" / "volume anomaly" / "suspected DDoS" / "origin 502" → call detect_bypass(step="volume_anomaly")
+- Specific IP suspected of bypass → call detect_bypass(step="investigate_ip", ip="...", start_time="...")
+- If user mentions both traffic anomaly AND bypass/scraping → call volume_anomaly FIRST (fast, metrics-based). If volume normal, then scan.
+- "credential stuffing" / "brute force login" / "API abuse with valid requests" → Do NOT call detect_bypass. Tell user this is beyond WAF capability. Recommend ATP or application-layer controls.
 - Specific attack/IP/URI question ("check IP 1.2.3.4" / "any SQLi yesterday") → use run_logs_query/analyze_ip (targeted, fast)
 - After review_waf_rules_deep completes your analysis → MUST call finalize_review_report with your findings
 - patrol_scan generates the report directly — just present the summary to the user.
@@ -264,7 +270,7 @@ _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
           run_athena_query, lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
-          patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility,
+          patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,
           record_finding, ask_user]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
@@ -586,5 +592,5 @@ if __name__ == "__main__":
         uvicorn.run(create_app(), host="0.0.0.0", port=8080)
     else:
         # Local CLI testing
-        prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "列出所有 WebACL"
+        prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "List all WebACLs"
         print(invoke({"prompt": prompt})["answer"])
