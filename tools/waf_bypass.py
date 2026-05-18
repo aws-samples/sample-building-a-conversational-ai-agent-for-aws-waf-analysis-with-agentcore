@@ -168,16 +168,22 @@ def _step_volume_anomaly() -> str:
         lines.append("### Assessment: Significant Anomaly")
         lines.append(f"⚠️  ALLOW traffic is **{wow_allowed:.1f}x** last week — significant deviation from baseline.")
         lines.append("")
-        lines.append("To classify the attack type, I need log-level analysis.")
-        lines.append("Ask user for a time window, then call detect_bypass(step='scan', start_time='...').")
-        lines.append("")
-        lines.append("**Preliminary classification hints (from metrics only):**")
+        lines.append("**Preliminary classification (from metrics only):**")
         if antiddos_detected:
             lines.append("- Anti-DDoS event detected → DDoS attack confirmed by AMR")
         if wow_blocked > WOW_ANOMALY_SIGNIFICANT:
             lines.append(f"- Mitigated traffic also spiked ({wow_blocked:.1f}x) → WAF IS catching some of it")
         else:
             lines.append(f"- Mitigated traffic did NOT spike ({wow_blocked:.1f}x) → traffic is bypassing WAF rules")
+        lines.append("")
+        lines.append("**To classify attack type, ask user for a time window then call detect_bypass(step='scan').**")
+        lines.append("The scan will determine IP distribution and URI patterns to distinguish:")
+        lines.append("- IP distribution FLAT + URI concentrated → Classic distributed DDoS")
+        lines.append("  → Recommend: Anti-DDoS AMR, rate-based rules")
+        lines.append("- IP distribution FLAT + URI diversity HIGH (random paths) → Cache-bypass DDoS")
+        lines.append("  → Recommend: Cache 403/404 in CloudFront, rate-based rule, Anti-DDoS AMR")
+        lines.append("- IP distribution CONCENTRATED + URI diversity HIGH → Scraper/crawler")
+        lines.append("  → Recommend: Bot Control (Targeted), custom rate-based rule")
 
     lines.append("")
     lines.append(CONFIDENCE_RULES)
@@ -187,11 +193,32 @@ def _step_volume_anomaly() -> str:
 def _step_scan(start_epoch: int, end_epoch: int) -> str:
     """Proactive scan: find suspicious IPs in ALLOW traffic."""
 
-    # 0. Quick coverage check (config-based)
+    # 0. Quick coverage check (config-based) + WoW volume check
     coverage_gaps = _check_coverage_gaps()
 
+    # Check WoW — if 3x+ spike, suggest volume_anomaly first
+    wow_note = ""
+    try:
+        webacl_name = get_webacl_name()
+        scope = get_scope()
+        region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+        cw = get_client("cloudwatch", region_name=region)
+        from tools.waf_patrol import _get_all_rules_metrics_search
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=7)
+        prev_dt = start_dt - timedelta(days=7)
+        tw = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=7*86400, scope=scope, region=region)
+        lw = _get_all_rules_metrics_search(cw, webacl_name, prev_dt, start_dt, period=7*86400, scope=scope, region=region)
+        tw_a = sum(tw.get("ALL", {}).get("allowed", []))
+        lw_a = sum(lw.get("ALL", {}).get("allowed", []))
+        wow = tw_a / max(lw_a, 1)
+        if wow >= WOW_ANOMALY_SIGNIFICANT:
+            wow_note = (f"⚠️  ALLOW traffic is {wow:.1f}x last week (significant spike). "
+                        f"Consider calling detect_bypass(step='volume_anomaly') for aggregate analysis first.")
+    except Exception:
+        pass
+
     # 1. Run anomaly filters (exclusions built into queries)
-    # Filter: exclude verified bots, exclude static resources, exclude low-freq
     crawlers_cwl = (
         "filter action = 'ALLOW'"
         " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
@@ -234,14 +261,39 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " ORDER BY total DESC LIMIT 10"
     )
 
+    # Data-center IPs not caught by Bot Control
+    datacenter_cwl = (
+        "filter action = 'ALLOW' and @message like 'known_bot_data_center'"
+        " and @message not like 'bot:verified' and @message not like 'bot:unverified'"
+        " | stats count(*) as total by httpRequest.clientIp"
+        " | filter total > 50"
+        " | sort total desc | limit 10"
+    )
+    datacenter_athena = (
+        "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        " AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%known_bot_data_center%')"
+        " AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%')"
+        " AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:unverified%')"
+        " GROUP BY httprequest.clientip HAVING count(*) > 50"
+        " ORDER BY total DESC LIMIT 10"
+    )
+
     crawlers = query_logs(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10) or []
     repeaters = query_logs(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10) or []
+    datacenter = query_logs(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10) or []
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
 
+    if wow_note:
+        lines.append(wow_note)
+        lines.append("")
+
     if coverage_gaps:
-        lines.append("### ⚠️ Coverage Gaps Detected")
+        lines.append("### Coverage Gaps Detected")
         for gap in coverage_gaps:
             lines.append(f"  - {gap}")
         lines.append("")
@@ -265,7 +317,18 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append("  (none found)")
 
-    if not crawlers and not repeaters:
+    lines.append("")
+    lines.append("### Data-Center IPs Not Caught by Bot Control")
+    if datacenter:
+        lines.append(f"| {'IP':<15} | {'Requests':>8} |")
+        lines.append(f"| {'-'*15} | {'-'*8} |")
+        for r in datacenter:
+            lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} |")
+        lines.append("  (signal:known_bot_data_center label present but not classified as bot)")
+    else:
+        lines.append("  (none found)")
+
+    if not crawlers and not repeaters and not datacenter:
         lines.append("")
         lines.append("### No Obvious Bypass Candidates Found")
         lines.append("No IPs matched the anomaly filters in this time window.")
@@ -372,6 +435,54 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     country_data = query_logs(country_cwl, country_athena, start_epoch, end_epoch, limit=1) or []
     country = country_data[0].get("httpRequest.country", "?") if country_data else "?"
 
+    # 6. User-Agent
+    ua_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/"
+        " | stats count(*) as hits by ua"
+        " | sort hits desc | limit 3"
+    )
+    ua_athena = (
+        f"SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua,"
+        f" count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
+        f" ORDER BY hits DESC LIMIT 3"
+    )
+    ua_data = query_logs(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3) or []
+
+    # 7. JA4 fingerprint
+    ja4_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | stats count(*) as hits by ja4Fingerprint"
+        " | sort hits desc | limit 3"
+    )
+    ja4_athena = (
+        f"SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" GROUP BY ja4fingerprint ORDER BY hits DESC LIMIT 3"
+    )
+    ja4_data = query_logs(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3) or []
+
+    # 8. COUNT rules triggered (nonTerminatingMatchingRules)
+    count_rules_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and @message like 'COUNT'"
+        " | parse @message /\"nonTerminatingMatchingRules\":\\[\\{\"ruleId\":\"(?<rule>[^\"]+)\",\"action\":\"COUNT\"/"
+        " | filter ispresent(rule)"
+        " | stats count(*) as hits by rule"
+        " | sort hits desc | limit 5"
+    )
+    count_rules_athena = (
+        f"SELECT t.ruleid as rule, count(*) as hits"
+        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}' AND t.action = 'COUNT'"
+        f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
+    )
+    count_rules = query_logs(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5) or []
+
     # Build output
     lines = [
         f"## Bypass Investigation: {ip}",
@@ -384,6 +495,34 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     ]
     for action, count in sorted(action_map.items(), key=lambda x: x[1], reverse=True):
         lines.append(f"  {action}: {count:,}")
+
+    lines.append("")
+    lines.append("### User-Agent")
+    is_automation_ua = False
+    if ua_data:
+        for r in ua_data:
+            ua = r.get("ua", "?")
+            lines.append(f"  {ua} ({r.get('hits', '?')} requests)")
+            if any(t in ua.lower() for t in ("curl", "python", "wget", "httpie", "go-http", "java/", "okhttp")):
+                is_automation_ua = True
+    else:
+        lines.append("  (not available)")
+
+    lines.append("")
+    lines.append("### JA4 Fingerprint")
+    if ja4_data:
+        for r in ja4_data:
+            lines.append(f"  {r.get('ja4Fingerprint', r.get('ja4fingerprint', '?'))} ({r.get('hits', '?')} requests)")
+    else:
+        lines.append("  (not available)")
+
+    lines.append("")
+    lines.append("### COUNT Rules Triggered (matched but not blocked)")
+    if count_rules:
+        for r in count_rules:
+            lines.append(f"  {r.get('rule', '?')} ({r.get('hits', '?')} hits)")
+    else:
+        lines.append("  (none — no COUNT rule matches for this IP)")
 
     lines.append("")
     lines.append("### Bot Control Labels")
@@ -421,6 +560,10 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         lines.append("**HIGH CONFIDENCE: Undetected bot from data center.**")
         lines.append("Evidence: data-center IP (signal:known_bot_data_center) + high frequency + no bot classification.")
         lines.append("→ Bot Control is not catching this IP.")
+    elif is_automation_ua and not has_bot_label:
+        lines.append("**HIGH CONFIDENCE: Bot Control bypass — automation UA allowed through.**")
+        lines.append("Evidence: known automation User-Agent but no bot detection label applied.")
+        lines.append("→ Bot Control may not be deployed, or SignalNonBrowserUserAgent is set to Count.")
     elif peak_val > 200 and uri_val > 50:
         lines.append("**HIGH CONFIDENCE: Automated scraper/crawler.**")
         lines.append(f"Evidence: {peak_rpm} req/min + {unique_uris} unique URIs — far exceeds human behavior.")
