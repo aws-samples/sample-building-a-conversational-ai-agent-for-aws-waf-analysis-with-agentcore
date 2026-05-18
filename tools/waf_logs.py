@@ -22,19 +22,19 @@ _cwl_semaphore = threading.Semaphore(8)
 TEMPLATES = {
     "count_rule_top_ips": {
         "query": "filter @message like '{rule_name}' and @message like 'COUNT' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top IPs triggering a COUNT rule",
     },
     "count_rule_top_uris": {
         "query": "filter @message like '{rule_name}' and @message like 'COUNT' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
         "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '{rule_name}' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
-        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
     },
@@ -82,7 +82,7 @@ TEMPLATES = {
     },
     "label_top_ips": {
         "query": "filter @message like '{label}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%{label}%') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%{label}%') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["label"],
         "description": "Top IPs matching a specific AWS WAF label",
     },
@@ -118,19 +118,19 @@ TEMPLATES = {
     },
     "top_allowed_crawlers": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%') GROUP BY httprequest.clientip HAVING count(DISTINCT httprequest.uri) > 50 ORDER BY unique_uris DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND NOT any_match(labels, l -> l.name LIKE '%bot:verified%') GROUP BY httprequest.clientip HAVING count(DISTINCT httprequest.uri) > 50 ORDER BY unique_uris DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Find IPs with high URI diversity (likely crawlers)",
     },
     "top_allowed_repeaters": {
         "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 200 and unique_uris < 10 | sort total desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%') GROUP BY httprequest.clientip HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10 ORDER BY total DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND NOT any_match(labels, l -> l.name LIKE '%bot:verified%') GROUP BY httprequest.clientip HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10 ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Find IPs hitting few URIs at high frequency",
     },
     "token_reuse_ips": {
         "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
-        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value as cookie, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%token:accepted%') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value ORDER BY ip_count DESC LIMIT {LIMIT}",
+        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value as cookie, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%token:accepted%') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value ORDER BY ip_count DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Detect token reuse across multiple IPs",
     },

@@ -292,7 +292,7 @@ def _step_analyze_rule(rule_name: str) -> str:
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
     )
     cwl_bottom = (
@@ -304,7 +304,7 @@ def _step_analyze_rule(rule_name: str) -> str:
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 10"
     )
     cwl_total = (
@@ -315,7 +315,7 @@ def _step_analyze_rule(rule_name: str) -> str:
         f"SELECT count(*) as total_hits, count(DISTINCT httprequest.clientip) as unique_ips"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
     )
 
     peak_end = peak_epoch + 3600  # 1 hour window
@@ -393,7 +393,7 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 5"
     )
     cwl_top = (
@@ -405,7 +405,7 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 5"
     )
 
@@ -483,7 +483,7 @@ def _find_peak_hour(rule_name: str, start_epoch: int, end_epoch: int) -> str:
         f"SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%dT%H:00') as hour, count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f" GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%dT%H:00')"
         f" ORDER BY hits DESC LIMIT 1"
     )

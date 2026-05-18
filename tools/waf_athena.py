@@ -469,17 +469,17 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
     templates = {
         "count_rule_top_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
             FROM {table} WHERE {tf}
-            AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}')
+            AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}')
             GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
 
         "count_rule_top_uris": f"""SELECT httprequest.uri as uri, count(*) as cnt
             FROM {table} WHERE {tf}
-            AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}')
+            AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}')
             GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {limit}""",
 
         "count_rule_top_uas": f"""SELECT {_UA_EXPR} as ua, count(*) as cnt
             FROM {table} WHERE {tf}
-            AND EXISTS(SELECT 1 FROM UNNEST(nonterminatingmatchingrules) t(r) WHERE r.ruleid = '{rule_name}')
+            AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}')
             GROUP BY {_UA_EXPR} ORDER BY cnt DESC LIMIT {limit}""",
 
         "ip_cross_query": f"""SELECT action, terminatingruleid, count(*) as cnt
@@ -530,7 +530,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             min(from_unixtime("timestamp"/1000)) as first_seen, max(from_unixtime("timestamp"/1000)) as last_seen
             FROM {table} WHERE {tf} AND action = 'ALLOW'
             AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')
-            AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%')
+            AND NOT any_match(labels, l -> l.name LIKE '%bot:verified%')
             GROUP BY httprequest.clientip
             HAVING count(DISTINCT httprequest.uri) > 50
             ORDER BY unique_uris DESC LIMIT {limit}""",
@@ -540,7 +540,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             min(from_unixtime("timestamp"/1000)) as first_seen, max(from_unixtime("timestamp"/1000)) as last_seen
             FROM {table} WHERE {tf} AND action = 'ALLOW'
             AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')
-            AND NOT EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%bot:verified%')
+            AND NOT any_match(labels, l -> l.name LIKE '%bot:verified%')
             GROUP BY httprequest.clientip
             HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10
             ORDER BY total DESC LIMIT {limit}""",
@@ -551,7 +551,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
 
         "label_top_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
             FROM {table} WHERE {tf}
-            AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%{label}%')
+            AND any_match(labels, l -> l.name LIKE '%{label}%')
             GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
 
         "action_timeline": f"""SELECT date_format(from_unixtime("timestamp"/1000), '%Y-%m-%d %H:%i:00') as bin, count(*) as cnt
@@ -582,7 +582,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
         "token_reuse_ips": f"""SELECT httprequest.clientip as clientip, count(*) as total,
             count(DISTINCT {_UA_EXPR}) as unique_uas, count(DISTINCT ja4fingerprint) as unique_ja4s
             FROM {table} WHERE {tf}
-            AND EXISTS(SELECT 1 FROM UNNEST(labels) t(l) WHERE l.name LIKE '%token:accepted%')
+            AND any_match(labels, l -> l.name LIKE '%token:accepted%')
             GROUP BY httprequest.clientip ORDER BY total DESC LIMIT {limit}""",
     }
 
