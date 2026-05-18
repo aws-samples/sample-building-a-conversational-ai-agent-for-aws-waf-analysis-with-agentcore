@@ -70,6 +70,10 @@
 - **Batch queries**: scan step uses single batch query instead of per-IP loops
 - **Narrow window guidance**: Tool output guides LLM to use 1-2h windows for best signal-to-noise
 
+### Breaking Changes
+
+- **`run_athena_query` removed**: `run_logs_query` now auto-routes to CWL or Athena based on log destination. Same interface, same query_types — no user-facing change. LLM no longer needs to choose between the two tools.
+
 ## 0.6.0 (2026-05-15)
 
 ### Security Patrol Report v2 — Complete Redesign
