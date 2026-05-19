@@ -309,7 +309,6 @@ Common causes:
 
 - Container not responding on port 8080
 - `/invocations` endpoint not implemented
-- Agent startup taking too long (check if JA4 database download is blocking)
 
 ### AgentRuntimeName validation error
 

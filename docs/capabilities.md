@@ -85,4 +85,4 @@ The agent supports 20+ predefined log query templates covering IPs, rules, URIs,
 - Cannot analyze traffic without WAF logging enabled
 - Cannot identify bots that perfectly mimic real browsers (legitimate UA + JA4 + moderate frequency)
 - Log analysis works best with 1-2 hour windows around the incident. Maximum is 6 hours. Shorter windows = faster results + lower Athena cost.
-- JA4 fingerprint lookup uses the open-source FoxIO database with limited coverage — most fingerprints will show as "unknown"
+- JA4 fingerprint analysis provides structural decoding (protocol, TLS version, cipher count) but cannot identify specific applications

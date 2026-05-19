@@ -296,7 +296,6 @@ aws bedrock-agentcore-control get-agent-runtime \
 
 - 容器没有在 8080 端口响应
 - `/invocations` 端点未实现
-- Agent 启动太慢（检查 JA4 数据库下载是否阻塞）
 
 ### AgentRuntimeName 验证错误
 
