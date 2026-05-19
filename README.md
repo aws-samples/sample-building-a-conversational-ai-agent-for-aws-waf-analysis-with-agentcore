@@ -6,11 +6,13 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 
 ## What It Does
 
-- **Investigate AWS WAF incidents** — "What happened on May 9th?" → identifies attack sources, correlates IPs, explains AWS WAF rule behavior
-- **Detect bypasses** — finds crawlers and bots that evade AWS WAF rules using frequency analysis
-- **Security patrol** — one-click weekly summary across all WebACLs with anomaly detection and interactive charts
-- **Generate weekly summarys** — HTML business reports proving AWS WAF value for management
-- **Deep WAF rules review** — comprehensive security audit with 18+ automated checks, label dependency analysis, Mermaid flow diagram, and downloadable HTML report
+- **Proactive security checks** — scan for bypasses, evaluate COUNT rules, audit WAF configuration
+- **Incident investigation** — false positive analysis, attack source identification, IP profiling
+- **Bypass detection** — find crawlers, bots, and DDoS traffic that evade WAF rules
+- **Reports** — security patrol, weekly summaries, deep rule reviews (all as downloadable HTML)
+- **Best practice guidance** — WAF configuration advice backed by AWS documentation
+
+See [docs/capabilities.md](docs/capabilities.md) for full details and example questions.
 
 ## Quick Start
 
