@@ -10,9 +10,6 @@ COPY tools/ ./tools/
 COPY scripts/ ./scripts/
 COPY references/ ./references/
 
-# Pre-download JA4 database (avoids 120s cold-start delay)
-RUN uv run python -c "from tools.ja4 import _update_index; _update_index()" || true
-
 EXPOSE 8080
 
 CMD ["uv", "run", "--no-project", "python", "agent.py", "--serve"]

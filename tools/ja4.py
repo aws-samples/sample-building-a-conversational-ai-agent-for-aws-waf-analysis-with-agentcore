@@ -1,122 +1,85 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""JA4 fingerprint lookup tool."""
+"""JA4 fingerprint analysis tool — structural interpretation without external database."""
 
-import json
-import os
-import urllib.request
-import tempfile
-import shutil
 from strands import tool
 
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "ja4db")
-INDEX_PATH = os.path.join(CACHE_DIR, "ja4_index.json")
-DB_URL = "https://ja4db.com/api/read/"
 
-_index: dict | None = None
-
-
-def _load_index() -> dict:
-    """Load JA4 index from disk. Returns empty dict if unavailable."""
-    global _index
-    if _index is not None:
-        return _index
-
-    if not os.path.exists(INDEX_PATH):
-        try:
-            _update_index(timeout=5)  # fast fail at runtime
-        except Exception:
-            _index = {}
-            return _index
-
-    try:
-        with open(INDEX_PATH) as f:
-            _index = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
-        _index = {}
-    return _index
-
-
-def _update_index(timeout=120):
-    """Download ja4db and build compact lookup index."""
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", dir=CACHE_DIR)
-    try:
-        with urllib.request.urlopen(DB_URL, timeout=timeout) as resp:
-            with os.fdopen(tmp_fd, "wb") as f:
-                shutil.copyfileobj(resp, f)
-
-        with open(tmp_path) as f:
-            data = json.load(f)
-
-        # Build index: fingerprint → {app, lib, os, verified, count}
-        groups: dict[str, list] = {}
-        for entry in data:
-            fp = entry.get("ja4_fingerprint")
-            if fp:
-                groups.setdefault(fp, []).append(entry)
-
-        index = {}
-        for fp, entries in groups.items():
-            record: dict = {"count": len(entries)}
-            for entry in sorted(entries, key=lambda e: e.get("verified", False), reverse=True):
-                if not record.get("app") and entry.get("application", "").strip():
-                    record["app"] = entry["application"].strip()
-                if not record.get("lib") and entry.get("library", "").strip():
-                    record["lib"] = entry["library"].strip()
-                if not record.get("os") and entry.get("os", "").strip():
-                    record["os"] = entry["os"].strip()
-                if entry.get("verified"):
-                    record["verified"] = True
-            index[fp] = record
-
-        with open(INDEX_PATH, "w") as f:
-            json.dump(index, f)
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+# JA4 first character: protocol
+_PROTO = {"t": "TCP/TLS", "q": "QUIC", "d": "DTLS"}
+# JA4 third character: SNI
+_SNI = {"d": "domain SNI present", "i": "IP-based (no SNI)"}
 
 
 @tool
 def lookup_ja4(fingerprints: str) -> str:
-    """Look up JA4 TLS fingerprints to identify client software.
+    """Analyze JA4 TLS fingerprints by decoding their structural components.
 
-    JA4 fingerprints are found in AWS WAF logs (ja4Fingerprint field). This tool
-    identifies what application/library generated the TLS connection, helping
-    distinguish real browsers from automation tools.
+    JA4 fingerprints are self-describing: the first 10 characters encode protocol,
+    TLS version, SNI presence, cipher count, and extension count. This tool decodes
+    that structure to help identify client type (browser vs automation).
+
+    Note: This tool does NOT identify specific applications. For application-level
+    identification, cross-reference with User-Agent and behavioral patterns from
+    analyze_ip or detect_bypass.
 
     Args:
-        fingerprints: Comma-separated JA4 fingerprint strings to look up.
-            Example: "t13d1516h2_8daaf6152771_02713d6af862,t13d1517h2_8daaf6152771_b0da82dd1658"
+        fingerprints: Comma-separated JA4 fingerprint strings to analyze.
+            Example: "t13d1516h2_8daaf6152771_02713d6af862"
 
     Returns:
-        For each fingerprint: identified application/library/OS, or "Unknown".
+        Structural analysis of each fingerprint.
     """
-    index = _load_index()
     fps = [fp.strip() for fp in fingerprints.split(",") if fp.strip()]
-
     if not fps:
         return "No fingerprints provided."
 
-    if not index:
-        return "JA4 database unavailable (offline or not yet downloaded). Cannot identify fingerprints."
+    lines = ["## JA4 Fingerprint Analysis", ""]
+    for fp in fps[:25]:
+        lines.append(f"**{fp}**")
+        parts = fp.split("_")
+        if len(parts) != 3 or len(parts[0]) < 10:
+            lines.append("  (invalid format)")
+            lines.append("")
+            continue
 
-    lines = []
-    for fp in fps[:25]:  # limit to 25
-        record = index.get(fp)
-        if record:
-            parts = []
-            if record.get("app"):
-                parts.append(f"App: {record['app']}")
-            if record.get("lib"):
-                parts.append(f"Lib: {record['lib']}")
-            if record.get("os"):
-                parts.append(f"OS: {record['os']}")
-            verified = " ✓" if record.get("verified") else ""
-            lines.append(f"  {fp} → {', '.join(parts)}{verified}")
-        else:
-            lines.append(f"  {fp} → Unknown (not in ja4db)")
+        prefix = parts[0]
+        # Decode prefix: [proto][version][sni][cipher_count][ext_count][alpn]
+        proto = _PROTO.get(prefix[0], f"unknown({prefix[0]})")
+        version = prefix[1:3]  # TLS version: 13=1.3, 12=1.2, etc.
+        sni = _SNI.get(prefix[3], f"unknown({prefix[3]})")
+        cipher_count = prefix[4:6]
+        ext_count = prefix[6:8]
+        alpn = prefix[8:10]
 
-    lines.append("")
-    lines.append("→ If fingerprint is unknown/suspicious, investigate the source IP: analyze_ip(ip='...', start_time='...')")
-    return f"JA4 Lookup ({len(fps)} fingerprint(s)):\n" + "\n".join(lines)
+        tls_ver = {"13": "TLS 1.3", "12": "TLS 1.2", "11": "TLS 1.1", "10": "TLS 1.0"}.get(version, f"TLS ?({version})")
+
+        lines.append(f"  Protocol: {proto}")
+        lines.append(f"  TLS Version: {tls_ver}")
+        lines.append(f"  SNI: {sni}")
+        lines.append(f"  Cipher suites: {int(cipher_count)} offered")
+        lines.append(f"  Extensions: {int(ext_count)}")
+        lines.append(f"  ALPN: {'h2' if alpn == 'h2' else 'http/1.1' if alpn == 'h1' else alpn}")
+        lines.append(f"  Hash segments: {parts[1]}_{parts[2]}")
+
+        # Heuristic signals
+        signals = []
+        if version == "13" and int(cipher_count) >= 12 and int(ext_count) >= 15:
+            signals.append("modern browser profile (TLS 1.3 + many ciphers/extensions)")
+        elif version == "12" and int(cipher_count) < 8:
+            signals.append("minimal TLS stack — likely automation tool or library")
+        if alpn == "h2":
+            signals.append("HTTP/2 capable")
+        if prefix[3] == "i":
+            signals.append("no SNI — unusual for browsers, common in scripts")
+
+        if signals:
+            lines.append(f"  Signals: {'; '.join(signals)}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("Note: JA4 fingerprints alone cannot definitively identify applications.")
+    lines.append("Cross-reference with: User-Agent, request frequency, URI patterns.")
+    lines.append("Same JA4 across multiple IPs = same TLS library (possible botnet).")
+    lines.append("Multiple UAs but single JA4 = UA spoofing (same client rotating UAs).")
+    return "\n".join(lines)
