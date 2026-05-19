@@ -163,7 +163,7 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 │   ├── waf_patrol.py     # Security patrol (deterministic HTML report)
 │   ├── report.py         # Weekly summary HTML generation
 │   ├── waf_knowledge.py  # Bedrock Knowledge Base search
-│   ├── ja4.py            # JA4 TLS fingerprint lookup
+│   ├── ja4.py            # JA4 TLS fingerprint analysis
 │   ├── session_state.py  # Per-session state (WebACL context, timezone)
 │   ├── finding.py        # Investigation findings accumulator
 │   └── ask_user.py       # Human-in-the-loop (CLI input / AG-UI event)

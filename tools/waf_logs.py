@@ -799,7 +799,7 @@ def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
 
     lines.append("")
     lines.append("→ If malicious: suggest user add IP to block list or adjust rate-limit threshold.")
-    lines.append("→ For JA4 fingerprint identification: lookup_ja4(fingerprints=[...])")
+    lines.append("→ For JA4 fingerprint analysis: lookup_ja4(fingerprints=[...])")
     if is_log_filter_active():
         lines.append("\n⚠️  Log Filter active — this analysis only covers logged actions. Some requests may be filtered out.")
     return "\n".join(lines)

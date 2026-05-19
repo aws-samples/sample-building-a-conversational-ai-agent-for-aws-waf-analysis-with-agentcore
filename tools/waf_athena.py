@@ -693,7 +693,7 @@ def run_athena_query(
     elif "uri" in query_type:
         lines.append("→ To check which IPs hit these URIs: run_athena_query(query_type='top_blocked_ips', start_time='...')")
     elif "ja4" in query_type or "fingerprint" in query_type:
-        lines.append("→ To identify fingerprints: lookup_ja4(fingerprints=[...])")
+        lines.append("→ To analyze fingerprints: lookup_ja4(fingerprints=[...])")
     return "\n".join(lines)
 
 
