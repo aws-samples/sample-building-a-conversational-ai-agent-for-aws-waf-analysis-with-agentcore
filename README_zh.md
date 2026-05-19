@@ -152,20 +152,31 @@ VITE_BRAND_NAME=我的公司 WAF Agent
 ├── tools/                # 所有工具（确定性逻辑，工具内部不调用 LLM）
 │   ├── waf_config.py     # WebACL 发现 + 能力检测
 │   ├── waf_metrics.py    # CloudWatch Metrics（免费、快速）
-│   ├── waf_logs.py       # CWL Insights 查询（22 个模板 + analyze_ip）
-│   ├── waf_athena.py     # Athena 查询（S3 日志，自动建表）
+│   ├── waf_overview.py   # 快速概览（Top 规则、Bot、攻击类型）
+│   ├── waf_logs.py       # 日志查询（20 个模板 + analyze_ip，CWL + Athena）
+│   ├── waf_query.py      # 统一查询层（自动路由 CWL 或 Athena）
+│   ├── waf_count_eval.py # COUNT 转 Block 评估工作流
+│   ├── waf_block_fp.py   # 误杀排查 + 主动扫描
+│   ├── waf_bypass.py     # 漏杀检测（扫描 + 流量异常 + IP 分析）
+│   ├── waf_challenge_check.py # Challenge/CAPTCHA 兼容性检查
 │   ├── waf_review_deep.py # 全面规则审计管线
+│   ├── waf_patrol.py     # 安全巡检（确定性 HTML 报告）
 │   ├── report.py         # 周报摘要 HTML 生成
+│   ├── waf_knowledge.py  # Bedrock Knowledge Base 搜索
 │   ├── ja4.py            # JA4 TLS 指纹查询
+│   ├── session_state.py  # 会话状态（WebACL 上下文、时区）
 │   ├── finding.py        # 调查发现累积器
 │   └── ask_user.py       # 人机交互（CLI 输入 / AG-UI 事件）
 ├── deploy/
 │   ├── backend.yaml      # CloudFormation: Cognito + AgentCore + IAM
-│   └── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
+│   ├── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
+│   └── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
 ├── frontend/             # React SPA（Vite + AG-UI 流式客户端）
 ├── Dockerfile            # ARM64 容器
 └── docs/
-    └── deployment.md     # 完整部署指南 + 故障排查
+    ├── deployment.md     # 完整部署指南
+    ├── capabilities.md   # 功能说明（英文，含示例）
+    └── capabilities_zh.md # 功能说明（中文）
 ```
 
 ## License

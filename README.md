@@ -152,19 +152,31 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 ├── tools/                # All agent tools (deterministic, no LLM in tools)
 │   ├── waf_config.py     # WebACL discovery + capabilities detection
 │   ├── waf_metrics.py    # CloudWatch Metrics (free, fast)
-│   ├── waf_logs.py       # CWL Insights queries (22 templates + analyze_ip)
+│   ├── waf_overview.py   # Quick overview (top rules, bots, attacks)
+│   ├── waf_logs.py       # Log queries (20 templates + analyze_ip, CWL + Athena)
+│   ├── waf_query.py      # Unified query layer (auto-routes CWL or Athena)
+│   ├── waf_count_eval.py # COUNT-to-Block evaluation workflow
+│   ├── waf_block_fp.py   # False positive investigation + proactive scan
+│   ├── waf_bypass.py     # Bypass/evasion detection (scan + volume + IP)
+│   ├── waf_challenge_check.py # Challenge/CAPTCHA compatibility check
 │   ├── waf_review_deep.py # Comprehensive rules audit pipeline
+│   ├── waf_patrol.py     # Security patrol (deterministic HTML report)
 │   ├── report.py         # Weekly summary HTML generation
+│   ├── waf_knowledge.py  # Bedrock Knowledge Base search
 │   ├── ja4.py            # JA4 TLS fingerprint lookup
+│   ├── session_state.py  # Per-session state (WebACL context, timezone)
 │   ├── finding.py        # Investigation findings accumulator
 │   └── ask_user.py       # Human-in-the-loop (CLI input / AG-UI event)
 ├── deploy/
 │   ├── backend.yaml      # CloudFormation: Cognito + AgentCore + IAM
-│   └── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
+│   ├── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
+│   └── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
 ├── frontend/             # React SPA (Vite + AG-UI streaming client)
 ├── Dockerfile            # ARM64 container for AgentCore
 └── docs/
-    └── deployment.md     # Full deployment guide + troubleshooting
+    ├── deployment.md     # Full deployment guide
+    ├── capabilities.md   # What you can ask (with examples)
+    └── capabilities_zh.md
 ```
 
 ## License
