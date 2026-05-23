@@ -11,7 +11,7 @@ import { config } from './config';
  * @param {string} sessionId - Session ID (≥33 chars)
  * @param {Array|null} interruptResponses - Resume payload [{interruptId, response}]
  */
-export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null, signal = null) {
+export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null, signal = null, tzOffset = 0) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const url = `${config.agentEndpoint}/runtimes/${arn}/invocations`;
 
@@ -36,7 +36,7 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
       tools: [],
       context: [],
       forwardedProps: {
-        userTimezoneOffset: -(new Date().getTimezoneOffset() / 60),
+        userTimezoneOffset: tzOffset,
       },
     };
   }

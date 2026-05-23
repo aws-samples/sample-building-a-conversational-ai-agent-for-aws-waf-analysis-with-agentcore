@@ -191,6 +191,11 @@ export default function App() {
   const [newPassForm, setNewPassForm] = useState(null);
   const [resetForm, setResetForm] = useState(null);
   const [darkMode, setDarkMode] = useState(true);
+  const [tzOffset, setTzOffset] = useState(() => {
+    const saved = localStorage.getItem('waf-agent-tz');
+    return saved !== null ? parseFloat(saved) : null; // null = not yet confirmed
+  });
+  const [tzConfirmed, setTzConfirmed] = useState(false);
   const sessionId = useRef(generateSessionId());
   const messagesEnd = useRef(null);
   const pendingResolve = useRef(null);
@@ -230,6 +235,7 @@ export default function App() {
     sessionId.current = generateSessionId();
     setActiveSessionId(sessionId.current);
     setMessages([]);
+    setTzConfirmed(false); // require timezone re-confirmation for new session
   }
 
   async function handleDeleteSession(sid, e) {
@@ -307,7 +313,7 @@ export default function App() {
         setMessages(prev => [...prev, assistantMsg]);
 
         setConnStatus('connected');
-        for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses, controller.signal)) {
+        for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses, controller.signal, tzOffset)) {
           switch (event.type) {
             case 'TEXT_MESSAGE_CONTENT':
               assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
@@ -466,6 +472,34 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
     );
   }
 
+  // Timezone confirmation overlay — must confirm before chatting
+  const tzOptions = [
+    [-12,'UTC-12'],[-11,'UTC-11'],[-10,'UTC-10'],[-9.5,'UTC-9:30'],[-9,'UTC-9'],[-8,'UTC-8'],[-7,'UTC-7'],[-6,'UTC-6'],[-5,'UTC-5'],[-4,'UTC-4'],[-3.5,'UTC-3:30'],[-3,'UTC-3'],[-2,'UTC-2'],[-1,'UTC-1'],
+    [0,'UTC'],[1,'UTC+1'],[2,'UTC+2'],[3,'UTC+3'],[3.5,'UTC+3:30'],[4,'UTC+4'],[4.5,'UTC+4:30'],[5,'UTC+5'],[5.5,'UTC+5:30'],[5.75,'UTC+5:45'],[6,'UTC+6'],[6.5,'UTC+6:30'],[7,'UTC+7'],[8,'UTC+8'],[8.75,'UTC+8:45'],[9,'UTC+9'],[9.5,'UTC+9:30'],[10,'UTC+10'],[10.5,'UTC+10:30'],[11,'UTC+11'],[12,'UTC+12'],[12.75,'UTC+12:45'],[13,'UTC+13'],[14,'UTC+14']
+  ];
+
+  function confirmTimezone() {
+    const val = tzOffset ?? 0;
+    setTzOffset(val);
+    localStorage.setItem('waf-agent-tz', String(val));
+    setTzConfirmed(true);
+  }
+
+  if (!tzConfirmed) {
+    return (
+      <div className="tz-overlay">
+        <div className="tz-card">
+          <h2>🕐 {sidebarLang === 'zh' ? '确认时区' : 'Confirm Timezone'}</h2>
+          <p>{sidebarLang === 'zh' ? '所有时间查询将使用此时区，会话期间不可更改。' : 'All time queries will use this timezone. Cannot be changed during the session.'}</p>
+          <select value={tzOffset ?? 0} onChange={e => setTzOffset(parseFloat(e.target.value))}>
+            {tzOptions.map(([v, label]) => <option key={v} value={v}>{label}</option>)}
+          </select>
+          <button onClick={confirmTimezone}>{sidebarLang === 'zh' ? '确认' : 'Confirm'}</button>
+        </div>
+      </div>
+    );
+  }
+
   const guideItems = sidebarLang === 'zh'
     ? [{text: '"安全巡检"', tip: '生成过去24小时的规则有效性、异常检测和Bot活动报告'}, {text: '"管理层周报"', tip: '生成过去7天的流量趋势、攻击摘要和ROI分析报告'}, {text: '"检测绕过攻击"', tip: '扫描ALLOW流量中的异常模式，发现绕过WAF的爬虫和Bot'}, {text: '"审查我的WAF规则"', tip: '全面审计规则配置，检查Allow规则风险、标签依赖和配置反模式'}, {text: '"你能做什么？"', tip: '查看所有可用功能和示例问题'}]
     : [{text: '"Security patrol"', tip: 'Generate a 24-hour report on rule effectiveness, anomaly detection, and bot activity'}, {text: '"Executive summary"', tip: 'Generate a 7-day report with traffic trends, attack summary, and ROI analysis'}, {text: '"Detect bypass attacks"', tip: 'Scan ALLOW traffic for anomalies — crawlers and bots evading WAF rules'}, {text: '"Review my WAF rules"', tip: 'Full security audit: Allow rule risks, label dependencies, and config anti-patterns'}, {text: '"What can you do?"', tip: 'See all available capabilities and example questions'}];
@@ -509,6 +543,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
             <span className="conn-label">{connStatus === 'idle' ? 'Connected' : connStatus === 'connecting' ? 'Connecting...' : connStatus === 'connected' ? 'Responding' : 'Disconnected'}</span>
             {connStatus === 'disconnected' && <button className="conn-retry" onClick={handleReconnect}>Reconnect</button>}
           </div>
+          <span className="tz-badge" title="Timezone (locked for this session)">🕐 {tzOffset === 0 ? 'UTC' : `UTC${tzOffset > 0 ? '+' : ''}${tzOffset % 1 === 0 ? tzOffset : (Math.floor(tzOffset) + ':' + (tzOffset % 1 === 0.5 ? '30' : tzOffset % 1 === 0.75 ? '45' : '00'))}`}</span>
           <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
           <UserMenu onSignOut={() => { signOut(); setUser(false); }} />
         </div>
