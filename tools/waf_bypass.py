@@ -9,6 +9,14 @@ from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, get_logs_region, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
+
+def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10) -> list[dict]:
+    """query_logs wrapper that never raises."""
+    try:
+        return query_logs(cwl, athena, start, end, limit) or []
+    except Exception:
+        return []
+
 CONFIDENCE_RULES = """\
 ## Confidence Rules
 - HIGH: automation UA + ALLOW, data-center IP + high freq + no bot labels → state directly
@@ -60,7 +68,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", hours_
             start_epoch = _parse_start_time(start_time)
             if start_epoch:
                 end_epoch = start_epoch + (min(hours_ago, 6) * 3600)
-                results = query_logs(test_cwl, test_athena, start_epoch, end_epoch, limit=1)
+                results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1)
                 if not results or int(results[0].get("cnt", 0)) == 0:
                     return ("## Cannot Proceed — ALLOW Logs Unavailable\n\n"
                             "⚠️  Log Filter is active and ALLOW logs appear filtered out.\n"
@@ -294,9 +302,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " ORDER BY total DESC LIMIT 10"
     )
 
-    crawlers = query_logs(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10) or []
-    repeaters = query_logs(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10) or []
-    datacenter = query_logs(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10) or []
+    crawlers = _safe_query(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10)
+    repeaters = _safe_query(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10)
+    datacenter = _safe_query(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10)
 
     # Automation UA filter (curl, python-requests, wget, etc. that are ALLOW'd)
     auto_ua_cwl = (
@@ -321,7 +329,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " HAVING count(*) > 10"
         " ORDER BY total DESC LIMIT 10"
     )
-    auto_ua = query_logs(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10) or []
+    auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10)
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
@@ -418,7 +426,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
-    freq = query_logs(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1) or []
+    freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1)
     peak_rpm = freq[0].get("peak_rpm", "?") if freq else "?"
     avg_rpm = freq[0].get("avg_rpm", "?") if freq else "?"
 
@@ -434,7 +442,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
     )
-    uri_data = query_logs(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1) or []
+    uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1)
     unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"
     total_reqs = uri_data[0].get("total", "?") if uri_data else "?"
 
@@ -449,7 +457,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY action"
     )
-    actions = query_logs(action_cwl, action_athena, start_epoch, end_epoch, limit=10) or []
+    actions = _safe_query(action_cwl, action_athena, start_epoch, end_epoch, limit=10)
     action_map = {r.get("action", ""): int(r.get("hits", 0)) for r in actions}
 
     # 4. Labels (bot detection)
@@ -467,7 +475,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND labels IS NOT NULL AND cardinality(labels) > 0"
         f" GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT 5"
     )
-    labels = query_logs(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5) or []
+    labels = _safe_query(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5)
 
     # 5. Country
     country_cwl = (
@@ -481,7 +489,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY httprequest.country LIMIT 1"
     )
-    country_data = query_logs(country_cwl, country_athena, start_epoch, end_epoch, limit=1) or []
+    country_data = _safe_query(country_cwl, country_athena, start_epoch, end_epoch, limit=1)
     country = country_data[0].get("httpRequest.country", "?") if country_data else "?"
 
     # 6. User-Agent
@@ -499,7 +507,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
         f" ORDER BY hits DESC LIMIT 3"
     )
-    ua_data = query_logs(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3) or []
+    ua_data = _safe_query(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3)
 
     # 7. JA4 fingerprint
     ja4_cwl = (
@@ -513,7 +521,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY ja4fingerprint ORDER BY hits DESC LIMIT 3"
     )
-    ja4_data = query_logs(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3) or []
+    ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3)
 
     # 8. COUNT rules triggered (nonTerminatingMatchingRules)
     count_rules_cwl = (
@@ -530,7 +538,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND t.action = 'COUNT'"
         f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
     )
-    count_rules = query_logs(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5) or []
+    count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5)
 
     # Build output
     lines = [

@@ -31,7 +31,10 @@ LOW_FP_RULES = {
 
 def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict]:
     """Execute a log query via unified layer (CWL or Athena)."""
-    results = query_logs(query_cwl, query_athena, start_epoch, end_epoch, limit)
+    try:
+        results = query_logs(query_cwl, query_athena, start_epoch, end_epoch, limit)
+    except Exception:
+        return []
     return results if results is not None else []
 
 
