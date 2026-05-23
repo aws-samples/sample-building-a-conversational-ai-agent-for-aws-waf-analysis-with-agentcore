@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """Bypass/evasion detection tool — find malicious traffic that WAF is allowing through."""
 
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from strands import tool
@@ -14,7 +15,8 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10) ->
     """query_logs wrapper that never raises."""
     try:
         return query_logs(cwl, athena, start, end, limit) or []
-    except Exception:
+    except Exception as e:
+        print(f"[waf_bypass] query_logs error: {e}", file=sys.stderr, flush=True)
         return []
 
 CONFIDENCE_RULES = """\
