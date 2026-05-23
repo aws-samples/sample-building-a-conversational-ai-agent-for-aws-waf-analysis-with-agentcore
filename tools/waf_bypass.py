@@ -81,6 +81,11 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", hours_
     elif step == "investigate_ip":
         if not ip:
             return "Error: ip is required for step='investigate_ip'. Ask the user which IP to check."
+        import ipaddress as _ipa
+        try:
+            _ipa.ip_address(ip)
+        except ValueError:
+            return f"Error: invalid IP address '{ip}'"
         return _step_investigate_ip(ip, start_epoch, end_epoch)
     else:
         return f"Error: unknown step '{step}'. Available: scan, investigate_ip, volume_anomaly"

@@ -686,7 +686,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     # Parse start_time
     try:
         if "T" in start_time:
-            start = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(start_time)
+            start = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
         else:
             start = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
     except ValueError:

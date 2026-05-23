@@ -204,6 +204,8 @@ def _step_init(rule_name: str = "") -> str:
 
 def _step_analyze_rule(rule_name: str) -> str:
     """Step 4-5: Find peak hour for this rule, then get client distribution."""
+    import re as _re
+    rule_name = _re.sub(r"[^a-zA-Z0-9_\-.]", "", rule_name)
     # Step 0 gate: check if this rule should never leave Count
     if rule_name in PERMANENT_COUNT_RULES:
         return (

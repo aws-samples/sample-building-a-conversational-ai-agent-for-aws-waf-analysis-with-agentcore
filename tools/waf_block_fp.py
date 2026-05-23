@@ -82,6 +82,11 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     if step == "investigate":
         if not ip:
             return "Error: ip is required for step='investigate'. Ask the user which IP to check."
+        import ipaddress as _ipa
+        try:
+            _ipa.ip_address(ip)
+        except ValueError:
+            return f"Error: invalid IP address '{ip}'"
         return _step_investigate(ip, start_epoch, end_epoch, rule_name)
     elif step == "scan":
         return _step_scan(start_epoch, end_epoch, rule_name)
