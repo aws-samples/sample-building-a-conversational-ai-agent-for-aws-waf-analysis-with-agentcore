@@ -493,6 +493,12 @@ def create_app():
         # --- Resume from interrupt ---
         interrupt_responses = input_data.get("interruptResponses")
         if interrupt_responses:
+            # Inject timezone even on resume
+            forwarded = input_data.get("forwardedProps", {})
+            tz_offset = forwarded.get("userTimezoneOffset")
+            if tz_offset is not None:
+                from tools.session_state import set_user_timezone
+                set_user_timezone(float(tz_offset))
             resume_input = [
                 {"interruptResponse": {"interruptId": ir["interruptId"], "response": ir["response"]}}
                 for ir in interrupt_responses

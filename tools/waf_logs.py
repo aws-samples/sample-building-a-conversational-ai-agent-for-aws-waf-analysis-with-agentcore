@@ -74,6 +74,42 @@ TEMPLATES = {
         "params": [],
         "description": "Top countries being blocked",
     },
+    "top_challenged_ips": {
+        "query": "filter action = 'CHALLENGE' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'CHALLENGE' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top IPs being challenged (DDoS/bot traffic)",
+    },
+    "top_challenged_countries": {
+        "query": "filter action = 'CHALLENGE' | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'CHALLENGE' GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top countries being challenged",
+    },
+    "top_captcha_ips": {
+        "query": "filter action = 'CAPTCHA' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'CAPTCHA' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top IPs receiving CAPTCHA",
+    },
+    "top_captcha_countries": {
+        "query": "filter action = 'CAPTCHA' | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'CAPTCHA' GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top countries receiving CAPTCHA",
+    },
+    "top_counted_ips": {
+        "query": "filter nonTerminatingMatchingRules.0.action = 'COUNT' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top IPs triggering COUNT rules (by request count, not rule count)",
+    },
+    "top_counted_countries": {
+        "query": "filter nonTerminatingMatchingRules.0.action = 'COUNT' | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT') GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top countries triggering COUNT rules",
+    },
     "ip_ja4_fingerprints": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit {limit}",
         "athena": "SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY ja4fingerprint ORDER BY cnt DESC LIMIT {LIMIT}",
