@@ -52,7 +52,8 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
         user_tz = timezone(timedelta(hours=tz_offset)) if tz_offset is not None else timezone.utc
         try:
             if "T" in start_time:
-                start = datetime.fromisoformat(start_time).replace(tzinfo=user_tz).astimezone(timezone.utc)
+                dt = datetime.fromisoformat(start_time)
+                start = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=user_tz).astimezone(timezone.utc)
             else:
                 start = datetime.strptime(start_time, "%Y-%m-%d").replace(tzinfo=user_tz).astimezone(timezone.utc)
         except ValueError:
