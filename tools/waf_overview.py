@@ -370,9 +370,15 @@ def _top_labels(cw, webacl_name, start, end, hours):
 
     label_counts = []
     for r in resp.get("MetricDataResults", []):
-        label = r.get("Label", "")
+        raw_label = r.get("Label", "")
         total = sum(int(v) for v in r.get("Values", []))
         if total > 0:
+            # Label format from SEARCH: "{LabelName} {LabelNamespace} {MetricName}"
+            parts = raw_label.split(" ")
+            if len(parts) >= 2:
+                label = f"{parts[1]}:{parts[0]}"  # e.g. "awswaf:managed:aws:anti-ddos:event-detected"
+            else:
+                label = raw_label
             label_counts.append((total, label))
 
     label_counts.sort(reverse=True)
