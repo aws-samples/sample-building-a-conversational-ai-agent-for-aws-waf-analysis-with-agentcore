@@ -118,13 +118,13 @@ TEMPLATES = {
         "description": "Top countries triggering COUNT rules",
     },
     "top_ips_by_volume": {
-        "query": "stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter ispresent(httpRequest.clientIp) | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top IPs by total request volume (ALL actions combined) — use for DDoS source identification",
     },
     "top_countries_by_volume": {
-        "query": "stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "query": "filter ispresent(httpRequest.country) | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top countries by total request volume (ALL actions) — use for DDoS geo-distribution",
@@ -428,7 +428,8 @@ def run_logs_query(
         return msg
 
     # Format as table (results is list[dict] from unified query layer)
-    columns = [k for k in results[0].keys() if not k.startswith("@ptr")]
+    # Use row with most keys for column headers (some rows may lack group-by field)
+    columns = [k for k in max(results[:MAX_RESULTS], key=lambda r: len(r)).keys() if not k.startswith("@ptr")]
     lines = [
         f"Query '{query_type}' returned {len(results)} results\n",
         "| " + " | ".join(columns) + " |",
