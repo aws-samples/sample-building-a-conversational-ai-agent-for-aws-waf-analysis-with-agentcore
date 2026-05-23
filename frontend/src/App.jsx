@@ -183,6 +183,8 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [connStatus, setConnStatus] = useState('idle'); // 'idle' | 'connecting' | 'connected' | 'disconnected'
+  const maxRetries = 5;
   const [loginForm, setLoginForm] = useState({ email: '', password: '' });
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState(new Set());
@@ -286,55 +288,85 @@ export default function App() {
     await runAgent(prompt);
   }
 
+  const lastFailedPrompt = useRef(null);
+
   async function runAgent(prompt, interruptResponses = null) {
     setLoading(true);
-    try {
-      const token = await getToken();
-      let assistantMsg = { role: 'assistant', content: '', tools: [] };
-      setMessages(prev => [...prev, assistantMsg]);
+    lastFailedPrompt.current = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      setConnStatus('connecting');
+      try {
+        const token = await getToken();
+        let assistantMsg = { role: 'assistant', content: '', tools: [] };
+        setMessages(prev => [...prev, assistantMsg]);
 
-      for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses)) {
-        switch (event.type) {
-          case 'TEXT_MESSAGE_CONTENT':
-            assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
-            setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            break;
-          case 'TOOL_CALL_START':
-            assistantMsg = { ...assistantMsg, tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
-            setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            break;
-          case 'TOOL_CALL_END':
-          case 'TOOL_CALL_RESULT':
-            assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map(t => t.id === event.toolCallId ? { ...t, status: 'done' } : t) };
-            if (assistantMsg.tools.at(-1)?.name === 'set_report_summary') {
-              assistantMsg = { ...assistantMsg, hasReport: true };
-            }
-            if (assistantMsg.tools.at(-1)?.name === 'finalize_review_report') {
-              assistantMsg = { ...assistantMsg, hasReviewReport: true };
-            }
-            if (assistantMsg.tools.at(-1)?.name === 'finalize_patrol_report') {
-              assistantMsg = { ...assistantMsg, hasPatrolReport: true };
-            }
-            setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-            break;
-          case 'CUSTOM':
-            if (event.name === 'interrupt' && event.value?.interrupts?.length) {
-              const interrupt = event.value.interrupts[0];
-              const question = interrupt.reason?.question || interrupt.reason || 'Agent needs your input';
-              setLoading(false);
-              const answer = await waitForUserInput(question);
-              setMessages(prev => [...prev, { role: 'user', content: answer }]);
-              await runAgent(null, [{ interruptId: interrupt.id, response: answer }]);
-              return;
-            }
-            break;
+        setConnStatus('connected');
+        for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses)) {
+          switch (event.type) {
+            case 'TEXT_MESSAGE_CONTENT':
+              assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
+              setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
+              break;
+            case 'TOOL_CALL_START':
+              assistantMsg = { ...assistantMsg, tools: [...assistantMsg.tools, { name: event.toolCallName, id: event.toolCallId, status: 'running' }] };
+              setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
+              break;
+            case 'TOOL_CALL_END':
+            case 'TOOL_CALL_RESULT':
+              assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map(t => t.id === event.toolCallId ? { ...t, status: 'done' } : t) };
+              if (assistantMsg.tools.at(-1)?.name === 'set_report_summary') {
+                assistantMsg = { ...assistantMsg, hasReport: true };
+              }
+              if (assistantMsg.tools.at(-1)?.name === 'finalize_review_report') {
+                assistantMsg = { ...assistantMsg, hasReviewReport: true };
+              }
+              if (assistantMsg.tools.at(-1)?.name === 'finalize_patrol_report') {
+                assistantMsg = { ...assistantMsg, hasPatrolReport: true };
+              }
+              setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
+              break;
+            case 'CUSTOM':
+              if (event.name === 'interrupt' && event.value?.interrupts?.length) {
+                const interrupt = event.value.interrupts[0];
+                const question = interrupt.reason?.question || interrupt.reason || 'Agent needs your input';
+                setLoading(false);
+                const answer = await waitForUserInput(question);
+                setMessages(prev => [...prev, { role: 'user', content: answer }]);
+                await runAgent(null, [{ interruptId: interrupt.id, response: answer }]);
+                return;
+              }
+              break;
+          }
         }
+        // Success
+        setConnStatus('idle');
+        setLoading(false);
+        loadSessions();
+        return;
+      } catch (err) {
+        // Remove the ghost assistant message from this failed attempt
+        setMessages(prev => prev.slice(0, -1));
+        if (attempt < maxRetries) {
+          const delay = Math.min(1000 * 2 ** (attempt + 1), 10000);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        setConnStatus('disconnected');
+        lastFailedPrompt.current = { prompt, interruptResponses };
+        setMessages(prev => [...prev, { role: 'error', content: err.message }]);
+        setLoading(false);
+        return;
       }
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'error', content: err.message }]);
     }
-    setLoading(false);
-    loadSessions();
+  }
+
+  function handleReconnect() {
+    setConnStatus('idle');
+    setMessages(prev => prev.filter(m => m.role !== 'error'));
+    if (lastFailedPrompt.current) {
+      const { prompt, interruptResponses } = lastFailedPrompt.current;
+      runAgent(prompt, interruptResponses);
+    }
   }
 
   function waitForUserInput(question) {
@@ -427,8 +459,8 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
   }
 
   const guideItems = sidebarLang === 'zh'
-    ? ['"安全巡检"', '"生成价值报告"', '"检测绕过攻击"', '"审查我的WAF规则"', '"你能做什么？"']
-    : ['"Weekly security summary"', '"Generate ROI report"', '"Detect bypass attacks"', '"Review my WAF rules"', '"What can you do?"'];
+    ? [{text: '"安全巡检"', tip: '生成过去24小时的规则有效性、异常检测和Bot活动报告'}, {text: '"管理层周报"', tip: '生成过去7天的流量趋势、攻击摘要和ROI分析报告'}, {text: '"检测绕过攻击"', tip: '扫描ALLOW流量中的异常模式，发现绕过WAF的爬虫和Bot'}, {text: '"审查我的WAF规则"', tip: '全面审计规则配置，检查Allow规则风险、标签依赖和配置反模式'}, {text: '"你能做什么？"', tip: '查看所有可用功能和示例问题'}]
+    : [{text: '"Security patrol"', tip: 'Generate a 24-hour report on rule effectiveness, anomaly detection, and bot activity'}, {text: '"Executive summary"', tip: 'Generate a 7-day report with traffic trends, attack summary, and ROI analysis'}, {text: '"Detect bypass attacks"', tip: 'Scan ALLOW traffic for anomalies — crawlers and bots evading WAF rules'}, {text: '"Review my WAF rules"', tip: 'Full security audit: Allow rule risks, label dependencies, and config anti-patterns'}, {text: '"What can you do?"', tip: 'See all available capabilities and example questions'}];
 
   return (
     <div className="app-layout">
@@ -451,7 +483,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
           )}
           <div className="sidebar-quickstart">
             <h3>⚡ {sidebarLang === 'zh' ? '试试这样问' : 'Try asking'}</h3>
-            <ul>{guideItems.map((t, i) => <li key={i}><em>{t}</em></li>)}</ul>
+            <ul>{guideItems.map((item, i) => <li key={i} title={item.tip}><em>{item.text}</em></li>)}</ul>
           </div>
           <div className="sidebar-footer">
             <a href={config.repoUrl} target="_blank" rel="noopener noreferrer">GitHub</a>
@@ -464,6 +496,10 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
           {!sidebarOpen && <button className="sidebar-open" onClick={() => setSidebarOpen(true)}>☰</button>}
         <h1>{config.brandName}</h1>
         <div className="header-actions">
+          <div className={`conn-status ${connStatus}`} title={connStatus === 'idle' ? 'Ready' : connStatus === 'connecting' ? 'Connecting...' : connStatus === 'connected' ? 'Connected' : 'Disconnected'}>
+            <span className="conn-dot" />
+            {connStatus === 'disconnected' && <button className="conn-retry" onClick={handleReconnect}>Reconnect</button>}
+          </div>
           <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
           <UserMenu onSignOut={() => { signOut(); setUser(null); }} />
         </div>

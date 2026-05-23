@@ -5,11 +5,11 @@
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_metrics_region, get_scope
+from tools.session_state import get_metrics_region, get_scope, get_user_timezone
 
 
 @tool
-def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, scope: str = "") -> str:
+def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_time: str = "", scope: str = "") -> str:
     """Fast metrics-based overview of WAF activity. No log queries — answers in 2-3 seconds.
 
     Use this for "what happened" questions. For "who did it" (IPs, URIs, request details),
@@ -26,6 +26,9 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, scope: 
             - challenge_solve_rate: Challenge/CAPTCHA solve rates
         webacl_name: Name of the WebACL to query.
         hours: Time window in hours (default 24, max 336 = 14 days).
+        start_time: Optional start time (e.g. "2026-05-09" or "2026-05-09T14:00").
+            If provided, queries from start_time to start_time + hours.
+            If omitted, queries from (now - hours) to now.
         scope: "CLOUDFRONT" or "REGIONAL". Auto-detected from session if empty.
 
     Returns:
@@ -38,8 +41,24 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, scope: 
     cw = get_client("cloudwatch", region_name=region)
 
     hours = min(hours, 336)
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(hours=hours)
+    if start_time:
+        tz_offset = get_user_timezone()
+        user_tz = timezone(timedelta(hours=tz_offset)) if tz_offset else timezone.utc
+        try:
+            if "T" in start_time:
+                start = datetime.fromisoformat(start_time).replace(tzinfo=user_tz).astimezone(timezone.utc)
+            else:
+                start = datetime.strptime(start_time, "%Y-%m-%d").replace(tzinfo=user_tz).astimezone(timezone.utc)
+        except ValueError:
+            return f"Error: invalid start_time '{start_time}'. Use format YYYY-MM-DD or YYYY-MM-DDTHH:MM."
+        end = start + timedelta(hours=hours)
+        # Clamp end to now if in the future
+        now = datetime.now(timezone.utc)
+        if end > now:
+            end = now
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours)
     prev_start = start - timedelta(hours=hours)
 
     if query_type == "top_rules":
