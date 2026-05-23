@@ -11,7 +11,7 @@ import { config } from './config';
  * @param {string} sessionId - Session ID (≥33 chars)
  * @param {Array|null} interruptResponses - Resume payload [{interruptId, response}]
  */
-export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null) {
+export async function* invokeAgent(prompt, token, sessionId, interruptResponses = null, signal = null) {
   const arn = encodeURIComponent(config.agentRuntimeArn);
   const url = `${config.agentEndpoint}/runtimes/${arn}/invocations`;
 
@@ -50,6 +50,7 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
       'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': sessionId,
     },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!response.ok) {
@@ -77,6 +78,12 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
         } catch { /* skip malformed */ }
       }
     }
+  }
+  // Process any remaining data in buffer
+  if (buffer.startsWith('data: ')) {
+    try {
+      yield JSON.parse(buffer.slice(6));
+    } catch { /* skip malformed */ }
   }
 }
 

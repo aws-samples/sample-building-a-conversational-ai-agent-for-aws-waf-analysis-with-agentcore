@@ -54,19 +54,26 @@ def lookup_ja4(fingerprints: str) -> str:
 
         tls_ver = {"13": "TLS 1.3", "12": "TLS 1.2", "11": "TLS 1.1", "10": "TLS 1.0"}.get(version, f"TLS ?({version})")
 
+        try:
+            cipher_n = int(cipher_count)
+            ext_n = int(ext_count)
+        except ValueError:
+            cipher_n = 0
+            ext_n = 0
+
         lines.append(f"  Protocol: {proto}")
         lines.append(f"  TLS Version: {tls_ver}")
         lines.append(f"  SNI: {sni}")
-        lines.append(f"  Cipher suites: {int(cipher_count)} offered")
-        lines.append(f"  Extensions: {int(ext_count)}")
+        lines.append(f"  Cipher suites: {cipher_n} offered")
+        lines.append(f"  Extensions: {ext_n}")
         lines.append(f"  ALPN: {'h2' if alpn == 'h2' else 'http/1.1' if alpn == 'h1' else alpn}")
         lines.append(f"  Hash segments: {parts[1]}_{parts[2]}")
 
         # Heuristic signals
         signals = []
-        if version == "13" and int(cipher_count) >= 12 and int(ext_count) >= 15:
+        if version == "13" and cipher_n >= 12 and ext_n >= 15:
             signals.append("modern browser profile (TLS 1.3 + many ciphers/extensions)")
-        elif version == "12" and int(cipher_count) < 8:
+        elif version == "12" and cipher_n < 8:
             signals.append("minimal TLS stack — likely automation tool or library")
         if alpn == "h2":
             signals.append("HTTP/2 capable")

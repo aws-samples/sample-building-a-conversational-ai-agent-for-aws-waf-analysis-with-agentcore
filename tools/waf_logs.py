@@ -183,7 +183,7 @@ def _parse_start_time(value: str) -> int | None:
             # Auto-remember timezone from first explicit offset
             if get_user_timezone() is None:
                 from tools.session_state import set_user_timezone
-                set_user_timezone(int(dt.utcoffset().total_seconds() // 3600))
+                set_user_timezone(dt.utcoffset().total_seconds() / 3600)
             return int(dt.timestamp())
         except ValueError:
             continue
@@ -193,13 +193,13 @@ def _parse_start_time(value: str) -> int | None:
             dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
             if get_user_timezone() is None:
                 from tools.session_state import set_user_timezone
-                set_user_timezone(int(dt.utcoffset().total_seconds() // 3600))
+                set_user_timezone(dt.utcoffset().total_seconds() / 3600)
             return int(dt.timestamp())
     except (ValueError, IndexError):
         pass
     # No explicit offset — use session state > env var > UTC+0
     session_tz = get_user_timezone()
-    tz_offset = session_tz if session_tz is not None else int(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
+    tz_offset = session_tz if session_tz is not None else float(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
     user_tz = timezone(timedelta(hours=tz_offset))
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:

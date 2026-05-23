@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """Bypass/evasion detection tool — find malicious traffic that WAF is allowing through."""
 
+import time
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
@@ -74,7 +75,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", hours_
         return f"Error: cannot parse start_time '{start_time}'."
 
     hours_ago = min(hours_ago, 6)
-    end_epoch = start_epoch + (hours_ago * 3600)
+    end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
 
     if step == "scan":
         return _step_scan(start_epoch, end_epoch)

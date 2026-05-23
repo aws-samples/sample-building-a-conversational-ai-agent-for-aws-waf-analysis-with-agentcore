@@ -606,7 +606,8 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
     try:
         resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=10)
         query_id = resp["queryId"]
-        for _ in range(max_wait // 2):
+        result = {"status": "Timeout"}
+        for _ in range(max(max_wait // 2, 1)):
             time.sleep(2)
             result = logs_client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):

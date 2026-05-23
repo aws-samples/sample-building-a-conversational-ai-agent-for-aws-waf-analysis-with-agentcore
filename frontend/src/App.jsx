@@ -215,6 +215,7 @@ export default function App() {
 
   async function handleSwitchSession(sid) {
     if (sid === activeSessionId) return;
+    if (abortRef.current) abortRef.current.abort();
     try {
       const token = await getToken();
       const msgs = await getSessionMessages(token, sid);
@@ -284,15 +285,20 @@ export default function App() {
     if (!input.trim() || loading) return;
     const prompt = input.trim();
     setInput('');
+    const ta = e.target.querySelector('textarea');
+    if (ta) ta.style.height = 'auto';
     setMessages(prev => [...prev, { role: 'user', content: prompt }]);
     await runAgent(prompt);
   }
 
   const lastFailedPrompt = useRef(null);
+  const abortRef = useRef(null);
 
   async function runAgent(prompt, interruptResponses = null) {
     setLoading(true);
     lastFailedPrompt.current = null;
+    const controller = new AbortController();
+    abortRef.current = controller;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       setConnStatus('connecting');
       try {
@@ -301,7 +307,7 @@ export default function App() {
         setMessages(prev => [...prev, assistantMsg]);
 
         setConnStatus('connected');
-        for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses)) {
+        for await (const event of invokeAgent(prompt, token, sessionId.current, interruptResponses, controller.signal)) {
           switch (event.type) {
             case 'TEXT_MESSAGE_CONTENT':
               assistantMsg = { ...assistantMsg, content: assistantMsg.content + (event.delta || '') };
@@ -312,19 +318,21 @@ export default function App() {
               setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
               break;
             case 'TOOL_CALL_END':
-            case 'TOOL_CALL_RESULT':
+            case 'TOOL_CALL_RESULT': {
+              const completedTool = assistantMsg.tools.find(t => t.id === event.toolCallId);
               assistantMsg = { ...assistantMsg, tools: assistantMsg.tools.map(t => t.id === event.toolCallId ? { ...t, status: 'done' } : t) };
-              if (assistantMsg.tools.at(-1)?.name === 'set_report_summary') {
+              if (completedTool?.name === 'set_report_summary') {
                 assistantMsg = { ...assistantMsg, hasReport: true };
               }
-              if (assistantMsg.tools.at(-1)?.name === 'finalize_review_report') {
+              if (completedTool?.name === 'finalize_review_report') {
                 assistantMsg = { ...assistantMsg, hasReviewReport: true };
               }
-              if (assistantMsg.tools.at(-1)?.name === 'finalize_patrol_report') {
+              if (completedTool?.name === 'finalize_patrol_report') {
                 assistantMsg = { ...assistantMsg, hasPatrolReport: true };
               }
               setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
               break;
+            }
             case 'CUSTOM':
               if (event.name === 'interrupt' && event.value?.interrupts?.length) {
                 const interrupt = event.value.interrupts[0];
@@ -502,7 +510,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
             {connStatus === 'disconnected' && <button className="conn-retry" onClick={handleReconnect}>Reconnect</button>}
           </div>
           <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
-          <UserMenu onSignOut={() => { signOut(); setUser(null); }} />
+          <UserMenu onSignOut={() => { signOut(); setUser(false); }} />
         </div>
       </header>
       <div className="messages">

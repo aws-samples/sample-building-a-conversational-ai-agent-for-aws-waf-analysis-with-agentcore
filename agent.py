@@ -557,7 +557,7 @@ def create_app():
         tz_offset = forwarded.get("userTimezoneOffset")
         if tz_offset is not None:
             from tools.session_state import set_user_timezone
-            set_user_timezone(int(tz_offset))
+            set_user_timezone(float(tz_offset))
 
         msg_seq = int(time.time() * 1000)  # timestamp-based seq for DDB ordering
         return StreamingResponse(
