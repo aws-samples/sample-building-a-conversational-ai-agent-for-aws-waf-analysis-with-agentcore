@@ -29,6 +29,7 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
             - targeted_signals: Targeted Bot Control detection signals breakdown
             - rate_limits: Rate-limit rule trigger counts
             - challenge_solve_rate: Challenge/CAPTCHA solve rates
+            - top_labels: All labels with hit counts (Anti-DDoS, Bot Control, token status) — use to verify which managed rules are active
         webacl_name: Name of the WebACL to query.
         hours: Time window in hours (default 24, max 336 = 14 days).
         start_time: Optional start time (e.g. "2026-05-09" or "2026-05-09T14:00").
@@ -82,8 +83,10 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
         return _rate_limits(cw, webacl_name, scope, start, end, hours)
     elif query_type == "challenge_solve_rate":
         return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours)
+    elif query_type == "top_labels":
+        return _top_labels(cw, webacl_name, start, end, hours)
     else:
-        return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate"
+        return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate, top_labels"
 
 
 def _calc_period(hours: float) -> int:
@@ -355,4 +358,33 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours):
             lines.append(f"✅ Low solve rate ({rate}%) — challenges are effectively blocking automated traffic.")
         else:
             lines.append(f"ℹ️ Moderate solve rate ({rate}%) — mix of bots and real users being challenged.")
+    return "\n".join(lines)
+
+
+def _top_labels(cw, webacl_name, start, end, hours):
+    """Get all labels with hit counts — useful for identifying which managed rules/features are active."""
+    period = _calc_period(hours)
+    resp = cw.get_metric_data(MetricDataQueries=[
+        {"Id": "labels", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})"},
+    ], StartTime=start, EndTime=end)
+
+    label_counts = []
+    for r in resp.get("MetricDataResults", []):
+        label = r.get("Label", "")
+        total = sum(int(v) for v in r.get("Values", []))
+        if total > 0:
+            label_counts.append((total, label))
+
+    label_counts.sort(reverse=True)
+    lines = [f"Top Labels (past {hours}h) for {webacl_name}:", ""]
+    lines.append(f"{'Label':<70} {'Count':>10}")
+    lines.append("-" * 82)
+    for count, label in label_counts[:30]:
+        lines.append(f"{label:<70} {count:>10,}")
+
+    if not label_counts:
+        lines.append("  No label metrics found. Labels are only emitted by managed rule groups (Bot Control, Anti-DDoS AMR, etc.).")
+
+    lines.append("")
+    lines.append("Key namespaces: awswaf:managed:aws:anti-ddos: (DDoS), awswaf:managed:aws:bot-control: (Bot), awswaf:managed:token: (Token)")
     return "\n".join(lines)

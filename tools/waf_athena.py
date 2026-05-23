@@ -549,6 +549,32 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             FROM {table} WHERE {tf} AND action = 'BLOCK'
             GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {limit}""",
 
+        "top_challenged_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
+            FROM {table} WHERE {tf} AND action = 'CHALLENGE'
+            GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
+
+        "top_challenged_countries": f"""SELECT httprequest.country as country, count(*) as cnt
+            FROM {table} WHERE {tf} AND action = 'CHALLENGE'
+            GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {limit}""",
+
+        "top_captcha_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
+            FROM {table} WHERE {tf} AND action = 'CAPTCHA'
+            GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
+
+        "top_captcha_countries": f"""SELECT httprequest.country as country, count(*) as cnt
+            FROM {table} WHERE {tf} AND action = 'CAPTCHA'
+            GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {limit}""",
+
+        "top_counted_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
+            FROM {table} WHERE {tf}
+            AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT')
+            GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
+
+        "top_counted_countries": f"""SELECT httprequest.country as country, count(*) as cnt
+            FROM {table} WHERE {tf}
+            AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT')
+            GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {limit}""",
+
         "label_top_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
             FROM {table} WHERE {tf}
             AND any_match(labels, l -> l.name LIKE '%{label}%')

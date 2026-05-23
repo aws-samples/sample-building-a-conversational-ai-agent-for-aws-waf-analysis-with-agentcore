@@ -176,7 +176,7 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 ## DDoS Investigation Methodology (CRITICAL — follow this order)
 1. get_waf_overview(top_rules) → identify WHICH rules triggered Challenge. Do NOT assume a rule is AMR just because it challenges. Check the rule name against known AMR rules (ChallengeAllDuringEvent, ChallengeDDoSRequests, DDoSRequests).
 2. If a custom rule (not AMR) is doing the challenging → say so. Don't attribute it to Anti-DDoS AMR.
-3. To confirm AMR involvement: check for label awswaf:managed:aws:anti-ddos:event-detected via label_top_ips or get_waf_overview.
+3. To confirm AMR involvement: use get_waf_overview(query_type='top_labels') and look for awswaf:managed:aws:anti-ddos:event-detected. If absent, AMR did NOT trigger.
 4. To find attack source IPs: use top_challenged_ips (NOT count_rule_top_ips, NOT top_blocked_ips). DDoS traffic action is CHALLENGE.
 5. Validate results: if top IPs have very low request counts (< 1000) but metrics show 300K+ challenges, the results are likely health checks or legitimate traffic, not the actual attack. Re-check your query parameters.
 - Bot Control Common: verified (allowed) / unverified (blocked) / neither (undetected)
