@@ -288,6 +288,12 @@ def run_logs_query(
             - top_allowed_crawlers: IPs with high URI diversity (content crawlers, scrapers)
             - top_allowed_repeaters: IPs hitting few URIs at high frequency (scalpers, flash sale bots)
             - top_countries_blocked: Top blocked countries
+            - top_challenged_ips: Top IPs being challenged (DDoS/bot traffic) — USE THIS FOR DDOS
+            - top_challenged_countries: Top countries being challenged
+            - top_captcha_ips: Top IPs receiving CAPTCHA
+            - top_captcha_countries: Top countries receiving CAPTCHA
+            - top_counted_ips: Top IPs triggering COUNT rules
+            - top_counted_countries: Top countries triggering COUNT rules
             - label_top_ips: Top IPs for an AWS WAF label (needs label)
             - ip_labels: All AWS WAF labels on a specific IP — Bot Control, Anti-DDoS, signals (needs ip)
             - action_timeline: Timeline of an action (needs action)
