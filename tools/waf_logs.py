@@ -382,6 +382,8 @@ def run_logs_query(
         msg = f"Query returned 0 results. (query: {query_type})"
         if is_log_filter_active():
             msg += "\n⚠️  A Log Filter is active on this WebACL — 0 results may be due to filtered-out log entries, not absence of traffic. Cross-check with get_waf_overview metrics."
+        else:
+            msg += "\nPossible reasons: (1) The action filter doesn't match — e.g. DDoS traffic uses CHALLENGE not BLOCK, try top_challenged_ips instead of top_blocked_ips. (2) Time window is wrong — verify start_time and timezone. (3) No traffic matching this filter exists in this period."
         return msg
 
     # Format as table (results is list[dict] from unified query layer)
