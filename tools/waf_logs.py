@@ -416,8 +416,7 @@ def run_logs_query(
         lines.append("| " + " | ".join(values) + " |")
 
     # Append deterministic interpretation for specific query types
-    rows_data = [{f["field"]: f["value"] for f in row} for row in results[:MAX_RESULTS]]
-    interpretation = _interpret_results(query_type, rows_data)
+    interpretation = _interpret_results(query_type, results[:MAX_RESULTS])
     if interpretation:
         lines.append("\n" + interpretation)
 

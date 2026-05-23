@@ -147,7 +147,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
     if timestamps and len(timestamps) > 1:
         # Combine blocked + challenge per period for peak detection
         combined = [b + c for b, c in zip(b_series, ch_series)] if len(b_series) == len(ch_series) else ch_series or b_series
-        if combined:
+        if combined and len(combined) <= len(timestamps):
             peak_idx = combined.index(max(combined))
             lines.append("")
             lines.append(f"Time granularity: {period}s ({period//60}min) | {len(timestamps)} data points")
