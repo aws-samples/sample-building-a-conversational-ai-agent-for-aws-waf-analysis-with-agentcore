@@ -575,6 +575,14 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
             AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT')
             GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {limit}""",
 
+        "top_ips_by_volume": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
+            FROM {table} WHERE {tf}
+            GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {limit}""",
+
+        "top_countries_by_volume": f"""SELECT httprequest.country as country, count(*) as cnt
+            FROM {table} WHERE {tf}
+            GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {limit}""",
+
         "label_top_ips": f"""SELECT httprequest.clientip as clientip, count(*) as cnt
             FROM {table} WHERE {tf}
             AND any_match(labels, l -> l.name LIKE '%{label}%')

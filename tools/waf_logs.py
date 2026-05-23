@@ -117,6 +117,18 @@ TEMPLATES = {
         "params": [],
         "description": "Top countries triggering COUNT rules",
     },
+    "top_ips_by_volume": {
+        "query": "stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top IPs by total request volume (ALL actions combined) — use for DDoS source identification",
+    },
+    "top_countries_by_volume": {
+        "query": "stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top countries by total request volume (ALL actions) — use for DDoS geo-distribution",
+    },
     "ip_ja4_fingerprints": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit {limit}",
         "athena": "SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY ja4fingerprint ORDER BY cnt DESC LIMIT {LIMIT}",
@@ -294,6 +306,8 @@ def run_logs_query(
             - top_captcha_countries: Top countries receiving CAPTCHA
             - top_counted_ips: Top IPs triggering COUNT rules
             - top_counted_countries: Top countries triggering COUNT rules
+            - top_ips_by_volume: Top IPs by total request volume (ALL actions) — BEST for DDoS source ID
+            - top_countries_by_volume: Top countries by total volume (ALL actions)
             - label_top_ips: Top IPs for an AWS WAF label (needs label)
             - ip_labels: All AWS WAF labels on a specific IP — Bot Control, Anti-DDoS, signals (needs ip)
             - action_timeline: Timeline of an action (needs action)
