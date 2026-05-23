@@ -43,7 +43,7 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
     hours = min(hours, 336)
     if start_time:
         tz_offset = get_user_timezone()
-        user_tz = timezone(timedelta(hours=tz_offset)) if tz_offset else timezone.utc
+        user_tz = timezone(timedelta(hours=tz_offset)) if tz_offset is not None else timezone.utc
         try:
             if "T" in start_time:
                 start = datetime.fromisoformat(start_time).replace(tzinfo=user_tz).astimezone(timezone.utc)

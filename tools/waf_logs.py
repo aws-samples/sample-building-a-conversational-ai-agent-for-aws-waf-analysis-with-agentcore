@@ -307,10 +307,14 @@ def run_logs_query(
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
     end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
 
-    # Build Athena query with params substituted
+    # Build Athena query with params substituted (only user params, not TABLE/START_MS/END_MS/PARTITION_FILTER)
     athena_query = template.get("athena", "")
     if athena_query:
-        athena_query = athena_query.format(**{k: v for k, v in params.items() if k != "limit"}, LIMIT=params["limit"])
+        for k, v in params.items():
+            if k == "limit":
+                continue
+            athena_query = athena_query.replace(f"{{{k}}}", str(v))
+        athena_query = athena_query.replace("{LIMIT}", str(params["limit"]))
 
     # If explicit log_group provided, force CWL path
     if log_group:
