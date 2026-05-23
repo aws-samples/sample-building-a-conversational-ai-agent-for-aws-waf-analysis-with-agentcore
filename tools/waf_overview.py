@@ -137,6 +137,10 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
     tot_ch = sum(all_data.get("challenge", []))
     tot_cap = sum(all_data.get("captcha", []))
     tot_a = sum(all_data.get("allowed", []))
+
+    if tot_b + tot_ch + tot_cap + tot_a == 0 and not rows:
+        return f"No metrics data for {webacl_name} in this time window (start_time + {hours}h). Verify the WebACL name and time range."
+
     lines.append("-" * 85)
     lines.append(f"Total: mitigated {tot_b + tot_ch + tot_cap:,} (blocked {tot_b:,} + challenge {tot_ch:,} + captcha {tot_cap:,}) | allowed {tot_a:,}")
 

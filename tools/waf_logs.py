@@ -380,7 +380,10 @@ def run_logs_query(
                     break
         if result["status"] != "Complete":
             return f"Query {result['status']}. QueryId: {query_id}"
-        results = [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
+        try:
+            results = [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
+        except (KeyError, TypeError):
+            results = []
     else:
         # Use unified query layer (auto-routes to CWL or Athena)
         log_type = get_log_type()
