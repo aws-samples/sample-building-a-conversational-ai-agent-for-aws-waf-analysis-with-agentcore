@@ -166,10 +166,19 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 ## AWS WAF Domain Knowledge
 - Rate-based rules: 20-30s kick-in delay — ALLOW before BLOCK is normal. Logs show threshold + key but NOT actual request count.
 - Anti-DDoS AMR: per-IP behavior analysis, ~15min baseline warmup
+  - Rule names: ChallengeAllDuringEvent, ChallengeDDoSRequests, DDoSRequests (NEVER confuse with custom rules like "always-on-challenge")
   - DDoSRequests blocks high-freq IPs regardless of JS capability
   - ChallengeAllDuringEvent: affects challengeable GET requests (those not matching exempt URI regex). Non-GET requests are not challenged.
   - Challenge delivery: GET with Accept:text/html → transparent JS challenge. GET for other content types → HTTP 202 (cannot proceed). This is disruptive for SPAs/fetch calls.
   - Blind spot: highly distributed low-rate attacks (below per-IP threshold)
+  - Labels: awswaf:managed:aws:anti-ddos:event-detected (DDoS event active), awswaf:managed:aws:anti-ddos:ddos-request (suspicious source), awswaf:managed:aws:anti-ddos:challengeable-request, awswaf:managed:aws:anti-ddos:high/medium/low-suspicion-ddos-request
+
+## DDoS Investigation Methodology (CRITICAL — follow this order)
+1. get_waf_overview(top_rules) → identify WHICH rules triggered Challenge. Do NOT assume a rule is AMR just because it challenges. Check the rule name against known AMR rules (ChallengeAllDuringEvent, ChallengeDDoSRequests, DDoSRequests).
+2. If a custom rule (not AMR) is doing the challenging → say so. Don't attribute it to Anti-DDoS AMR.
+3. To confirm AMR involvement: check for label awswaf:managed:aws:anti-ddos:event-detected via label_top_ips or get_waf_overview.
+4. To find attack source IPs: use top_challenged_ips (NOT count_rule_top_ips, NOT top_blocked_ips). DDoS traffic action is CHALLENGE.
+5. Validate results: if top IPs have very low request counts (< 1000) but metrics show 300K+ challenges, the results are likely health checks or legitimate traffic, not the actual attack. Re-check your query parameters.
 - Bot Control Common: verified (allowed) / unverified (blocked) / neither (undetected)
   - Does NOT block browser-UA bots — need Targeted for those
   - SignalNonBrowserUserAgent + CategoryHttpLibrary: FP on native apps → recommend Count
