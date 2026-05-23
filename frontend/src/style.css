@@ -26,9 +26,10 @@ header h1 { font-size: 1.25rem; margin-right: auto; }
 
 .conn-status { display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; color: var(--muted); }
 .conn-dot { width: 8px; height: 8px; border-radius: 50%; }
-.conn-status.idle .conn-dot { background: var(--muted); }
+.conn-label { user-select: none; }
+.conn-status.idle .conn-dot { background: var(--success); }
 .conn-status.connecting .conn-dot { background: var(--warning); animation: pulse 1s infinite; }
-.conn-status.connected .conn-dot { background: var(--success); }
+.conn-status.connected .conn-dot { background: var(--accent); animation: pulse 1s infinite; }
 .conn-status.disconnected .conn-dot { background: var(--danger); }
 .conn-retry { font-size: 0.7rem !important; padding: 0.2rem 0.5rem !important; background: var(--accent) !important; color: #fff !important; border-radius: 4px !important; cursor: pointer; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }

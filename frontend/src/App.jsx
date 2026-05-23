@@ -496,8 +496,9 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
           {!sidebarOpen && <button className="sidebar-open" onClick={() => setSidebarOpen(true)}>☰</button>}
         <h1>{config.brandName}</h1>
         <div className="header-actions">
-          <div className={`conn-status ${connStatus}`} title={connStatus === 'idle' ? 'Ready' : connStatus === 'connecting' ? 'Connecting...' : connStatus === 'connected' ? 'Connected' : 'Disconnected'}>
+          <div className={`conn-status ${connStatus}`}>
             <span className="conn-dot" />
+            <span className="conn-label">{connStatus === 'idle' ? 'Connected' : connStatus === 'connecting' ? 'Connecting...' : connStatus === 'connected' ? 'Responding' : 'Disconnected'}</span>
             {connStatus === 'disconnected' && <button className="conn-retry" onClick={handleReconnect}>Reconnect</button>}
           </div>
           <button onClick={() => setDarkMode(!darkMode)} className="theme-toggle">{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
