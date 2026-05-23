@@ -5,6 +5,7 @@
 import time
 import re
 import os
+import sys
 import threading
 from strands import tool
 from tools.aws_session import get_client
@@ -17,6 +18,12 @@ MAX_HOURS = 6  # Hard cap for all investigation queries
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
 _cwl_semaphore = threading.Semaphore(8)
+
+
+def _log(msg: str):
+    """Log tool execution details to stderr for debugging."""
+    print(f"[waf_logs] {msg}", file=sys.stderr, flush=True)
+
 
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
@@ -322,12 +329,14 @@ def run_logs_query(
     if not log_group:
         dest = get_log_destination()
         if not dest:
+            _log(f"ABORT: no log destination in session state. get_waf_config not called?")
             return "No logging configured. Run get_waf_config first."
     else:
         dest = None  # explicit log_group provided
 
     # Build CWL query
     query = template["query"].format(**params)
+    _log(f"query_type={query_type} start_time={start_time} hours_ago={hours_ago} dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
     from tools.waf_query import query_logs, get_log_type
@@ -374,9 +383,18 @@ def run_logs_query(
         results = [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
     else:
         # Use unified query layer (auto-routes to CWL or Athena)
-        results = query_logs(query, athena_query, start_epoch, end_epoch, limit=params["limit"])
+        log_type = get_log_type()
+        _log(f"routing via unified layer: log_type={log_type} start={start_epoch} end={end_epoch}")
+        try:
+            results = query_logs(query, athena_query, start_epoch, end_epoch, limit=params["limit"])
+        except Exception as e:
+            _log(f"ERROR in query_logs: {type(e).__name__}: {e}")
+            return f"Log query failed: {type(e).__name__}: {e}"
         if results is None:
+            _log("query_logs returned None (no log destination)")
             results = []
+        else:
+            _log(f"query_logs returned {len(results)} results")
 
     if not results:
         msg = f"Query returned 0 results. (query: {query_type})"

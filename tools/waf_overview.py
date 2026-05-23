@@ -2,10 +2,15 @@
 # SPDX-License-Identifier: MIT-0
 """WAF Overview tool — fast metrics-based answers for common questions."""
 
+import sys
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_metrics_region, get_scope, get_user_timezone
+
+
+def _log(msg: str):
+    print(f"[waf_overview] {msg}", file=sys.stderr, flush=True)
 
 
 @tool
@@ -35,6 +40,7 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
         Formatted overview data. For deeper analysis of specific IPs/URIs,
         use run_logs_query with start_time.
     """
+    _log(f"query_type={query_type} webacl={webacl_name} hours={hours} start_time={start_time}")
     if not scope:
         scope = get_scope() or "CLOUDFRONT"
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
@@ -79,10 +85,27 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
         return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate"
 
 
+def _calc_period(hours: float) -> int:
+    """Calculate a sensible CloudWatch period for the given time window.
+
+    Returns period in seconds that gives meaningful granularity:
+    - ≤6h  → 300s  (5-min, ~72 data points max)
+    - ≤72h → 3600s (1-hour, up to 72 data points)
+    - >72h → 86400s (1-day)
+    """
+    if hours <= 6:
+        return 300
+    elif hours <= 72:
+        return 3600
+    else:
+        return 86400
+
+
 def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT", region=""):
     from tools.waf_patrol import _get_all_rules_metrics_search
-    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600), scope=scope, region=region)
-    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=int(hours * 3600), scope=scope, region=region)
+    period = _calc_period(hours)
+    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope, region=region)
+    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=period, scope=scope, region=region)
 
     rows = []
     for rule, data in this_week.items():
@@ -116,6 +139,20 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
     tot_a = sum(all_data.get("allowed", []))
     lines.append("-" * 85)
     lines.append(f"Total: mitigated {tot_b + tot_ch + tot_cap:,} (blocked {tot_b:,} + challenge {tot_ch:,} + captcha {tot_cap:,}) | allowed {tot_a:,}")
+
+    # Time-series breakdown (peak detection)
+    timestamps = all_data.get("timestamps", [])
+    ch_series = all_data.get("challenge", [])
+    b_series = all_data.get("blocked", [])
+    if timestamps and len(timestamps) > 1:
+        # Combine blocked + challenge per period for peak detection
+        combined = [b + c for b, c in zip(b_series, ch_series)] if len(b_series) == len(ch_series) else ch_series or b_series
+        if combined:
+            peak_idx = combined.index(max(combined))
+            lines.append("")
+            lines.append(f"Time granularity: {period}s ({period//60}min) | {len(timestamps)} data points")
+            lines.append(f"Peak period: {timestamps[peak_idx]} ({max(combined):,} mitigated requests)")
+
     lines.append("")
     lines.append("→ For IP/URI details on a specific rule, use run_logs_query(query_type='count_rule_top_ips', rule_name='...', start_time='...')")
     return "\n".join(lines)
@@ -123,7 +160,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
 
 def _attack_types(cw, webacl_name, start, end, hours):
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {int(hours*3600)})"},
+        {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {_calc_period(hours)})"},
     ], StartTime=start, EndTime=end)
 
     types = {}
@@ -147,7 +184,7 @@ def _attack_types(cw, webacl_name, start, end, hours):
 
 
 def _bot_summary(cw, webacl_name, start, end, hours):
-    period = int(hours * 3600)
+    period = _calc_period(hours)
     queries = [
         {"Id": "v_a", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
             {"Name": "LabelName", "Value": "verified"}, {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"}, {"Name": "WebACL", "Value": webacl_name}]}, "Period": period, "Stat": "Sum"}},
@@ -184,7 +221,7 @@ def _bot_summary(cw, webacl_name, start, end, hours):
 
 def _bot_names(cw, webacl_name, start, end, hours):
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {int(hours*3600)})"},
+        {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {_calc_period(hours)})"},
     ], StartTime=start, EndTime=end)
 
     bots = {}
@@ -208,7 +245,7 @@ def _bot_names(cw, webacl_name, start, end, hours):
 
 
 def _targeted_signals(cw, webacl_name, start, end, hours):
-    period = int(hours * 3600)
+    period = _calc_period(hours)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "ctrl", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {period})"},
         {"Id": "sig", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal\"', 'Sum', {period})"},
@@ -255,7 +292,7 @@ def _targeted_signals(cw, webacl_name, start, end, hours):
 def _rate_limits(cw, webacl_name, scope, start, end, hours):
     from tools.waf_patrol import _get_all_rules_metrics_search
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600), scope=scope, region=region)
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(hours), scope=scope, region=region)
 
     # Get rate-based rule names from WebACL config
     rate_rule_names = set()
@@ -294,7 +331,7 @@ def _rate_limits(cw, webacl_name, scope, start, end, hours):
 def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours):
     from tools.waf_patrol import _get_challenge_solved, _get_all_rules_metrics_search
     cs, cas = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=int(hours * 3600), scope=scope, region=region)
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(hours), scope=scope, region=region)
     all_data = data.get("ALL", {})
     tot_ch = sum(all_data.get("challenge", []))
     tot_cap = sum(all_data.get("captcha", []))

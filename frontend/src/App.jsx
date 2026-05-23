@@ -516,7 +516,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
       <div className="messages">
         {messages.map((msg, i) => (
           <div key={i} className={`msg ${msg.role}${selectMode && selected.has(i) ? ' selected' : ''}`} onClick={selectMode ? () => toggleSelect(i) : undefined}>
-            {selectMode && <input type="checkbox" className="msg-checkbox" checked={selected.has(i)} onChange={(e) => { e.stopPropagation(); toggleSelect(i); }} />}
+            {selectMode && <input type="checkbox" className="msg-checkbox" checked={selected.has(i)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelect(i)} />}
             {msg.tools?.length > 0 && (
               <div className="tools">
                 {msg.tools.map((t, j) => (
