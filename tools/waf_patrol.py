@@ -844,10 +844,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         labels = []
         total_values = []
         attack_raw = {}
-        _tz_off = timedelta(hours=8) if lang == "zh" else timedelta(0)
+        _tz_user = timezone(timedelta(hours=get_user_timezone())) if get_user_timezone() is not None else timezone.utc
         for r in chart_resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
-                labels = [(t + _tz_off).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                labels = [t.astimezone(_tz_user).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 total_values = [int(v) for v in r.get("Values", [])]
             elif r["Id"] == "attacks":
                 raw_label = r.get("Label", "Unknown")
@@ -855,7 +855,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 if atype not in attack_raw:
                     attack_raw[atype] = {}
                 for t, v in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    k = (t + _tz_off).strftime("%m/%d %H:%M")
+                    k = t.astimezone(_tz_user).strftime("%m/%d %H:%M")
                     attack_raw[atype][k] = attack_raw[atype].get(k, 0) + int(v)
         if labels:
             series = {a: [ts_map.get(l, 0) for l in labels] for a, ts_map in attack_raw.items()}
@@ -1043,8 +1043,9 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
     """Render deterministic patrol report HTML — chart-first, minimal tables."""
     L = _PATROL_I18N.get(lang, _PATROL_I18N["en"])
     now = datetime.now(timezone.utc)
-    tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
-    tz_label = "UTC+8" if lang == "zh" else "UTC"
+    tz_off = get_user_timezone()
+    tz_offset = timedelta(hours=tz_off) if tz_off is not None else timedelta(0)
+    tz_label = f"UTC{tz_off:+g}" if tz_off is not None and tz_off != 0 else "UTC"
 
     n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
     n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
@@ -1304,7 +1305,7 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 </style></head><body>
 <h1>🛡️ {L["title"]}</h1>
 <button onclick="document.documentElement.classList.toggle('light');this.textContent=document.documentElement.classList.contains('light')?'🌙':'☀️'" style="position:fixed;top:1rem;right:1rem;font-size:1.5rem;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;cursor:pointer;z-index:99">☀️</button>
-<p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} — {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
+<p class="muted">{L["period"]}: {start.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} — {end.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {now.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
 <p class="muted">{L["delay_note"]}</p>
 
 <div class="banner {banner_class}">{banner_text}</div>
