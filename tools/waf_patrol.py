@@ -8,6 +8,17 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
+from tools.session_state import get_user_timezone
+
+
+def _to_local_ts(timestamps):
+    """Convert CloudWatch timestamps to user's session timezone."""
+    tz_off = get_user_timezone()
+    if tz_off is not None:
+        user_tz = timezone(timedelta(hours=tz_off))
+        return [t.astimezone(user_tz).isoformat() for t in timestamps]
+    return [t.isoformat() for t in timestamps]
+
 
 _latest_patrol_html: str | None = None
 
@@ -330,15 +341,7 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
         parts = label.rsplit(" ", 1)
         rule_name = parts[0] if len(parts) == 2 else label
         values = [int(v) for v in r.get("Values", [])]
-        # Convert timestamps to user's session timezone for consistent display
-        from tools.session_state import get_user_timezone
-        tz_off = get_user_timezone()
-        if tz_off is not None:
-            from datetime import timezone as _tz, timedelta as _td
-            user_tz = _tz(_td(hours=tz_off))
-            timestamps = [t.astimezone(user_tz).isoformat() for t in r.get("Timestamps", [])]
-        else:
-            timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+        timestamps = _to_local_ts(r.get("Timestamps", []))
 
         if rule_name not in rules:
             rules[rule_name] = {"blocked": [], "counted": [], "challenge": [], "captcha": [], "allowed": [], "timestamps": []}

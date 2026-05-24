@@ -13,6 +13,15 @@ def _log(msg: str):
     print(f"[waf_overview] {msg}", file=sys.stderr, flush=True)
 
 
+def _to_local_ts(timestamps):
+    """Convert CloudWatch timestamps to user's session timezone."""
+    tz_off = get_user_timezone()
+    if tz_off is not None:
+        user_tz = timezone(timedelta(hours=tz_off))
+        return [t.astimezone(user_tz).isoformat() for t in timestamps]
+    return [t.isoformat() for t in timestamps]
+
+
 @tool
 def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, start_time: str = "", scope: str = "") -> str:
     """Fast metrics-based overview of WAF activity. No log queries — answers in 2-3 seconds.
@@ -206,7 +215,7 @@ def _attack_types(cw, webacl_name, start, end, minutes):
         parts = label.split(" ")
         atype = parts[0] if parts else label
         values = [int(v) for v in r.get("Values", [])]
-        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+        timestamps = _to_local_ts(r.get("Timestamps", []))
         if sum(values) > 0:
             type_series[atype] = {"timestamps": timestamps, "values": values, "total": sum(values)}
 
@@ -255,7 +264,7 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
     for r in resp.get("MetricDataResults", []):
         rid = r["Id"]
         values = [int(v) for v in r.get("Values", [])]
-        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+        timestamps = _to_local_ts(r.get("Timestamps", []))
         totals[rid] = sum(values)
         series[rid] = {"timestamps": timestamps, "values": values}
 
