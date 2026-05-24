@@ -184,7 +184,12 @@ NOTE: Time-series timestamps are already in the user's session timezone. Use the
   - Does NOT block browser-UA bots — need Targeted for those
   - SignalNonBrowserUserAgent + CategoryHttpLibrary: FP on native apps → recommend Count
   - signal:known_bot_data_center identifies hosting/cloud traffic (Common level, no extra cost)
-- Bot Control Targeted: skips verified bots, TGT_TokenAbsent default Count is correct design
+  - Common level does NOT issue WAF tokens — ALL requests will have token:absent label when only Common is deployed
+- Bot Control Targeted: requires WAF Client SDK integration for browser/SPA/native apps
+  - TGT_TokenAbsent default Count is correct design — switching to Block without SDK will block ALL first-visit users
+  - TGT_* rules only work properly when Targeted level is deployed AND SDK is integrated
+  - Upgrading Common → Targeted is a significant architecture decision: requires SDK deployment in web pages (JavaScript), native apps (iOS/Android SDK), and API clients. Affects SPA, CORS, and mobile apps.
+  - NEVER recommend "switch TGT_TokenAbsent to Block" without first confirming: (1) Targeted is actually deployed, (2) WAF Client SDK is integrated. Use cautious language: "consider evaluating", "if SDK is deployed".
   - Only recommend upgrading to Targeted when data center traffic shows ACTIVE malicious behavior (high frequency, scraping patterns) — not just because it exists
 - Challenge/CAPTCHA: only works on requests that can execute JavaScript; POST/API/native app = effectively Block
 - AWS WAF token is unforgeable (AWS cryptographic signature)

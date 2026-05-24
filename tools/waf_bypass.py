@@ -435,9 +435,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
 def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     """Deep-dive a specific IP's behavior in ALLOW logs."""
 
-    # 1. Frequency
+    # 1. Frequency (ALLOW only — bypass context)
     freq_cwl = (
-        f"filter httpRequest.clientIp = '{ip}'"
+        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
         " | stats count(*) as hits by bin(1m)"
         " | stats max(hits) as peak_rpm, avg(hits) as avg_rpm, count(*) as active_minutes"
     )
@@ -445,7 +445,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm, count(*) as active_minutes FROM ("
         f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
         f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f"  AND httprequest.clientip = '{ip}'"
+        f"  AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
@@ -453,16 +453,16 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     peak_rpm = freq[0].get("peak_rpm", "?") if freq else "?"
     avg_rpm = freq[0].get("avg_rpm", "?") if freq else "?"
 
-    # 2. URI diversity
+    # 2. URI diversity (ALLOW only)
     uri_cwl = (
-        f"filter httpRequest.clientIp = '{ip}'"
+        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
         " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
         " | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total"
     )
     uri_athena = (
         f"SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND httprequest.clientip = '{ip}'"
+        f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
         f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
     )
     uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1)
@@ -583,8 +583,12 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         "",
         "### Action Breakdown",
     ]
+    allow_count = action_map.get("ALLOW", 0)
+    non_allow_count = sum(v for k, v in action_map.items() if k != "ALLOW")
     for action, count in sorted(action_map.items(), key=lambda x: x[1], reverse=True):
         lines.append(f"  {action}: {count:,}")
+    if non_allow_count > allow_count * 5:
+        lines.append(f"\n  ⚠️ This IP has {non_allow_count:,} non-ALLOW requests vs {allow_count:,} ALLOW — primarily an attacker being mitigated, with partial bypass.")
 
     lines.append("")
     lines.append("### User-Agent")
@@ -616,13 +620,23 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
 
     lines.append("")
     lines.append("### Bot Control Labels")
+    bot_categories = set()
+    bot_names = set()
     if labels:
         has_bot_labels = False
         for r in labels:
             label_str = r.get("Labels", "")
             if "bot:" in label_str or "signal:" in label_str:
                 has_bot_labels = True
+            # Extract bot category and name
+            import re
+            for cat in re.findall(r'bot:category:([^"}\s,]+)', label_str):
+                bot_categories.add(cat)
+            for name in re.findall(r'bot:name:([^"}\s,]+)', label_str):
+                bot_names.add(name)
             lines.append(f"  {label_str} ({r.get('cnt', '?')} requests)")
+        if bot_categories or bot_names:
+            lines.append(f"\n  **Bot classification**: category={', '.join(bot_categories) or 'unknown'}, name={', '.join(bot_names) or 'unknown'}")
         if not has_bot_labels:
             lines.append("  ⚠️  No bot detection labels — Bot Control did not classify this IP")
     else:
