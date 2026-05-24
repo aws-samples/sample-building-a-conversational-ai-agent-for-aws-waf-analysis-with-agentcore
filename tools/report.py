@@ -925,10 +925,10 @@ def _get_traffic_timeseries(cw, webacl_name: str, start, end, scope: str = "CLOU
         data = {}
         from tools.session_state import get_user_timezone
         _tz_off = get_user_timezone()
-        _off = timedelta(hours=_tz_off) if _tz_off is not None else timedelta(0)
+        _user_tz = timezone(timedelta(hours=_tz_off)) if _tz_off is not None else timezone.utc
         for r in resp.get("MetricDataResults", []):
             for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                key = (ts + _off).strftime("%m/%d %H:%M")
+                key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
                 if key not in data:
                     data[key] = {"date": key, "allowed": 0, "blocked": 0, "challenged": 0, "captcha": 0}
                 data[key][r["Id"]] = int(val)
@@ -963,11 +963,11 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
         total_values = []
         ddos_values = []
         attack_raw = {}  # {attack_type: {timestamp_str: value}}
-        _off = tz_offset or timedelta(0)
+        _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = (ts + _off).strftime("%m/%d %H:%M")
+                    key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
                     labels.append(key)
                     total_values.append(int(val))
             elif r["Id"] == "ddos_c":
@@ -980,7 +980,7 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
                 if attack_type not in attack_raw:
                     attack_raw[attack_type] = {}
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = (ts + _off).strftime("%m/%d %H:%M")
+                    key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
                     attack_raw[attack_type][key] = attack_raw[attack_type].get(key, 0) + int(val)
 
         if not labels:
@@ -1019,9 +1019,10 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         ddos_chart_data = {"labels": [], "ddos": []}
+        _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "ddosreq":
-                ddos_chart_data["labels"] = [(t + (tz_offset or timedelta(0))).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                ddos_chart_data["labels"] = [t.astimezone(_user_tz).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
         if not ddos_chart_data["labels"]:
             return f'<h2>{L["antiddos"]}</h2><p style="color:var(--muted)">{L["antiddos_no_data"]}</p>'
