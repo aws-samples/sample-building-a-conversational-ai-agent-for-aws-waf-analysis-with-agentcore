@@ -364,6 +364,21 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     tz_label = f"UTC{_tz_off:+g}" if _tz_off is not None and _tz_off != 0 else "UTC"
     L = {k: v.format(tz=tz_label) if isinstance(v, str) and "{tz}" in v else v for k, v in L.items()}
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+
+    # Validate WebACL exists
+    try:
+        waf_client = get_client("wafv2", region_name=region)
+        waf_scope = "CLOUDFRONT" if scope == "CLOUDFRONT" else "REGIONAL"
+        acls = waf_client.list_web_acls(Scope=waf_scope)["WebACLs"]
+        acl = next((a for a in acls if a["Name"] == webacl_name), None)
+        if not acl:
+            available = [a["Name"] for a in acls]
+            return (f"Error: WebACL '{webacl_name}' not found (scope={scope}, region={region}).\n"
+                    f"Available WebACLs: {available}\n"
+                    "ACTION: Ask the user to confirm the correct WebACL name from the list above.")
+    except Exception as e:
+        return f"Error: Failed to validate WebACL: {e}"
+
     cw = get_client("cloudwatch", region_name=region)
     # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
     _region_dim = [{"Name": "Region", "Value": region}] if scope != "CLOUDFRONT" else []

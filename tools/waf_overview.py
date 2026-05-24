@@ -56,6 +56,20 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
     if not scope:
         scope = get_scope() or "CLOUDFRONT"
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+
+    # Validate WebACL exists
+    try:
+        waf = get_client("wafv2", region_name=region)
+        waf_scope = "CLOUDFRONT" if scope == "CLOUDFRONT" else "REGIONAL"
+        acls = waf.list_web_acls(Scope=waf_scope)["WebACLs"]
+        if not any(a["Name"] == webacl_name for a in acls):
+            available = [a["Name"] for a in acls]
+            return (f"Error: WebACL '{webacl_name}' not found (scope={scope}, region={region}).\n"
+                    f"Available WebACLs: {available}\n"
+                    "ACTION: Ask the user to confirm the correct WebACL name from the list above.")
+    except Exception as e:
+        return f"Error: Failed to validate WebACL: {e}"
+
     cw = get_client("cloudwatch", region_name=region)
 
     minutes = min(minutes, 20160)  # max 14 days

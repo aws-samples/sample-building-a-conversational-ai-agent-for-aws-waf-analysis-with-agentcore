@@ -228,9 +228,11 @@ def finalize_review_report(llm_analysis_md: str) -> str:
 
 def _get_webacl_id(waf, name: str, scope: str) -> str:
     """Get WebACL ID by name."""
+    all_acls = []
     kwargs = {"Scope": scope, "Limit": 100}
     while True:
         resp = waf.list_web_acls(**kwargs)
+        all_acls.extend(resp.get("WebACLs", []))
         for acl in resp.get("WebACLs", []):
             if acl["Name"].lower() == name.lower():
                 return acl["Id"]
@@ -238,7 +240,8 @@ def _get_webacl_id(waf, name: str, scope: str) -> str:
         if not marker:
             break
         kwargs["NextMarker"] = marker
-    raise ValueError(f"WebACL '{name}' not found")
+    available = [a["Name"] for a in all_acls]
+    raise ValueError(f"WebACL '{name}' not found (scope={scope}). Available: {available}")
 
 
 def _render_html(md: str) -> str:
