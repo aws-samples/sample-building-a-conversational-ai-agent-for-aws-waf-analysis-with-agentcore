@@ -14,7 +14,7 @@ def _log(msg: str):
 
 
 @tool
-def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_time: str = "", scope: str = "") -> str:
+def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, start_time: str = "", scope: str = "") -> str:
     """Fast metrics-based overview of WAF activity. No log queries — answers in 2-3 seconds.
 
     Use this for "what happened" questions. For "who did it" (IPs, URIs, request details),
@@ -22,7 +22,7 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
 
     Args:
         query_type: Type of overview to return:
-            - top_rules: Rules ranked by mitigation volume + WoW comparison
+            - top_rules: Rules ranked by mitigation volume + WoW comparison + full time-series
             - attack_types: Attack type distribution (XSS, SQLi, LFI, etc.)
             - bot_summary: Verified/unverified/targeted bot overview
             - bot_names: Top bot names by request volume
@@ -31,23 +31,25 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
             - challenge_solve_rate: Challenge/CAPTCHA solve rates
             - top_labels: All labels with hit counts (Anti-DDoS, Bot Control, token status) — use to verify which managed rules are active
         webacl_name: Name of the WebACL to query.
-        hours: Time window in hours (default 24, max 336 = 14 days).
+        minutes: Time window in minutes (default 1440 = 24h, max 20160 = 14 days).
+            Use 60 for 1 hour (1-min granularity), 240 for 4 hours (5-min), 1440 for 1 day (15-min).
+            Zoom in to shorter windows for finer granularity.
         start_time: Optional start time (e.g. "2026-05-09" or "2026-05-09T14:00").
-            If provided, queries from start_time to start_time + hours.
-            If omitted, queries from (now - hours) to now.
+            If provided, queries from start_time to start_time + minutes.
+            If omitted, queries from (now - minutes) to now.
         scope: "CLOUDFRONT" or "REGIONAL". Auto-detected from session if empty.
 
     Returns:
-        Formatted overview data. For deeper analysis of specific IPs/URIs,
+        Formatted overview data with time-series. For deeper analysis of specific IPs/URIs,
         use run_logs_query with start_time.
     """
-    _log(f"query_type={query_type} webacl={webacl_name} hours={hours} start_time={start_time}")
+    _log(f"query_type={query_type} webacl={webacl_name} minutes={minutes} start_time={start_time}")
     if not scope:
         scope = get_scope() or "CLOUDFRONT"
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
 
-    hours = min(hours, 336)
+    minutes = min(minutes, 20160)  # max 14 days
     if start_time:
         tz_offset = get_user_timezone()
         user_tz = timezone(timedelta(hours=tz_offset)) if tz_offset is not None else timezone.utc
@@ -59,55 +61,71 @@ def get_waf_overview(query_type: str, webacl_name: str, hours: int = 24, start_t
                 start = datetime.strptime(start_time, "%Y-%m-%d").replace(tzinfo=user_tz).astimezone(timezone.utc)
         except ValueError:
             return f"Error: invalid start_time '{start_time}'. Use format YYYY-MM-DD or YYYY-MM-DDTHH:MM."
-        end = start + timedelta(hours=hours)
+        end = start + timedelta(minutes=minutes)
         # Clamp end to now if in the future
         now = datetime.now(timezone.utc)
         if end > now:
             end = now
     else:
         end = datetime.now(timezone.utc)
-        start = end - timedelta(hours=hours)
-    prev_start = start - timedelta(hours=hours)
+        start = end - timedelta(minutes=minutes)
+    prev_start = start - timedelta(minutes=minutes)
 
     if query_type == "top_rules":
-        return _top_rules(cw, webacl_name, start, end, prev_start, hours, scope, region)
+        return _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope, region)
     elif query_type == "attack_types":
-        return _attack_types(cw, webacl_name, start, end, hours)
+        return _attack_types(cw, webacl_name, start, end, minutes)
     elif query_type == "bot_summary":
-        return _bot_summary(cw, webacl_name, start, end, hours)
+        return _bot_summary(cw, webacl_name, start, end, minutes)
     elif query_type == "bot_names":
-        return _bot_names(cw, webacl_name, start, end, hours)
+        return _bot_names(cw, webacl_name, start, end, minutes)
     elif query_type == "targeted_signals":
-        return _targeted_signals(cw, webacl_name, start, end, hours)
+        return _targeted_signals(cw, webacl_name, start, end, minutes)
     elif query_type == "rate_limits":
-        return _rate_limits(cw, webacl_name, scope, start, end, hours)
+        return _rate_limits(cw, webacl_name, scope, start, end, minutes)
     elif query_type == "challenge_solve_rate":
-        return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours)
+        return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes)
     elif query_type == "top_labels":
-        return _top_labels(cw, webacl_name, start, end, hours)
+        return _top_labels(cw, webacl_name, start, end, minutes)
     else:
         return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate, top_labels"
 
 
-def _calc_period(hours: float) -> int:
-    """Calculate a sensible CloudWatch period for the given time window.
+def _calc_period(minutes: int) -> int:
+    """Calculate CloudWatch period for the given time window.
 
-    Returns period in seconds that gives meaningful granularity:
-    - ≤6h  → 300s  (5-min, ~72 data points max)
-    - ≤72h → 3600s (1-hour, up to 72 data points)
-    - >72h → 86400s (1-day)
+    Returns period in seconds:
+    - ≤60min  → 60s   (1-min, up to 60 points)
+    - ≤360min → 300s  (5-min, up to 72 points)
+    - ≤4320min→ 900s  (15-min, up to 288 points)
+    - ≤10080min→3600s (1-hour, up to 168 points)
+    - >10080min→14400s(4-hour)
     """
-    if hours <= 6:
+    if minutes <= 60:
+        return 60
+    elif minutes <= 360:
         return 300
-    elif hours <= 72:
+    elif minutes <= 4320:
+        return 900
+    elif minutes <= 10080:
         return 3600
     else:
-        return 86400
+        return 14400
 
 
-def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT", region=""):
+def _fmt_window(minutes: int) -> str:
+    """Format time window for display."""
+    if minutes < 60:
+        return f"{minutes}min"
+    elif minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    else:
+        return f"{minutes}min"
+
+
+def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRONT", region=""):
     from tools.waf_patrol import _get_all_rules_metrics_search
-    period = _calc_period(hours)
+    period = _calc_period(minutes)
     this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope, region=region)
     last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=period, scope=scope, region=region)
 
@@ -129,7 +147,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
         rows.append((mitigated, rule, blocked, challenged, captcha, counted, wow))
 
     rows.sort(reverse=True)
-    lines = [f"Top Rules (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Top Rules (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     lines.append(f"{'Rule':<40} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Counted':>8} {'WoW':>6}")
     lines.append("-" * 85)
     for _, rule, b, ch, cap, cnt, wow in rows[:15]:
@@ -143,7 +161,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
     tot_a = sum(all_data.get("allowed", []))
 
     if tot_b + tot_ch + tot_cap + tot_a == 0 and not rows:
-        return f"No metrics data for {webacl_name} in this time window (start_time + {hours}h). Verify the WebACL name and time range."
+        return f"No metrics data for {webacl_name} in this time window (start_time + {_fmt_window(minutes)}). Verify the WebACL name and time range."
 
     lines.append("-" * 85)
     lines.append(f"Total: mitigated {tot_b + tot_ch + tot_cap:,} (blocked {tot_b:,} + challenge {tot_ch:,} + captcha {tot_cap:,}) | allowed {tot_a:,}")
@@ -170,9 +188,9 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
     return "\n".join(lines)
 
 
-def _attack_types(cw, webacl_name, start, end, hours):
+def _attack_types(cw, webacl_name, start, end, minutes):
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {_calc_period(hours)})"},
+        {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {_calc_period(minutes)})"},
     ], StartTime=start, EndTime=end)
 
     types = {}
@@ -185,7 +203,7 @@ def _attack_types(cw, webacl_name, start, end, hours):
             types[atype] = types.get(atype, 0) + val
 
     sorted_types = sorted(types.items(), key=lambda x: x[1], reverse=True)
-    lines = [f"Attack Types (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Attack Types (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     for atype, count in sorted_types:
         lines.append(f"  {atype:<25} {count:>10,}")
     if not sorted_types:
@@ -195,8 +213,8 @@ def _attack_types(cw, webacl_name, start, end, hours):
     return "\n".join(lines)
 
 
-def _bot_summary(cw, webacl_name, start, end, hours):
-    period = _calc_period(hours)
+def _bot_summary(cw, webacl_name, start, end, minutes):
+    period = _calc_period(minutes)
     queries = [
         {"Id": "v_a", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
             {"Name": "LabelName", "Value": "verified"}, {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"}, {"Name": "WebACL", "Value": webacl_name}]}, "Period": period, "Stat": "Sum"}},
@@ -219,7 +237,7 @@ def _bot_summary(cw, webacl_name, start, end, hours):
     u_cap = vals.get("u_cap", 0)
     u_mit = u_b + u_ch + u_cap
 
-    lines = [f"Bot Summary (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Bot Summary (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     lines.append(f"  ✅ Verified (self-declared):     {v_a:>10,} allowed")
     lines.append(f"  ⚠️ Unverified allowed:           {u_a:>10,}")
     lines.append(f"  🚫 Unverified mitigated:         {u_mit:>10,} (blocked {u_b:,} + challenge {u_ch:,} + captcha {u_cap:,})")
@@ -231,9 +249,9 @@ def _bot_summary(cw, webacl_name, start, end, hours):
     return "\n".join(lines)
 
 
-def _bot_names(cw, webacl_name, start, end, hours):
+def _bot_names(cw, webacl_name, start, end, minutes):
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {_calc_period(hours)})"},
+        {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {_calc_period(minutes)})"},
     ], StartTime=start, EndTime=end)
 
     bots = {}
@@ -246,7 +264,7 @@ def _bot_names(cw, webacl_name, start, end, hours):
             bots[name] = bots.get(name, 0) + val
 
     sorted_bots = sorted(bots.items(), key=lambda x: x[1], reverse=True)
-    lines = [f"Bot Names (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Bot Names (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     for name, count in sorted_bots[:15]:
         lines.append(f"  {name:<30} {count:>10,}")
     if not sorted_bots:
@@ -256,8 +274,8 @@ def _bot_names(cw, webacl_name, start, end, hours):
     return "\n".join(lines)
 
 
-def _targeted_signals(cw, webacl_name, start, end, hours):
-    period = _calc_period(hours)
+def _targeted_signals(cw, webacl_name, start, end, minutes):
+    period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "ctrl", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {period})"},
         {"Id": "sig", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal\"', 'Sum', {period})"},
@@ -285,7 +303,7 @@ def _targeted_signals(cw, webacl_name, start, end, hours):
         signals[name][metric] = signals[name].get(metric, 0) + val
 
     sorted_sigs = sorted(signals.items(), key=lambda x: sum(x[1].values()), reverse=True)
-    lines = [f"Targeted Bot Signals (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Targeted Bot Signals (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     lines.append(f"{'Signal':<35} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'NotBlocked':>10}")
     lines.append("-" * 75)
     for name, metrics in sorted_sigs:
@@ -301,10 +319,10 @@ def _targeted_signals(cw, webacl_name, start, end, hours):
     return "\n".join(lines)
 
 
-def _rate_limits(cw, webacl_name, scope, start, end, hours):
+def _rate_limits(cw, webacl_name, scope, start, end, minutes):
     from tools.waf_patrol import _get_all_rules_metrics_search
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(hours), scope=scope, region=region)
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(minutes), scope=scope, region=region)
 
     # Get rate-based rule names from WebACL config
     rate_rule_names = set()
@@ -321,7 +339,7 @@ def _rate_limits(cw, webacl_name, scope, start, end, hours):
     except Exception:
         pass
 
-    lines = [f"Rate-Limit Rules (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Rate-Limit Rules (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     found = False
     for rule, metrics in sorted(data.items(), key=lambda x: sum(x[1].get("blocked", [])), reverse=True):
         if rule == "ALL":
@@ -340,15 +358,15 @@ def _rate_limits(cw, webacl_name, scope, start, end, hours):
     return "\n".join(lines)
 
 
-def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours):
+def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     from tools.waf_patrol import _get_challenge_solved, _get_all_rules_metrics_search
     cs, cas = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(hours), scope=scope, region=region)
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(minutes), scope=scope, region=region)
     all_data = data.get("ALL", {})
     tot_ch = sum(all_data.get("challenge", []))
     tot_cap = sum(all_data.get("captcha", []))
 
-    lines = [f"Challenge/CAPTCHA Solve Rate (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Challenge/CAPTCHA Solve Rate (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     lines.append(f"  Challenges issued:  {tot_ch:>10,}")
     lines.append(f"  Challenges solved:  {cs:>10,}" + (f"  ({cs*100//tot_ch}% solve rate)" if tot_ch > 0 else ""))
     lines.append(f"  CAPTCHAs issued:    {tot_cap:>10,}")
@@ -365,9 +383,9 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, hours):
     return "\n".join(lines)
 
 
-def _top_labels(cw, webacl_name, start, end, hours):
+def _top_labels(cw, webacl_name, start, end, minutes):
     """Get all labels with hit counts — useful for identifying which managed rules/features are active."""
-    period = _calc_period(hours)
+    period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "labels", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})"},
     ], StartTime=start, EndTime=end)
@@ -386,7 +404,7 @@ def _top_labels(cw, webacl_name, start, end, hours):
             label_counts.append((total, label))
 
     label_counts.sort(reverse=True)
-    lines = [f"Top Labels (past {hours}h) for {webacl_name}:", ""]
+    lines = [f"Top Labels (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     lines.append(f"{'Label':<70} {'Count':>10}")
     lines.append("-" * 82)
     for count, label in label_counts[:30]:
