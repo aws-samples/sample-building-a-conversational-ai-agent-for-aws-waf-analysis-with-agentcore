@@ -15,7 +15,7 @@ POLL_INTERVAL = 2
 
 
 @tool
-def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_type: str = "CHALLENGE") -> str:
+def check_challenge_compatibility(start_time: str, duration_hours: int = 6, hours_ago: int = None, action_type: str = "CHALLENGE") -> str:
     """Check which URIs/methods are being challenged or CAPTCHA'd. Identifies requests that
     cannot complete Challenge/CAPTCHA due to technical requirements.
 
@@ -28,10 +28,11 @@ def check_challenge_compatibility(start_time: str, hours_ago: int = 6, action_ty
 
     Args:
         start_time: Start time for log query (e.g., "2026-05-12T14:00").
-        hours_ago: Duration in hours (default 6, max 6).
+        duration_hours: Duration in hours (default 6, max 6).
         action_type: "CHALLENGE" or "CAPTCHA". Default "CHALLENGE".
     """
     from tools.waf_logs import _parse_start_time
+    hours_ago = hours_ago if hours_ago is not None else duration_hours
 
     if get_log_type() == "none":
         return ("Error: No logging configured. "

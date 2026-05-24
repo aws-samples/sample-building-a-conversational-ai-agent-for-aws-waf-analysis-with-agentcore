@@ -189,7 +189,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
             lines.append("  (all zeros)")
 
     lines.append("")
-    lines.append("→ For IP/URI details on a specific rule, use run_logs_query(query_type='top_ips_by_volume', start_time='<peak_time>', hours_ago=1)")
+    lines.append("→ For IP/URI details on a specific rule, use run_logs_query(query_type='top_ips_by_volume', start_time='<peak_time>', duration_hours=1)")
     return "\n".join(lines)
 
 

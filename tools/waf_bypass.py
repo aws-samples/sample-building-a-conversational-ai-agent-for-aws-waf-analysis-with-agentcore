@@ -34,7 +34,7 @@ UNIQUE_IP_ANOMALY = 2.0
 
 
 @tool
-def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", hours_ago: int = 6) -> str:
+def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", duration_hours: int = 6, hours_ago: int = None) -> str:
     """Detect potential WAF bypass — find malicious traffic in ALLOW logs.
 
     This tool provides evidence for human judgment. It does NOT make definitive
@@ -49,9 +49,10 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", hours_
         step: "scan", "investigate_ip", or "volume_anomaly".
         ip: Client IP (required for investigate_ip).
         start_time: Start time for log queries (required for scan and investigate_ip).
-        hours_ago: Duration in hours (default 6, max 6).
+        duration_hours: Duration in hours (default 6, max 6).
     """
     from tools.waf_logs import _parse_start_time
+    hours_ago = hours_ago if hours_ago is not None else duration_hours
 
     if step == "volume_anomaly":
         return _step_volume_anomaly()

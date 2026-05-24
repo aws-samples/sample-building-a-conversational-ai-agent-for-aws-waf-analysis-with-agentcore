@@ -44,7 +44,7 @@ def _has_logging() -> bool:
 
 
 @tool
-def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: str = "", hours_ago: int = 1) -> str:
+def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: str = "", duration_hours: int = 1, hours_ago: int = None) -> str:
     """Guided workflow for evaluating whether COUNT rules are ready to switch to BLOCK.
 
     This is a multi-step skill. Call with step="init" for bulk evaluation (all COUNT rules),
@@ -59,8 +59,9 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
         step: Workflow step to execute.
         rule_name: Rule name (required for analyze_rule and check_low_volume_clients).
         start_time: Start time for log queries (required for check_low_volume_clients).
-        hours_ago: Duration in hours (default 1, max 6).
+        duration_hours: Duration in hours (default 1, max 6).
     """
+    hours_ago = hours_ago if hours_ago is not None else duration_hours
     if step == "init":
         return _step_init(rule_name=rule_name)
     elif step == "analyze_rule":

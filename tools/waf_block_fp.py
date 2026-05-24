@@ -26,7 +26,7 @@ CONFIDENCE_RULES = """\
 
 
 @tool
-def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: str = "", hours_ago: int = 6, rule_name: str = "") -> str:
+def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: str = "", duration_hours: int = 6, hours_ago: int = None, rule_name: str = "") -> str:
     """Investigate whether a blocked request is a false positive, or proactively scan for suspected FPs.
 
     This tool provides evidence for human judgment — do not make definitive FP/TP verdicts
@@ -40,10 +40,11 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
         step: "investigate" (targeted) or "scan" (proactive audit).
         ip: Client IP address (required for investigate).
         start_time: Start time for log query (required).
-        hours_ago: Duration in hours (default 6, max 6).
+        duration_hours: Duration in hours (default 6, max 6).
         rule_name: Optional — filter to a specific rule.
     """
     from tools.waf_logs import _parse_start_time
+    hours_ago = hours_ago if hours_ago is not None else duration_hours
 
     # Validate logging
     if get_log_type() == "none":
