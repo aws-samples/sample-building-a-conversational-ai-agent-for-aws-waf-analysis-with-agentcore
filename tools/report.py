@@ -773,7 +773,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     in_event = False
     except Exception:
         pass
-    ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else L["no_events"]
+    ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else (f"🔴 {ddos_num_events} {L['events']}" if ddos_num_events > 0 else L["no_events"])
 
     # Executive Summary — LLM generates, limited to 3-5 sentences
     mitigated_pct = f"{(threats_mitigated/total_this*100):.1f}" if total_this > 0 else "0"
@@ -1024,13 +1024,19 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
         resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 900),0))"},
+                {"Id": "challreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"challengeable-request\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         ddos_chart_data = {"labels": [], "ddos": []}
         _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
+        # Prefer ddos-request; fallback to challengeable-request (Challenge-based DDoS mitigation)
         for r in resp.get("MetricDataResults", []):
-            if r["Id"] == "ddosreq":
+            if r["Id"] == "ddosreq" and any(v > 0 for v in r.get("Values", [])):
+                ddos_chart_data["labels"] = [t.astimezone(_user_tz).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
+                break
+            elif r["Id"] == "challreq" and any(v > 0 for v in r.get("Values", [])):
                 ddos_chart_data["labels"] = [t.astimezone(_user_tz).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
         if not ddos_chart_data["labels"]:
