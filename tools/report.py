@@ -425,6 +425,12 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     ddos_duration_min = 0
     caps = get_capabilities()
     log_dest = get_log_destination()
+    # Auto-init session if capabilities not set (LLM may skip get_waf_config)
+    if not caps:
+        from tools.waf_config import get_waf_config as _init_config
+        _init_config(webacl_name=webacl_name, scope=scope)
+        caps = get_capabilities()
+        log_dest = get_log_destination()
     # Auto-discover log destination if not already set
     if not log_dest:
         try:
@@ -1091,28 +1097,33 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFR
 
 
 def _get_top_countries(cw, webacl_name: str, start, end) -> list:
-    """Get top countries by blocked requests using SEARCH + SORT."""
+    """Get top countries by mitigated requests (Block + Challenge + Captcha) using SEARCH + SORT."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
     resp = cw.get_metric_data(
         MetricDataQueries=[
-            {"Id": "raw", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-            {"Id": "sorted", "Expression": "SORT(raw, SUM, DESC, 10)"},
+            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            {"Id": "challenged", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"ChallengeRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"CaptchaRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
         ],
         StartTime=start, EndTime=end,
     )
-    results = []
+    # Aggregate all actions per country
+    country_totals = {}
     for r in resp.get("MetricDataResults", []):
-        if r["Id"] != "sorted":
-            continue
         total = sum(r.get("Values", []))
         if total > 0:
             label = r.get("Label", "")
-            # Label format: "{rank} - {CountryCode}" e.g. "1 - US"
-            parts = label.split(" - ", 1)
-            country = parts[1] if len(parts) == 2 else label
-            results.append({"country": country, "count": int(total)})
-    return results
+            # Label format varies: "{CountryCode} {MetricName}" or just country code
+            parts = label.split()
+            country = parts[0] if parts else label
+            # Clean up: remove metric name suffix if present
+            if country in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests"):
+                continue
+            country_totals[country] = country_totals.get(country, 0) + int(total)
+    # Sort and return top 10
+    sorted_countries = sorted(country_totals.items(), key=lambda x: x[1], reverse=True)
+    return [{"country": c, "count": cnt} for c, cnt in sorted_countries[:10]]
 
 
 def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "") -> list:
