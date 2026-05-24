@@ -415,7 +415,7 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: float) -> st
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    end_epoch = start_epoch + (hours_ago * 3600)
+    end_epoch = int(start_epoch + hours_ago * 3600)
 
     # Get both ends of client distribution
     cwl_bottom = (

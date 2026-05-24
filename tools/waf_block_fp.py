@@ -59,7 +59,7 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
         return f"Error: cannot parse start_time '{start_time}'."
 
     hours_ago = min(hours_ago, 6)
-    end_epoch = start_epoch + (hours_ago * 3600)
+    end_epoch = int(start_epoch + hours_ago * 3600)
 
     # Check ALLOW log availability for both steps
     if is_log_filter_active():

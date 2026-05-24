@@ -438,10 +438,10 @@ def _time_filter(table: str, hours_ago: int, partition_format: str | None, start
     """Build WHERE clause with timestamp + partition pruning."""
     if start_epoch:
         start_ms = start_epoch * 1000
-        end_ms = start_ms + (hours_ago * 3600 * 1000)
+        end_ms = int(start_ms + hours_ago * 3600 * 1000)
     else:
         end_ms = int(time.time()) * 1000
-        start_ms = end_ms - (hours_ago * 3600 * 1000)
+        start_ms = int(end_ms - hours_ago * 3600 * 1000)
     clause = f'"timestamp" BETWEEN {start_ms} AND {end_ms}'
     if partition_format:
         start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)

@@ -375,7 +375,7 @@ def run_logs_query(
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-    end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
+    end_epoch = min(int(start_epoch + hours_ago * 3600), int(time.time()))
 
     # Build Athena query with params substituted (only user params, not TABLE/START_MS/END_MS/PARTITION_FILTER)
     athena_query = template.get("athena", "")
@@ -716,7 +716,7 @@ def analyze_ip(ip: str, start_time: str, duration_hours: float = 6, hours_ago: f
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-    end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
+    end_epoch = min(int(start_epoch + hours_ago * 3600), int(time.time()))
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
     # Phase 1: Diversity check (NAT detection)

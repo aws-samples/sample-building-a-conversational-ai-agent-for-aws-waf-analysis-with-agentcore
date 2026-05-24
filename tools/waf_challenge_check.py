@@ -43,7 +43,7 @@ def check_challenge_compatibility(start_time: str, duration_hours: float = 6, ho
         return f"Error: cannot parse start_time '{start_time}'."
 
     hours_ago = min(hours_ago, 6)
-    end_epoch = start_epoch + (hours_ago * 3600)
+    end_epoch = int(start_epoch + hours_ago * 3600)
 
     action = action_type.upper()
     if action not in ("CHALLENGE", "CAPTCHA"):

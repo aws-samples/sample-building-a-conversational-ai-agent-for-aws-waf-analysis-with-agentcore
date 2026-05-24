@@ -79,7 +79,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
         if start_time:
             start_epoch = _parse_start_time(start_time)
             if start_epoch:
-                end_epoch = start_epoch + (min(hours_ago, 6) * 3600)
+                end_epoch = int(start_epoch + min(hours_ago, 6) * 3600)
                 results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1)
                 if not results or int(results[0].get("cnt", 0)) == 0:
                     return ("## Cannot Proceed — ALLOW Logs Unavailable\n\n"
@@ -95,7 +95,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
         return f"Error: cannot parse start_time '{start_time}'."
 
     hours_ago = min(hours_ago, 6)
-    end_epoch = min(start_epoch + (hours_ago * 3600), int(time.time()))
+    end_epoch = min(int(start_epoch + hours_ago * 3600), int(time.time()))
 
     if step == "scan":
         return _step_scan(start_epoch, end_epoch)
