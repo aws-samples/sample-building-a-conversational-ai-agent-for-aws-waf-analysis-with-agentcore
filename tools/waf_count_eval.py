@@ -35,7 +35,11 @@ def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoc
         results = query_logs(query_cwl, query_athena, start_epoch, end_epoch, limit)
     except Exception:
         return []
-    return results if results is not None else []
+    if results is None:
+        return []
+    if results and isinstance(results[0], dict) and "_error" in results[0]:
+        return []
+    return results
 
 
 def _has_logging() -> bool:

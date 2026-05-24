@@ -369,7 +369,7 @@ def _wait_query(athena, qid: str):
         if state in ("FAILED", "CANCELLED"):
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
             raise RuntimeError(f"Athena query {state}: {reason}")
-    raise RuntimeError("Athena query timed out")
+    raise RuntimeError("Athena query timed out (>5min). Try a shorter time window (duration_hours=1) or verify partition pruning is working.")
 
 
 # ---------------------------------------------------------------------------

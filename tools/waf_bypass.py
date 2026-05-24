@@ -12,9 +12,13 @@ from tools.waf_query import query_logs, get_log_type
 
 
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10) -> list[dict]:
-    """query_logs wrapper that never raises."""
+    """query_logs wrapper that never raises. Returns [] on error or Athena cap."""
     try:
-        return query_logs(cwl, athena, start, end, limit) or []
+        results = query_logs(cwl, athena, start, end, limit) or []
+        if results and isinstance(results[0], dict) and "_error" in results[0]:
+            print(f"[waf_bypass] query_logs cap: {results[0]['_error']}", file=sys.stderr, flush=True)
+            return []
+        return results
     except Exception as e:
         print(f"[waf_bypass] query_logs error: {e}", file=sys.stderr, flush=True)
         return []

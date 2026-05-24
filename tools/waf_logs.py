@@ -421,6 +421,9 @@ def run_logs_query(
         if results is None:
             _log("query_logs returned None (no log destination)")
             results = []
+        elif results and isinstance(results[0], dict) and "_error" in results[0]:
+            _log(f"query_logs returned error: {results[0]['_error']}")
+            return results[0]["_error"]
         else:
             _log(f"query_logs returned {len(results)} results")
 
