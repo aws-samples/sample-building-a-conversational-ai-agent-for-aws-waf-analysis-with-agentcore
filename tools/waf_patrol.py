@@ -8,17 +8,6 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_user_timezone
-
-
-def _to_local_ts(timestamps):
-    """Convert CloudWatch timestamps to user's session timezone."""
-    tz_off = get_user_timezone()
-    if tz_off is not None:
-        user_tz = timezone(timedelta(hours=tz_off))
-        return [t.astimezone(user_tz).isoformat() for t in timestamps]
-    return [t.isoformat() for t in timestamps]
-
 
 _latest_patrol_html: str | None = None
 
@@ -329,37 +318,25 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
         StartTime=start, EndTime=end, ScanBy="TimestampAscending",
     )
 
-    rules = {}  # {rule_name: {blocked: [(ts,val),...], ...}}
+    rules = {}  # {rule_name: {blocked: [...], counted: [...], challenge: [...], captcha: [...], allowed: [...]}}
     metric_map = {"blocked": "blocked", "counted": "counted", "challenge": "challenge", "captcha": "captcha", "allowed": "allowed"}
 
-    # Phase 1: collect time-indexed data per rule per metric
-    _raw = {}  # {rule_name: {metric: {ts_str: value}}}
     for r in resp.get("MetricDataResults", []):
         qid = r["Id"]
         if qid not in metric_map:
             continue
         label = r.get("Label", "")
+        # Label format: "{RuleName} {MetricName}" — parse rule name
         parts = label.rsplit(" ", 1)
         rule_name = parts[0] if len(parts) == 2 else label
         values = [int(v) for v in r.get("Values", [])]
-        timestamps = _to_local_ts(r.get("Timestamps", []))
+        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
 
-        if rule_name not in _raw:
-            _raw[rule_name] = {}
-        _raw[rule_name][metric_map[qid]] = dict(zip(timestamps, values))
-
-    # Phase 2: build aligned arrays per rule (union of all timestamps, sorted)
-    rules = {}
-    for rule_name, metrics_data in _raw.items():
-        all_ts = sorted(set(ts for m in metrics_data.values() for ts in m.keys()))
-        rules[rule_name] = {
-            "timestamps": all_ts,
-            "blocked": [metrics_data.get("blocked", {}).get(ts, 0) for ts in all_ts],
-            "counted": [metrics_data.get("counted", {}).get(ts, 0) for ts in all_ts],
-            "challenge": [metrics_data.get("challenge", {}).get(ts, 0) for ts in all_ts],
-            "captcha": [metrics_data.get("captcha", {}).get(ts, 0) for ts in all_ts],
-            "allowed": [metrics_data.get("allowed", {}).get(ts, 0) for ts in all_ts],
-        }
+        if rule_name not in rules:
+            rules[rule_name] = {"blocked": [], "counted": [], "challenge": [], "captcha": [], "allowed": [], "timestamps": []}
+        rules[rule_name][metric_map[qid]] = values
+        if timestamps and not rules[rule_name]["timestamps"]:
+            rules[rule_name]["timestamps"] = timestamps
 
     return rules
 
@@ -396,7 +373,7 @@ _EXPECTED_AMRS = {
     "AWSManagedRulesKnownBadInputsRuleSet": "Known Bad Inputs",
     "AWSManagedRulesBotControlRuleSet": "Bot Control",
     "AWSManagedRulesAntiDDoSRuleSet": "Anti-DDoS",
-    "AWSManagedRulesAnonymousIpList": "Anonymous IP (VPN/Tor/Proxy)",
+    "AWSManagedRulesAnonymousIpList": "IP Reputation",
     "AWSManagedRulesAmazonIpReputationList": "IP Reputation (Amazon)",
     "AWSManagedRulesSQLiRuleSet": "SQL Injection",
     "AWSManagedRulesLinuxRuleSet": "Linux OS",
@@ -503,7 +480,7 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
         if amr_name not in deployed_amrs and amr_name in (
             "AWSManagedRulesCommonRuleSet", "AWSManagedRulesKnownBadInputsRuleSet",
             "AWSManagedRulesBotControlRuleSet", "AWSManagedRulesAntiDDoSRuleSet",
-            "AWSManagedRulesAmazonIpReputationList",
+            "AWSManagedRulesAnonymousIpList",
         ):
             tools.append({"layer": layer, "rule_name": "—", "mode": _d["not_deployed"], "status": "missing", "detail": ""})
 
@@ -629,8 +606,7 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
     try:
         resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=10)
         query_id = resp["queryId"]
-        result = {"status": "Timeout"}
-        for _ in range(max(max_wait // 2, 1)):
+        for _ in range(max_wait // 2):
             time.sleep(2)
             result = logs_client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
@@ -707,16 +683,12 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to scan.\nExample: patrol_scan(webacl_name=\"...\", start_time=\"2026-05-09\", hours=24)"
 
-    # Parse start_time (use session timezone)
-    from tools.session_state import get_user_timezone
-    tz_off = get_user_timezone()
-    user_tz = timezone(timedelta(hours=tz_off)) if tz_off is not None else timezone.utc
+    # Parse start_time
     try:
         if "T" in start_time:
-            dt = datetime.fromisoformat(start_time)
-            start = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=user_tz).astimezone(timezone.utc)
+            start = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
         else:
-            start = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=user_tz).astimezone(timezone.utc)
+            start = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
     except ValueError:
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
@@ -859,10 +831,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         labels = []
         total_values = []
         attack_raw = {}
-        _tz_user = timezone(timedelta(hours=get_user_timezone())) if get_user_timezone() is not None else timezone.utc
+        _tz_off = timedelta(hours=8) if lang == "zh" else timedelta(0)
         for r in chart_resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
-                labels = [t.astimezone(_tz_user).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                labels = [(t + _tz_off).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 total_values = [int(v) for v in r.get("Values", [])]
             elif r["Id"] == "attacks":
                 raw_label = r.get("Label", "Unknown")
@@ -870,7 +842,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 if atype not in attack_raw:
                     attack_raw[atype] = {}
                 for t, v in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    k = t.astimezone(_tz_user).strftime("%m/%d %H:%M")
+                    k = (t + _tz_off).strftime("%m/%d %H:%M")
                     attack_raw[atype][k] = attack_raw[atype].get(k, 0) + int(v)
         if labels:
             series = {a: [ts_map.get(l, 0) for l in labels] for a, ts_map in attack_raw.items()}
@@ -1058,9 +1030,8 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
     """Render deterministic patrol report HTML — chart-first, minimal tables."""
     L = _PATROL_I18N.get(lang, _PATROL_I18N["en"])
     now = datetime.now(timezone.utc)
-    tz_off = get_user_timezone()
-    tz_offset = timedelta(hours=tz_off) if tz_off is not None else timedelta(0)
-    tz_label = f"UTC{tz_off:+g}" if tz_off is not None and tz_off != 0 else "UTC"
+    tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
+    tz_label = "UTC+8" if lang == "zh" else "UTC"
 
     n_critical = sum(1 for a in all_action_items if a["severity"] == "critical")
     n_moderate = sum(1 for a in all_action_items if a["severity"] == "moderate")
@@ -1320,7 +1291,7 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 </style></head><body>
 <h1>🛡️ {L["title"]}</h1>
 <button onclick="document.documentElement.classList.toggle('light');this.textContent=document.documentElement.classList.contains('light')?'🌙':'☀️'" style="position:fixed;top:1rem;right:1rem;font-size:1.5rem;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;cursor:pointer;z-index:99">☀️</button>
-<p class="muted">{L["period"]}: {start.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} — {end.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {now.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
+<p class="muted">{L["period"]}: {(start + tz_offset).strftime('%Y-%m-%d %H:%M')} — {(end + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {(now + tz_offset).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
 <p class="muted">{L["delay_note"]}</p>
 
 <div class="banner {banner_class}">{banner_text}</div>

@@ -24,11 +24,11 @@ _I18N = {
         "of_traffic": "of traffic",
         "of_total_traffic": "of total traffic",
         "top_attack": "Top Attack Sources",
-        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · {tz}",
+        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · UTC",
         "country_note": "Blocked requests by country · Does not include Anti-DDoS challenged requests",
         "attack_chart_title": "Threats Mitigated by Attack Type",
         "antiddos": "Anti-DDoS Protection",
-        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · {tz}",
+        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · UTC",
         "antiddos_no_data": "No Anti-DDoS AMR metrics available.",
         "antiddos_not_deployed": "Anti-DDoS AMR not deployed.",
         "antiddos_title": "Anti-DDoS: Requests Identified",
@@ -57,11 +57,11 @@ _I18N = {
         "of_traffic": "占总流量",
         "of_total_traffic": "占总流量",
         "top_attack": "攻击来源",
-        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · {tz}",
+        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · UTC+8",
         "country_note": "按国家统计的拦截请求 · 不含 Anti-DDoS 质询请求",
         "attack_chart_title": "按攻击类型拦截分布",
         "antiddos": "Anti-DDoS 防护",
-        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · {tz}",
+        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · UTC+8",
         "antiddos_no_data": "无 Anti-DDoS AMR 指标数据。",
         "antiddos_not_deployed": "未部署 Anti-DDoS AMR。",
         "antiddos_title": "Anti-DDoS：识别的 DDoS 请求",
@@ -327,26 +327,18 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         return "Error: start_time is required. Ask the user which period to report on.\nExample: generate_weekly_report(webacl_name=\"my-acl\", start_time=\"2026-05-08\", days=7)"
     days = min(days, 7)
 
-    # Parse start_time (use session timezone)
-    from tools.session_state import get_user_timezone
-    tz_off = get_user_timezone()
-    _user_tz = timezone(timedelta(hours=tz_off)) if tz_off is not None else timezone.utc
+    # Parse start_time
     try:
         if "T" in start_time:
-            dt = datetime.fromisoformat(start_time)
-            _st = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=_user_tz).astimezone(timezone.utc)
+            _st = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
         else:
-            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=_user_tz).astimezone(timezone.utc)
+            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
     except ValueError:
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
     L = _I18N.get(lang, _I18N["en"])
-    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities, get_user_timezone
-    tz_off = get_user_timezone()
-    _tz_offset = timedelta(hours=tz_off) if tz_off is not None else timedelta(0)
-    # Format timezone label for chart notes
-    tz_label = f"UTC{tz_off:+g}" if tz_off is not None and tz_off != 0 else "UTC"
-    L = {k: v.format(tz=tz_label) if "{tz}" in str(v) else v for k, v in L.items()}
+    _tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
+    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
     # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
@@ -425,12 +417,6 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     ddos_duration_min = 0
     caps = get_capabilities()
     log_dest = get_log_destination()
-    # Auto-init session if capabilities not set (LLM may skip get_waf_config)
-    if not caps:
-        from tools.waf_config import get_waf_config as _init_config
-        _init_config(webacl_name=webacl_name, scope=scope)
-        caps = get_capabilities()
-        log_dest = get_log_destination()
     # Auto-discover log destination if not already set
     if not log_dest:
         try:
@@ -773,7 +759,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     in_event = False
     except Exception:
         pass
-    ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else (f"🔴 {ddos_num_events} {L['events']}" if ddos_num_events > 0 else L["no_events"])
+    ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else L["no_events"]
 
     # Executive Summary — LLM generates, limited to 3-5 sentences
     mitigated_pct = f"{(threats_mitigated/total_this*100):.1f}" if total_this > 0 else "0"
@@ -932,12 +918,9 @@ def _get_traffic_timeseries(cw, webacl_name: str, start, end, scope: str = "CLOU
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         data = {}
-        from tools.session_state import get_user_timezone
-        _tz_off = get_user_timezone()
-        _user_tz = timezone(timedelta(hours=_tz_off)) if _tz_off is not None else timezone.utc
         for r in resp.get("MetricDataResults", []):
             for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
+                key = ts.strftime("%m/%d %H:%M")
                 if key not in data:
                     data[key] = {"date": key, "allowed": 0, "blocked": 0, "challenged": 0, "captcha": 0}
                 data[key][r["Id"]] = int(val)
@@ -972,11 +955,11 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
         total_values = []
         ddos_values = []
         attack_raw = {}  # {attack_type: {timestamp_str: value}}
-        _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
+        _off = tz_offset or timedelta(0)
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
+                    key = (ts + _off).strftime("%m/%d %H:%M")
                     labels.append(key)
                     total_values.append(int(val))
             elif r["Id"] == "ddos_c":
@@ -989,7 +972,7 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
                 if attack_type not in attack_raw:
                     attack_raw[attack_type] = {}
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
+                    key = (ts + _off).strftime("%m/%d %H:%M")
                     attack_raw[attack_type][key] = attack_raw[attack_type].get(key, 0) + int(val)
 
         if not labels:
@@ -1024,20 +1007,13 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
         resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 900),0))"},
-                {"Id": "challreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"challengeable-request\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         ddos_chart_data = {"labels": [], "ddos": []}
-        _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
-        # Prefer ddos-request; fallback to challengeable-request (Challenge-based DDoS mitigation)
         for r in resp.get("MetricDataResults", []):
-            if r["Id"] == "ddosreq" and any(v > 0 for v in r.get("Values", [])):
-                ddos_chart_data["labels"] = [t.astimezone(_user_tz).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
-                ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
-                break
-            elif r["Id"] == "challreq" and any(v > 0 for v in r.get("Values", [])):
-                ddos_chart_data["labels"] = [t.astimezone(_user_tz).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+            if r["Id"] == "ddosreq":
+                ddos_chart_data["labels"] = [(t + (tz_offset or timedelta(0))).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
         if not ddos_chart_data["labels"]:
             return f'<h2>{L["antiddos"]}</h2><p style="color:var(--muted)">{L["antiddos_no_data"]}</p>'
@@ -1103,33 +1079,28 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFR
 
 
 def _get_top_countries(cw, webacl_name: str, start, end) -> list:
-    """Get top countries by mitigated requests (Block + Challenge + Captcha) using SEARCH + SORT."""
+    """Get top countries by blocked requests using SEARCH + SORT."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
     resp = cw.get_metric_data(
         MetricDataQueries=[
-            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-            {"Id": "challenged", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"ChallengeRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"CaptchaRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            {"Id": "raw", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            {"Id": "sorted", "Expression": "SORT(raw, SUM, DESC, 10)"},
         ],
         StartTime=start, EndTime=end,
     )
-    # Aggregate all actions per country
-    country_totals = {}
+    results = []
     for r in resp.get("MetricDataResults", []):
+        if r["Id"] != "sorted":
+            continue
         total = sum(r.get("Values", []))
         if total > 0:
             label = r.get("Label", "")
-            # Label format varies: "{CountryCode} {MetricName}" or just country code
-            parts = label.split()
-            country = parts[0] if parts else label
-            # Clean up: remove metric name suffix if present
-            if country in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests"):
-                continue
-            country_totals[country] = country_totals.get(country, 0) + int(total)
-    # Sort and return top 10
-    sorted_countries = sorted(country_totals.items(), key=lambda x: x[1], reverse=True)
-    return [{"country": c, "count": cnt} for c, cnt in sorted_countries[:10]]
+            # Label format: "{rank} - {CountryCode}" e.g. "1 - US"
+            parts = label.split(" - ", 1)
+            country = parts[1] if len(parts) == 2 else label
+            results.append({"country": country, "count": int(total)})
+    return results
 
 
 def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "") -> list:
