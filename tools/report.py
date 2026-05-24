@@ -24,11 +24,11 @@ _I18N = {
         "of_traffic": "of traffic",
         "of_total_traffic": "of total traffic",
         "top_attack": "Top Attack Sources",
-        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · UTC",
+        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · {tz}",
         "country_note": "Blocked requests by country · Does not include Anti-DDoS challenged requests",
         "attack_chart_title": "Threats Mitigated by Attack Type",
         "antiddos": "Anti-DDoS Protection",
-        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · UTC",
+        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · {tz}",
         "antiddos_no_data": "No Anti-DDoS AMR metrics available.",
         "antiddos_not_deployed": "Anti-DDoS AMR not deployed.",
         "antiddos_title": "Anti-DDoS: Requests Identified",
@@ -57,11 +57,11 @@ _I18N = {
         "of_traffic": "占总流量",
         "of_total_traffic": "占总流量",
         "top_attack": "攻击来源",
-        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · UTC+8",
+        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · {tz}",
         "country_note": "按国家统计的拦截请求 · 不含 Anti-DDoS 质询请求",
         "attack_chart_title": "按攻击类型拦截分布",
         "antiddos": "Anti-DDoS 防护",
-        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · UTC+8",
+        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · {tz}",
         "antiddos_no_data": "无 Anti-DDoS AMR 指标数据。",
         "antiddos_not_deployed": "未部署 Anti-DDoS AMR。",
         "antiddos_title": "Anti-DDoS：识别的 DDoS 请求",
@@ -341,6 +341,9 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     from tools.session_state import get_metrics_region, get_log_destination, get_capabilities, get_user_timezone
     tz_off = get_user_timezone()
     _tz_offset = timedelta(hours=tz_off) if tz_off is not None else timedelta(0)
+    # Format timezone label for chart notes
+    tz_label = f"UTC{tz_off:+g}" if tz_off is not None and tz_off != 0 else "UTC"
+    L = {k: v.format(tz=tz_label) if "{tz}" in str(v) else v for k, v in L.items()}
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
     # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
