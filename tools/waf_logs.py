@@ -269,7 +269,8 @@ def _parse_start_time(value: str) -> int | None:
 def run_logs_query(
     query_type: str,
     start_time: str,
-    hours_ago: int = 6,
+    duration_hours: int = 6,
+    hours_ago: int = None,
     log_group: str = "",
     rule_name: str = "",
     ip: str = "",
@@ -316,7 +317,7 @@ def run_logs_query(
             - host_uri_pattern: Top URIs for a specific host (needs host param)
             - host_method_distribution: HTTP method distribution for a host (needs host param)
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
-        hours_ago: Duration in hours from start_time (default 6, max 6). The query covers [start_time, start_time + hours_ago].
+        duration_hours: Duration in hours from start_time (default 6, max 6). The query covers [start_time, start_time + duration_hours].
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
@@ -358,7 +359,9 @@ def run_logs_query(
     query = template["query"]
     for k, v in params.items():
         query = query.replace(f"{{{k}}}", str(v))
-    _log(f"query_type={query_type} start_time={start_time} hours_ago={hours_ago} dest={dest or log_group}")
+    # Resolve duration (duration_hours is primary, hours_ago is backward-compat alias)
+    hours_ago = hours_ago if hours_ago is not None else duration_hours
+    _log(f"query_type={query_type} start_time={start_time} duration={hours_ago}h dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
     from tools.waf_query import query_logs, get_log_type
@@ -367,7 +370,7 @@ def run_logs_query(
         hours_ago = MAX_HOURS
 
     if not start_time:
-        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_hours=2)"
 
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
@@ -677,7 +680,7 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 
 
 @tool
-def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
+def analyze_ip(ip: str, start_time: str, duration_hours: int = 6, hours_ago: int = None) -> str:
     """Analyze a single IP address — full behavioral profile across all actions.
 
     Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
@@ -687,11 +690,12 @@ def analyze_ip(ip: str, start_time: str, hours_ago: int = 6) -> str:
     Args:
         ip: IP address to analyze.
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED.
-        hours_ago: Duration in hours from start_time (default 6, max 6).
+        duration_hours: Duration in hours from start_time (default 6, max 6).
 
     Returns:
         Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
     """
+    hours_ago = hours_ago if hours_ago is not None else duration_hours
     import ipaddress
     try:
         ipaddress.ip_address(ip)
