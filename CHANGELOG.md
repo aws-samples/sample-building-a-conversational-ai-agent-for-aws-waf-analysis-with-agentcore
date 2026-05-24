@@ -58,19 +58,44 @@
 
 ### Athena Performance & Robustness
 
-- **1-hour query cap for Athena**: Enforced at the unified `query_logs` layer — prevents full-table scans on production datasets (1-10TB/day). Clear error message guides LLM to split into multiple 1h calls with progressive user reporting.
+- **Unified query window caps**: Athena hard-capped at 60 min, CWL defaults to 180 min (max 360 min). Enforced at tool level — no separate cap in `waf_query.py`.
 - **Partition pruning fix**: `_ensure_athena_table` now detects partition format for existing tables (was only set during table creation, causing full scans on pre-existing tables).
-- **`duration_hours` as float**: All tools accept fractional hours (0.5 = 30min, 0.25 = 15min) — LLM can progressively narrow if queries time out.
-- **Error surfacing**: Athena cap errors now bubble up to LLM (previously `detect_bypass` and `evaluate_count_rules` silently returned empty results).
-- **Metrics-based peak detection**: `evaluate_count_rules` uses CloudWatch Metrics (instant, free) instead of 14-day log scan to find peak hours.
-- **Improved timeout message**: Suggests narrower window instead of generic "timed out".
+- **Error surfacing**: Query errors bubble up to LLM (previously `detect_bypass` and `evaluate_count_rules` silently returned empty results).
+- **Metrics-based peak detection**: `evaluate_count_rules(step='analyze_rule')` returns peak hour + hit count only — does NOT auto-query logs. LLM decides window based on volume.
+- **Improved timeout message**: Suggests `duration_minutes=30` or `duration_minutes=15` instead of generic "timed out".
 - **User expectation management**: LLM proactively informs user about Athena latency after `get_waf_config`.
 
-### Parameter Rename: `hours_ago` → `duration_hours`
+### Parameter Rename: `duration_hours` → `duration_minutes`
 
-- All 6 log-querying tools renamed for clarity (it's duration from start, not "hours ago from now")
-- `hours_ago` retained as backward-compatible alias
-- Type changed from `int` to `float` for sub-hour precision
+- All 6 log-querying tools renamed: `duration_hours` (float) → `duration_minutes` (int)
+- `hours_ago` backward-compat alias removed entirely
+- Integer arithmetic eliminates float→ParamValidationError bug class
+- Adaptive window guidance in system prompt: LLM starts with default, narrows based on results
+- `_athena_cap_hit` dead code removed from `waf_bypass.py`
+
+### Report Improvements
+
+- **Title**: "管理层周报" / "Executive Summary" (was "AWS WAF 安全周报")
+- **Unified headers**: Both reports show WebACL name, scope, time range, gen time, timezone, delay note
+- **Light theme chart fix**: `<html class="dark">` at top + Chart.js color update on toggle
+- **Country map**: Includes Challenge + Captcha (not just Block) — DDoS-heavy WebACLs now show data
+- **i18n**: DDoS section cards, delay note, "Generated" label all localized
+- **IP Reputation check**: Validates `AmazonIpReputationList` (deployed) not `AnonymousIpList` (optional)
+
+### CloudWatch MetricStat Migration (Phase 1)
+
+- Fixed-dimension SEARCH queries converted to explicit MetricStat + FILL — extends queryable window from ~14 days (SEARCH index expiry) to 63 days (5-min rollup retention)
+- Converted: Rule=ALL metrics, event-detected, ddos-request, total_m
+- DDoS fallback: queries both `ddos-request` and `challengeable-request` labels
+
+### Missing Data Indicators (Phase 2)
+
+- When SEARCH returns empty (metric index expired), reports show user-friendly warning instead of blank space
+- Tool return includes structured `PARTIAL_DATA` / `MISSING_SECTIONS` / `REASON` / `ACTION` for LLM
+
+### WebACL Validation
+
+- All tools validate WebACL name before querying metrics — returns available names + ACTION hint if not found
 
 ## 0.7.0 (2026-05-18)
 
