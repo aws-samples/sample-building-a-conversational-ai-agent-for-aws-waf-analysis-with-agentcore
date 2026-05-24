@@ -189,27 +189,42 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
 
 
 def _attack_types(cw, webacl_name, start, end, minutes):
+    period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {_calc_period(minutes)})"},
+        {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})"},
     ], StartTime=start, EndTime=end)
 
-    types = {}
+    # Collect per-type time-series
+    type_series = {}  # {attack_type: {timestamps: [], values: []}}
     for r in resp.get("MetricDataResults", []):
         label = r.get("Label", "")
         parts = label.split(" ")
         atype = parts[0] if parts else label
-        val = int(sum(r.get("Values", [])))
-        if val > 0:
-            types[atype] = types.get(atype, 0) + val
+        values = [int(v) for v in r.get("Values", [])]
+        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+        if sum(values) > 0:
+            type_series[atype] = {"timestamps": timestamps, "values": values, "total": sum(values)}
 
-    sorted_types = sorted(types.items(), key=lambda x: x[1], reverse=True)
+    sorted_types = sorted(type_series.items(), key=lambda x: x[1]["total"], reverse=True)
     lines = [f"Attack Types (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
-    for atype, count in sorted_types:
-        lines.append(f"  {atype:<25} {count:>10,}")
+    for atype, data in sorted_types:
+        lines.append(f"  {atype:<25} {data['total']:>10,}")
     if not sorted_types:
         lines.append("  No attack data in this period.")
-    lines.append("")
-    lines.append("→ For timeline details, use get_waf_overview(query_type='top_rules') or run patrol_scan for full report.")
+        return "\n".join(lines)
+
+    # Time-series for top attack type
+    if sorted_types:
+        top_type, top_data = sorted_types[0]
+        ts = top_data["timestamps"]
+        vals = top_data["values"]
+        if len(ts) > 1:
+            lines.append(f"\nTime-series for '{top_type}' ({period//60}min granularity):")
+            lines.append(f"{'Time':<25} {'Count':>8}")
+            for i, t in enumerate(ts):
+                if vals[i] > 0:
+                    lines.append(f"{t:<25} {vals[i]:>8,}")
+
     return "\n".join(lines)
 
 
@@ -228,13 +243,22 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
             {"Name": "LabelName", "Value": "unverified"}, {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"}, {"Name": "WebACL", "Value": webacl_name}]}, "Period": period, "Stat": "Sum"}},
     ]
     resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
-    vals = {r["Id"]: int(sum(r.get("Values", []))) for r in resp.get("MetricDataResults", [])}
 
-    v_a = vals.get("v_a", 0)
-    u_a = vals.get("u_a", 0)
-    u_b = vals.get("u_b", 0)
-    u_ch = vals.get("u_ch", 0)
-    u_cap = vals.get("u_cap", 0)
+    # Collect totals and time-series
+    series = {}
+    totals = {}
+    for r in resp.get("MetricDataResults", []):
+        rid = r["Id"]
+        values = [int(v) for v in r.get("Values", [])]
+        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+        totals[rid] = sum(values)
+        series[rid] = {"timestamps": timestamps, "values": values}
+
+    v_a = totals.get("v_a", 0)
+    u_a = totals.get("u_a", 0)
+    u_b = totals.get("u_b", 0)
+    u_ch = totals.get("u_ch", 0)
+    u_cap = totals.get("u_cap", 0)
     u_mit = u_b + u_ch + u_cap
 
     lines = [f"Bot Summary (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
@@ -243,9 +267,20 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
     lines.append(f"  🚫 Unverified mitigated:         {u_mit:>10,} (blocked {u_b:,} + challenge {u_ch:,} + captcha {u_cap:,})")
     if v_a + u_a + u_mit == 0:
         lines.append("  No bot data — Bot Control may not be deployed.")
+
+    # Time-series: unverified allowed (most actionable — bots getting through)
+    ua_series = series.get("u_a", {})
+    ts = ua_series.get("timestamps", [])
+    vals = ua_series.get("values", [])
+    if ts and len(ts) > 1 and u_a > 0:
+        lines.append(f"\nUnverified-allowed time-series ({period//60}min granularity):")
+        lines.append(f"{'Time':<25} {'Count':>8}")
+        for i, t in enumerate(ts):
+            if vals[i] > 0:
+                lines.append(f"{t:<25} {vals[i]:>8,}")
+
     lines.append("")
     lines.append("→ For bot name breakdown: get_waf_overview(query_type='bot_names')")
-    lines.append("→ For targeted detection signals: get_waf_overview(query_type='targeted_signals')")
     return "\n".join(lines)
 
 
@@ -339,16 +374,28 @@ def _rate_limits(cw, webacl_name, scope, start, end, minutes):
     except Exception:
         pass
 
+    period = _calc_period(minutes)
     lines = [f"Rate-Limit Rules (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     found = False
     for rule, metrics in sorted(data.items(), key=lambda x: sum(x[1].get("blocked", [])), reverse=True):
         if rule == "ALL":
             continue
-        blocked = sum(metrics.get("blocked", []))
-        challenged = sum(metrics.get("challenge", []))
+        blocked_series = metrics.get("blocked", [])
+        challenge_series = metrics.get("challenge", [])
+        timestamps = metrics.get("timestamps", [])
+        blocked = sum(blocked_series)
+        challenged = sum(challenge_series)
         total = blocked + challenged
-        if rule in rate_rule_names:
+        if rule in rate_rule_names and total > 0:
             lines.append(f"  {rule}: {total:,} mitigated (blocked {blocked:,} + challenge {challenged:,})")
+            # Time-series
+            if timestamps and len(timestamps) > 1:
+                lines.append(f"    Time-series ({period//60}min):")
+                for i, ts in enumerate(timestamps):
+                    b = blocked_series[i] if i < len(blocked_series) else 0
+                    c = challenge_series[i] if i < len(challenge_series) else 0
+                    if b + c > 0:
+                        lines.append(f"    {ts}  {b + c:,}")
             found = True
     if not found:
         if rate_rule_names:
@@ -360,11 +407,15 @@ def _rate_limits(cw, webacl_name, scope, start, end, minutes):
 
 def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     from tools.waf_patrol import _get_challenge_solved, _get_all_rules_metrics_search
+    period = _calc_period(minutes)
     cs, cas = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
-    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(minutes), scope=scope, region=region)
+    data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope, region=region)
     all_data = data.get("ALL", {})
-    tot_ch = sum(all_data.get("challenge", []))
-    tot_cap = sum(all_data.get("captcha", []))
+    ch_series = all_data.get("challenge", [])
+    cap_series = all_data.get("captcha", [])
+    timestamps = all_data.get("timestamps", [])
+    tot_ch = sum(ch_series)
+    tot_cap = sum(cap_series)
 
     lines = [f"Challenge/CAPTCHA Solve Rate (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     lines.append(f"  Challenges issued:  {tot_ch:>10,}")
@@ -380,6 +431,16 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
             lines.append(f"✅ Low solve rate ({rate}%) — challenges are effectively blocking automated traffic.")
         else:
             lines.append(f"ℹ️ Moderate solve rate ({rate}%) — mix of bots and real users being challenged.")
+
+    # Time-series: challenge issued per period
+    if timestamps and len(timestamps) > 1 and tot_ch > 0:
+        lines.append(f"\nChallenge issued time-series ({period//60}min granularity):")
+        lines.append(f"{'Time':<25} {'Issued':>8}")
+        for i, ts in enumerate(timestamps):
+            v = ch_series[i] if i < len(ch_series) else 0
+            if v > 0:
+                lines.append(f"{ts:<25} {v:>8,}")
+
     return "\n".join(lines)
 
 
