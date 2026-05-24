@@ -22,7 +22,7 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
 
     Args:
         query_type: Type of overview to return:
-            - top_rules: Rules ranked by mitigation volume + WoW comparison + full time-series
+            - top_rules: Rules ranked by mitigation volume + vs-previous-period comparison + full time-series
             - attack_types: Attack type distribution (XSS, SQLi, LFI, etc.)
             - bot_summary: Verified/unverified/targeted bot overview
             - bot_names: Top bot names by request volume
@@ -140,7 +140,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
         mitigated = blocked + challenged + captcha
         if mitigated == 0 and counted == 0:
             continue
-        # WoW
+        # vs previous period
         lw = last_week.get(rule, {})
         lw_mit = sum(lw.get("blocked", [])) + sum(lw.get("challenge", [])) + sum(lw.get("captcha", []))
         wow = f"{mitigated/lw_mit:.1f}x" if lw_mit > 0 else "new"
@@ -148,10 +148,10 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
 
     rows.sort(reverse=True)
     lines = [f"Top Rules (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
-    lines.append(f"{'Rule':<40} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Counted':>8} {'WoW':>6}")
+    lines.append(f"{'Rule':<40} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Counted':>8} {'Change':>7}")
     lines.append("-" * 85)
     for _, rule, b, ch, cap, cnt, wow in rows[:15]:
-        lines.append(f"{rule:<40} {b:>8,} {ch:>10,} {cap:>8,} {cnt:>8,} {wow:>6}")
+        lines.append(f"{rule:<40} {b:>8,} {ch:>10,} {cap:>8,} {cnt:>8,} {wow:>7}")
 
     # Totals
     all_data = this_week.get("ALL", {})
@@ -176,12 +176,17 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
         lines.append("")
         lines.append(f"Time-series ({period//60}min granularity, {len(timestamps)} points):")
         lines.append(f"{'Time':<25} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Allowed':>8} {'Total':>8}")
+        shown = 0
         for i, ts in enumerate(timestamps):
             b = b_series[i] if i < len(b_series) else 0
             c = ch_series[i] if i < len(ch_series) else 0
             cap = cap_series[i] if i < len(cap_series) else 0
             a = a_series[i] if i < len(a_series) else 0
-            lines.append(f"{ts:<25} {b:>8,} {c:>10,} {cap:>8,} {a:>8,} {b+c+cap:>8,}")
+            if b + c + cap + a > 0:
+                lines.append(f"{ts:<25} {b:>8,} {c:>10,} {cap:>8,} {a:>8,} {b+c+cap:>8,}")
+                shown += 1
+        if shown == 0:
+            lines.append("  (all zeros)")
 
     lines.append("")
     lines.append("→ For IP/URI details on a specific rule, use run_logs_query(query_type='top_ips_by_volume', start_time='<peak_time>', hours_ago=1)")
@@ -192,7 +197,7 @@ def _attack_types(cw, webacl_name, start, end, minutes):
     period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})"},
-    ], StartTime=start, EndTime=end)
+    ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
     # Collect per-type time-series
     type_series = {}  # {attack_type: {timestamps: [], values: []}}
@@ -242,7 +247,7 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
         {"Id": "u_cap", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": [
             {"Name": "LabelName", "Value": "unverified"}, {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"}, {"Name": "WebACL", "Value": webacl_name}]}, "Period": period, "Stat": "Sum"}},
     ]
-    resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end)
+    resp = cw.get_metric_data(MetricDataQueries=queries, StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
     # Collect totals and time-series
     series = {}
@@ -287,7 +292,7 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
 def _bot_names(cw, webacl_name, start, end, minutes):
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {_calc_period(minutes)})"},
-    ], StartTime=start, EndTime=end)
+    ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
     bots = {}
     for r in resp.get("MetricDataResults", []):
@@ -316,7 +321,7 @@ def _targeted_signals(cw, webacl_name, start, end, minutes):
         {"Id": "sig", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal\"', 'Sum', {period})"},
         {"Id": "csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\"', 'Sum', {period})"},
         {"Id": "vol", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\"', 'Sum', {period})"},
-    ], StartTime=start, EndTime=end)
+    ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
     signals = {}
     for r in resp.get("MetricDataResults", []):
@@ -449,7 +454,7 @@ def _top_labels(cw, webacl_name, start, end, minutes):
     period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "labels", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})"},
-    ], StartTime=start, EndTime=end)
+    ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
     label_counts = []
     for r in resp.get("MetricDataResults", []):

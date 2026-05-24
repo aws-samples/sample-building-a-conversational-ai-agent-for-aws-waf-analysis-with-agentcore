@@ -193,7 +193,7 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [tzOffset, setTzOffset] = useState(() => {
     const saved = localStorage.getItem('waf-agent-tz');
-    return saved !== null ? parseFloat(saved) : null; // null = not yet confirmed
+    return saved !== null ? parseFloat(saved) : -(new Date().getTimezoneOffset() / 60);
   });
   const [tzConfirmed, setTzConfirmed] = useState(false);
   const sessionId = useRef(generateSessionId());
