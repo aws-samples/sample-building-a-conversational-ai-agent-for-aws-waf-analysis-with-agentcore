@@ -396,7 +396,7 @@ _EXPECTED_AMRS = {
     "AWSManagedRulesKnownBadInputsRuleSet": "Known Bad Inputs",
     "AWSManagedRulesBotControlRuleSet": "Bot Control",
     "AWSManagedRulesAntiDDoSRuleSet": "Anti-DDoS",
-    "AWSManagedRulesAnonymousIpList": "IP Reputation",
+    "AWSManagedRulesAnonymousIpList": "Anonymous IP (VPN/Tor/Proxy)",
     "AWSManagedRulesAmazonIpReputationList": "IP Reputation (Amazon)",
     "AWSManagedRulesSQLiRuleSet": "SQL Injection",
     "AWSManagedRulesLinuxRuleSet": "Linux OS",
@@ -503,7 +503,7 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
         if amr_name not in deployed_amrs and amr_name in (
             "AWSManagedRulesCommonRuleSet", "AWSManagedRulesKnownBadInputsRuleSet",
             "AWSManagedRulesBotControlRuleSet", "AWSManagedRulesAntiDDoSRuleSet",
-            "AWSManagedRulesAnonymousIpList",
+            "AWSManagedRulesAmazonIpReputationList",
         ):
             tools.append({"layer": layer, "rule_name": "—", "mode": _d["not_deployed"], "status": "missing", "detail": ""})
 

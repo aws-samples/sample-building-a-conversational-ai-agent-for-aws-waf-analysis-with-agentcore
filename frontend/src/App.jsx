@@ -333,7 +333,7 @@ export default function App() {
               if (completedTool?.name === 'finalize_review_report') {
                 assistantMsg = { ...assistantMsg, hasReviewReport: true };
               }
-              if (completedTool?.name === 'finalize_patrol_report') {
+              if (completedTool?.name === 'patrol_scan') {
                 assistantMsg = { ...assistantMsg, hasPatrolReport: true };
               }
               setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
