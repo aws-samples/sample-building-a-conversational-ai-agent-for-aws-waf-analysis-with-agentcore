@@ -327,13 +327,16 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         return "Error: start_time is required. Ask the user which period to report on.\nExample: generate_weekly_report(webacl_name=\"my-acl\", start_time=\"2026-05-08\", days=7)"
     days = min(days, 7)
 
-    # Parse start_time
+    # Parse start_time (use session timezone)
+    from tools.session_state import get_user_timezone
+    tz_off = get_user_timezone()
+    _user_tz = timezone(timedelta(hours=tz_off)) if tz_off is not None else timezone.utc
     try:
         if "T" in start_time:
             dt = datetime.fromisoformat(start_time)
-            _st = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+            _st = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=_user_tz).astimezone(timezone.utc)
         else:
-            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
+            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=_user_tz).astimezone(timezone.utc)
     except ValueError:
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
