@@ -11,12 +11,17 @@ from tools.session_state import get_webacl_name, get_scope, get_logs_region, is_
 from tools.waf_query import query_logs, get_log_type
 
 
+_athena_cap_hit = False  # module-level flag for Athena cap detection
+
+
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10) -> list[dict]:
-    """query_logs wrapper that never raises. Returns [] on error or Athena cap."""
+    """query_logs wrapper that never raises. Sets _athena_cap_hit if window too wide."""
+    global _athena_cap_hit
     try:
         results = query_logs(cwl, athena, start, end, limit) or []
         if results and isinstance(results[0], dict) and "_error" in results[0]:
             print(f"[waf_bypass] query_logs cap: {results[0]['_error']}", file=sys.stderr, flush=True)
+            _athena_cap_hit = True
             return []
         return results
     except Exception as e:
@@ -338,6 +343,17 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
     auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10)
 
+    # Check if Athena cap was hit — all queries returned empty
+    global _athena_cap_hit
+    if _athena_cap_hit and not crawlers and not repeaters and not datacenter and not auto_ua:
+        _athena_cap_hit = False
+        window_h = (end_epoch - start_epoch) / 3600
+        return (f"## Cannot Scan — Query Window Too Wide ({window_h:.1f}h)\n\n"
+                "Athena log queries are capped at 1 hour per call to control cost.\n"
+                "Please narrow the time window: detect_bypass(step='scan', start_time='<peak_hour>', duration_hours=1)\n"
+                "Use get_waf_overview to identify the peak period first.")
+    _athena_cap_hit = False
+
     # Build output
     lines = ["## Bypass Scan Results", ""]
 
@@ -546,6 +562,16 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
     )
     count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5)
+
+    # Check if Athena cap was hit
+    global _athena_cap_hit
+    if _athena_cap_hit:
+        _athena_cap_hit = False
+        window_h = (end_epoch - start_epoch) / 3600
+        return (f"## Cannot Investigate — Query Window Too Wide ({window_h:.1f}h)\n\n"
+                "Athena log queries are capped at 1 hour per call.\n"
+                f"Please narrow: detect_bypass(step='investigate_ip', ip='{ip}', start_time='<peak_hour>', duration_hours=1)")
+    _athena_cap_hit = False
 
     # Build output
     lines = [

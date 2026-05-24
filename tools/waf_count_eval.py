@@ -30,7 +30,7 @@ LOW_FP_RULES = {
 
 
 def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict]:
-    """Execute a log query via unified layer (CWL or Athena)."""
+    """Execute a log query via unified layer (CWL or Athena). Returns [] on error, raises QueryCapError if Athena cap hit."""
     try:
         results = query_logs(query_cwl, query_athena, start_epoch, end_epoch, limit)
     except Exception:
@@ -38,8 +38,13 @@ def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoc
     if results is None:
         return []
     if results and isinstance(results[0], dict) and "_error" in results[0]:
-        return []
+        raise QueryCapError(results[0]["_error"])
     return results
+
+
+class QueryCapError(Exception):
+    """Raised when Athena query window cap is hit."""
+    pass
 
 
 def _has_logging() -> bool:
@@ -419,8 +424,11 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: float) -> st
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 5"
     )
 
-    bottom = _run_log_query(cwl_bottom, athena_bottom, start_epoch, end_epoch, limit=5)
-    top = _run_log_query(cwl_top, athena_top, start_epoch, end_epoch, limit=5)
+    try:
+        bottom = _run_log_query(cwl_bottom, athena_bottom, start_epoch, end_epoch, limit=5)
+        top = _run_log_query(cwl_top, athena_top, start_epoch, end_epoch, limit=5)
+    except QueryCapError as e:
+        return str(e)
 
     lines = [
         f"## Client Distribution: {rule_name}",
