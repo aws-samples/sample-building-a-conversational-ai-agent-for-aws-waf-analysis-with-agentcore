@@ -577,7 +577,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     lines = [
         f"## Bypass Investigation: {ip}",
         f"**Country**: {country}",
-        f"**Total requests (non-static)**: {total_reqs}",
+        f"**Total ALLOW requests (non-static)**: {total_reqs}",
         f"**Unique URIs**: {unique_uris}",
         f"**Peak frequency**: {peak_rpm} req/min (avg {avg_rpm})",
         "",
