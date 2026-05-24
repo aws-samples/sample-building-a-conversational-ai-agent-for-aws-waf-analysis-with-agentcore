@@ -46,6 +46,7 @@ _I18N = {
         "events": "event(s)",
         "blocked": "blocked",
         "delay_note": "CloudWatch metrics have ~5 min delay. Data may change after report generation.",
+        "no_data_search": "⚠️ No data — this WebACL had no matching traffic in the last 14 days. CloudWatch metric index expired. Generate traffic and re-run.",
         "generated": "Generated",
         "ddos_events_label": "DDoS Events This Week",
         "ddos_requests_label": "DDoS Requests Identified",
@@ -85,6 +86,7 @@ _I18N = {
         "events": "次事件",
         "blocked": "次拦截",
         "delay_note": "CloudWatch 指标延迟约 5 分钟，数据可能在报告生成后有变化。",
+        "no_data_search": "⚠️ 无数据 — 该 WebACL 最近 14 天无此类流量，CloudWatch 指标索引已过期。请产生流量后重新生成报告。",
         "generated": "生成时间",
         "ddos_events_label": "本周 DDoS 事件",
         "ddos_requests_label": "识别的 DDoS 请求",
@@ -295,6 +297,8 @@ if (attackData.labels && attackData.labels.length > 0) {{
       }}
     }}
   }});
+}} else {{
+  document.getElementById('attackChart').parentElement.innerHTML = '<p class="muted">{L_no_data_search}</p>';
 }}
 
 function toggleTheme() {{
@@ -756,7 +760,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     antiddos_chart_section = _get_ddos_chart_data(cw, webacl_name, start_this_week, end, L, tz_offset=_tz_offset)
 
     # Country map SVG
-    country_map_svg = _build_country_map_svg(countries)
+    country_map_svg = _build_country_map_svg(countries) if countries else f'<p class="muted">{L["no_data_search"]}</p>'
 
     # DDoS event count from metrics — count distinct events by looking for gaps in event-detected label
     ddos_event_count = 0
@@ -820,6 +824,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         L_title=L["title"],
         L_delay_note=L["delay_note"],
         L_generated=L["generated"],
+        L_no_data_search=L["no_data_search"],
         L_exec_summary=L["exec_summary"],
         L_highlights=L["highlights"],
         L_total_requests=L["total_requests"],
@@ -873,7 +878,22 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     if actual_days < days - 0.1:
         truncation_note = f"\n⚠️ Note: requested {days} days but only {actual_days:.1f} days of data available (end capped at current time). WoW comparison uses full {days}-day previous period."
 
-    return "\n".join(data_lines) + truncation_note
+    # Detect missing sections
+    missing = []
+    if not countries:
+        missing.append("country_map")
+    if not attack_ts.get("series"):
+        missing.append("attack_types")
+    if not bot_requests:
+        missing.append("bot_control")
+
+    partial_note = ""
+    if missing:
+        partial_note = (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
+                        "REASON: CloudWatch metric discovery index expired (no matching traffic in ~14 days).\n"
+                        "ACTION: Inform user that some sections are empty due to lack of recent traffic. Suggest generating test traffic and re-running.")
+
+    return "\n".join(data_lines) + truncation_note + partial_note
 
 
 
@@ -981,6 +1001,9 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
         _dims_ddos = [{"Name": "WebACL", "Value": webacl_name},
                       {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
                       {"Name": "LabelName", "Value": "ddos-request"}]
+        _dims_ddos_fb = [{"Name": "WebACL", "Value": webacl_name},
+                         {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                         {"Name": "LabelName", "Value": "challengeable-request"}]
         resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
@@ -989,7 +1012,8 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
                 {"Id": "rp", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
                 {"Id": "total_m", "Expression": "FILL(rb,0)+FILL(rc,0)+FILL(rp,0)"},
                 {"Id": "raw_ddos", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_ddos}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
-                {"Id": "ddos_c", "Expression": "FILL(raw_ddos,0)"},
+                {"Id": "raw_ddos_fb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_ddos_fb}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ddos_c", "Expression": "IF(SUM(raw_ddos)>0, FILL(raw_ddos,0), FILL(raw_ddos_fb,0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
@@ -1047,13 +1071,17 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
     """Build DDoS chart HTML section. Always renders (flat line if no events)."""
     import json as _json
     try:
+        _dims_ddos = [{"Name": "WebACL", "Value": webacl_name},
+                      {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                      {"Name": "LabelName", "Value": "ddos-request"}]
+        _dims_ddos_fb = [{"Name": "WebACL", "Value": webacl_name},
+                         {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                         {"Name": "LabelName", "Value": "challengeable-request"}]
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "raw_ddos", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests",
-                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
-                                   {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
-                                   {"Name": "LabelName", "Value": "ddos-request"}]}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
-                {"Id": "ddosreq", "Expression": "FILL(raw_ddos,0)"},
+                {"Id": "raw_ddos", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_ddos}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "raw_ddos_fb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_ddos_fb}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ddosreq", "Expression": "IF(SUM(raw_ddos)>0, FILL(raw_ddos,0), FILL(raw_ddos_fb,0))"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )

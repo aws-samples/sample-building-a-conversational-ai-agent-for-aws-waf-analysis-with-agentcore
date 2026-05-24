@@ -18,6 +18,7 @@ _PATROL_I18N = {
         "period": "Period",
         "generated": "Generated",
         "delay_note": "CloudWatch Metrics delay: ~5 min. Data may have changed since generation.",
+        "no_data_search": "⚠️ No data — no matching traffic in last 14 days. CloudWatch metric index expired. Generate traffic and re-run.",
         "action_items": "Action Items",
         "no_action": "🟢 No action required",
         "detection_tools": "Detection Tools Status",
@@ -56,6 +57,7 @@ _PATROL_I18N = {
         "period": "巡检周期",
         "generated": "生成时间",
         "delay_note": "CloudWatch 指标延迟约 5 分钟，数据可能在报告生成后有变化。",
+        "no_data_search": "⚠️ 无数据 — 最近 14 天无此类流量，CloudWatch 指标索引已过期。请产生流量后重新生成报告。",
         "action_items": "待办事项",
         "no_action": "🟢 本周期无需操作",
         "detection_tools": "防护层状态",
@@ -1048,6 +1050,20 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     if table_msg:
         summary += f"\n📋 {table_msg}\n"
     summary += "\nFull HTML report is ready for download."
+
+    # Detect missing sections
+    missing = []
+    if not chart_data:
+        missing.append("attack_chart")
+    if not wr.get("bot_data", {}).get("bot_names"):
+        missing.append("bot_names")
+    if not wr.get("bot_data", {}).get("targeted_signals"):
+        missing.append("targeted_signals")
+    if missing:
+        summary += (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
+                    "REASON: CloudWatch metric discovery index expired (no matching traffic in ~14 days).\n"
+                    "ACTION: Inform user that some sections are empty due to lack of recent traffic. Suggest generating test traffic and re-running.")
+
     return summary
 
 
