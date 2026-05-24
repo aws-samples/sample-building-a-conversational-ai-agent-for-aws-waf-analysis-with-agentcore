@@ -24,11 +24,11 @@ _I18N = {
         "of_traffic": "of traffic",
         "of_total_traffic": "of total traffic",
         "top_attack": "Top Attack Sources",
-        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · UTC",
+        "attack_chart_note": "15-minute sum · Scroll to zoom, drag to pan · Excludes Anti-DDoS challenges (shown in DDoS chart below) · Count-mode rules not included · {tz}",
         "country_note": "Blocked requests by country · Does not include Anti-DDoS challenged requests",
         "attack_chart_title": "Threats Mitigated by Attack Type",
         "antiddos": "Anti-DDoS Protection",
-        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · UTC",
+        "antiddos_chart_note": "15-minute sum · Scroll to zoom, drag to pan · DDoS requests identified by Anti-DDoS AMR · {tz}",
         "antiddos_no_data": "No Anti-DDoS AMR metrics available.",
         "antiddos_not_deployed": "Anti-DDoS AMR not deployed.",
         "antiddos_title": "Anti-DDoS: Requests Identified",
@@ -57,11 +57,11 @@ _I18N = {
         "of_traffic": "占总流量",
         "of_total_traffic": "占总流量",
         "top_attack": "攻击来源",
-        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · UTC+8",
+        "attack_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · 不含 Anti-DDoS 质询（见下方 DDoS 图表）· 不含 Count 模式规则 · {tz}",
         "country_note": "按国家统计的拦截请求 · 不含 Anti-DDoS 质询请求",
         "attack_chart_title": "按攻击类型拦截分布",
         "antiddos": "Anti-DDoS 防护",
-        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · UTC+8",
+        "antiddos_chart_note": "15 分钟总计 · 滚轮缩放，拖拽平移 · Anti-DDoS AMR 识别的 DDoS 请求 · {tz}",
         "antiddos_no_data": "无 Anti-DDoS AMR 指标数据。",
         "antiddos_not_deployed": "未部署 Anti-DDoS AMR。",
         "antiddos_title": "Anti-DDoS：识别的 DDoS 请求",
@@ -327,18 +327,23 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         return "Error: start_time is required. Ask the user which period to report on.\nExample: generate_weekly_report(webacl_name=\"my-acl\", start_time=\"2026-05-08\", days=7)"
     days = min(days, 7)
 
-    # Parse start_time
+    # Parse start_time (use session timezone)
+    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities, get_user_timezone
+    _tz_off = get_user_timezone()
+    _user_tz = timezone(timedelta(hours=_tz_off)) if _tz_off is not None else timezone.utc
     try:
         if "T" in start_time:
-            _st = datetime.fromisoformat(start_time).replace(tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(start_time)
+            _st = dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=_user_tz).astimezone(timezone.utc)
         else:
-            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=timezone.utc)
+            _st = datetime.fromisoformat(start_time + "T00:00:00").replace(tzinfo=_user_tz).astimezone(timezone.utc)
     except ValueError:
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
     L = _I18N.get(lang, _I18N["en"])
-    _tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
-    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
+    _tz_offset = timedelta(hours=_tz_off) if _tz_off is not None else timedelta(0)
+    tz_label = f"UTC{_tz_off:+g}" if _tz_off is not None and _tz_off != 0 else "UTC"
+    L = {k: v.format(tz=tz_label) if isinstance(v, str) and "{tz}" in v else v for k, v in L.items()}
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
     # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
@@ -955,11 +960,11 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
         total_values = []
         ddos_values = []
         attack_raw = {}  # {attack_type: {timestamp_str: value}}
-        _off = tz_offset or timedelta(0)
+        _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "total_m":
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = (ts + _off).strftime("%m/%d %H:%M")
+                    key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
                     labels.append(key)
                     total_values.append(int(val))
             elif r["Id"] == "ddos_c":
@@ -972,7 +977,7 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
                 if attack_type not in attack_raw:
                     attack_raw[attack_type] = {}
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                    key = (ts + _off).strftime("%m/%d %H:%M")
+                    key = ts.astimezone(_user_tz).strftime("%m/%d %H:%M")
                     attack_raw[attack_type][key] = attack_raw[attack_type].get(key, 0) + int(val)
 
         if not labels:
@@ -1011,9 +1016,10 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         ddos_chart_data = {"labels": [], "ddos": []}
+        _user_tz = timezone(tz_offset) if tz_offset else timezone.utc
         for r in resp.get("MetricDataResults", []):
             if r["Id"] == "ddosreq":
-                ddos_chart_data["labels"] = [(t + (tz_offset or timedelta(0))).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
+                ddos_chart_data["labels"] = [t.astimezone(_user_tz).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 ddos_chart_data["ddos"] = [int(v) for v in r.get("Values", [])]
         if not ddos_chart_data["labels"]:
             return f'<h2>{L["antiddos"]}</h2><p style="color:var(--muted)">{L["antiddos_no_data"]}</p>'
