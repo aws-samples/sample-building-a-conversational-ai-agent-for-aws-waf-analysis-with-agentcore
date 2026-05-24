@@ -338,8 +338,9 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
     L = _I18N.get(lang, _I18N["en"])
-    _tz_offset = timedelta(hours=8) if lang == "zh" else timedelta(0)
-    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities
+    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities, get_user_timezone
+    tz_off = get_user_timezone()
+    _tz_offset = timedelta(hours=tz_off) if tz_off is not None else timedelta(0)
     region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
     cw = get_client("cloudwatch", region_name=region)
     # Region dimension: required for REGIONAL, omitted for CLOUDFRONT
@@ -919,9 +920,12 @@ def _get_traffic_timeseries(cw, webacl_name: str, start, end, scope: str = "CLOU
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         data = {}
+        from tools.session_state import get_user_timezone
+        _tz_off = get_user_timezone()
+        _off = timedelta(hours=_tz_off) if _tz_off is not None else timedelta(0)
         for r in resp.get("MetricDataResults", []):
             for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
-                key = ts.strftime("%m/%d %H:%M")
+                key = (ts + _off).strftime("%m/%d %H:%M")
                 if key not in data:
                     data[key] = {"date": key, "allowed": 0, "blocked": 0, "challenged": 0, "captcha": 0}
                 data[key][r["Id"]] = int(val)
