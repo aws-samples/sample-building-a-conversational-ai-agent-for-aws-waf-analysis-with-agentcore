@@ -151,7 +151,9 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     if log_dest and ":log-group:" in log_dest:
         lines.append("  Use: run_logs_query (CloudWatch Logs Insights)")
     elif log_dest and (":s3:::" in log_dest or ":firehose:" in log_dest):
-        lines.append("  Use: run_athena_query (S3 logs via Athena)")
+        lines.append("  Use: run_logs_query (S3 logs via Athena)")
+        lines.append("  ⚠️ Athena queries may take up to several minutes depending on data volume. Tell the user upfront.")
+        lines.append("  Prefer get_waf_overview (metrics, instant) for initial analysis. Only query logs for IP/URI-level details.")
     else:
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
 
