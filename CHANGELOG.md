@@ -47,6 +47,12 @@
 - `top_counted_ips` / `top_counted_countries` — COUNT action sources
 - `top_ips_by_volume` / `top_countries_by_volume` — All actions combined
 - `top_labels` — All managed rule group labels with hit counts
+- `ip_uri_prefix` — URI path prefix clustering for an IP (crawl/scrape pattern detection)
+- `rule_uri_prefix` — URI prefix clustering for a rule (FP vs attack signal for COUNT-to-BLOCK)
+- `top_ua_by_action` — Global User-Agent distribution by action (bot/bypass detection)
+- `ip_request_timeline` — Per-minute action timeline for an IP (rate-limit/DDoS analysis)
+- `ip_label_breakdown` — All WAF labels on an IP (bot signals, Anti-DDoS, token status)
+- `host_top_ips` — Top IPs per host/domain (multi-domain WebACL attack attribution)
 
 ### Other
 

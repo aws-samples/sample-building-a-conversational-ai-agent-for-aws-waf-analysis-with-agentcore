@@ -153,7 +153,7 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 │   ├── waf_config.py     # WebACL discovery + capabilities detection
 │   ├── waf_metrics.py    # CloudWatch Metrics (free, fast)
 │   ├── waf_overview.py   # Quick overview (top rules, bots, attacks)
-│   ├── waf_logs.py       # Log queries (20 templates + analyze_ip, CWL + Athena)
+│   ├── waf_logs.py       # Log queries (36 templates + analyze_ip, CWL + Athena)
 │   ├── waf_query.py      # Unified query layer (auto-routes CWL or Athena)
 │   ├── waf_count_eval.py # COUNT-to-Block evaluation workflow
 │   ├── waf_block_fp.py   # False positive investigation + proactive scan

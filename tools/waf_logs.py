@@ -57,6 +57,42 @@ TEMPLATES = {
         "params": ["ip"],
         "description": "URI breakdown for a specific IP",
     },
+    "ip_uri_prefix": {
+        "query": "filter httpRequest.clientIp = '{ip}' | parse httpRequest.uri \"/*/*/**\" as seg1, seg2, rest | stats count(*) as hits, count_distinct(httpRequest.uri) as unique_uris by seg1, seg2 | sort hits desc | limit {limit}",
+        "athena": "SELECT COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) as prefix, count(*) as hits, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) ORDER BY hits DESC LIMIT {LIMIT}",
+        "params": ["ip"],
+        "description": "URI path prefix clustering for an IP — shows crawl/scrape patterns without hitting result limits",
+    },
+    "rule_uri_prefix": {
+        "query": "filter @message like '{rule_name}' | parse httpRequest.uri \"/*/*/**\" as seg1, seg2, rest | stats count(*) as hits, count_distinct(httpRequest.uri) as unique_uris by seg1, seg2 | sort hits desc | limit {limit}",
+        "athena": "SELECT COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) as prefix, count(*) as hits, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (terminatingruleid = '{rule_name}' OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}')) GROUP BY COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) ORDER BY hits DESC LIMIT {LIMIT}",
+        "params": ["rule_name"],
+        "description": "URI path prefix clustering for a rule — shows which paths trigger it (FP vs attack signal)",
+    },
+    "top_ua_by_action": {
+        "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>[^\"]*)\"}/ | stats count(*) as hits by action, ua | sort hits desc | limit {limit}",
+        "athena": "SELECT action, h.value as ua, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND lower(h.name) = 'user-agent' GROUP BY action, h.value ORDER BY hits DESC LIMIT {LIMIT}",
+        "params": [],
+        "description": "Top User-Agents grouped by action — find suspicious UAs in ALLOW traffic or bot patterns",
+    },
+    "ip_request_timeline": {
+        "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as hits by action, bin(1m) as minute | sort minute | limit {limit}",
+        "athena": "SELECT action, from_unixtime((\"timestamp\" / 60000) * 60) as minute, count(*) as hits FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY action, (\"timestamp\" / 60000) * 60 ORDER BY minute LIMIT {LIMIT}",
+        "params": ["ip"],
+        "description": "Per-minute action timeline for an IP — see when BLOCK/Challenge kicked in",
+    },
+    "ip_label_breakdown": {
+        "query": "filter httpRequest.clientIp = '{ip}' | parse @message /\"labels\":\\[(?<lbls>[^\\]]*)\\]/ | filter ispresent(lbls) | parse lbls /\"name\":\"(?<lbl>[^\"]*)\"/  | stats count(*) as hits by lbl | sort hits desc | limit {limit}",
+        "athena": "SELECT l.name as label, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(labels) AS t(l) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY l.name ORDER BY hits DESC LIMIT {LIMIT}",
+        "params": ["ip"],
+        "description": "All WAF labels applied to an IP's requests — bot signals, Anti-DDoS, token status",
+    },
+    "host_top_ips": {
+        "query": "filter @message like '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", action, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND lower(h.name) = 'host' AND h.value = '{host}' GROUP BY httprequest.clientip, action ORDER BY hits DESC LIMIT {LIMIT}",
+        "params": ["host"],
+        "description": "Top IPs for a specific host/domain — identify per-domain attackers in multi-domain WebACLs",
+    },
     "top_blocked_ips": {
         "query": "filter action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'BLOCK' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
@@ -290,6 +326,12 @@ def run_logs_query(
             - count_rule_top_uas: Top User-Agents for a COUNT rule (needs rule_name)
             - ip_cross_query: All actions/rules for an IP (needs ip)
             - ip_uri_breakdown: URI breakdown for an IP (needs ip)
+            - ip_uri_prefix: URI path prefix clustering for an IP — shows crawl patterns (needs ip)
+            - rule_uri_prefix: URI prefix clustering for a rule — which paths trigger it (needs rule_name)
+            - top_ua_by_action: Top User-Agents grouped by action — find suspicious UAs
+            - ip_request_timeline: Per-minute action timeline for an IP (needs ip)
+            - ip_label_breakdown: All WAF labels on an IP — bot signals, Anti-DDoS, tokens (needs ip)
+            - host_top_ips: Top IPs for a specific host/domain (needs host)
             - ip_ja4_fingerprints: JA4 fingerprints for an IP (needs ip)
             - ip_request_rate: Per-minute request rate for an IP (needs ip) — detect automation
             - ip_unique_uris: Unique URI count + time span for an IP (needs ip) — frequency anomaly
