@@ -15,7 +15,7 @@ POLL_INTERVAL = 2
 
 
 @tool
-def check_challenge_compatibility(start_time: str, duration_hours: float = 6, hours_ago: float = None, action_type: str = "CHALLENGE") -> str:
+def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, action_type: str = "CHALLENGE") -> str:
     """Check which URIs/methods are being challenged or CAPTCHA'd. Identifies requests that
     cannot complete Challenge/CAPTCHA due to technical requirements.
 
@@ -28,11 +28,11 @@ def check_challenge_compatibility(start_time: str, duration_hours: float = 6, ho
 
     Args:
         start_time: Start time for log query (e.g., "2026-05-12T14:00").
-        duration_hours: Duration in hours (default 6, max 6).
+        duration_minutes: Duration in minutes (default 180, max 360 for CWL, 60 for Athena).
         action_type: "CHALLENGE" or "CAPTCHA". Default "CHALLENGE".
     """
     from tools.waf_logs import _parse_start_time
-    hours_ago = hours_ago if hours_ago is not None else duration_hours
+    _duration = min(duration_minutes, 360)
 
     if get_log_type() == "none":
         return ("Error: No logging configured. "
@@ -42,8 +42,8 @@ def check_challenge_compatibility(start_time: str, duration_hours: float = 6, ho
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    hours_ago = min(hours_ago, 6)
-    end_epoch = int(start_epoch + hours_ago * 3600)
+    
+    end_epoch = start_epoch + _duration * 60
 
     action = action_type.upper()
     if action not in ("CHALLENGE", "CAPTCHA"):
@@ -90,7 +90,7 @@ def check_challenge_compatibility(start_time: str, duration_hours: float = 6, ho
     # Build output
     lines = [
         f"## {action} Compatibility Check",
-        f"**Time window**: {start_time} + {hours_ago}h",
+        f"**Time window**: {start_time} + {_duration}min",
         f"**Total URI/method combinations**: {len(results)}",
     ]
 

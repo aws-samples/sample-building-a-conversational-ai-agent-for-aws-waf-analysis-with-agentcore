@@ -38,13 +38,6 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         log_group = dest.split(":log-group:")[-1].rstrip(":*")
         return _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
     elif ":s3:::" in dest or ":firehose:" in dest:
-        # Athena: enforce 1h max window
-        window_hours = (end_epoch - start_epoch) / 3600
-        if window_hours > 1.1:  # small tolerance for rounding
-            return [{"_error": f"Athena log query window too wide ({window_hours:.1f}h). "
-                     "Max 1 hour per query to control cost and latency. "
-                     "Split into multiple 1h calls: run_logs_query(..., start_time='<hour_start>', duration_hours=1) "
-                     "for each hour, then report findings progressively to the user."}]
         table = _ensure_athena_table(dest)
         if not table:
             return None

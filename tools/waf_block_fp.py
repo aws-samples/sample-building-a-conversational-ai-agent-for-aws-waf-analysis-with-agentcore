@@ -26,7 +26,7 @@ CONFIDENCE_RULES = """\
 
 
 @tool
-def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: str = "", duration_hours: float = 6, hours_ago: float = None, rule_name: str = "") -> str:
+def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: str = "", duration_minutes: int = 60, rule_name: str = "") -> str:
     """Investigate whether a blocked request is a false positive, or proactively scan for suspected FPs.
 
     This tool provides evidence for human judgment — do not make definitive FP/TP verdicts
@@ -40,11 +40,10 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
         step: "investigate" (targeted) or "scan" (proactive audit).
         ip: Client IP address (required for investigate).
         start_time: Start time for log query (required).
-        duration_hours: Duration in hours (default 6, max 6).
+        duration_minutes: Duration in minutes (default 60, max 360 for CWL, 60 for Athena).
         rule_name: Optional — filter to a specific rule.
     """
     from tools.waf_logs import _parse_start_time
-    hours_ago = hours_ago if hours_ago is not None else duration_hours
 
     # Validate logging
     if get_log_type() == "none":
@@ -58,8 +57,8 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    hours_ago = min(hours_ago, 6)
-    end_epoch = int(start_epoch + hours_ago * 3600)
+    _duration = min(duration_minutes, 360)
+    end_epoch = start_epoch + _duration * 60
 
     # Check ALLOW log availability for both steps
     if is_log_filter_active():

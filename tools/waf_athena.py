@@ -369,7 +369,7 @@ def _wait_query(athena, qid: str):
         if state in ("FAILED", "CANCELLED"):
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
             raise RuntimeError(f"Athena query {state}: {reason}")
-    raise RuntimeError("Athena query timed out (>5min). Narrow the time window — try duration_hours=0.5 (30min) or duration_hours=0.25 (15min). Use get_waf_overview to identify the exact spike period first.")
+    raise RuntimeError("Athena query timed out (>5min). Narrow the time window — try duration_minutes=30 or duration_minutes=15. Use get_waf_overview to identify the exact spike period first.")
 
 
 # ---------------------------------------------------------------------------
@@ -434,14 +434,14 @@ _UA_EXPR = "element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-ag
 _HOST_EXPR = "element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value"
 
 
-def _time_filter(table: str, hours_ago: int, partition_format: str | None, start_epoch: int | None = None) -> str:
+def _time_filter(table: str, duration_minutes: int, partition_format: str | None, start_epoch: int | None = None) -> str:
     """Build WHERE clause with timestamp + partition pruning."""
     if start_epoch:
         start_ms = start_epoch * 1000
-        end_ms = int(start_ms + hours_ago * 3600 * 1000)
+        end_ms = start_ms + duration_minutes * 60 * 1000
     else:
         end_ms = int(time.time()) * 1000
-        start_ms = int(end_ms - hours_ago * 3600 * 1000)
+        start_ms = end_ms - duration_minutes * 60 * 1000
     clause = f'"timestamp" BETWEEN {start_ms} AND {end_ms}'
     if partition_format:
         start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
@@ -456,10 +456,10 @@ def _time_filter(table: str, hours_ago: int, partition_format: str | None, start
     return clause
 
 
-def _build_query(query_type: str, table: str, hours_ago: int, partition_format: str | None,
+def _build_query(query_type: str, table: str, duration_minutes: int, partition_format: str | None,
                  limit: int, start_epoch: int | None = None, **params) -> str:
     """Build Athena SQL for a given query_type."""
-    tf = _time_filter(table, hours_ago, partition_format, start_epoch)
+    tf = _time_filter(table, duration_minutes, partition_format, start_epoch)
     ip = params.get("ip", "")
     rule_name = params.get("rule_name", "")
     label = params.get("label", "")
@@ -634,7 +634,7 @@ def _build_query(query_type: str, table: str, hours_ago: int, partition_format: 
 def run_athena_query(
     query_type: str,
     start_time: str,
-    hours_ago: int = 6,
+    duration_minutes: int = 60,
     rule_name: str = "",
     ip: str = "",
     label: str = "",
@@ -648,12 +648,12 @@ def run_athena_query(
     Automatically discovers S3 path and creates a permanent Athena table if needed.
 
     IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
-    Max query window is 6 hours. For broader trends, use CloudWatch Metrics instead.
+    Max query window is 60 minutes. For broader trends, use CloudWatch Metrics instead.
 
     Args:
         query_type: Same types as run_logs_query (count_rule_top_ips, ip_cross_query, etc.)
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
-        hours_ago: Duration in hours from start_time (default 6, max 6). The query covers [start_time, start_time + hours_ago].
+        duration_minutes: Duration in minutes from start_time (default 60, max 60). The query covers [start_time, start_time + duration_minutes].
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
         label: AWS WAF label name (for label_top_ips).
@@ -670,10 +670,10 @@ def run_athena_query(
 
     # Validate start_time
     if not start_time:
-        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_athena_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_athena_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
 
-    # Cap at 6 hours
-    hours_ago = min(hours_ago, 6)
+    # Cap at 60 minutes
+    _duration = min(duration_minutes, 60)
 
     # Parse start_time (reuse same logic as run_logs_query)
     from tools.waf_logs import _parse_start_time
@@ -694,7 +694,7 @@ def run_athena_query(
         return f"Error: {e}"
 
     try:
-        sql = _build_query(query_type, table, hours_ago, _athena_state.get("partition_format"),
+        sql = _build_query(query_type, table, _duration, _athena_state.get("partition_format"),
                            limit, start_epoch=start_epoch, ip=ip, rule_name=rule_name, label=label, action=action, host=host)
     except ValueError as e:
         return str(e)

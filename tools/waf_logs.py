@@ -14,7 +14,7 @@ from tools.session_state import get_logs_region, get_log_destination, is_log_fil
 MAX_RESULTS = 25
 POLL_INTERVAL = 2
 MAX_POLL = 600
-MAX_HOURS = 6  # Hard cap for all investigation queries
+MAX_MINUTES = 360  # Hard cap for CWL queries (6 hours)
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
 _cwl_semaphore = threading.Semaphore(8)
@@ -269,8 +269,7 @@ def _parse_start_time(value: str) -> int | None:
 def run_logs_query(
     query_type: str,
     start_time: str,
-    duration_hours: float = 6,
-    hours_ago: float = None,
+    duration_minutes: int = 180,
     log_group: str = "",
     rule_name: str = "",
     ip: str = "",
@@ -282,7 +281,7 @@ def run_logs_query(
     """Run a predefined AWS WAF log query against CloudWatch Logs Insights.
 
     IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
-    Max query window is 6 hours. For broader trends, use CloudWatch Metrics instead.
+    Default window is 180 min (3h). Athena backend auto-caps at 60 min.
 
     Args:
         query_type: Type of query to run. Available types:
@@ -317,7 +316,7 @@ def run_logs_query(
             - host_uri_pattern: Top URIs for a specific host (needs host param)
             - host_method_distribution: HTTP method distribution for a host (needs host param)
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
-        duration_hours: Duration in hours from start_time (default 6, max 6). The query covers [start_time, start_time + duration_hours].
+        duration_minutes: Duration in minutes from start_time (default 180, max 360 for CWL, 60 for Athena). The query covers [start_time, start_time + duration_minutes].
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
@@ -368,23 +367,20 @@ def run_logs_query(
     query = template["query"]
     for k, v in params.items():
         query = query.replace(f"{{{k}}}", str(v))
-    # Resolve duration (duration_hours is primary, hours_ago is backward-compat alias)
-    hours_ago = hours_ago if hours_ago is not None else duration_hours
-    _log(f"query_type={query_type} start_time={start_time} duration={hours_ago}h dest={dest or log_group}")
+    # Resolve duration
+    _duration = min(duration_minutes, MAX_MINUTES)
+    _log(f"query_type={query_type} start_time={start_time} duration={_duration}min dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
     from tools.waf_query import query_logs, get_log_type
 
-    if hours_ago > MAX_HOURS:
-        hours_ago = MAX_HOURS
-
     if not start_time:
-        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_hours=2)"
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
 
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-    end_epoch = min(int(start_epoch + hours_ago * 3600), int(time.time()))
+    end_epoch = min(start_epoch + _duration * 60, int(time.time()))
 
     # Build Athena query with params substituted (only user params, not TABLE/START_MS/END_MS/PARTITION_FILTER)
     athena_query = template.get("athena", "")
@@ -692,7 +688,7 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 
 
 @tool
-def analyze_ip(ip: str, start_time: str, duration_hours: float = 6, hours_ago: float = None) -> str:
+def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     """Analyze a single IP address — full behavioral profile across all actions.
 
     Two-phase: diversity check first (NAT detection), then full analysis if not NAT.
@@ -702,12 +698,11 @@ def analyze_ip(ip: str, start_time: str, duration_hours: float = 6, hours_ago: f
     Args:
         ip: IP address to analyze.
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED.
-        duration_hours: Duration in hours from start_time (default 6, max 6).
+        duration_minutes: Duration in minutes from start_time (default 180, max 360 for CWL, 60 for Athena).
 
     Returns:
         Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
     """
-    hours_ago = hours_ago if hours_ago is not None else duration_hours
     import ipaddress
     try:
         ipaddress.ip_address(ip)
@@ -715,17 +710,17 @@ def analyze_ip(ip: str, start_time: str, duration_hours: float = 6, hours_ago: f
         return f"Error: invalid IP address '{ip}'"
 
     if not start_time:
-        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", hours_ago=6)"
+        return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
 
     from tools.waf_query import query_logs, get_log_type
     if get_log_type() == "none":
         return "Error: no logging configured. Run get_waf_config first."
 
-    hours_ago = min(hours_ago, MAX_HOURS)
+    _duration = min(duration_minutes, MAX_MINUTES)
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
-    end_epoch = min(int(start_epoch + hours_ago * 3600), int(time.time()))
+    end_epoch = min(start_epoch + _duration * 60, int(time.time()))
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
     # Phase 1: Diversity check (NAT detection)
@@ -836,7 +831,7 @@ def analyze_ip(ip: str, start_time: str, duration_hours: float = 6, hours_ago: f
     uri_div = query_logs(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1) or []
 
     # Format output
-    lines = [f"## IP Analysis: {ip}", f"Time window: {hours_ago}h from {start_time}", ""]
+    lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]
 
     # Diversity summary
     lines.append(f"**Diversity**: {ua_count} UAs, {ja4_count} JA4 fingerprints, {total} total requests")

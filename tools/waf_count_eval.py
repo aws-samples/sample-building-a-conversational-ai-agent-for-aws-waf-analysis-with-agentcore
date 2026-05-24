@@ -53,7 +53,7 @@ def _has_logging() -> bool:
 
 
 @tool
-def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: str = "", duration_hours: float = 1, hours_ago: float = None) -> str:
+def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: str = "", duration_minutes: int = 60) -> str:
     """Guided workflow for evaluating whether COUNT rules are ready to switch to BLOCK.
 
     This is a multi-step skill. Call with step="init" for bulk evaluation (all COUNT rules),
@@ -61,16 +61,15 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
 
     Steps:
     - "init": Inventory all COUNT rules, classify them, find peak hour. Returns full assessment plan.
-    - "analyze_rule": Deep-dive a specific rule during its peak hour. Requires rule_name. Can be called directly without init.
+    - "analyze_rule": Deep-dive a specific rule — finds peak hour and hit count. Does NOT auto-query logs. Requires rule_name.
     - "check_low_volume_clients": Check low-volume clients for a rule (FP signal). Requires rule_name + start_time.
 
     Args:
         step: Workflow step to execute.
         rule_name: Rule name (required for analyze_rule and check_low_volume_clients).
         start_time: Start time for log queries (required for check_low_volume_clients).
-        duration_hours: Duration in hours (default 1, max 6).
+        duration_minutes: Duration in minutes (default 60, max 360 for CWL, 60 for Athena).
     """
-    hours_ago = hours_ago if hours_ago is not None else duration_hours
     if step == "init":
         return _step_init(rule_name=rule_name)
     elif step == "analyze_rule":
@@ -80,7 +79,7 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
     elif step == "check_low_volume_clients":
         if not rule_name or not start_time:
             return "Error: rule_name and start_time are required for step='check_low_volume_clients'."
-        return _step_check_clients(rule_name, start_time, min(hours_ago, 6))
+        return _step_check_clients(rule_name, start_time, duration_minutes)
     else:
         return f"Error: unknown step '{step}'. Available: init, analyze_rule, check_low_volume_clients"
 
@@ -316,96 +315,33 @@ def _step_analyze_rule(rule_name: str) -> str:
     if peak_epoch is None:
         return f"Error parsing peak hour '{peak_hour_str}'."
 
-    # Query: client IP distribution in peak hour (both top and bottom)
-    cwl_top = (
-        f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        " | stats count(*) as hits by httpRequest.clientIp"
-        " | sort hits desc | limit 10"
-    )
-    athena_top = (
-        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
-        f" FROM {{TABLE}}"
-        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
-        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
-    )
-    cwl_bottom = (
-        f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        " | stats count(*) as hits by httpRequest.clientIp"
-        " | sort hits asc | limit 10"
-    )
-    athena_bottom = (
-        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
-        f" FROM {{TABLE}}"
-        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
-        f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 10"
-    )
-    cwl_total = (
-        f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        " | stats count(*) as total_hits, count_distinct(httpRequest.clientIp) as unique_ips"
-    )
-    athena_total = (
-        f"SELECT count(*) as total_hits, count(DISTINCT httprequest.clientip) as unique_ips"
-        f" FROM {{TABLE}}"
-        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
-    )
-
-    peak_end = peak_epoch + 3600  # 1 hour window
-    top_clients = _run_log_query(cwl_top, athena_top, peak_epoch, peak_end, limit=10)
-    bottom_clients = _run_log_query(cwl_bottom, athena_bottom, peak_epoch, peak_end, limit=10)
-    totals = _run_log_query(cwl_total, athena_total, peak_epoch, peak_end, limit=1)
-
-    total_hits = totals[0].get("total_hits", "?") if totals else "?"
-    unique_ips = totals[0].get("unique_ips", "?") if totals else "?"
+    peak_hits = int(max(counted_series))
+    # Suggest duration based on hit volume
+    if peak_hits < 1000:
+        suggested_minutes = 60
+    elif peak_hits < 10000:
+        suggested_minutes = 15
+    else:
+        suggested_minutes = 5
 
     lines = [
         f"## Rule Analysis: {rule_name}",
         f"**Peak hour**: {peak_hour_str}",
-        f"**Total hits in peak hour**: {total_hits}",
-        f"**Unique client IPs**: {unique_ips}",
+        f"**Hits in peak hour**: {peak_hits:,}",
         "",
-        "### High-Volume Clients (likely automation/attack)",
+        "---",
+        "## Your Next Action",
+        "",
+        f"Based on hit volume ({peak_hits:,}/hour ≈ {peak_hits // 60}/min), recommend duration_minutes={suggested_minutes}.",
+        "",
+        f"Call: evaluate_count_rules(step='check_low_volume_clients', rule_name='{rule_name}', "
+        f"start_time='{peak_hour_str}', duration_minutes={suggested_minutes})",
     ]
-    if top_clients:
-        for r in top_clients:
-            lines.append(f"  {r.get('httpRequest.clientIp', '?'):>15}  {r.get('hits', '?'):>6} hits")
-    else:
-        lines.append("  (no data)")
-
-    lines.append("")
-    lines.append("### Low-Volume Clients (check for false positives)")
-    if bottom_clients:
-        for r in bottom_clients:
-            lines.append(f"  {r.get('httpRequest.clientIp', '?'):>15}  {r.get('hits', '?'):>6} hits")
-    else:
-        lines.append("  (no data)")
-
-    lines.append("")
-    lines.append("---")
-    lines.append("## Your Next Action")
-    lines.append("")
-    lines.append("**Check low-volume clients first** (higher FP probability):")
-    lines.append("For each low-volume client IP, use run_logs_query(query_type='ip_cross_query', ip='...', start_time='...') to check:")
-    lines.append("1. Does this IP trigger OTHER rules? (if yes → likely attacker)")
-    lines.append("2. Does this IP have ALLOW requests too? (if yes → likely legitimate user with occasional trigger)")
-    lines.append("3. What URIs does this IP access? (business URIs = FP signal; sensitive paths = attack signal)")
-    lines.append("")
-    lines.append("**Then confirm with high-volume clients** (lower FP probability):")
-    lines.append("If high-volume clients show >200 req/hour or >50 unique URIs/hour → automation, not FP.")
-    lines.append("")
-    lines.append("**Conclusion criteria:**")
-    lines.append("- ALL low-volume clients show attack signals → safe to Block")
-    lines.append("- ANY low-volume client shows FP signals → recommend scope-down exclusion, keep Count for now")
-    lines.append("- Mixed signals → ask user for business context on the affected URIs")
-    lines.append("")
-    lines.append("After concluding, call record_finding() with your assessment, then ask the user if they want to evaluate the next rule.")
 
     return "\n".join(lines)
 
 
-def _step_check_clients(rule_name: str, start_time: str, hours_ago: float) -> str:
+def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) -> str:
     """Step 6: Detailed client check for a specific time window."""
     if not _has_logging():
         return "Error: No logging configured. Cannot perform log-level analysis."
@@ -415,7 +351,7 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: float) -> st
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    end_epoch = int(start_epoch + hours_ago * 3600)
+    end_epoch = start_epoch + duration_minutes * 60
 
     # Get both ends of client distribution
     cwl_bottom = (
@@ -451,7 +387,7 @@ def _step_check_clients(rule_name: str, start_time: str, hours_ago: float) -> st
 
     lines = [
         f"## Client Distribution: {rule_name}",
-        f"**Window**: {start_time} + {hours_ago}h",
+        f"**Window**: {start_time} + {duration_minutes}min",
         "",
         "### Low-Volume Clients (check these for FP first)",
     ]

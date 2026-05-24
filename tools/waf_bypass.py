@@ -11,19 +11,10 @@ from tools.session_state import get_webacl_name, get_scope, get_logs_region, is_
 from tools.waf_query import query_logs, get_log_type
 
 
-_athena_cap_hit = False  # module-level flag for Athena cap detection
-
-
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10) -> list[dict]:
-    """query_logs wrapper that never raises. Sets _athena_cap_hit if window too wide."""
-    global _athena_cap_hit
+    """query_logs wrapper that never raises."""
     try:
-        results = query_logs(cwl, athena, start, end, limit) or []
-        if results and isinstance(results[0], dict) and "_error" in results[0]:
-            print(f"[waf_bypass] query_logs cap: {results[0]['_error']}", file=sys.stderr, flush=True)
-            _athena_cap_hit = True
-            return []
-        return results
+        return query_logs(cwl, athena, start, end, limit) or []
     except Exception as e:
         print(f"[waf_bypass] query_logs error: {e}", file=sys.stderr, flush=True)
         return []
@@ -43,7 +34,7 @@ UNIQUE_IP_ANOMALY = 2.0
 
 
 @tool
-def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", duration_hours: float = 6, hours_ago: float = None) -> str:
+def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", duration_minutes: int = 180) -> str:
     """Detect potential WAF bypass — find malicious traffic in ALLOW logs.
 
     This tool provides evidence for human judgment. It does NOT make definitive
@@ -58,10 +49,9 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
         step: "scan", "investigate_ip", or "volume_anomaly".
         ip: Client IP (required for investigate_ip).
         start_time: Start time for log queries (required for scan and investigate_ip).
-        duration_hours: Duration in hours (default 6, max 6).
+        duration_minutes: Duration in minutes (default 180, max 360 for CWL, 60 for Athena).
     """
     from tools.waf_logs import _parse_start_time
-    hours_ago = hours_ago if hours_ago is not None else duration_hours
 
     if step == "volume_anomaly":
         return _step_volume_anomaly()
@@ -79,7 +69,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
         if start_time:
             start_epoch = _parse_start_time(start_time)
             if start_epoch:
-                end_epoch = int(start_epoch + min(hours_ago, 6) * 3600)
+                end_epoch = start_epoch + min(duration_minutes, 60) * 60
                 results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1)
                 if not results or int(results[0].get("cnt", 0)) == 0:
                     return ("## Cannot Proceed — ALLOW Logs Unavailable\n\n"
@@ -94,8 +84,8 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    hours_ago = min(hours_ago, 6)
-    end_epoch = min(int(start_epoch + hours_ago * 3600), int(time.time()))
+    _duration = min(duration_minutes, 360)
+    end_epoch = min(start_epoch + _duration * 60, int(time.time()))
 
     if step == "scan":
         return _step_scan(start_epoch, end_epoch)
@@ -219,7 +209,7 @@ def _step_volume_anomaly() -> str:
     lines.append("## Your Next Action")
     lines.append("")
     lines.append("Always ask: \"Is this expected traffic growth (marketing campaign, product launch, seasonal event)?\"")
-    lines.append("If user confirms unexpected → ask which day/hour was worst, then call detect_bypass(step='scan', start_time='...', hours_ago=1).")
+    lines.append("If user confirms unexpected → ask which day/hour was worst, then call detect_bypass(step='scan', start_time='...', duration_minutes=60).")
     lines.append("Use a 1-2 hour window around the peak for best signal-to-noise ratio.")
 
     lines.append("")
@@ -346,17 +336,6 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " ORDER BY total DESC LIMIT 10"
     )
     auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10)
-
-    # Check if Athena cap was hit — all queries returned empty
-    global _athena_cap_hit
-    if _athena_cap_hit and not crawlers and not repeaters and not datacenter and not auto_ua:
-        _athena_cap_hit = False
-        window_h = (end_epoch - start_epoch) / 3600
-        return (f"## Cannot Scan — Query Window Too Wide ({window_h:.1f}h)\n\n"
-                "Athena log queries are capped at 1 hour per call to control cost.\n"
-                "Please narrow the time window: detect_bypass(step='scan', start_time='<peak_hour>', duration_hours=1)\n"
-                "Use get_waf_overview to identify the peak period first.")
-    _athena_cap_hit = False
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
@@ -566,16 +545,6 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
     )
     count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5)
-
-    # Check if Athena cap was hit
-    global _athena_cap_hit
-    if _athena_cap_hit:
-        _athena_cap_hit = False
-        window_h = (end_epoch - start_epoch) / 3600
-        return (f"## Cannot Investigate — Query Window Too Wide ({window_h:.1f}h)\n\n"
-                "Athena log queries are capped at 1 hour per call.\n"
-                f"Please narrow: detect_bypass(step='investigate_ip', ip='{ip}', start_time='<peak_hour>', duration_hours=1)")
-    _athena_cap_hit = False
 
     # Build output
     lines = [
