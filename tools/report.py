@@ -355,13 +355,6 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     except ValueError:
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
-    # Refuse if data is too old (CloudWatch 15-min metrics expire after 15 days)
-    age_days = (datetime.now(timezone.utc) - _st).total_seconds() / 86400
-    if age_days > 15:
-        return (f"Error: start_time is {age_days:.0f} days ago. CloudWatch metrics at 15-minute resolution "
-                "expire after 15 days — report data would be incomplete or empty.\n"
-                "Please choose a start_time within the last 15 days.")
-
     L = _I18N.get(lang, _I18N["en"])
     _tz_offset = timedelta(hours=_tz_off) if _tz_off is not None else timedelta(0)
     tz_label = f"UTC{_tz_off:+g}" if _tz_off is not None and _tz_off != 0 else "UTC"
