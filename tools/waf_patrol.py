@@ -277,7 +277,13 @@ def _detect_ddos_windows(cw, webacl_name: str, start, end) -> list[int]:
     """
     try:
         resp = cw.get_metric_data(
-            MetricDataQueries=[{"Id": "evt", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 86400),0))"}],
+            MetricDataQueries=[
+                {"Id": "raw_evt", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests",
+                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
+                                   {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                                   {"Name": "LabelName", "Value": "event-detected"}]}, "Period": 86400, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "evt", "Expression": "FILL(raw_evt,0)"},
+            ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
         for r in resp.get("MetricDataResults", []):
@@ -832,18 +838,18 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     }
 
     # 10. Attack chart data
+    _dims_rule = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
     if scope == "REGIONAL" and region:
-        _rule_dim = "{AWS/WAFV2,Rule,WebACL,Region}"
-        _rule_extra = f' Region="{region}"'
-    else:
-        _rule_dim = "{AWS/WAFV2,Rule,WebACL}"
-        _rule_extra = ""
+        _dims_rule.append({"Name": "Region", "Value": region})
     chart_data = None
     try:
         chart_resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
-                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{_rule_dim} WebACL=\"{webacl_name}\" Rule=\"ALL\"{_rule_extra} MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
+                {"Id": "rb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "rc", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "rp", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "total_m", "Expression": "FILL(rb,0)+FILL(rc,0)+FILL(rp,0)"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )

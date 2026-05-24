@@ -147,9 +147,13 @@ def _step_volume_anomaly() -> str:
     antiddos_detected = False
     try:
         evt_resp = cw.get_metric_data(
-            MetricDataQueries=[{"Id": "evt", "Expression":
-                f"SUM(FILL(SEARCH('{_label_dim_set()} WebACL=\"{webacl_name}\" "
-                f"LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 86400),0))"}],
+            MetricDataQueries=[
+                {"Id": "raw_evt", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests",
+                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
+                                   {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                                   {"Name": "LabelName", "Value": "event-detected"}]}, "Period": 86400, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "evt", "Expression": "FILL(raw_evt,0)"},
+            ],
             StartTime=start, EndTime=end,
         )
         for r in evt_resp.get("MetricDataResults", []):

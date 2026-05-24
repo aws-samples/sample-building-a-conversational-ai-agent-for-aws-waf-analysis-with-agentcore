@@ -762,7 +762,13 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     ddos_event_count = 0
     try:
         _ddos_resp = cw.get_metric_data(
-            MetricDataQueries=[{"Id": "evt", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"event-detected\"', 'Sum', 900),0))"}],
+            MetricDataQueries=[
+                {"Id": "raw_evt", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests",
+                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
+                                   {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                                   {"Name": "LabelName", "Value": "event-detected"}]}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "evt", "Expression": "FILL(raw_evt,0)"},
+            ],
             StartTime=start_this_week, EndTime=end, ScanBy="TimestampAscending",
         )
         for r in _ddos_resp.get("MetricDataResults", []):
@@ -927,19 +933,20 @@ def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRON
 
 def _get_traffic_timeseries(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "") -> list:
     """Get 15-min resolution traffic data using SEARCH."""
-    if scope == "REGIONAL" and region:
-        dim_set = "{AWS/WAFV2,Rule,WebACL,Region}"
-        extra_filter = f' Region="{region}"'
-    else:
-        dim_set = "{AWS/WAFV2,Rule,WebACL}"
-        extra_filter = ""
     try:
+        _dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+        if scope == "REGIONAL" and region:
+            _dims.append({"Name": "Region", "Value": region})
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "allowed", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"AllowedRequests\"', 'Sum', 900),0))"},
-                {"Id": "blocked", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', 900),0))"},
-                {"Id": "challenged", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
-                {"Id": "captcha", "Expression": f"SUM(FILL(SEARCH('{dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{extra_filter} MetricName=\"CaptchaRequests\"', 'Sum', 900),0))"},
+                {"Id": "raw_a", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": _dims}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "allowed", "Expression": "FILL(raw_a,0)"},
+                {"Id": "raw_b", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "blocked", "Expression": "FILL(raw_b,0)"},
+                {"Id": "raw_c", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "challenged", "Expression": "FILL(raw_c,0)"},
+                {"Id": "raw_p", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "captcha", "Expression": "FILL(raw_p,0)"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
@@ -968,11 +975,21 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
         rule_dim_set = "{AWS/WAFV2,Rule,WebACL}"
         rule_extra = ""
     try:
+        _dims_rule = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+        if scope == "REGIONAL" and region:
+            _dims_rule.append({"Name": "Region", "Value": region})
+        _dims_ddos = [{"Name": "WebACL", "Value": webacl_name},
+                      {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                      {"Name": "LabelName", "Value": "ddos-request"}]
         resp = cw.get_metric_data(
             MetricDataQueries=[
                 {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
-                {"Id": "total_m", "Expression": f"SUM(FILL(SEARCH('{rule_dim_set} WebACL=\"{webacl_name}\" Rule=\"ALL\"{rule_extra} MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900),0))"},
-                {"Id": "ddos_c", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\" MetricName=\"ChallengeRequests\"', 'Sum', 900),0))"},
+                {"Id": "rb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "rc", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "rp", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "total_m", "Expression": "FILL(rb,0)+FILL(rc,0)+FILL(rp,0)"},
+                {"Id": "raw_ddos", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_ddos}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ddos_c", "Expression": "FILL(raw_ddos,0)"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
@@ -1032,7 +1049,11 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "ddosreq", "Expression": f"SUM(FILL(SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:anti-ddos\" LabelName=\"ddos-request\"', 'Sum', 900),0))"},
+                {"Id": "raw_ddos", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests",
+                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
+                                   {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                                   {"Name": "LabelName", "Value": "ddos-request"}]}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ddosreq", "Expression": "FILL(raw_ddos,0)"},
             ],
             StartTime=start, EndTime=end, ScanBy="TimestampAscending",
         )
