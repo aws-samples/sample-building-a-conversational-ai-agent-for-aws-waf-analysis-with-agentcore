@@ -26,7 +26,7 @@ CONFIDENCE_RULES = """\
 
 
 @tool
-def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: str = "", duration_hours: int = 6, hours_ago: int = None, rule_name: str = "") -> str:
+def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: str = "", duration_hours: float = 6, hours_ago: float = None, rule_name: str = "") -> str:
     """Investigate whether a blocked request is a false positive, or proactively scan for suspected FPs.
 
     This tool provides evidence for human judgment — do not make definitive FP/TP verdicts

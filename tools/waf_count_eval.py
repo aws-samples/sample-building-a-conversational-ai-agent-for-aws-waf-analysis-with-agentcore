@@ -48,7 +48,7 @@ def _has_logging() -> bool:
 
 
 @tool
-def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: str = "", duration_hours: int = 1, hours_ago: int = None) -> str:
+def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: str = "", duration_hours: float = 1, hours_ago: float = None) -> str:
     """Guided workflow for evaluating whether COUNT rules are ready to switch to BLOCK.
 
     This is a multi-step skill. Call with step="init" for bulk evaluation (all COUNT rules),
@@ -381,7 +381,7 @@ def _step_analyze_rule(rule_name: str) -> str:
     return "\n".join(lines)
 
 
-def _step_check_clients(rule_name: str, start_time: str, hours_ago: int) -> str:
+def _step_check_clients(rule_name: str, start_time: str, hours_ago: float) -> str:
     """Step 6: Detailed client check for a specific time window."""
     if not _has_logging():
         return "Error: No logging configured. Cannot perform log-level analysis."

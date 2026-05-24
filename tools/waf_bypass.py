@@ -38,7 +38,7 @@ UNIQUE_IP_ANOMALY = 2.0
 
 
 @tool
-def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", duration_hours: int = 6, hours_ago: int = None) -> str:
+def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", duration_hours: float = 6, hours_ago: float = None) -> str:
     """Detect potential WAF bypass — find malicious traffic in ALLOW logs.
 
     This tool provides evidence for human judgment. It does NOT make definitive

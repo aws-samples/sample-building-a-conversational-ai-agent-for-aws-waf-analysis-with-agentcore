@@ -269,8 +269,8 @@ def _parse_start_time(value: str) -> int | None:
 def run_logs_query(
     query_type: str,
     start_time: str,
-    duration_hours: int = 6,
-    hours_ago: int = None,
+    duration_hours: float = 6,
+    hours_ago: float = None,
     log_group: str = "",
     rule_name: str = "",
     ip: str = "",
@@ -683,7 +683,7 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 
 
 @tool
-def analyze_ip(ip: str, start_time: str, duration_hours: int = 6, hours_ago: int = None) -> str:
+def analyze_ip(ip: str, start_time: str, duration_hours: float = 6, hours_ago: float = None) -> str:
     """Analyze a single IP address — full behavioral profile across all actions.
 
     Two-phase: diversity check first (NAT detection), then full analysis if not NAT.

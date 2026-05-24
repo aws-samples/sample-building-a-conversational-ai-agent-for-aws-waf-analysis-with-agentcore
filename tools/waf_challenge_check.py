@@ -15,7 +15,7 @@ POLL_INTERVAL = 2
 
 
 @tool
-def check_challenge_compatibility(start_time: str, duration_hours: int = 6, hours_ago: int = None, action_type: str = "CHALLENGE") -> str:
+def check_challenge_compatibility(start_time: str, duration_hours: float = 6, hours_ago: float = None, action_type: str = "CHALLENGE") -> str:
     """Check which URIs/methods are being challenged or CAPTCHA'd. Identifies requests that
     cannot complete Challenge/CAPTCHA due to technical requirements.
 
