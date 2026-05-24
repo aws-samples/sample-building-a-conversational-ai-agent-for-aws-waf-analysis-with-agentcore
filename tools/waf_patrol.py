@@ -330,7 +330,15 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
         parts = label.rsplit(" ", 1)
         rule_name = parts[0] if len(parts) == 2 else label
         values = [int(v) for v in r.get("Values", [])]
-        timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
+        # Convert timestamps to user's session timezone for consistent display
+        from tools.session_state import get_user_timezone
+        tz_off = get_user_timezone()
+        if tz_off is not None:
+            from datetime import timezone as _tz, timedelta as _td
+            user_tz = _tz(_td(hours=tz_off))
+            timestamps = [t.astimezone(user_tz).isoformat() for t in r.get("Timestamps", [])]
+        else:
+            timestamps = [t.isoformat() for t in r.get("Timestamps", [])]
 
         if rule_name not in rules:
             rules[rule_name] = {"blocked": [], "counted": [], "challenge": [], "captcha": [], "allowed": [], "timestamps": []}
