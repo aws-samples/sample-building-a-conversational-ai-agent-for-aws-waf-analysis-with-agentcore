@@ -80,7 +80,7 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 ## Athena vs CloudWatch Logs
 - run_logs_query works for BOTH CWL and S3/Athena users (auto-routes based on log destination).
 - **When get_waf_config shows S3/Athena logging**: immediately tell the user: "This WebACL uses Athena for log queries. Each query may take up to several minutes depending on data volume. I'll use metrics (instant) for initial analysis and only query logs when we need IP/URI-level details." This sets expectations before any slow query.
-- First Athena query may be slow (~30s) due to automatic table creation. Warn the user.
+- First Athena query includes table creation overhead on top of normal query time.
 - Athena charges per TB scanned (~$5/TB). For repeated queries, mention potential cost.
 - **Athena queries are capped at 1 hour per call** (production WAF logs can be 1-10TB/day). If you need a longer window, split into multiple 1h calls and report progress to the user between each call (e.g., "Querying 14:00-15:00... found 3 suspicious IPs. Now checking 15:00-16:00..."). Merge findings across calls by identifying IPs/patterns that appear in multiple hours.
 - If a 1h query times out (extremely high traffic), narrow further: duration_hours=0.5 (30min) or 0.25 (15min). Always able to reduce until query succeeds.

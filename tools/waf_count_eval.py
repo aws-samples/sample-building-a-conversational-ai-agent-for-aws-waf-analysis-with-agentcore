@@ -509,37 +509,6 @@ def _get_rule_type_prior(rule_name: str) -> str:
     return "No specific prior available for this rule. Log analysis recommended before switching."
 
 
-def _find_peak_hour(rule_name: str, start_epoch: int, end_epoch: int) -> str:
-    """Find the hour with most hits for a given rule in the time range."""
-    # Cap to 1h for Athena compatibility (query_logs enforces 1h max for Athena).
-    # For CWL this is also fine — we just find peak within the most recent hour.
-    # The caller uses CloudWatch Metrics (14-day) for broader peak detection.
-    max_window = 3600
-    if (end_epoch - start_epoch) > max_window:
-        start_epoch = end_epoch - max_window
-    cwl = (
-        f"filter @message like '{rule_name}' and @message like 'COUNT'"
-        " | stats count(*) as hits by bin(1h)"
-        " | sort hits desc | limit 1"
-    )
-    athena = (
-        f"SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%dT%H:00') as hour, count(*) as hits"
-        f" FROM {{TABLE}}"
-        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
-        f" GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%dT%H:00')"
-        f" ORDER BY hits DESC LIMIT 1"
-    )
-    results = _run_log_query(cwl, athena, start_epoch, end_epoch, limit=1)
-    if results:
-        # CWL returns "bin(1h)" key, Athena returns "hour" key
-        ts = results[0].get("bin(1h)", "") or results[0].get("hour", "")
-        if ts:
-            # Normalize to YYYY-MM-DDTHH:MM format
-            return ts[:16].replace(" ", "T")
-    return ""
-
-
 def _get_all_count_rules(waf_region: str, scope: str) -> list[str]:
     """Get all rule IDs that are in COUNT mode from the WebACL config."""
     webacl_name = get_webacl_name()
