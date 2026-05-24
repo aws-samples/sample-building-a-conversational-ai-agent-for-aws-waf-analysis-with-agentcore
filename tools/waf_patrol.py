@@ -329,25 +329,37 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
         StartTime=start, EndTime=end, ScanBy="TimestampAscending",
     )
 
-    rules = {}  # {rule_name: {blocked: [...], counted: [...], challenge: [...], captcha: [...], allowed: [...]}}
+    rules = {}  # {rule_name: {blocked: [(ts,val),...], ...}}
     metric_map = {"blocked": "blocked", "counted": "counted", "challenge": "challenge", "captcha": "captcha", "allowed": "allowed"}
 
+    # Phase 1: collect time-indexed data per rule per metric
+    _raw = {}  # {rule_name: {metric: {ts_str: value}}}
     for r in resp.get("MetricDataResults", []):
         qid = r["Id"]
         if qid not in metric_map:
             continue
         label = r.get("Label", "")
-        # Label format: "{RuleName} {MetricName}" — parse rule name
         parts = label.rsplit(" ", 1)
         rule_name = parts[0] if len(parts) == 2 else label
         values = [int(v) for v in r.get("Values", [])]
         timestamps = _to_local_ts(r.get("Timestamps", []))
 
-        if rule_name not in rules:
-            rules[rule_name] = {"blocked": [], "counted": [], "challenge": [], "captcha": [], "allowed": [], "timestamps": []}
-        rules[rule_name][metric_map[qid]] = values
-        if timestamps and not rules[rule_name]["timestamps"]:
-            rules[rule_name]["timestamps"] = timestamps
+        if rule_name not in _raw:
+            _raw[rule_name] = {}
+        _raw[rule_name][metric_map[qid]] = dict(zip(timestamps, values))
+
+    # Phase 2: build aligned arrays per rule (union of all timestamps, sorted)
+    rules = {}
+    for rule_name, metrics_data in _raw.items():
+        all_ts = sorted(set(ts for m in metrics_data.values() for ts in m.keys()))
+        rules[rule_name] = {
+            "timestamps": all_ts,
+            "blocked": [metrics_data.get("blocked", {}).get(ts, 0) for ts in all_ts],
+            "counted": [metrics_data.get("counted", {}).get(ts, 0) for ts in all_ts],
+            "challenge": [metrics_data.get("challenge", {}).get(ts, 0) for ts in all_ts],
+            "captcha": [metrics_data.get("captcha", {}).get(ts, 0) for ts in all_ts],
+            "allowed": [metrics_data.get("allowed", {}).get(ts, 0) for ts in all_ts],
+        }
 
     return rules
 
