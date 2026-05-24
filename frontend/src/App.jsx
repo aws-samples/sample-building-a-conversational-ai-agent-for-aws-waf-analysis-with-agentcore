@@ -190,7 +190,7 @@ export default function App() {
   const [selected, setSelected] = useState(new Set());
   const [newPassForm, setNewPassForm] = useState(null);
   const [resetForm, setResetForm] = useState(null);
-  const [darkMode, setDarkMode] = useState(true);
+  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('waf-theme') !== 'light');
   const [tzOffset, setTzOffset] = useState(() => {
     const saved = localStorage.getItem('waf-agent-tz');
     return saved !== null ? parseFloat(saved) : -(new Date().getTimezoneOffset() / 60);
@@ -201,13 +201,13 @@ export default function App() {
   const pendingResolve = useRef(null);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [sidebarLang, setSidebarLang] = useState(() => navigator.language.startsWith('zh') ? 'zh' : 'en');
+  const [sidebarLang, setSidebarLang] = useState(() => localStorage.getItem('waf-lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en'));
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(sessionId.current);
 
   useEffect(() => { getToken().then(() => setUser(true)).catch(() => setUser(false)); }, []);
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-  useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
+  useEffect(() => { document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light'); localStorage.setItem('waf-theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
   useEffect(() => { if (user) loadSessions(); }, [user]);
 
   async function loadSessions() {
@@ -510,7 +510,7 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
         <aside className="sidebar">
           <div className="sidebar-top">
             <button className="sidebar-close" onClick={() => setSidebarOpen(false)}>✕</button>
-            <button className="sidebar-lang-btn" onClick={() => setSidebarLang(sidebarLang === 'zh' ? 'en' : 'zh')}>{sidebarLang === 'zh' ? 'EN' : '中'}</button>
+            <button className="sidebar-lang-btn" onClick={() => { const next = sidebarLang === 'zh' ? 'en' : 'zh'; setSidebarLang(next); localStorage.setItem('waf-lang', next); }}>{sidebarLang === 'zh' ? 'EN' : '中'}</button>
           </div>
           <button className="new-session-btn" onClick={handleNewSession}>+ {sidebarLang === 'zh' ? '新建会话' : 'New Chat'}</button>
           {sessions.length > 0 && (
