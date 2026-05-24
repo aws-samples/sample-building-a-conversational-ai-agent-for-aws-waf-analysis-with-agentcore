@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.8.0 (2026-05-24)
+
+### Breaking Change: `get_waf_overview` parameter renamed
+
+- `hours` parameter renamed to `minutes` for finer granularity control
+- Existing callers must update: `hours=24` → `minutes=1440`
+
+### Time-Series Output & Zoom-In Capability
+
+- **All metric functions now output full time-series data** — LLM can see spike shapes, duration, and timing
+- **5-tier granularity**: 1-min (≤60min), 5-min (≤6h), 15-min (≤3d), 1-hour (≤1w), 4-hour (>1w)
+- **Zoom-in methodology**: LLM guided to progressively narrow windows (1440→240→60 minutes) to locate exact spike timing before querying logs
+- Functions with time-series: `top_rules`, `attack_types`, `bot_summary`, `rate_limits`, `challenge_solve_rate`
+
+### DDoS Investigation Methodology
+
+- **Explicit AMR rule identification**: LLM must verify rule names (ChallengeAllDuringEvent, ChallengeDDoSRequests, DDoSRequests) — prevents misattribution of custom rules to AMR
+- **`top_labels` query type**: Lists all managed rule group labels with hit counts — confirms AMR/Bot Control involvement without guessing
+- **`top_ips_by_volume` / `top_countries_by_volume`**: Action-agnostic DDoS source queries (works regardless of Challenge/Block/Count config)
+- **Result validation step**: Flags when top IPs have low counts vs metrics (wrong time window)
+
+### Timezone Handling
+
+- **Timezone confirmation overlay**: User must select timezone before chatting, locked for session duration
+- **Session timezone injected into system prompt**: LLM always sees "Session timezone: UTC+8" — eliminates double-conversion bugs
+- **localStorage persistence**: Remembers last timezone choice, pre-selects browser TZ for first-time users
+
+### Bug Fixes
+
+- **fix: TypeError in `run_logs_query`** — results were double-parsed as CWL raw format
+- **fix: `top_ips_by_volume` missing IP column** — CWL null group-by field caused column loss; added `filter ispresent()`
+- **fix: KeyError TABLE when routing CWL queries** — `.format()` replaced with `.replace()` for user params only
+- **fix: metric granularity** — was using entire window as one data point (`period=hours*3600`)
+- **fix: checkbox double-toggle** — `stopPropagation` moved from `onChange` to `onClick`
+- **fix: `ScanBy=TimestampAscending`** — time-series output now chronological in all functions
+- **fix: query injection** — IP validation added to `waf_bypass`, `waf_block_fp`; rule_name sanitized in `waf_count_eval`
+- **fix: timezone `.replace(tzinfo=utc)` discarding explicit offset** — now uses `.astimezone()` for tz-aware strings
+- **fix: half-hour timezone support** — offset stored as float (India +5.5, Nepal +5.75)
+- **fix: guard all `query_logs` callers** — RuntimeError from Athena no longer crashes tools
+
+### New Query Types
+
+- `top_challenged_ips` / `top_challenged_countries` — Challenge action sources
+- `top_captcha_ips` / `top_captcha_countries` — CAPTCHA action sources
+- `top_counted_ips` / `top_counted_countries` — COUNT action sources
+- `top_ips_by_volume` / `top_countries_by_volume` — All actions combined
+- `top_labels` — All managed rule group labels with hit counts
+
+### Other
+
+- Removed unused `strands-agents-tools` dependency (42% smaller lock file)
+- Added stderr logging to `waf_logs`, `waf_overview`, `waf_bypass` for debugging
+- Frontend: connection status indicator with auto-retry
+- Frontend: sidebar tooltips for quick-start items
+- `js-cookie` override to 3.0.7 (CVE fix)
+
 ## 0.7.0 (2026-05-18)
 
 ### New Tool: `detect_bypass` — Bypass/Evasion Detection
