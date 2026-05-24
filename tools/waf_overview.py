@@ -148,21 +148,25 @@ def _top_rules(cw, webacl_name, start, end, prev_start, hours, scope="CLOUDFRONT
     lines.append("-" * 85)
     lines.append(f"Total: mitigated {tot_b + tot_ch + tot_cap:,} (blocked {tot_b:,} + challenge {tot_ch:,} + captcha {tot_cap:,}) | allowed {tot_a:,}")
 
-    # Time-series breakdown (peak detection)
+    # Time-series breakdown
     timestamps = all_data.get("timestamps", [])
     ch_series = all_data.get("challenge", [])
     b_series = all_data.get("blocked", [])
+    cap_series = all_data.get("captcha", [])
+    a_series = all_data.get("allowed", [])
     if timestamps and len(timestamps) > 1:
-        # Combine blocked + challenge per period for peak detection
-        combined = [b + c for b, c in zip(b_series, ch_series)] if len(b_series) == len(ch_series) else ch_series or b_series
-        if combined and len(combined) <= len(timestamps):
-            peak_idx = combined.index(max(combined))
-            lines.append("")
-            lines.append(f"Time granularity: {period}s ({period//60}min) | {len(timestamps)} data points")
-            lines.append(f"Peak period: {timestamps[peak_idx]} ({max(combined):,} mitigated requests)")
+        lines.append("")
+        lines.append(f"Time-series ({period//60}min granularity, {len(timestamps)} points):")
+        lines.append(f"{'Time':<25} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Allowed':>8} {'Total':>8}")
+        for i, ts in enumerate(timestamps):
+            b = b_series[i] if i < len(b_series) else 0
+            c = ch_series[i] if i < len(ch_series) else 0
+            cap = cap_series[i] if i < len(cap_series) else 0
+            a = a_series[i] if i < len(a_series) else 0
+            lines.append(f"{ts:<25} {b:>8,} {c:>10,} {cap:>8,} {a:>8,} {b+c+cap:>8,}")
 
     lines.append("")
-    lines.append("→ For IP/URI details on a specific rule, use run_logs_query(query_type='count_rule_top_ips', rule_name='...', start_time='...')")
+    lines.append("→ For IP/URI details on a specific rule, use run_logs_query(query_type='top_ips_by_volume', start_time='<peak_time>', hours_ago=1)")
     return "\n".join(lines)
 
 
