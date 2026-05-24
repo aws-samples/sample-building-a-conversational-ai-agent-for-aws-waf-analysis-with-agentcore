@@ -95,6 +95,13 @@ def get_waf_metrics(
     values = data["Values"]
     total = sum(values)
 
+    # Convert timestamps to user timezone
+    from tools.session_state import get_user_timezone
+    tz_off = get_user_timezone()
+    if tz_off is not None:
+        user_tz = timezone(timedelta(hours=tz_off))
+        timestamps = [t.astimezone(user_tz) for t in timestamps]
+
     # Format output
     lines = [
         f"## {metric_name} — {webacl_name} (last {period_hours}h)",
