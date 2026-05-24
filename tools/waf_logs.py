@@ -46,10 +46,10 @@ TEMPLATES = {
         "description": "Top User-Agents triggering a COUNT rule",
     },
     "ip_cross_query": {
-        "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by action, terminatingRuleId | sort cnt desc | limit {limit}",
-        "athena": "SELECT action, terminatingruleid as \"terminatingRuleId\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT {LIMIT}",
+        "query": "filter httpRequest.clientIp = '{ip}' | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>[^\"]*)\"}/ | stats count(*) as cnt, earliest(ua) as user_agent by action, terminatingRuleId | sort cnt desc | limit {limit}",
+        "athena": "SELECT action, terminatingruleid as \"terminatingRuleId\", count(*) as cnt, arbitrary(h.value) as user_agent FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND lower(h.name) = 'user-agent' GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["ip"],
-        "description": "All actions/rules for a specific IP (cross-validation)",
+        "description": "All actions/rules for a specific IP with User-Agent (cross-validation)",
     },
     "ip_uri_breakdown": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
