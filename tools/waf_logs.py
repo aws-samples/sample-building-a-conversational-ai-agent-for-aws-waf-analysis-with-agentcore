@@ -355,7 +355,9 @@ def run_logs_query(
         dest = None  # explicit log_group provided
 
     # Build CWL query
-    query = template["query"].format(**params)
+    query = template["query"]
+    for k, v in params.items():
+        query = query.replace(f"{{{k}}}", str(v))
     _log(f"query_type={query_type} start_time={start_time} hours_ago={hours_ago} dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)

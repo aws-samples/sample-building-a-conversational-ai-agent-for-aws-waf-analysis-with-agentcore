@@ -139,6 +139,13 @@ def _ensure_athena_table(dest: str) -> str | None:
         if existing:
             _athena_table = existing
             _athena_state["table"] = existing
+            # Detect partition format for pruning
+            try:
+                _, part_fmt, _ = _detect_partitions(s3_path)
+                if part_fmt:
+                    _athena_state["partition_format"] = part_fmt
+            except Exception:
+                pass
             return existing
 
         # Create permanent table

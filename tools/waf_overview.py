@@ -175,7 +175,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     if timestamps and len(timestamps) > 1:
         lines.append("")
         lines.append(f"Time-series ({period//60}min granularity, {len(timestamps)} points):")
-        lines.append(f"{'Time':<25} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Allowed':>8} {'Total':>8}")
+        lines.append(f"{'Time':<25} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Allowed':>8} {'Mitigated':>10}")
         shown = 0
         for i, ts in enumerate(timestamps):
             b = b_series[i] if i < len(b_series) else 0
@@ -183,7 +183,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
             cap = cap_series[i] if i < len(cap_series) else 0
             a = a_series[i] if i < len(a_series) else 0
             if b + c + cap + a > 0:
-                lines.append(f"{ts:<25} {b:>8,} {c:>10,} {cap:>8,} {a:>8,} {b+c+cap:>8,}")
+                lines.append(f"{ts:<25} {b:>8,} {c:>10,} {cap:>8,} {a:>8,} {b+c+cap:>10,}")
                 shown += 1
         if shown == 0:
             lines.append("  (all zeros)")
