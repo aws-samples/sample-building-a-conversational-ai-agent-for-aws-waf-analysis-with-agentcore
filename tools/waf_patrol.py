@@ -711,6 +711,13 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     except ValueError:
         return f"Error: invalid start_time format '{start_time}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MM."
 
+    # Refuse if data is too old (CloudWatch 15-min metrics expire after 15 days)
+    age_days = (datetime.now(timezone.utc) - start).total_seconds() / 86400
+    if age_days > 15:
+        return (f"Error: start_time is {age_days:.0f} days ago. CloudWatch metrics at 15-minute resolution "
+                "expire after 15 days — report data would be incomplete or empty.\n"
+                "Please choose a start_time within the last 15 days.")
+
     # Cap hours at 24
     hours = min(hours, 24)
     end = start + timedelta(hours=hours)
