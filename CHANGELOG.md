@@ -56,6 +56,22 @@
 - Frontend: sidebar tooltips for quick-start items
 - `js-cookie` override to 3.0.7 (CVE fix)
 
+### Athena Performance & Robustness
+
+- **1-hour query cap for Athena**: Enforced at the unified `query_logs` layer — prevents full-table scans on production datasets (1-10TB/day). Clear error message guides LLM to split into multiple 1h calls with progressive user reporting.
+- **Partition pruning fix**: `_ensure_athena_table` now detects partition format for existing tables (was only set during table creation, causing full scans on pre-existing tables).
+- **`duration_hours` as float**: All tools accept fractional hours (0.5 = 30min, 0.25 = 15min) — LLM can progressively narrow if queries time out.
+- **Error surfacing**: Athena cap errors now bubble up to LLM (previously `detect_bypass` and `evaluate_count_rules` silently returned empty results).
+- **Metrics-based peak detection**: `evaluate_count_rules` uses CloudWatch Metrics (instant, free) instead of 14-day log scan to find peak hours.
+- **Improved timeout message**: Suggests narrower window instead of generic "timed out".
+- **User expectation management**: LLM proactively informs user about Athena latency after `get_waf_config`.
+
+### Parameter Rename: `hours_ago` → `duration_hours`
+
+- All 6 log-querying tools renamed for clarity (it's duration from start, not "hours ago from now")
+- `hours_ago` retained as backward-compatible alias
+- Type changed from `int` to `float` for sub-hour precision
+
 ## 0.7.0 (2026-05-18)
 
 ### New Tool: `detect_bypass` — Bypass/Evasion Detection
