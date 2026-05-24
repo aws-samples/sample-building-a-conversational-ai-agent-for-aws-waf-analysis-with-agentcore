@@ -350,8 +350,17 @@ def run_logs_query(
     if not log_group:
         dest = get_log_destination()
         if not dest:
-            _log(f"ABORT: no log destination in session state. get_waf_config not called?")
-            return "No logging configured. Run get_waf_config first."
+            # Auto-init: try to call get_waf_config if webacl_name is known
+            from tools.session_state import get_webacl_name, get_scope
+            wn = get_webacl_name()
+            if wn:
+                _log(f"auto-init: calling get_waf_config({wn})")
+                from tools.waf_config import get_waf_config
+                get_waf_config(webacl_name=wn, scope=get_scope() or "CLOUDFRONT")
+                dest = get_log_destination()
+            if not dest:
+                _log(f"ABORT: no log destination in session state.")
+                return "Error: No WebACL configured. Call get_waf_config(webacl_name='...') first to set up the session context (logging destination, capabilities)."
     else:
         dest = None  # explicit log_group provided
 

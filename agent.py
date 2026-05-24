@@ -171,7 +171,9 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 3. To confirm AMR involvement: use get_waf_overview(query_type='top_labels') and look for awswaf:managed:aws:anti-ddos:event-detected. If absent, AMR did NOT trigger.
 4. ZOOM IN to find precise spike: Look at the time-series from step 1, identify the peak hour, then call get_waf_overview(query_type='top_rules', start_time='<peak_hour>', minutes=60) to get 1-minute granularity. Identify the exact spike window (usually 2-15 minutes). If 1-minute granularity shows a single spike point, the attack was very short — proceed directly to log queries for that minute.
 5. To find attack source IPs: use run_logs_query(query_type='top_ips_by_volume', start_time='<spike_start>', duration_hours=1) with the NARROW window from step 4. If spike is <10 min, use duration_hours=1 centered on the spike. Do NOT query a 6-hour window.
-6. Validate results: if top IPs have very low request counts (< 1000) but metrics show 300K+ mitigated, the results are wrong. Re-check query parameters and time window.
+6. VERIFY terminating rule (MANDATORY): After finding top IPs, call run_logs_query(query_type='ip_cross_query', ip='<top_ip>', start_time='...', duration_hours=1) to confirm which rule ACTUALLY terminated those requests. Do NOT infer the terminating rule from top_rules — top_rules shows aggregate counts, not per-IP attribution. The terminatingRuleId in ip_cross_query is the ground truth.
+7. Data consistency check: if top_rules shows rule X with N challenges but total mitigated is 100×N, rule X is NOT the primary mitigator. Look for the ⚠️ gap warning in top_rules output.
+8. Validate results: if top IPs have very low request counts (< 1000) but metrics show 300K+ mitigated, the results are wrong. Re-check query parameters and time window.
 
 NOTE: Time-series timestamps are already in the user's session timezone. Use them directly when passing to run_logs_query (strip the offset suffix).
 

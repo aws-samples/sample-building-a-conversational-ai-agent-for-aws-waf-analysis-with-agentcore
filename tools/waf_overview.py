@@ -175,6 +175,13 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     lines.append("-" * 85)
     lines.append(f"Total: mitigated {tot_b + tot_ch + tot_cap:,} (blocked {tot_b:,} + challenge {tot_ch:,} + captcha {tot_cap:,}) | allowed {tot_a:,}")
 
+    # Gap detection: warn if visible rules don't account for most mitigated traffic
+    total_mitigated = tot_b + tot_ch + tot_cap
+    visible_mitigated = sum(r[0] for r in rows[:15])
+    if total_mitigated > 0 and visible_mitigated < total_mitigated * 0.5:
+        gap = total_mitigated - visible_mitigated
+        lines.append(f"\n⚠️ {gap:,} mitigated requests ({gap*100//total_mitigated}%) not attributed to visible rules — likely from managed rule group sub-rules (e.g., AMR ChallengeAllDuringEvent). Use ip_cross_query on top IPs to identify the actual terminating rule.")
+
     # Time-series breakdown
     timestamps = all_data.get("timestamps", [])
     ch_series = all_data.get("challenge", [])
