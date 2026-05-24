@@ -142,13 +142,18 @@ def _step_init(rule_name: str = "") -> str:
         else:
             needs_analysis.append((rule_id, hits))
 
-    # For top rule needing analysis, find peak hour (requires logging)
+    # For top rule needing analysis, find peak hour via CloudWatch Metrics (works for all log types)
     peak_info = ""
-    if needs_analysis and _has_logging() and not is_log_filter_active():
+    if needs_analysis:
         top_rule = needs_analysis[0][0]
-        end_epoch = int(time.time())
-        start_epoch = end_epoch - (14 * 86400)
-        peak_info = _find_peak_hour(top_rule, start_epoch, end_epoch)
+        # Re-query with hourly granularity to find peak hour
+        peak_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=3600, scope=scope, region=region)
+        rule_data = peak_metrics.get(top_rule, {})
+        counted_series = rule_data.get("counted", [])
+        timestamps = rule_data.get("timestamps", [])
+        if counted_series and timestamps and len(counted_series) == len(timestamps):
+            peak_idx = counted_series.index(max(counted_series))
+            peak_info = timestamps[peak_idx][:16].replace(" ", "T")  # YYYY-MM-DDTHH:MM
 
     # Build response
     lines = [
@@ -283,8 +288,22 @@ def _step_analyze_rule(rule_name: str) -> str:
     end_epoch = int(time.time())
     start_epoch = end_epoch - (14 * 86400)
 
-    # Find peak hour
-    peak_hour_str = _find_peak_hour(rule_name, start_epoch, end_epoch)
+    # Find peak hour via CloudWatch Metrics (avoids Athena cap issue)
+    from datetime import datetime as dt, timedelta, timezone as tz
+    from tools.waf_patrol import _get_all_rules_metrics_search
+    scope = get_scope() or "CLOUDFRONT"
+    region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    cw = get_client("cloudwatch", region_name=region)
+    end_dt = dt.now(tz.utc)
+    start_dt = end_dt - timedelta(days=14)
+    peak_metrics = _get_all_rules_metrics_search(cw, get_webacl_name(), start_dt, end_dt, period=3600, scope=scope, region=region)
+    rule_data = peak_metrics.get(rule_name, {})
+    counted_series = rule_data.get("counted", [])
+    timestamps = rule_data.get("timestamps", [])
+    peak_hour_str = ""
+    if counted_series and timestamps and len(counted_series) == len(timestamps):
+        peak_idx = counted_series.index(max(counted_series))
+        peak_hour_str = timestamps[peak_idx][:16].replace(" ", "T")
     if not peak_hour_str:
         return (f"Could not find peak hour for rule '{rule_name}'. "
                 "The rule may have very sparse hits. Ask the user for a specific time window, "
@@ -492,6 +511,12 @@ def _get_rule_type_prior(rule_name: str) -> str:
 
 def _find_peak_hour(rule_name: str, start_epoch: int, end_epoch: int) -> str:
     """Find the hour with most hits for a given rule in the time range."""
+    # Cap to 1h for Athena compatibility (query_logs enforces 1h max for Athena).
+    # For CWL this is also fine — we just find peak within the most recent hour.
+    # The caller uses CloudWatch Metrics (14-day) for broader peak detection.
+    max_window = 3600
+    if (end_epoch - start_epoch) > max_window:
+        start_epoch = end_epoch - max_window
     cwl = (
         f"filter @message like '{rule_name}' and @message like 'COUNT'"
         " | stats count(*) as hits by bin(1h)"
