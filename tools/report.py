@@ -45,6 +45,12 @@ _I18N = {
         "no_events": "🟢 No events",
         "events": "event(s)",
         "blocked": "blocked",
+        "delay_note": "CloudWatch metrics have ~5 min delay. Data may change after report generation.",
+        "generated": "Generated",
+        "ddos_events_label": "DDoS Events This Week",
+        "ddos_requests_label": "DDoS Requests Identified",
+        "ddos_suspicion_label": "Suspicion Level",
+        "ddos_total_during_label": "Total Requests During Events",
     },
     "zh": {
         "title": "管理层周报",
@@ -78,6 +84,12 @@ _I18N = {
         "no_events": "🟢 本周无事件",
         "events": "次事件",
         "blocked": "次拦截",
+        "delay_note": "CloudWatch 指标延迟约 5 分钟，数据可能在报告生成后有变化。",
+        "generated": "生成时间",
+        "ddos_events_label": "本周 DDoS 事件",
+        "ddos_requests_label": "识别的 DDoS 请求",
+        "ddos_suspicion_label": "可疑等级",
+        "ddos_total_during_label": "事件期间总请求",
     },
 }
 
@@ -174,7 +186,7 @@ _FRIENDLY_NAMES = {
 
 REPORT_TEMPLATE = """\
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="{default_theme}">
 <head>
 <meta charset="UTF-8">
 <title>{L_title} — {webacl_name}</title>
@@ -188,7 +200,7 @@ REPORT_TEMPLATE = """\
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--fg); padding: 2rem; max-width: 1200px; margin: 0 auto; line-height: 1.6; }}
 h1 {{ color: var(--accent); margin-bottom: .5rem; }}
 h2 {{ color: var(--accent); margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }}
-.subtitle {{ color: var(--muted); margin-bottom: 2rem; }}
+.subtitle {{ color: var(--muted); margin-bottom: .5rem; }}
 .theme-toggle {{ position: fixed; top: 1rem; right: 1rem; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: .4rem .8rem; cursor: pointer; color: var(--fg); font-size: .85rem; }}
 .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 1rem 0; }}
 .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.2rem; }}
@@ -218,7 +230,8 @@ svg path[data-tip]:hover {{ opacity: 0.8; cursor: pointer; }}
 <body>
 <button class="theme-toggle" onclick="toggleTheme()">🌓 Toggle Theme</button>
 <h1>{L_title}</h1>
-<p class="subtitle">{webacl_name} — {date_range}</p>
+<p class="subtitle">{webacl_name} ({scope}) — {date_range}</p>
+<p style="color:var(--muted)">{L_generated}: {gen_time} {tz_label} · {L_delay_note}</p>
 
 <h2>{L_exec_summary}</h2>
 <div class="summary"><p>{executive_summary}</p></div>
@@ -290,15 +303,17 @@ function toggleTheme() {{
   root.classList.toggle('light');
   const c = getComputedStyle(root).getPropertyValue('--chart-text').trim() || '#1f2328';
   Chart.helpers.each(Chart.instances, function(chart) {{
-    chart.options.plugins.title.color = c;
-    if (chart.options.plugins.legend.labels) chart.options.plugins.legend.labels.color = c;
-    chart.options.scales.x.ticks.color = c;
-    chart.options.scales.y.ticks.color = c;
-    if (chart.options.scales.y.title) chart.options.scales.y.title.color = c;
+    if (chart.options.plugins.title) chart.options.plugins.title.color = c;
+    if (chart.options.plugins.legend && chart.options.plugins.legend.labels) chart.options.plugins.legend.labels.color = c;
+    if (chart.options.scales && chart.options.scales.x) chart.options.scales.x.ticks.color = c;
+    if (chart.options.scales && chart.options.scales.y) {{
+      chart.options.scales.y.ticks.color = c;
+      if (chart.options.scales.y.title) chart.options.scales.y.title.color = c;
+    }}
     chart.update();
   }});
 }}
-document.documentElement.classList.add('{default_theme}');
+
 </script>
 </body>
 </html>
@@ -485,23 +500,22 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 # Build suspicion breakdown — only show distinct levels
                 suspicion_cards = ""
                 if ddos_high == ddos_medium == ddos_low and ddos_high > 0:
-                    # All same = AMR classified all as high (high ⊃ medium ⊃ low)
-                    suspicion_cards = f'<div class="card"><div class="label">Suspicion Level</div><div class="value">All High</div></div>'
+                    suspicion_cards = f'<div class="card"><div class="label">{L["ddos_suspicion_label"]}</div><div class="value">All High</div></div>'
                 else:
                     if ddos_high > 0:
-                        suspicion_cards += f'<div class="card"><div class="label">High Suspicion</div><div class="value">{ddos_high:,}</div></div>'
+                        suspicion_cards += f'<div class="card"><div class="label">High</div><div class="value">{ddos_high:,}</div></div>'
                     if ddos_medium > ddos_high:
-                        suspicion_cards += f'<div class="card"><div class="label">Medium Suspicion</div><div class="value">{ddos_medium - ddos_high:,}</div></div>'
+                        suspicion_cards += f'<div class="card"><div class="label">Medium</div><div class="value">{ddos_medium - ddos_high:,}</div></div>'
                     if ddos_low > ddos_medium:
-                        suspicion_cards += f'<div class="card"><div class="label">Low Suspicion</div><div class="value">{ddos_low - ddos_medium:,}</div></div>'
+                        suspicion_cards += f'<div class="card"><div class="label">Low</div><div class="value">{ddos_low - ddos_medium:,}</div></div>'
 
                 antiddos_section = (
-                    f'<h2>Anti-DDoS Protection</h2>'
+                    f'<h2>{L["antiddos"]}</h2>'
                     f'<div class="grid">'
-                    f'<div class="roi-box"><div class="label">DDoS Events This Week</div><div class="value">{num_events}</div></div>'
-                    f'<div class="card"><div class="label">DDoS Requests Identified</div><div class="value">{ddos_total:,}</div></div>'
+                    f'<div class="roi-box"><div class="label">{L["ddos_events_label"]}</div><div class="value">{num_events}</div></div>'
+                    f'<div class="card"><div class="label">{L["ddos_requests_label"]}</div><div class="value">{ddos_total:,}</div></div>'
                     f'{suspicion_cards}'
-                    f'<div class="card"><div class="label">Total Requests During Events</div><div class="value">{total_during_event:,}</div></div>'
+                    f'<div class="card"><div class="label">{L["ddos_total_during_label"]}</div><div class="value">{total_during_event:,}</div></div>'
                     f'</div>'
                 )
 
@@ -772,10 +786,15 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     executive_summary = "{{EXECUTIVE_SUMMARY}}"
 
     date_range = f"{start_this_week.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
+    from datetime import datetime as _dt
+    gen_time = _dt.now(timezone(timedelta(hours=_tz_off)) if _tz_off else timezone.utc).strftime('%Y-%m-%d %H:%M')
 
     html = REPORT_TEMPLATE.format(
         webacl_name=webacl_name,
+        scope=scope,
         date_range=date_range,
+        gen_time=gen_time,
+        tz_label=tz_label,
         default_theme=theme,
         executive_summary=executive_summary,
         total_requests=f"{total_this:,}",
@@ -793,6 +812,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         country_map_svg=country_map_svg,
         attack_data_json=json.dumps(attack_ts),
         L_title=L["title"],
+        L_delay_note=L["delay_note"],
+        L_generated=L["generated"],
         L_exec_summary=L["exec_summary"],
         L_highlights=L["highlights"],
         L_total_requests=L["total_requests"],

@@ -388,7 +388,7 @@ _EXPECTED_AMRS = {
     "AWSManagedRulesKnownBadInputsRuleSet": "Known Bad Inputs",
     "AWSManagedRulesBotControlRuleSet": "Bot Control",
     "AWSManagedRulesAntiDDoSRuleSet": "Anti-DDoS",
-    "AWSManagedRulesAnonymousIpList": "IP Reputation",
+    "AWSManagedRulesAnonymousIpList": "Anonymous IP (VPN/Tor/Proxy)",
     "AWSManagedRulesAmazonIpReputationList": "IP Reputation (Amazon)",
     "AWSManagedRulesSQLiRuleSet": "SQL Injection",
     "AWSManagedRulesLinuxRuleSet": "Linux OS",
@@ -495,7 +495,7 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
         if amr_name not in deployed_amrs and amr_name in (
             "AWSManagedRulesCommonRuleSet", "AWSManagedRulesKnownBadInputsRuleSet",
             "AWSManagedRulesBotControlRuleSet", "AWSManagedRulesAntiDDoSRuleSet",
-            "AWSManagedRulesAnonymousIpList",
+            "AWSManagedRulesAmazonIpReputationList",
         ):
             tools.append({"layer": layer, "rule_name": "—", "mode": _d["not_deployed"], "status": "missing", "detail": ""})
 
@@ -1283,12 +1283,12 @@ new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_labe
     donut_script = f'<script>{" ".join(donut_calls)}</script>' if donut_calls else ""
 
     return f'''<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{L["title"]}</title>
+<html class="dark"><head><meta charset="utf-8"><title>{L["title"]}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1"></script>
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0"></script>
 <style>
-:root {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; }}
+:root.dark {{ --bg: #0d1117; --fg: #e6edf3; --card: #161b22; --border: #30363d; --accent: #58a6ff; --green: #3fb950; --red: #f85149; --muted: #8b949e; }}
 :root.light {{ --bg: #ffffff; --fg: #1f2328; --card: #f6f8fa; --border: #d0d7de; --accent: #0969da; --green: #1a7f37; --red: #cf222e; --muted: #656d76; }}
 body {{ font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.6; font-size: 1rem; }}
 h1 {{ color: var(--accent); }} h2 {{ color: var(--accent); margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }} h3 {{ margin-top: 1.5rem; }}
@@ -1311,9 +1311,9 @@ th {{ background: var(--border); text-align: left; padding: .5rem .7rem; }} td {
 .footer {{ color: var(--muted); font-size: .85rem; margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }}
 </style></head><body>
 <h1>🛡️ {L["title"]}</h1>
-<button onclick="document.documentElement.classList.toggle('light');this.textContent=document.documentElement.classList.contains('light')?'🌙':'☀️'" style="position:fixed;top:1rem;right:1rem;font-size:1.5rem;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;cursor:pointer;z-index:99">☀️</button>
-<p class="muted">{L["period"]}: {start.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} — {end.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h) · {L["generated"]}: {now.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label}</p>
-<p class="muted">{L["delay_note"]}</p>
+<button onclick="document.documentElement.classList.toggle('dark');document.documentElement.classList.toggle('light');this.textContent=document.documentElement.classList.contains('light')?'🌙':'☀️';var c=getComputedStyle(document.documentElement).getPropertyValue('--fg').trim();Chart.helpers.each(Chart.instances,function(ch){{if(ch.options.plugins.legend&&ch.options.plugins.legend.labels)ch.options.plugins.legend.labels.color=c;if(ch.options.scales&&ch.options.scales.x)ch.options.scales.x.ticks.color=c;if(ch.options.scales&&ch.options.scales.y)ch.options.scales.y.ticks.color=c;ch.update()}})" style="position:fixed;top:1rem;right:1rem;font-size:1.5rem;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:.4rem .7rem;cursor:pointer;z-index:99">☀️</button>
+<p class="muted">{webacl_results[0]["name"]} ({webacl_results[0]["scope"]}) · {L["period"]}: {start.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} — {end.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label} ({hours}h)</p>
+<p class="muted">{L["generated"]}: {now.astimezone(timezone(tz_offset)).strftime('%Y-%m-%d %H:%M')} {tz_label} · {L["delay_note"]}</p>
 
 <div class="banner {banner_class}">{banner_text}</div>
 
