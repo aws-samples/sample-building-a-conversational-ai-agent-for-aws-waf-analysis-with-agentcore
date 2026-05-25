@@ -85,7 +85,7 @@ TEMPLATES = {
         "query": "filter httpRequest.clientIp = '{ip}' | parse @message /\"labels\":\\[(?<lbls>[^\\]]*)\\]/ | filter ispresent(lbls) | parse lbls /\"name\":\"(?<lbl>[^\"]*)\"/  | stats count(*) as hits by lbl | sort hits desc | limit {limit}",
         "athena": "SELECT l.name as label, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(labels) AS t(l) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY l.name ORDER BY hits DESC LIMIT {LIMIT}",
         "params": ["ip"],
-        "description": "All WAF labels applied to an IP's requests — bot signals, Anti-DDoS, token status",
+        "description": "All WAF labels applied to an IP's requests — bot signals, Anti-DDoS, token status. CWL: first label per request only; Athena: all labels (more accurate)",
     },
     "host_top_ips": {
         "query": "filter @message like '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",

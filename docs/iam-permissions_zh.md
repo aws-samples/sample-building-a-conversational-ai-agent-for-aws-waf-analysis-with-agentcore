@@ -71,12 +71,14 @@
 | `glue:GetDatabase` | 检查数据库是否存在 | 无（只读） |
 | `glue:CreateDatabase` | 创建 `waf_analysis_tmp` 数据库（如不存在） | **创建一个新的空数据库。** 不会触碰现有数据库。 |
 | `glue:CreateTable` | 创建带分区投影的永久表 | **仅在 `waf_analysis_tmp` 数据库中创建表。** 不会修改现有表。 |
+| `glue:DeleteTable` | 分区格式变更时重建表 | **仅删除 `waf_analysis_tmp` 数据库中的表**（Agent 自己创建的）。当 S3 分区结构变化时触发。 |
 
 **Glue 安全保证：**
-- Agent 只在专用的 `waf_agent_temp` 数据库中创建表
-- 会话结束时自动删除表（SIGTERM 处理器）
-- 如果清理失败（如容器被强制终止），`waf_agent_temp` 中的孤立表可以安全手动删除
+- Agent 只在专用的 `waf_analysis_tmp` 数据库中创建表
+- 表是永久的，跨会话复用（避免重复创建开销）
+- 表是只读外部表，指向现有 S3 日志数据 — 不会复制或移动数据
 - Agent 永远不会修改其他数据库中的表
+- 清理方式：`DROP DATABASE waf_analysis_tmp CASCADE` 可删除所有 Agent 创建的表
 
 ### Amazon Bedrock（模型调用）
 

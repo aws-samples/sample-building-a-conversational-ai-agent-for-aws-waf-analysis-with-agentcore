@@ -71,6 +71,7 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 | `glue:GetDatabase` | Check if database exists | None (read) |
 | `glue:CreateDatabase` | Create `waf_analysis_tmp` database if not exists | **Creates a new empty database.** Does not touch existing databases. |
 | `glue:CreateTable` | Create table with partition projection | **Creates a table in `waf_analysis_tmp` database only.** Does not modify existing tables. |
+| `glue:DeleteTable` | Recreate table when partition format changes | **Only deletes tables in `waf_analysis_tmp` database** (tables the agent created). Triggered when S3 partition structure changes. |
 
 **Safety guarantees for Glue:**
 - The agent only creates tables in a dedicated `waf_analysis_tmp` database
