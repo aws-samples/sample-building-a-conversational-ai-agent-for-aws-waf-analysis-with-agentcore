@@ -47,6 +47,9 @@ def _resolve_s3_path(log_dest_arn: str) -> str:
         bucket_arn = s3_dest.get("BucketARN", "")
         prefix = s3_dest.get("Prefix", "").rstrip("/")
         bucket = bucket_arn.split(":::")[1] if ":::" in bucket_arn else ""
+        # Strip Firehose dynamic expressions (!{timestamp:...}, !{firehose:...})
+        import re
+        prefix = re.sub(r'!{[^}]*}', '', prefix).strip("/")
         if prefix:
             return f"s3://{bucket}/{prefix}"
         return f"s3://{bucket}"
