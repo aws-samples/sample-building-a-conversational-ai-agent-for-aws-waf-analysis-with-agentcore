@@ -408,8 +408,29 @@ def _ensure_table(region: str) -> str:
     # Check for existing table
     existing = _find_existing_table(s3_path, region)
     if existing:
-        _athena_state["table"] = existing
-        return existing
+        # Validate partition format matches actual S3 structure
+        try:
+            db, tbl_name = existing.split(".", 1)
+            glue = get_client("glue", region_name=region)
+            tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
+            tbl_params = tbl_resp["Table"].get("Parameters", {})
+            existing_fmt = tbl_params.get("projection.log_time.format", "")
+            _, actual_fmt, _ = _detect_partitions(s3_path)
+            if existing_fmt and actual_fmt and existing_fmt != actual_fmt:
+                if db == TMP_DATABASE:
+                    # Safe to drop — we created it
+                    print(f"[waf_athena] Partition format mismatch in our table: '{existing_fmt}' vs S3 '{actual_fmt}'. Recreating.", file=__import__('sys').stderr, flush=True)
+                    glue.delete_table(DatabaseName=db, Name=tbl_name)
+                else:
+                    # Not our table — don't touch it, create a new one in our database
+                    print(f"[waf_athena] Partition format mismatch in external table {existing}: '{existing_fmt}' vs S3 '{actual_fmt}'. Creating correct table in {TMP_DATABASE}.", file=__import__('sys').stderr, flush=True)
+            else:
+                _athena_state["table"] = existing
+                _athena_state["partition_format"] = existing_fmt or None
+                return existing
+        except Exception:
+            _athena_state["table"] = existing
+            return existing
 
     # Detect partitions and create permanent table
     if not _validate_waf_log(s3_path):
