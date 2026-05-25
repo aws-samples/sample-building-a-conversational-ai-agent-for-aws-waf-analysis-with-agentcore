@@ -201,5 +201,7 @@ def _ensure_athena_table(dest: str) -> str | None:
         _athena_state["table"] = full_table
         _athena_state["partition_format"] = part_fmt
         return full_table
-    except Exception:
+    except Exception as e:
+        import sys as _sys
+        print(f"[waf_query] _ensure_athena_table FAILED: {type(e).__name__}: {e}", file=_sys.stderr, flush=True)
         return None
