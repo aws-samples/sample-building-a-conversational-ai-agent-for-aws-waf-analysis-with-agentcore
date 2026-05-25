@@ -138,6 +138,73 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
 
     # Detect capabilities from rules
     caps = _detect_capabilities(rules)
+
+    # Protection Coverage Assessment
+    lines.append("\n## Protection Coverage")
+    _gaps = []
+
+    # DDoS protection
+    if caps["anti_ddos_amr"]:
+        ddos_rule = next((r for r in rules if r.get("Statement", {}).get("ManagedRuleGroupStatement", {}).get("Name") == "AWSManagedRulesAntiDDoSRuleSet"), None)
+        ddos_action = _extract_action(ddos_rule) if ddos_rule else "?"
+        ddos_scope = "has scope-down" if ddos_rule and ddos_rule.get("Statement", {}).get("ManagedRuleGroupStatement", {}).get("ScopeDownStatement") else "no scope-down"
+        lines.append(f"  Anti-DDoS AMR: ✅ deployed ({ddos_action}, {ddos_scope})")
+        if ddos_scope == "has scope-down":
+            _gaps.append("Anti-DDoS AMR has scope-down — some paths may be unprotected")
+    else:
+        lines.append("  Anti-DDoS AMR: ❌ NOT deployed")
+        _gaps.append("No Anti-DDoS protection — short burst attacks will pass through undetected")
+
+    # Bot Control
+    if caps["bot_control"] != "none":
+        bc_rule = next((r for r in rules if r.get("Statement", {}).get("ManagedRuleGroupStatement", {}).get("Name") == "AWSManagedRulesBotControlRuleSet"), None)
+        bc_action = _extract_action(bc_rule) if bc_rule else "?"
+        bc_scope = "has scope-down" if bc_rule and bc_rule.get("Statement", {}).get("ManagedRuleGroupStatement", {}).get("ScopeDownStatement") else "no scope-down"
+        lines.append(f"  Bot Control: ✅ {caps['bot_control']} ({bc_action}, {bc_scope})")
+        if "Count" in bc_action or "count" in bc_action:
+            _gaps.append("Bot Control is in COUNT mode — bots are labeled but not blocked")
+    else:
+        lines.append("  Bot Control: ❌ NOT deployed")
+        _gaps.append("No Bot Control — automated scraping/crawling not detected")
+
+    # Rate-based rules
+    rate_rules = [r for r in rules if "RateBasedStatement" in r.get("Statement", {})]
+    if rate_rules:
+        for rr in rate_rules:
+            threshold = rr["Statement"]["RateBasedStatement"].get("Limit", "?")
+            rr_action = _extract_action(rr)
+            lines.append(f"  Rate-based: ✅ '{rr['Name']}' (threshold {threshold}/5min, {rr_action})")
+            if rr_action == "Count":
+                _gaps.append(f"Rate-based rule '{rr['Name']}' is in COUNT mode — not blocking")
+    else:
+        lines.append("  Rate-based rules: ❌ none")
+        _gaps.append("No rate-based rules — volumetric attacks from single IPs not rate-limited")
+
+    # Injection protection (CRS)
+    crs_groups = ["AWSManagedRulesCommonRuleSet", "AWSManagedRulesSQLiRuleSet", "AWSManagedRulesKnownBadInputsRuleSet"]
+    found_crs = []
+    for r in rules:
+        gn = r.get("Statement", {}).get("ManagedRuleGroupStatement", {}).get("Name", "")
+        if gn in crs_groups:
+            action = _extract_action(r)
+            found_crs.append((gn, action))
+    if found_crs:
+        for gn, action in found_crs:
+            short = gn.replace("AWSManagedRules", "").replace("RuleSet", "")
+            lines.append(f"  {short}: ✅ ({action})")
+            if action == "Count":
+                _gaps.append(f"{short} is in COUNT mode — attacks detected but not blocked")
+    else:
+        lines.append("  Injection/XSS protection: ❌ No CRS/SQLi/KnownBadInputs rule groups")
+        _gaps.append("No managed rule groups for SQLi/XSS/LFI — injection attacks not blocked")
+
+    # Gaps summary
+    if _gaps:
+        lines.append("")
+        lines.append("  ⚠️ PROTECTION GAPS:")
+        for g in _gaps:
+            lines.append(f"    - {g}")
+        lines.append("  ACTION: Inform user about these gaps. If they report issues related to unprotected areas, recommend deploying the missing protection.")
     set_capabilities(caps)
     lines.append("\n## Detected Capabilities")
     lines.append(f"  Bot Control: {caps['bot_control']}")
