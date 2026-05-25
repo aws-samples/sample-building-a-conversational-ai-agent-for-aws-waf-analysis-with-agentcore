@@ -222,6 +222,8 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("  ⚠️ Athena queries may take up to several minutes depending on data volume. Tell the user upfront.")
         lines.append("  Prefer get_waf_overview (metrics, instant) for initial analysis. Only query logs for IP/URI-level details.")
         lines.append("  Note: If the first Athena query fails with a permissions error, the Athena workgroup may not have an output location configured. The agent will auto-fallback to writing results in the WAF log bucket (athena-results/ prefix). If that also fails, advise the user to configure a query result location in the Athena console (Workgroups → primary → Edit).")
+        if ":firehose:" in log_dest:
+            lines.append("  ⚠️ IMPORTANT: Firehose S3 prefix time zone MUST be UTC (default). If the user configured a non-UTC time zone, Athena queries will return 0 results. Ask the user to confirm their Firehose prefix time zone is UTC.")
     else:
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
 
