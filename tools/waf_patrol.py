@@ -547,14 +547,14 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
         if not full_table:
             if not _validate_waf_log(s3_path):
                 return {}, None
-            storage_template, part_fmt, part_unit = _detect_partitions(s3_path)
+            storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
             _ensure_database(region, "primary")
             safe_name = _re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-            full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, "primary", f"waf_logs_{safe_name}")
+            full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, part_interval, region, "primary", f"waf_logs_{safe_name}")
             table_msg = f"Created permanent Athena table: {full_table} (reusable for future queries)"
         else:
             # Detect partition format from existing table's S3 path
-            _, part_fmt, _ = _detect_partitions(s3_path)
+            _, part_fmt, _, _ = _detect_partitions(s3_path)
 
         # Build time filter WITH partition pruning (critical for performance)
         start_ms = int(start.timestamp()) * 1000

@@ -91,9 +91,9 @@ def _s3_list_dirs(bucket: str, prefix: str) -> list[str]:
     return dirs
 
 
-def _detect_partitions(s3_path: str) -> tuple[str, str, str]:
+def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
     """Walk S3 to find partition structure.
-    Returns (storage_template, partition_format, partition_unit)."""
+    Returns (storage_template, partition_format, partition_unit, partition_interval)."""
     parts = s3_path.replace("s3://", "").split("/", 1)
     bucket = parts[0]
     base_prefix = parts[1] if len(parts) > 1 else ""
@@ -120,10 +120,20 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str]:
                     break
             if len(levels) >= 5:
                 fmt, unit = "yyyy/MM/dd/HH/mm", "minutes"
+                # Detect interval from minute-level directories (e.g., 00,05,10 → interval=5)
+                minute_dirs = sorted(_s3_list_dirs(bucket, test_prefix.rsplit("/", 2)[0] + "/"))
+                if len(minute_dirs) >= 2:
+                    try:
+                        interval = int(minute_dirs[1]) - int(minute_dirs[0])
+                    except (ValueError, IndexError):
+                        interval = 5
+                else:
+                    interval = 5
             else:
                 fmt, unit = "yyyy/MM/dd/HH", "hours"
+                interval = 1
             storage_template = f"s3://{bucket}/{current_prefix}${{log_time}}"
-            return storage_template, fmt, unit
+            return storage_template, fmt, unit, interval
 
         # Pick best subdir to descend
         chosen = None
@@ -221,7 +231,7 @@ LOCATION '{s3_location}'
 TBLPROPERTIES (
   'projection.enabled' = 'true',
   'projection.log_time.format' = '{partition_format}',
-  'projection.log_time.interval' = '1',
+  'projection.log_time.interval' = '{partition_interval}',
   'projection.log_time.interval.unit' = '{partition_unit}',
   'projection.log_time.range' = '{range_start},NOW',
   'projection.log_time.type' = 'date',
@@ -265,7 +275,7 @@ def _ensure_database(region: str, workgroup: str):
 
 
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
-                        partition_unit: str, region: str, workgroup: str, table_name: str) -> str:
+                        partition_unit: str, partition_interval: int, region: str, workgroup: str, table_name: str) -> str:
     """Create a permanent Athena table with the given name."""
     _ensure_database(region, workgroup)
     range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
@@ -274,6 +284,7 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
         database=TMP_DATABASE, table=table_name,
         s3_location=s3_path.rstrip("/") + "/",
         partition_format=partition_format, partition_unit=partition_unit,
+        partition_interval=partition_interval,
         storage_template=storage_template, range_start=range_start,
     )
     _run_athena_ddl(ddl, region, workgroup)
@@ -415,8 +426,11 @@ def _ensure_table(region: str) -> str:
             tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
             tbl_params = tbl_resp["Table"].get("Parameters", {})
             existing_fmt = tbl_params.get("projection.log_time.format", "")
-            _, actual_fmt, _ = _detect_partitions(s3_path)
-            if existing_fmt and actual_fmt and existing_fmt != actual_fmt:
+            existing_interval = tbl_params.get("projection.log_time.interval", "1")
+            _, actual_fmt, _, actual_interval = _detect_partitions(s3_path)
+            fmt_mismatch = existing_fmt and actual_fmt and existing_fmt != actual_fmt
+            interval_mismatch = str(actual_interval) != str(existing_interval)
+            if fmt_mismatch or interval_mismatch:
                 if db == TMP_DATABASE:
                     # Safe to drop — we created it
                     print(f"[waf_athena] Partition format mismatch in our table: '{existing_fmt}' vs S3 '{actual_fmt}'. Recreating.", file=__import__('sys').stderr, flush=True)
@@ -436,12 +450,12 @@ def _ensure_table(region: str) -> str:
     if not _validate_waf_log(s3_path):
         raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}")
 
-    storage_template, part_fmt, part_unit = _detect_partitions(s3_path)
+    storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
     _athena_state["partition_format"] = part_fmt
 
     workgroup = "primary"
     safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-    full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, region, workgroup, f"waf_logs_{safe_name}")
+    full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, part_interval, region, workgroup, f"waf_logs_{safe_name}")
     _athena_state["table"] = full_table
     _athena_state["temp_created"] = False
     return full_table

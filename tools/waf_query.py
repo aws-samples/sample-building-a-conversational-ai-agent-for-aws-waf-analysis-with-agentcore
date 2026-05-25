@@ -137,24 +137,38 @@ def _ensure_athena_table(dest: str) -> str | None:
         # Check for existing table
         existing = _find_existing_table(s3_path, region)
         if existing:
-            _athena_table = existing
-            _athena_state["table"] = existing
-            # Detect partition format for pruning
+            # Validate partition config matches S3 structure
             try:
-                _, part_fmt, _ = _detect_partitions(s3_path)
-                if part_fmt:
+                from tools.aws_session import get_client as _gc
+                glue = _gc("glue", region_name=region)
+                db, tbl_name = existing.split(".", 1)
+                tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
+                tbl_params = tbl_resp["Table"].get("Parameters", {})
+                existing_interval = tbl_params.get("projection.log_time.interval", "1")
+                _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
+                if str(actual_interval) != str(existing_interval):
+                    if db == "waf_analysis_tmp":
+                        glue.delete_table(DatabaseName=db, Name=tbl_name)
+                        # Fall through to create new table
+                    else:
+                        pass  # External table — create our own below
+                else:
+                    _athena_table = existing
+                    _athena_state["table"] = existing
                     _athena_state["partition_format"] = part_fmt
+                    return existing
             except Exception:
-                pass
-            return existing
+                _athena_table = existing
+                _athena_state["table"] = existing
+                return existing
 
         # Create permanent table
         if not _validate_waf_log(s3_path):
             return None
-        storage_template, part_fmt, part_unit = _detect_partitions(s3_path)
+        storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
         safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
         full_table = _create_named_table(
-            s3_path, storage_template, part_fmt, part_unit,
+            s3_path, storage_template, part_fmt, part_unit, part_interval,
             region, "primary", f"waf_logs_{safe_name}"
         )
         _athena_table = full_table
