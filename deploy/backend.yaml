@@ -134,7 +134,13 @@ Resources:
                 Action:
                   - s3:GetObject
                   - s3:ListBucket
+                  - s3:GetBucketLocation
                 Resource: '*'
+              - Sid: AthenaResults
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: 'arn:aws:s3:::*/athena-results/*'
               - Sid: Firehose
                 Effect: Allow
                 Action:

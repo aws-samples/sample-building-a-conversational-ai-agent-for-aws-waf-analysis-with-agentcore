@@ -50,12 +50,14 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 **Athena write impact:** Athena queries themselves are read-only (SELECT). The agent also creates temporary tables (CREATE TABLE) for partition projection — see Glue section below.
 
-### S3 (Read-Only)
+### S3 (Read + Athena Results)
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
 | `s3:GetObject` | Read AWS WAF log files from S3 | None (read) |
 | `s3:ListBucket` | Discover log file paths and partition structure | None (read) |
+| `s3:GetBucketLocation` | Determine bucket region for Athena queries | None (read) |
+| `s3:PutObject` | Write Athena query results to `athena-results/` prefix | **Only needed if your Athena workgroup has no output location configured.** Writes small result files (~1KB each) under `athena-results/` prefix only. Does not touch log data. |
 
 ### Firehose (Read-Only)
 

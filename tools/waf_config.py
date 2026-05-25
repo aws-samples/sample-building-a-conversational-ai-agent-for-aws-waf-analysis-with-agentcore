@@ -154,6 +154,7 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("  Use: run_logs_query (S3 logs via Athena)")
         lines.append("  ⚠️ Athena queries may take up to several minutes depending on data volume. Tell the user upfront.")
         lines.append("  Prefer get_waf_overview (metrics, instant) for initial analysis. Only query logs for IP/URI-level details.")
+        lines.append("  Note: If the first Athena query fails with a permissions error, the Athena workgroup may not have an output location configured. The agent will auto-fallback to writing results in the WAF log bucket (athena-results/ prefix). If that also fails, advise the user to configure a query result location in the Athena console (Workgroups → primary → Edit).")
     else:
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
 

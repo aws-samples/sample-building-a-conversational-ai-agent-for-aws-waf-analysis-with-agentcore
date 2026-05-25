@@ -307,7 +307,28 @@ def _get_output_location(region: str, workgroup: str = "primary") -> str:
             return loc
     except Exception:
         pass
-    # Fallback: find an existing athena results bucket
+    # Fallback 1: use the WAF log bucket with athena-results prefix
+    from tools.session_state import get_log_destination
+    import sys as _sys
+    dest = get_log_destination()
+    if dest:
+        if ":s3:::" in dest:
+            bucket = dest.split(":s3:::")[-1].rstrip(":*").split("/")[0]
+            print(f"[waf_athena] Workgroup has no output location. Using fallback: s3://{bucket}/athena-results/", file=_sys.stderr, flush=True)
+            return f"s3://{bucket}/athena-results/"
+        elif ":firehose:" in dest:
+            try:
+                firehose = get_client("firehose", region_name=region)
+                stream_name = dest.split("/")[-1]
+                resp = firehose.describe_delivery_stream(DeliveryStreamName=stream_name)
+                s3_dest = resp["DeliveryStreamDescription"]["Destinations"][0].get("ExtendedS3DestinationDescription", {})
+                bucket = s3_dest.get("BucketARN", "").split(":::")[-1]
+                if bucket:
+                    print(f"[waf_athena] Workgroup has no output location. Using fallback: s3://{bucket}/athena-results/", file=_sys.stderr, flush=True)
+                    return f"s3://{bucket}/athena-results/"
+            except Exception:
+                pass
+    # Fallback 2: find any athena results bucket
     s3 = get_client("s3", region_name=region)
     try:
         buckets = s3.list_buckets().get("Buckets", [])
@@ -317,7 +338,16 @@ def _get_output_location(region: str, workgroup: str = "primary") -> str:
                 return f"s3://{name}/"
     except Exception:
         pass
-    raise RuntimeError("No Athena output location found. Configure one in the Athena workgroup settings.")
+    # Fallback 3: use any waf-logs bucket
+    if dest and ":s3:::" in dest:
+        bucket = dest.split(":s3:::")[-1].rstrip(":*").split("/")[0]
+        return f"s3://{bucket}/athena-results/"
+    raise RuntimeError(
+        "No Athena output location found. Either:\n"
+        "1. Configure an output location in the Athena 'primary' workgroup, or\n"
+        "2. Ensure the agent's IAM role has s3:PutObject on the WAF log bucket.\n"
+        "ACTION: Guide user to set Athena workgroup output location in the AWS Console → Athena → Workgroups → primary → Edit → Query result location."
+    )
 
 
 def _run_athena_ddl(sql: str, region: str, workgroup: str = "primary"):

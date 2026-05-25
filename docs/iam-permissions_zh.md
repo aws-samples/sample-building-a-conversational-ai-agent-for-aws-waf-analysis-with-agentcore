@@ -50,12 +50,14 @@
 
 **Athena 写入影响：** Athena 查询本身是只读的（SELECT）。Agent 还会创建永久表（CREATE TABLE）用于分区投影——见下方 Glue 部分。
 
-### S3（只读）
+### S3（读取 + Athena 结果写入）
 
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
 | `s3:GetObject` | 从 S3 读取 AWS WAF 日志文件 | 无（只读） |
 | `s3:ListBucket` | 发现日志文件路径和分区结构 | 无（只读） |
+| `s3:GetBucketLocation` | 确定存储桶区域以执行 Athena 查询 | 无（只读） |
+| `s3:PutObject` | 将 Athena 查询结果写入 `athena-results/` 前缀 | **仅在 Athena workgroup 未配置查询结果位置时需要。** 在 `athena-results/` 前缀下写入小型结果文件（每个约 1KB），不会触碰日志数据。 |
 
 ### Firehose（只读）
 
