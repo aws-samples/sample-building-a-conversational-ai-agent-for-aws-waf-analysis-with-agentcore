@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.9.0 (2026-05-25)
+
+### Breaking Change: `duration_hours` → `duration_minutes`
+
+- All 6 log-querying tools renamed: `duration_hours` (float) → `duration_minutes` (int)
+- `hours_ago` backward-compat alias removed entirely
+- Integer arithmetic eliminates float→ParamValidationError bug class
+- CWL: default 180 min, max 360 min. Athena: default 60 min, max 60 min (hard cap)
+
+### New Query Types (6 added, total 36)
+
+- `ip_uri_prefix` — URI path prefix clustering for an IP (crawl/scrape pattern detection)
+- `rule_uri_prefix` — URI prefix clustering for a rule (FP vs attack signal for COUNT-to-BLOCK)
+- `top_ua_by_action` — Global User-Agent distribution by action (bot/bypass detection)
+- `ip_request_timeline` — Per-minute action timeline for an IP (rate-limit/DDoS analysis)
+- `ip_label_breakdown` — All WAF labels on an IP (bot signals, Anti-DDoS, token status)
+- `host_top_ips` — Top IPs per host/domain (multi-domain WebACL attack attribution)
+
+### IP Attribution & Route 53 Misidentification Fix
+
+- `ip_cross_query` now returns User-Agent in both CWL and Athena
+- System prompt: mandatory IP identity verification before concluding malicious
+- DDoS methodology step 6b: exclude benign services (Route 53 health checks, monitoring) using `bot:verified` label
+- Query Type Selection Guide added to system prompt
+
+### MetricStat for `top_rules` Totals
+
+- `_top_rules` now gets `Rule=ALL` totals via MetricStat (immune to 14-day SEARCH index expiry)
+- Previously, if Anti-DDoS rules hadn't fired in 14 days, weekly overview showed "0 mitigated" — now always accurate
+- Gap warning fires correctly when per-rule SEARCH attribution is missing
+
+### SEARCH Index Expiry Detection
+
+- `attack_types`, `bot_names`, `targeted_signals`, `top_labels` now detect when SEARCH returns empty but MetricStat shows traffic exists
+- Explicit ACTION hints guide LLM to inform user and use alternative queries (top_rules, bot_summary, logs)
+- No false warnings when data genuinely doesn't exist
+
+### Athena Reliability
+
+- Auto-resolve Athena output location from WAF log bucket (fallback when workgroup not configured)
+- Validate table path on reuse — detect log delivery method changes (Firehose ↔ Vended Logs)
+- Validate partition format + interval on reuse — detect S3 structure changes
+- Block queries on hourly partitions — guide user to configure minute-level partitioning
+- `s3:PutObject` permission added (scoped to `athena-results/*` prefix only)
+- Silent `return None` replaced with `RuntimeError` — errors now surface to LLM instead of showing "0 results"
+
+### Build & Deployment
+
+- Build-time version injection (`version.json` with commit hash + timestamp)
+- System prompt shows `Agent version: <commit> (<time>)` — users can verify container is current
+- Deployment guide updated: always use unique commit hash tags (not `:latest`)
+- `--build-arg BUILD_COMMIT` and `BUILD_TIME` documented for both Docker and finch
+
+### `_step_analyze_rule` Refactor
+
+- No longer auto-queries logs — returns peak hour + hit count + suggested `duration_minutes`
+- LLM decides window size based on volume, then calls `check_low_volume_clients`
+
+### Documentation
+
+- User guide: metric discovery 14-day limitation, Athena output location, version check
+- IAM permissions: `s3:PutObject` for Athena results, `glue:DeleteTable` restored
+- Firehose minute-level partitioning guide (new doc)
+- No-data caution rewritten to be user-friendly with actionable next steps
+
+### Bug Fixes
+
+- `_athena_cap_hit` dead code removed from `waf_bypass.py`
+- Athena partition format mismatch — validate existing table before reuse
+- Athena partition interval detection — use actual S3 interval (5min) not hardcoded 1
+- Chinese IAM doc stale references fixed (`waf_agent_temp` → `waf_analysis_tmp`)
+
 ## 0.8.0 (2026-05-24)
 
 ### Breaking Change: `get_waf_overview` parameter renamed
