@@ -50,19 +50,17 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
     """
     dest = get_log_destination()
     if not dest:
-        return None
+        raise RuntimeError("No log destination configured. Call get_waf_config first.")
 
     if ":log-group:" in dest:
         log_group = dest.split(":log-group:")[-1].rstrip(":*")
         return _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
     elif ":s3:::" in dest or ":firehose:" in dest:
         table = _ensure_athena_table(dest)
-        if not table:
-            return None
         # Block queries on hourly partitions (Firehose without minute-level prefix)
         from tools.waf_athena import _athena_state
         if _athena_state.get("partition_format") == "yyyy/MM/dd/HH":
-            return None  # Caller (run_logs_query) handles the user-facing message
+            raise RuntimeError(_HOURLY_PARTITION_ERROR)
         sql = query_athena.replace("{TABLE}", table)
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))
@@ -85,7 +83,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
             partition_clause = ""
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
         return _run_athena(sql)
-    return None
+    raise RuntimeError(f"Unsupported log destination format: {dest}")
 
 
 def get_log_type() -> str:
@@ -190,7 +188,7 @@ def _ensure_athena_table(dest: str) -> str | None:
 
         # Create permanent table
         if not _validate_waf_log(s3_path):
-            return None
+            raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log destination is correct.")
         storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
         safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
         full_table = _create_named_table(
@@ -202,6 +200,4 @@ def _ensure_athena_table(dest: str) -> str | None:
         _athena_state["partition_format"] = part_fmt
         return full_table
     except Exception as e:
-        import sys as _sys
-        print(f"[waf_query] _ensure_athena_table FAILED: {type(e).__name__}: {e}", file=_sys.stderr, flush=True)
-        return None
+        raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e

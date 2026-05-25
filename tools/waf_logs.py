@@ -468,11 +468,6 @@ def run_logs_query(
             _log(f"ERROR in query_logs: {type(e).__name__}: {e}")
             return f"Log query failed: {type(e).__name__}: {e}"
         if results is None:
-            # Check if blocked by hourly partition (partition_format now set after _ensure_athena_table ran)
-            hourly_err = check_hourly_partition_block()
-            if hourly_err:
-                return hourly_err
-            _log("query_logs returned None (no log destination)")
             results = []
         elif results and isinstance(results[0], dict) and "_error" in results[0]:
             _log(f"query_logs returned error: {results[0]['_error']}")
@@ -786,12 +781,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}'"
     )
-    diversity = query_logs(div_cwl, div_athena, start_epoch, end_epoch, limit=1)
+    try:
+        diversity = query_logs(div_cwl, div_athena, start_epoch, end_epoch, limit=1)
+    except RuntimeError as e:
+        return f"Log query failed: {e}"
 
-    if diversity is None:
-        hourly_err = check_hourly_partition_block()
-        if hourly_err:
-            return hourly_err
     if not diversity:
         return f"No log records found for {ip} in this time window."
 
