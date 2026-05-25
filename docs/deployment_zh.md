@@ -348,6 +348,14 @@ finch build --platform linux/arm64 --no-cache \
 
 # 推送
 finch push $ECR_URI:$COMMIT
+
+# 部署（和 Docker 路径相同）
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
+  --capabilities CAPABILITY_NAMED_IAM
 ```
 
 **注意：**

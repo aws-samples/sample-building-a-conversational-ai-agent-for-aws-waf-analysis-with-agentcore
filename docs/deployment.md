@@ -362,6 +362,14 @@ finch build --platform linux/arm64 --no-cache \
 
 # Push
 finch push $ECR_URI:$COMMIT
+
+# Deploy (same as Docker path)
+aws cloudformation deploy \
+  --template-file deploy/backend.yaml \
+  --stack-name waf-agent \
+  --region $REGION \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
+  --capabilities CAPABILITY_NAMED_IAM
 ```
 
 **Notes:**
