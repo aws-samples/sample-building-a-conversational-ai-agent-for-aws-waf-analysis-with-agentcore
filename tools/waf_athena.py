@@ -461,7 +461,7 @@ def _ensure_table(region: str) -> str:
             _, actual_fmt, _, actual_interval = _detect_partitions(s3_path)
             fmt_mismatch = existing_fmt and actual_fmt and existing_fmt != actual_fmt
             interval_mismatch = str(actual_interval) != str(existing_interval)
-            path_mismatch = not (resolved.startswith(table_location) or table_location.startswith(resolved))
+            path_mismatch = not resolved.startswith(table_location)
             if fmt_mismatch or interval_mismatch or path_mismatch:
                 if db == TMP_DATABASE:
                     reason = "path" if path_mismatch else ("interval" if interval_mismatch else "format")

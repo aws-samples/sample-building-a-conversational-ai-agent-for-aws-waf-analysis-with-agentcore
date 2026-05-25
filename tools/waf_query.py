@@ -169,7 +169,10 @@ def _ensure_athena_table(dest: str) -> str | None:
                 resolved = s3_path.rstrip("/")
                 _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
                 interval_mismatch = str(actual_interval) != str(existing_interval)
-                path_mismatch = not (resolved.startswith(table_location) or table_location.startswith(resolved))
+                # Path mismatch: resolved must be equal to or more specific than table location.
+                # If resolved is just bucket root but table points to a sub-path, it's a mismatch
+                # (log delivery method changed — e.g., Vended Logs → Firehose).
+                path_mismatch = not resolved.startswith(table_location)
                 if interval_mismatch or path_mismatch:
                     if db == "waf_analysis_tmp":
                         glue.delete_table(DatabaseName=db, Name=tbl_name)
