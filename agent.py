@@ -194,7 +194,8 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 6. VERIFY terminating rule (MANDATORY): After finding top IPs, call run_logs_query(query_type='ip_cross_query', ip='<top_ip>', start_time='...', duration_minutes=N) with the same window. Do NOT infer the terminating rule from top_rules — top_rules shows aggregate counts, not per-IP attribution. The terminatingRuleId in ip_cross_query is the ground truth.
 6b. EXCLUDE benign services: For IPs with low volume + regular patterns (fixed interval, single URI, 2 req/min), call run_logs_query(query_type='ip_label_breakdown', ip='...', start_time='...'). If bot:verified label present → legitimate service (Route53 health check, monitoring). Exclude from attack attribution. Do NOT recommend blocking AWS infrastructure IPs.
 7. Data consistency check: if top_rules shows rule X with N challenges but total mitigated is 100×N, rule X is NOT the primary mitigator. Look for the ⚠️ gap warning in top_rules output.
-8. Validate results: if top IPs have very low request counts (< 1000) but metrics show 300K+ mitigated, the results are wrong. Re-check query parameters and time window.
+8. Label anomaly check: if a traffic spike shows ALL requests ALLOW'd with ZERO labels despite Bot Control being deployed, this is abnormal — Bot Control should label every request (at minimum token:absent). Possible causes: scope-down statement excluding that path from Bot Control evaluation, or the spike predates Bot Control deployment. Flag this to the user.
+9. Validate results: if top IPs have very low request counts (< 1000) but metrics show 300K+ mitigated, the results are wrong. Re-check query parameters and time window.
 
 NOTE: Time-series timestamps are already in the user's session timezone. Use them directly when passing to run_logs_query (strip the offset suffix).
 
