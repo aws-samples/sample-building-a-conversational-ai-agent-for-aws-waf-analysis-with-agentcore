@@ -467,7 +467,7 @@ def run_logs_query(
         except Exception as e:
             _log(f"ERROR in query_logs: {type(e).__name__}: {e}")
             return f"Log query failed: {type(e).__name__}: {e}"
-        if results is None:
+        if not results:
             results = []
         elif results and isinstance(results[0], dict) and "_error" in results[0]:
             _log(f"query_logs returned error: {results[0]['_error']}")
