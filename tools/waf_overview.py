@@ -97,19 +97,19 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
     if query_type == "top_rules":
         return _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope, region)
     elif query_type == "attack_types":
-        return _attack_types(cw, webacl_name, start, end, minutes)
+        return _attack_types(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "bot_summary":
         return _bot_summary(cw, webacl_name, start, end, minutes)
     elif query_type == "bot_names":
-        return _bot_names(cw, webacl_name, start, end, minutes)
+        return _bot_names(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "targeted_signals":
-        return _targeted_signals(cw, webacl_name, start, end, minutes)
+        return _targeted_signals(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "rate_limits":
         return _rate_limits(cw, webacl_name, scope, start, end, minutes)
     elif query_type == "challenge_solve_rate":
         return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes)
     elif query_type == "top_labels":
-        return _top_labels(cw, webacl_name, start, end, minutes)
+        return _top_labels(cw, webacl_name, start, end, minutes, scope, region)
     else:
         return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate, top_labels"
 
@@ -144,6 +144,26 @@ def _fmt_window(minutes: int) -> str:
         return f"{minutes // 60}h"
     else:
         return f"{minutes}min"
+
+
+def _has_mitigated_traffic(cw, webacl_name, start, end, scope="CLOUDFRONT", region="") -> bool:
+    """Quick MetricStat check: did this WebACL have any blocked/challenged/captcha'd traffic?"""
+    _dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+    if scope == "REGIONAL" and region:
+        _dims.append({"Name": "Region", "Value": region})
+    try:
+        resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {"Id": "b", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}},
+                {"Id": "c", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}},
+                {"Id": "p", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}},
+            ],
+            StartTime=start, EndTime=end,
+        )
+        total = sum(int(v) for r in resp.get("MetricDataResults", []) for v in r.get("Values", []))
+        return total > 0
+    except Exception:
+        return False
 
 
 def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRONT", region=""):
@@ -263,7 +283,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     return "\n".join(lines)
 
 
-def _attack_types(cw, webacl_name, start, end, minutes):
+def _attack_types(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
     period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})"},
@@ -285,7 +305,11 @@ def _attack_types(cw, webacl_name, start, end, minutes):
     for atype, data in sorted_types:
         lines.append(f"  {atype:<25} {data['total']:>10,}")
     if not sorted_types:
-        lines.append("  No attack data in this period.")
+        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+            lines.append("  ⚠️ PARTIAL DATA: Attack-type breakdown unavailable (CloudWatch only retains per-type index for 14 days).")
+            lines.append("  ACTION: Tell the user that per-attack-type details are unavailable for this time range, but total mitigated count is available. Then call top_rules to show the totals, and offer to query logs for IP/URI-level details.")
+        else:
+            lines.append("  No attack data in this period.")
         return "\n".join(lines)
 
     # Time-series for top attack type
@@ -359,7 +383,7 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
     return "\n".join(lines)
 
 
-def _bot_names(cw, webacl_name, start, end, minutes):
+def _bot_names(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {_calc_period(minutes)})"},
     ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
@@ -378,13 +402,17 @@ def _bot_names(cw, webacl_name, start, end, minutes):
     for name, count in sorted_bots[:15]:
         lines.append(f"  {name:<30} {count:>10,}")
     if not sorted_bots:
-        lines.append("  No bot name data — Bot Control may not be deployed.")
+        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+            lines.append("  ⚠️ PARTIAL DATA: Bot name breakdown unavailable (CloudWatch only retains per-bot index for 14 days).")
+            lines.append("  ACTION: Tell the user that per-bot-name details are unavailable for this time range, but bot totals are available. Then call bot_summary to show verified/unverified counts, and offer to query logs for bot identification.")
+        else:
+            lines.append("  No bot name data — Bot Control may not be deployed, or no bot traffic in this period.")
     lines.append("")
     lines.append("→ For IP-level analysis of a specific bot, use run_logs_query(query_type='label_top_ips', label='bot:name:<name>', start_time='...')")
     return "\n".join(lines)
 
 
-def _targeted_signals(cw, webacl_name, start, end, minutes):
+def _targeted_signals(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
     period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "ctrl", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {period})"},
@@ -423,7 +451,11 @@ def _targeted_signals(cw, webacl_name, start, end, minutes):
         a = metrics.get("AllowedRequests", 0)
         lines.append(f"{name:<35} {b:>8,} {ch:>10,} {cap:>8,} {a:>10,}")
     if not sorted_sigs:
-        lines.append("  No targeted bot signals — Targeted Bot Control may not be deployed.")
+        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+            lines.append("  ⚠️ PARTIAL DATA: Targeted bot signal breakdown unavailable (CloudWatch only retains per-signal index for 14 days).")
+            lines.append("  ACTION: Tell the user that per-signal details are unavailable for this time range. Then call top_rules to show totals, and offer to query logs.")
+        else:
+            lines.append("  No targeted bot signals — Targeted Bot Control may not be deployed, or no activity in this period.")
     lines.append("")
     lines.append("→ For IP details on challenged traffic, use run_logs_query(query_type='ip_cross_query', start_time='...')")
     return "\n".join(lines)
@@ -519,7 +551,7 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     return "\n".join(lines)
 
 
-def _top_labels(cw, webacl_name, start, end, minutes):
+def _top_labels(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
     """Get all labels with hit counts — useful for identifying which managed rules/features are active."""
     period = _calc_period(minutes)
     resp = cw.get_metric_data(MetricDataQueries=[
@@ -547,7 +579,11 @@ def _top_labels(cw, webacl_name, start, end, minutes):
         lines.append(f"{label:<70} {count:>10,}")
 
     if not label_counts:
-        lines.append("  No label metrics found. Labels are only emitted by managed rule groups (Bot Control, Anti-DDoS AMR, etc.).")
+        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+            lines.append("  ⚠️ PARTIAL DATA: Label breakdown unavailable (CloudWatch only retains per-label index for 14 days).")
+            lines.append("  ACTION: Tell the user that per-label details are unavailable for this time range, but mitigated traffic exists. Then call top_rules to show totals, and offer run_logs_query(query_type='ip_label_breakdown') for per-request labels.")
+        else:
+            lines.append("  No label metrics found. Labels are only emitted by managed rule groups (Bot Control, Anti-DDoS AMR, etc.).")
 
     lines.append("")
     lines.append("Key namespaces: awswaf:managed:aws:anti-ddos: (DDoS), awswaf:managed:aws:bot-control: (Bot), awswaf:managed:token: (Token)")
