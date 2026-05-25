@@ -556,6 +556,10 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             # Detect partition format from existing table's S3 path
             _, part_fmt, _, _ = _detect_partitions(s3_path)
 
+        # Block queries on hourly partitions
+        if part_fmt == "yyyy/MM/dd/HH":
+            return {}, "⚠️ Firehose hourly partition detected — log-level details skipped (timeout risk). See docs/firehose-minute-partitioning.md to optimize."
+
         # Build time filter WITH partition pruning (critical for performance)
         start_ms = int(start.timestamp()) * 1000
         end_ms = int(end.timestamp()) * 1000

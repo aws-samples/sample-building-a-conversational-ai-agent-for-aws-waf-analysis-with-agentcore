@@ -16,6 +16,24 @@ POLL_INTERVAL = 2
 _athena_table: str | None = None
 
 
+
+_HOURLY_PARTITION_ERROR = (
+    "Error: Firehose hourly partition detected. Queries will timeout on production traffic.\n"
+    "Please configure minute-level partitioning on your Firehose stream.\n"
+    "Guide: https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/blob/main/docs/firehose-minute-partitioning.md\n"
+    "ACTION: Inform user about this limitation and share the guide link."
+)
+
+
+def check_hourly_partition_block() -> str | None:
+    """Return error message if Athena backend has hourly partitions, else None."""
+    if get_log_type() != "s3":
+        return None
+    from tools.waf_athena import _athena_state
+    if _athena_state.get("partition_format") == "yyyy/MM/dd/HH":
+        return _HOURLY_PARTITION_ERROR
+    return None
+
 def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict] | None:
     """Execute a log query, routing to CWL or Athena based on log destination.
 
@@ -41,6 +59,10 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         table = _ensure_athena_table(dest)
         if not table:
             return None
+        # Block queries on hourly partitions (Firehose without minute-level prefix)
+        from tools.waf_athena import _athena_state
+        if _athena_state.get("partition_format") == "yyyy/MM/dd/HH":
+            return None  # Caller (run_logs_query) handles the user-facing message
         sql = query_athena.replace("{TABLE}", table)
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))

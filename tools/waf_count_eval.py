@@ -345,6 +345,10 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     """Step 6: Detailed client check for a specific time window."""
     if not _has_logging():
         return "Error: No logging configured. Cannot perform log-level analysis."
+    from tools.waf_query import check_hourly_partition_block
+    hourly_err = check_hourly_partition_block()
+    if hourly_err:
+        return hourly_err
 
     from tools.waf_logs import _parse_start_time
     start_epoch = _parse_start_time(start_time)

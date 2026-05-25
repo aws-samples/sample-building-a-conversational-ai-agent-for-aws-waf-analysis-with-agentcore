@@ -730,6 +730,11 @@ def run_athena_query(
     except RuntimeError as e:
         return f"Error: {e}"
 
+    # Block queries on hourly partitions
+    if _athena_state.get("partition_format") == "yyyy/MM/dd/HH":
+        from tools.waf_query import _HOURLY_PARTITION_ERROR
+        return _HOURLY_PARTITION_ERROR
+
     try:
         sql = _build_query(query_type, table, _duration, _athena_state.get("partition_format"),
                            limit, start_epoch=start_epoch, ip=ip, rule_name=rule_name, label=label, action=action, host=host)
