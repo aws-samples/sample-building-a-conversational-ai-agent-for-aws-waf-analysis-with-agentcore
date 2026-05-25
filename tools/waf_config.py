@@ -246,7 +246,7 @@ def _extract_action(rule: dict) -> str:
     if "OverrideAction" in rule:
         oa = rule["OverrideAction"]
         if "none" in oa or "None" in oa:
-            return "(managed-group)"
+            return "managed-group defaults"
         return f"override:{list(oa.keys())[0]}"
     return "?"
 
