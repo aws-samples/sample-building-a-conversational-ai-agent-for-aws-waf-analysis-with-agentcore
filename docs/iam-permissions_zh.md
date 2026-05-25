@@ -8,7 +8,7 @@
 
 **WAF Agent 对你的生产资源是只读的。** 它不能修改 AWS WAF 规则、删除日志组、更改 CloudFront 分配或改动任何生产配置。唯一的写操作是：
 
-1. 在专用数据库中创建/删除**临时 Athena 表**（会话结束时自动清理）
+1. 在专用 `waf_analysis_tmp` 数据库中创建**永久 Athena 表**（跨会话复用，避免重复创建开销）
 2. 写入自身的**容器日志**到 CloudWatch
 3. 写入**会话历史**到专用 DynamoDB 表（30 天后自动过期）
 4. 写入**记忆事件**到 AgentCore Memory（托管服务，自动过期）
@@ -48,7 +48,7 @@
 | `athena:GetQueryExecution` | 检查查询状态 | 无（只读） |
 | `athena:GetQueryResults` | 获取查询结果 | 无（只读） |
 
-**Athena 写入影响：** Athena 查询本身是只读的（SELECT）。Agent 还会创建临时表（CREATE TABLE）用于分区投影——见下方 Glue 部分。
+**Athena 写入影响：** Athena 查询本身是只读的（SELECT）。Agent 还会创建永久表（CREATE TABLE）用于分区投影——见下方 Glue 部分。
 
 ### S3（只读）
 
@@ -69,9 +69,8 @@
 |---|---|---|
 | `glue:GetTable` | 查找现有的 AWS WAF 日志 Athena 表 | 无（只读） |
 | `glue:GetDatabase` | 检查数据库是否存在 | 无（只读） |
-| `glue:CreateDatabase` | 创建 `waf_agent_temp` 数据库（如不存在） | **创建一个新的空数据库。** 不会触碰现有数据库。 |
-| `glue:CreateTable` | 创建带分区投影的临时表 | **仅在 `waf_agent_temp` 数据库中创建表。** 不会修改现有表。 |
-| `glue:DeleteTable` | 会话结束时清理临时表 | **仅删除 Agent 自己创建的表**（在 `waf_agent_temp` 数据库中）。 |
+| `glue:CreateDatabase` | 创建 `waf_analysis_tmp` 数据库（如不存在） | **创建一个新的空数据库。** 不会触碰现有数据库。 |
+| `glue:CreateTable` | 创建带分区投影的永久表 | **仅在 `waf_analysis_tmp` 数据库中创建表。** 不会修改现有表。 |
 
 **Glue 安全保证：**
 - Agent 只在专用的 `waf_agent_temp` 数据库中创建表

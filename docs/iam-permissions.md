@@ -8,7 +8,7 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 
 **WAF Agent is read-only for your production resources.** It cannot modify AWS WAF rules, delete log groups, change CloudFront distributions, or alter any production configuration. The only write operations are:
 
-1. Creating/deleting **temporary Athena tables** in a dedicated database (auto-cleaned on session end)
+1. Creating **permanent Athena tables** in a dedicated `waf_analysis_tmp` database (reused across sessions to avoid recreation overhead)
 2. Writing its own **container logs** to CloudWatch
 3. Writing **session history** to a dedicated DynamoDB table (auto-expires after 30 days)
 4. Writing **memory events** to AgentCore Memory (managed service, auto-expires)
@@ -69,15 +69,15 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 |---|---|---|
 | `glue:GetTable` | Find existing Athena tables for AWS WAF logs | None (read) |
 | `glue:GetDatabase` | Check if database exists | None (read) |
-| `glue:CreateDatabase` | Create `waf_agent_temp` database if not exists | **Creates a new empty database.** Does not touch existing databases. |
-| `glue:CreateTable` | Create temporary table with partition projection | **Creates a table in `waf_agent_temp` database only.** Does not modify existing tables. |
-| `glue:DeleteTable` | Clean up temporary table on session end | **Deletes only tables created by the agent** (in `waf_agent_temp` database). |
+| `glue:CreateDatabase` | Create `waf_analysis_tmp` database if not exists | **Creates a new empty database.** Does not touch existing databases. |
+| `glue:CreateTable` | Create table with partition projection | **Creates a table in `waf_analysis_tmp` database only.** Does not modify existing tables. |
 
 **Safety guarantees for Glue:**
-- The agent only creates tables in a dedicated `waf_agent_temp` database
-- Tables are automatically deleted when the session ends (SIGTERM handler)
-- If cleanup fails (e.g., container killed), orphaned tables in `waf_agent_temp` can be safely deleted manually
+- The agent only creates tables in a dedicated `waf_analysis_tmp` database
+- Tables are permanent and reused across sessions (avoids repeated creation overhead)
+- Tables are read-only external tables pointing to existing S3 log data — they do not copy or move data
 - The agent never modifies tables in other databases
+- To clean up: `DROP DATABASE waf_analysis_tmp CASCADE` removes all agent-created tables
 
 ### Amazon Bedrock (Model Invocation)
 
@@ -152,6 +152,6 @@ This document lists every IAM permission WAF Agent requires, what it's used for,
 - ❌ Modify S3 objects (no `s3:PutObject`, `s3:DeleteObject`)
 - ❌ Modify CloudFront distributions
 - ❌ Create or modify Firehose delivery streams
-- ❌ Modify existing Glue tables or databases (only creates in `waf_agent_temp`)
+- ❌ Modify existing Glue tables or databases (only creates in `waf_analysis_tmp`)
 - ❌ Access DynamoDB tables other than its own sessions table
 - ❌ Access any service not listed above
