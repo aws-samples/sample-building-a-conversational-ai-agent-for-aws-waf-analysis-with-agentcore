@@ -427,17 +427,19 @@ def _ensure_table(region: str) -> str:
             tbl_params = tbl_resp["Table"].get("Parameters", {})
             existing_fmt = tbl_params.get("projection.log_time.format", "")
             existing_interval = tbl_params.get("projection.log_time.interval", "1")
+            table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
+            resolved = s3_path.rstrip("/")
             _, actual_fmt, _, actual_interval = _detect_partitions(s3_path)
             fmt_mismatch = existing_fmt and actual_fmt and existing_fmt != actual_fmt
             interval_mismatch = str(actual_interval) != str(existing_interval)
-            if fmt_mismatch or interval_mismatch:
+            path_mismatch = not (resolved.startswith(table_location) or table_location.startswith(resolved))
+            if fmt_mismatch or interval_mismatch or path_mismatch:
                 if db == TMP_DATABASE:
-                    # Safe to drop — we created it
-                    print(f"[waf_athena] Partition format mismatch in our table: '{existing_fmt}' vs S3 '{actual_fmt}'. Recreating.", file=__import__('sys').stderr, flush=True)
+                    reason = "path" if path_mismatch else ("interval" if interval_mismatch else "format")
+                    print(f"[waf_athena] Table {reason} mismatch. Recreating.", file=__import__('sys').stderr, flush=True)
                     glue.delete_table(DatabaseName=db, Name=tbl_name)
                 else:
-                    # Not our table — don't touch it, create a new one in our database
-                    print(f"[waf_athena] Partition format mismatch in external table {existing}: '{existing_fmt}' vs S3 '{actual_fmt}'. Creating correct table in {TMP_DATABASE}.", file=__import__('sys').stderr, flush=True)
+                    print(f"[waf_athena] Table mismatch in external table {existing}. Creating correct table in {TMP_DATABASE}.", file=__import__('sys').stderr, flush=True)
             else:
                 _athena_state["table"] = existing
                 _athena_state["partition_format"] = existing_fmt or None

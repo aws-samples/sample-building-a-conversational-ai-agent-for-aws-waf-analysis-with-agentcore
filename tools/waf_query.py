@@ -137,7 +137,7 @@ def _ensure_athena_table(dest: str) -> str | None:
         # Check for existing table
         existing = _find_existing_table(s3_path, region)
         if existing:
-            # Validate partition config matches S3 structure
+            # Validate partition config and path match S3 structure
             try:
                 from tools.aws_session import get_client as _gc
                 glue = _gc("glue", region_name=region)
@@ -145,8 +145,12 @@ def _ensure_athena_table(dest: str) -> str | None:
                 tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
                 tbl_params = tbl_resp["Table"].get("Parameters", {})
                 existing_interval = tbl_params.get("projection.log_time.interval", "1")
+                table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
+                resolved = s3_path.rstrip("/")
                 _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
-                if str(actual_interval) != str(existing_interval):
+                interval_mismatch = str(actual_interval) != str(existing_interval)
+                path_mismatch = not (resolved.startswith(table_location) or table_location.startswith(resolved))
+                if interval_mismatch or path_mismatch:
                     if db == "waf_analysis_tmp":
                         glue.delete_table(DatabaseName=db, Name=tbl_name)
                         # Fall through to create new table
