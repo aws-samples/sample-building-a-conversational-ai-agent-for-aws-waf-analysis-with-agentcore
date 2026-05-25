@@ -45,6 +45,15 @@
 - Block queries on hourly partitions — guide user to configure minute-level partitioning
 - `s3:PutObject` permission added (scoped to `athena-results/*` prefix only)
 - Silent `return None` replaced with `RuntimeError` — errors now surface to LLM instead of showing "0 results"
+- Strip Firehose dynamic expressions (`!{timestamp:...}`) from S3 prefix before path resolution
+- Fix path validation: bucket root no longer incorrectly matches sub-path tables (Vended Logs → Firehose switch)
+- Firehose S3 prefix time zone must be UTC — documented + LLM hint added
+
+### Protection Coverage Assessment
+
+- `get_waf_config` now reports protection status for Anti-DDoS, Bot Control, Rate-based, and Injection rule groups
+- Detects action mode (Block vs Count), scope-down presence, rate-limit thresholds
+- Flags protection gaps with ACTION hints — LLM informs user about unprotected areas
 
 ### Build & Deployment
 
