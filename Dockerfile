@@ -10,6 +10,10 @@ COPY tools/ ./tools/
 COPY scripts/ ./scripts/
 COPY references/ ./references/
 
+ARG BUILD_COMMIT=unknown
+ARG BUILD_TIME=unknown
+RUN echo "{\"commit\": \"${BUILD_COMMIT}\", \"build_time\": \"${BUILD_TIME}\"}" > /app/version.json
+
 EXPOSE 8080
 
 CMD ["uv", "run", "--no-project", "python", "agent.py", "--serve"]

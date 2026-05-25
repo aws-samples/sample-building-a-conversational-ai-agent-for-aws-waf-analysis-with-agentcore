@@ -257,12 +257,24 @@ No labels on high-volume IP = undetected bot (needs Targeted) or distributed att
 Call record_finding() after each conclusion. One call per distinct finding.
 """
 
+def _get_version() -> str:
+    """Read build version from version.json (injected at build time)."""
+    import json, os
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "version.json")) as f:
+            v = json.load(f)
+            return f"{v.get('commit', 'unknown')} ({v.get('build_time', 'unknown')})"
+    except Exception:
+        return "dev (local)"
+
+
 def _build_system_prompt(tz_offset: float | None = None) -> str:
     """Build system prompt with current date and timezone injected."""
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     tz_str = f"UTC{tz_offset:+g}" if tz_offset is not None else "UTC (not set by user)"
-    return f"Current date/time: {now}\nSession timezone: {tz_str} — All times from the user are in this timezone. Pass them to tools as-is, NEVER convert to UTC.\n\n" + SYSTEM_PROMPT
+    version = _get_version()
+    return f"Current date/time: {now}\nSession timezone: {tz_str} — All times from the user are in this timezone. Pass them to tools as-is, NEVER convert to UTC.\nAgent version: {version}\n\n" + SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------

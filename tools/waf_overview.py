@@ -152,6 +152,46 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope, region=region)
     last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=period, scope=scope, region=region)
 
+    # Get Rule=ALL totals via MetricStat (immune to 14-day SEARCH index expiry)
+    _dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+    if scope == "REGIONAL" and region:
+        _dims.append({"Name": "Region", "Value": region})
+    try:
+        _ms_resp = cw.get_metric_data(
+            MetricDataQueries=[
+                {"Id": "raw_a", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": _dims}, "Period": period, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ms_a", "Expression": "FILL(raw_a,0)"},
+                {"Id": "raw_b", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims}, "Period": period, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ms_b", "Expression": "FILL(raw_b,0)"},
+                {"Id": "raw_c", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims}, "Period": period, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ms_c", "Expression": "FILL(raw_c,0)"},
+                {"Id": "raw_p", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims}, "Period": period, "Stat": "Sum"}, "ReturnData": False},
+                {"Id": "ms_p", "Expression": "FILL(raw_p,0)"},
+            ],
+            StartTime=start, EndTime=end, ScanBy="TimestampAscending",
+        )
+        from tools.session_state import get_user_timezone
+        from datetime import timezone, timedelta
+        _tz_off = get_user_timezone()
+        _user_tz = timezone(timedelta(hours=_tz_off)) if _tz_off is not None else timezone(timedelta(0))
+        ms_all = {"blocked": [], "challenge": [], "captcha": [], "allowed": [], "timestamps": []}
+        for r in _ms_resp.get("MetricDataResults", []):
+            vals = [int(v) for v in r.get("Values", [])]
+            ts = [t.astimezone(_user_tz).isoformat() for t in r.get("Timestamps", [])]
+            if r["Id"] == "ms_a":
+                ms_all["allowed"] = vals
+                ms_all["timestamps"] = ts
+            elif r["Id"] == "ms_b":
+                ms_all["blocked"] = vals
+            elif r["Id"] == "ms_c":
+                ms_all["challenge"] = vals
+            elif r["Id"] == "ms_p":
+                ms_all["captcha"] = vals
+        # Override SEARCH-derived ALL with MetricStat ALL (always accurate)
+        this_week["ALL"] = ms_all
+    except Exception:
+        pass  # Fall back to SEARCH-derived ALL
+
     rows = []
     for rule, data in this_week.items():
         if rule == "ALL":
