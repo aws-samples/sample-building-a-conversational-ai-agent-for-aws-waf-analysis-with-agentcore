@@ -18,7 +18,7 @@ _PATROL_I18N = {
         "period": "Period",
         "generated": "Generated",
         "delay_note": "CloudWatch Metrics delay: ~5 min. Data may have changed since generation.",
-        "no_data_search": "⚠️ No data — no matching traffic in last 14 days. CloudWatch metric index expired. Generate traffic and re-run.",
+        "no_data_search": "⚠️ No data for this section. CloudWatch can only discover metrics that had activity in the last 14 days. Historical data may exist — generate a few matching requests to reactivate the metric index, then re-run.",
         "action_items": "Action Items",
         "no_action": "🟢 No action required",
         "detection_tools": "Detection Tools Status",
@@ -57,7 +57,7 @@ _PATROL_I18N = {
         "period": "巡检周期",
         "generated": "生成时间",
         "delay_note": "CloudWatch 指标延迟约 5 分钟，数据可能在报告生成后有变化。",
-        "no_data_search": "⚠️ 无数据 — 最近 14 天无此类流量，CloudWatch 指标索引已过期。请产生流量后重新生成报告。",
+        "no_data_search": "⚠️ 该部分无数据。CloudWatch 仅能自动发现最近 14 天内有活动的指标。如果近期没有此类流量，历史数据将无法自动发现。可尝试产生少量匹配流量以重新激活指标索引，然后重新生成报告。",
         "action_items": "待办事项",
         "no_action": "🟢 本周期无需操作",
         "detection_tools": "防护层状态",
@@ -1061,8 +1061,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         missing.append("targeted_signals")
     if missing:
         summary += (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
-                    "REASON: CloudWatch metric discovery index expired (no matching traffic in ~14 days).\n"
-                    "ACTION: Inform user that some sections are empty due to lack of recent traffic. Suggest generating test traffic and re-running.")
+                    "REASON: CloudWatch metric auto-discovery requires recent activity (last 14 days). These sections had no matching traffic recently.\n"
+                    "ACTION: Inform user that some sections are empty due to a CloudWatch limitation. Continuous traffic ensures all sections populate correctly.")
 
     return summary
 

@@ -46,7 +46,7 @@ _I18N = {
         "events": "event(s)",
         "blocked": "blocked",
         "delay_note": "CloudWatch metrics have ~5 min delay. Data may change after report generation.",
-        "no_data_search": "⚠️ No data — this WebACL had no matching traffic in the last 14 days. CloudWatch metric index expired. Generate traffic and re-run.",
+        "no_data_search": "⚠️ No data for this section. CloudWatch can only discover metrics that had activity in the last 14 days. If this WebACL had no traffic of this type recently, historical data cannot be retrieved through auto-discovery. The data may still exist — try generating some matching traffic (e.g. a few test requests that trigger this rule/action), then re-run the report. This reactivates the metric index and unlocks historical data.",
         "generated": "Generated",
         "ddos_events_label": "DDoS Events This Week",
         "ddos_requests_label": "DDoS Requests Identified",
@@ -86,7 +86,7 @@ _I18N = {
         "events": "次事件",
         "blocked": "次拦截",
         "delay_note": "CloudWatch 指标延迟约 5 分钟，数据可能在报告生成后有变化。",
-        "no_data_search": "⚠️ 无数据 — 该 WebACL 最近 14 天无此类流量，CloudWatch 指标索引已过期。请产生流量后重新生成报告。",
+        "no_data_search": "⚠️ 该部分无数据。CloudWatch 仅能自动发现最近 14 天内有活动的指标。如果该 WebACL 近期没有此类流量，历史数据将无法通过自动发现获取。数据可能仍然存在 — 可尝试产生少量匹配流量（如几个触发该规则/动作的测试请求），即可重新激活指标索引，解锁历史数据。",
         "generated": "生成时间",
         "ddos_events_label": "本周 DDoS 事件",
         "ddos_requests_label": "识别的 DDoS 请求",
@@ -905,8 +905,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     partial_note = ""
     if missing:
         partial_note = (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
-                        "REASON: CloudWatch metric discovery index expired (no matching traffic in ~14 days).\n"
-                        "ACTION: Inform user that some sections are empty due to lack of recent traffic. Suggest generating test traffic and re-running.")
+                        "REASON: CloudWatch metric auto-discovery requires recent activity (last 14 days). These sections had no matching traffic recently, so their historical metric dimensions are unknown.\n"
+                        "ACTION: Inform user that some sections are empty. This is a CloudWatch limitation — if the WebACL has been idle for this metric type, the data cannot be auto-discovered. Continuous traffic ensures all report sections populate correctly.")
 
     return "\n".join(data_lines) + truncation_note + partial_note
 
