@@ -79,10 +79,17 @@ aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
 # Build the container image (ARM64 architecture, required by AgentCore)
-docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+# Use a unique tag (commit hash) to ensure AgentCore pulls the new image
+COMMIT=$(git rev-parse --short HEAD)
+docker buildx build --platform linux/arm64 \
+  --build-arg BUILD_COMMIT=$COMMIT \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t $ECR_URI:$COMMIT --push .
 ```
 
-> **What this does**: Reads the `Dockerfile` in the project root, installs Python dependencies, copies agent code into the image, and uploads it to ECR. AgentCore will pull this image when starting the agent.
+> **What this does**: Reads the `Dockerfile` in the project root, installs Python dependencies, copies agent code into the image, injects the version info, and uploads it to ECR. AgentCore will pull this image when starting the agent.
+
+> **Important**: Always use a unique tag (e.g., commit hash) instead of `:latest`. AgentCore only pulls a new image when CloudFormation detects a parameter change — reusing `:latest` may result in stale code.
 
 > **Troubleshooting**: Build typically takes 1-2 minutes. If it hangs longer than 5 minutes, check network connectivity (the build downloads Python packages from PyPI). You can add `--no-cache` to force a clean build. If you don't have Docker Desktop, see [Alternative: Using finch](#alternative-using-finch) at the end of this guide.
 
@@ -93,7 +100,7 @@ aws cloudformation deploy \
   --template-file deploy/backend.yaml \
   --stack-name waf-agent \
   --region $REGION \
-  --parameter-overrides AgentContainerUri=$ECR_URI:latest \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -107,7 +114,7 @@ aws cloudformation deploy \
   --stack-name waf-agent \
   --region $REGION \
   --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
+    AgentContainerUri=$ECR_URI:$COMMIT \
     ModelId=us.anthropic.claude-sonnet-4-6 \
     ModelRegion=us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM
@@ -123,12 +130,12 @@ AgentCore Memory gives the agent cross-session memory — it remembers your WebA
 
 To disable memory (not recommended):
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=none
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=none
 ```
 
 To use an existing Memory resource instead of auto-creating:
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=<your-memory-id>
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=<your-memory-id>
 ```
 
 ### Existing Cognito User Pool (optional)
@@ -141,7 +148,7 @@ aws cloudformation deploy \
   --stack-name waf-agent \
   --region $REGION \
   --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
+    AgentContainerUri=$ECR_URI:$COMMIT \
     ExistingUserPoolId=<your-user-pool-id> \
     ExistingClientId=<your-client-id> \
   --capabilities CAPABILITY_NAMED_IAM
@@ -228,7 +235,7 @@ aws cloudformation deploy \
   --stack-name waf-agent \
   --region $REGION \
   --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
+    AgentContainerUri=$ECR_URI:$COMMIT \
     KnowledgeBaseId=$KB_ID \
   --capabilities CAPABILITY_NAMED_IAM
 ```
@@ -320,14 +327,18 @@ After code changes:
 
 ```bash
 # Rebuild and push
-docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+COMMIT=$(git rev-parse --short HEAD)
+docker buildx build --platform linux/arm64 \
+  --build-arg BUILD_COMMIT=$COMMIT \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t $ECR_URI:$COMMIT --push .
 
 # Update the stack (triggers runtime update)
 aws cloudformation deploy \
   --template-file deploy/backend.yaml \
   --stack-name waf-agent \
   --region $REGION \
-  --parameter-overrides AgentContainerUri=$ECR_URI:latest \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -343,10 +354,14 @@ aws ecr get-login-password --region $REGION | \
   finch login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
 # Build (finch does not support --push, must be separate)
-finch build --platform linux/arm64 -t $ECR_URI:latest .
+COMMIT=$(git rev-parse --short HEAD)
+finch build --platform linux/arm64 --no-cache \
+  --build-arg BUILD_COMMIT=$COMMIT \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t $ECR_URI:$COMMIT .
 
 # Push
-finch push $ECR_URI:latest
+finch push $ECR_URI:$COMMIT
 ```
 
 **Notes:**

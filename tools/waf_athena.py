@@ -338,10 +338,6 @@ def _get_output_location(region: str, workgroup: str = "primary") -> str:
                 return f"s3://{name}/"
     except Exception:
         pass
-    # Fallback 3: use any waf-logs bucket
-    if dest and ":s3:::" in dest:
-        bucket = dest.split(":s3:::")[-1].rstrip(":*").split("/")[0]
-        return f"s3://{bucket}/athena-results/"
     raise RuntimeError(
         "No Athena output location found. Either:\n"
         "1. Configure an output location in the Athena 'primary' workgroup, or\n"

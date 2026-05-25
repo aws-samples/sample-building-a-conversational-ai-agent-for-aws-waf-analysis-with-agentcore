@@ -138,4 +138,5 @@ Classify domains behind a WebACL as Web/API/Mixed to guide protection strategy.
 - **Metric discovery (14-day window).** CloudWatch can only auto-discover metrics that had activity in the last 14 days. If your WebACL had no traffic of a certain type (e.g., no blocked requests from a specific country) for 14+ days, that section of the report will be empty. **Fix:** Generate a few matching requests (e.g., trigger the rule with a test request), then re-run the report — this reactivates the metric index and unlocks up to 63 days of historical data.
 - **Session timeout.** Container idles out after 15 minutes. Download reports promptly.
 - **Cold start.** First query in a new session takes ~30 seconds (container boot).
+- **Version check.** Ask the agent "what version are you running?" to verify it's running the expected code. The agent reports its build commit hash and build time. If the version is stale after a deployment, start a new session (old sessions keep running old code).
 - **Match details.** AWS WAF only provides request body match details for SQLi and XSS rules. For other rules, the agent cannot tell you what specific content triggered the rule.

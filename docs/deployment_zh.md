@@ -68,11 +68,17 @@ aws ecr create-repository --repository-name waf-agent --region $REGION
 aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
-# 构建 ARM64 镜像并推送
-docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+# 构建 ARM64 镜像并推送（使用 commit hash 作为唯一标签）
+COMMIT=$(git rev-parse --short HEAD)
+docker buildx build --platform linux/arm64 \
+  --build-arg BUILD_COMMIT=$COMMIT \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t $ECR_URI:$COMMIT --push .
 ```
 
-> **这一步做了什么**：读取项目根目录的 `Dockerfile`，安装 Python 依赖，将 Agent 代码复制到镜像中，然后上传到 ECR。AgentCore 启动 Agent 时会从 ECR 拉取此镜像。
+> **这一步做了什么**：读取项目根目录的 `Dockerfile`，安装 Python 依赖，将 Agent 代码和版本信息复制到镜像中，然后上传到 ECR。AgentCore 启动 Agent 时会从 ECR 拉取此镜像。
+
+> **重要**：始终使用唯一标签（如 commit hash），不要用 `:latest`。AgentCore 仅在 CloudFormation 检测到参数变化时才拉取新镜像 — 重复使用 `:latest` 可能导致运行旧代码。
 
 > **排查**：构建通常需要 1-2 分钟。如果超过 5 分钟没有反应，检查网络连接（构建过程需要从 PyPI 下载 Python 包）。可以加 `--no-cache` 强制全新构建。如果没有 Docker Desktop，参见本文末尾的[替代方案：使用 finch](#替代方案使用-finch)。
 
@@ -83,7 +89,7 @@ aws cloudformation deploy \
   --template-file deploy/backend.yaml \
   --stack-name waf-agent \
   --region $REGION \
-  --parameter-overrides AgentContainerUri=$ECR_URI:latest \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -97,7 +103,7 @@ aws cloudformation deploy \
   --stack-name waf-agent \
   --region $REGION \
   --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
+    AgentContainerUri=$ECR_URI:$COMMIT \
     ModelId=us.anthropic.claude-sonnet-4-6 \
     ModelRegion=us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM
@@ -113,12 +119,12 @@ AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 
 
 禁用 Memory（不推荐）：
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=none
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=none
 ```
 
 使用已有的 Memory 资源（而非自动创建）：
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:latest MemoryId=<your-memory-id>
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=<your-memory-id>
 ```
 
 ### 使用现有 Cognito User Pool（可选）
@@ -131,7 +137,7 @@ aws cloudformation deploy \
   --stack-name waf-agent \
   --region $REGION \
   --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
+    AgentContainerUri=$ECR_URI:$COMMIT \
     ExistingUserPoolId=<your-user-pool-id> \
     ExistingClientId=<your-client-id> \
   --capabilities CAPABILITY_NAMED_IAM
@@ -218,7 +224,7 @@ aws cloudformation deploy \
   --stack-name waf-agent \
   --region $REGION \
   --parameter-overrides \
-    AgentContainerUri=$ECR_URI:latest \
+    AgentContainerUri=$ECR_URI:$COMMIT \
     KnowledgeBaseId=$KB_ID \
   --capabilities CAPABILITY_NAMED_IAM
 ```
@@ -307,14 +313,18 @@ aws bedrock-agentcore-control get-agent-runtime \
 
 ```bash
 # 重新构建并推送
-docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+COMMIT=$(git rev-parse --short HEAD)
+docker buildx build --platform linux/arm64 \
+  --build-arg BUILD_COMMIT=$COMMIT \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t $ECR_URI:$COMMIT --push .
 
 # 更新 Stack（触发 runtime 更新）
 aws cloudformation deploy \
   --template-file deploy/backend.yaml \
   --stack-name waf-agent \
   --region $REGION \
-  --parameter-overrides AgentContainerUri=$ECR_URI:latest \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -330,10 +340,14 @@ aws ecr get-login-password --region $REGION | \
   finch login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 
 # 构建（finch 不支持 --push，必须分开执行）
-finch build --platform linux/arm64 -t $ECR_URI:latest .
+COMMIT=$(git rev-parse --short HEAD)
+finch build --platform linux/arm64 --no-cache \
+  --build-arg BUILD_COMMIT=$COMMIT \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t $ECR_URI:$COMMIT .
 
 # 推送
-finch push $ECR_URI:latest
+finch push $ECR_URI:$COMMIT
 ```
 
 **注意：**
