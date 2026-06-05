@@ -377,6 +377,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             continue
         ips_cwl = (
             f"filter action = 'ALLOW' and ja4Fingerprint = '{ja4}'"
+            " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+            " and @message not like 'bot:verified'"
             " | stats count(*) as hits by httpRequest.clientIp"
             " | sort hits desc | limit 3"
         )
@@ -385,6 +387,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             f" FROM {{TABLE}}"
             f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
             f" AND action = 'ALLOW' AND ja4fingerprint = '{ja4}'"
+            f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+            f" AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
             f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 3"
         )
         ip_results = _safe_query(ips_cwl, ips_athena, start_epoch, end_epoch, limit=3)

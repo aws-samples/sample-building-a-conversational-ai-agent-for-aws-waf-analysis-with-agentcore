@@ -45,6 +45,12 @@ TEMPLATES = {
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
     },
+    "rule_block_top_ips": {
+        "query": "filter terminatingRuleId = '{rule_name}' and action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND terminatingruleid = '{rule_name}' AND action = 'BLOCK' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "params": ["rule_name"],
+        "description": "Top source IPs blocked by a specific rule",
+    },
     "ip_cross_query": {
         "query": "filter httpRequest.clientIp = '{ip}' | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>[^\"]*)\"}/ | stats count(*) as cnt, earliest(ua) as user_agent by action, terminatingRuleId | sort cnt desc | limit {limit}",
         "athena": "SELECT action, terminatingruleid as \"terminatingRuleId\", count(*) as cnt, arbitrary(h.value) as user_agent FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND lower(h.name) = 'user-agent' GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT {LIMIT}",
