@@ -46,7 +46,7 @@ TEMPLATES = {
         "description": "Top User-Agents triggering a COUNT rule",
     },
     "rule_block_top_ips": {
-        "query": "filter (terminatingRuleId = '{rule_name}' or @message like '\"terminatingRule\":{{\"ruleId\":\"{rule_name}\"') and action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter (terminatingRuleId = '{rule_name}' or @message like '\"terminatingRule\":{\"ruleId\":\"{rule_name}\"') and action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'BLOCK' AND (terminatingruleid = '{rule_name}' OR any_match(rulegrouplist, rg -> rg.terminatingrule.ruleid = '{rule_name}')) GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top source IPs blocked by a specific rule (supports both top-level rules and managed rule group sub-rules)",
