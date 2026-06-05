@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.10.0 (2026-06-05)
+
+### Detection Methodology Refinements
+
+Reviewed and improved the core analysis methodology for false positive, bypass, COUNT→Block, and injection attack workflows.
+
+### Bypass Detection: JA4 Cross-IP Aggregation (new filter)
+
+- `detect_bypass(step="scan")` now includes a 5th anomaly filter: JA4 cross-IP aggregation
+- Detects distributed scraping where a single tool (same JA4 fingerprint) spreads across many IPs, each below per-IP thresholds
+- Requires `unique_ips > 10 AND total > 500 AND unique_uris > 50` to avoid false-positiving normal browser traffic
+- Outputs representative IPs for drill-down into `investigate_ip`
+
+### CWL Query Precision Fix
+
+- `count_rule_top_ips`, `count_rule_top_uris`, `count_rule_top_uas` templates: CWL filter changed from `@message like '{rule_name}'` to `@message like '"ruleId":"{rule_name}"'` — prevents substring false matches
+- `rule_uri_prefix` CWL: changed from `@message like '{rule_name}'` to `(terminatingRuleId = '{rule_name}' or @message like '"ruleId":"{rule_name}"')`
+- `waf_count_eval.py` `_step_check_clients`: same fix applied
+- Athena queries were already using structured fields — no change needed
+
+### Managed Rule Group Sub-Rule Matching
+
+- New query template `rule_block_top_ips`: fetches top IPs blocked by a rule, supporting both top-level `terminatingRuleId` and managed sub-rules in `ruleGroupList[].terminatingRule.ruleId`
+- `rule_uri_prefix` Athena: added `rulegrouplist` sub-rule condition for managed rule groups (SQLi/XSS/LFI)
+- This fixes the main injection investigation case where blocks come from managed sub-rules
+
+### System Prompt Updates
+
+- **Injection attack investigation**: 6-step deterministic sequence (overview → rule_uri_prefix → top_ua → rule_block_top_ips → analyze_ip → classify)
+- **Confidence boundaries**: explicit statement that WAF logs cannot prove backend exploit success; FP requires business confirmation; bypass is "probable abuse" not "confirmed exploit"
+- **Reactive investigation**: agent now asks for missing context (IP, time, business action) before running broad scans
+- **COUNT workflow**: removed contradictory "do NOT manually query logs" instruction; tool output may direct follow-up `ip_cross_query` calls
+
+### False Positive Output Wording
+
+- Changed from "LIKELY FALSE POSITIVE" to "WAF-side likely FP candidate (needs business confirmation)"
+- Added `missing_confirmation` note listing what evidence is needed to upgrade to confirmed FP
+
+### Documentation
+
+- Added model choice warning (Claude recommended, GPT-family may silently fail) to README, README_zh, deployment, deployment_zh, user-guide, user-guide_zh
+
 ## 0.9.0 (2026-05-25)
 
 ### Breaking Change: `duration_hours` → `duration_minutes`
