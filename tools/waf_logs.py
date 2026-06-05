@@ -46,10 +46,10 @@ TEMPLATES = {
         "description": "Top User-Agents triggering a COUNT rule",
     },
     "rule_block_top_ips": {
-        "query": "filter terminatingRuleId = '{rule_name}' and action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND terminatingruleid = '{rule_name}' AND action = 'BLOCK' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "query": "filter (terminatingRuleId = '{rule_name}' or @message like '\"terminatingRule\":{{\"ruleId\":\"{rule_name}\"') and action = 'BLOCK' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'BLOCK' AND (terminatingruleid = '{rule_name}' OR any_match(rulegrouplist, rg -> rg.terminatingrule.ruleid = '{rule_name}')) GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
-        "description": "Top source IPs blocked by a specific rule",
+        "description": "Top source IPs blocked by a specific rule (supports both top-level rules and managed rule group sub-rules)",
     },
     "ip_cross_query": {
         "query": "filter httpRequest.clientIp = '{ip}' | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>[^\"]*)\"}/ | stats count(*) as cnt, earliest(ua) as user_agent by action, terminatingRuleId | sort cnt desc | limit {limit}",
@@ -71,7 +71,7 @@ TEMPLATES = {
     },
     "rule_uri_prefix": {
         "query": "filter @message like '{rule_name}' | parse httpRequest.uri \"/*/*/**\" as seg1, seg2, rest | stats count(*) as hits, count_distinct(httpRequest.uri) as unique_uris by seg1, seg2 | sort hits desc | limit {limit}",
-        "athena": "SELECT COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) as prefix, count(*) as hits, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (terminatingruleid = '{rule_name}' OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}')) GROUP BY COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) ORDER BY hits DESC LIMIT {LIMIT}",
+        "athena": "SELECT COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) as prefix, count(*) as hits, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (terminatingruleid = '{rule_name}' OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}') OR any_match(rulegrouplist, rg -> rg.terminatingrule.ruleid = '{rule_name}')) GROUP BY COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) ORDER BY hits DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "URI path prefix clustering for a rule — shows which paths trigger it (FP vs attack signal)",
     },
@@ -330,6 +330,7 @@ def run_logs_query(
             - count_rule_top_ips: Top IPs triggering a COUNT rule (needs rule_name)
             - count_rule_top_uris: Top URIs for a COUNT rule (needs rule_name)
             - count_rule_top_uas: Top User-Agents for a COUNT rule (needs rule_name)
+            - rule_block_top_ips: Top IPs blocked by a rule or managed sub-rule (needs rule_name)
             - ip_cross_query: All actions/rules for an IP (needs ip)
             - ip_uri_breakdown: URI breakdown for an IP (needs ip)
             - ip_uri_prefix: URI path prefix clustering for an IP — shows crawl patterns (needs ip)
