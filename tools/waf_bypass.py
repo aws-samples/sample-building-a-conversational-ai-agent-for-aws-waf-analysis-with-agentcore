@@ -342,17 +342,20 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10)
 
     # Single tool distributed across many IPs (JA4 aggregation)
+    # Require high URI diversity per JA4 to filter out normal browser traffic sharing common fingerprints
     distributed_cwl = (
         "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
         " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
         " and @message not like 'bot:verified'"
-        " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips by ja4Fingerprint"
-        " | filter unique_ips > 10 and total > 500"
+        " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips,"
+        " count_distinct(httpRequest.uri) as unique_uris by ja4Fingerprint"
+        " | filter unique_ips > 10 and total > 500 and unique_uris > 50"
         " | sort total desc | limit 10"
     )
     distributed_athena = (
         "SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as total,"
-        " count(DISTINCT httprequest.clientip) as unique_ips"
+        " count(DISTINCT httprequest.clientip) as unique_ips,"
+        " count(DISTINCT httprequest.uri) as unique_uris"
         " FROM {TABLE}"
         " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
         " AND action = 'ALLOW'"
@@ -361,9 +364,31 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY ja4fingerprint"
         " HAVING count(DISTINCT httprequest.clientip) > 10 AND count(*) > 500"
+        " AND count(DISTINCT httprequest.uri) > 50"
         " ORDER BY total DESC LIMIT 10"
     )
     distributed = _safe_query(distributed_cwl, distributed_athena, start_epoch, end_epoch, limit=10)
+
+    # For each JA4 candidate, get representative IPs for drill-down
+    distributed_ips: dict[str, list[str]] = {}
+    for r in (distributed or []):
+        ja4 = r.get("ja4Fingerprint", "")
+        if not ja4:
+            continue
+        ips_cwl = (
+            f"filter action = 'ALLOW' and ja4Fingerprint = '{ja4}'"
+            " | stats count(*) as hits by httpRequest.clientIp"
+            " | sort hits desc | limit 3"
+        )
+        ips_athena = (
+            f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
+            f" FROM {{TABLE}}"
+            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+            f" AND action = 'ALLOW' AND ja4fingerprint = '{ja4}'"
+            f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 3"
+        )
+        ip_results = _safe_query(ips_cwl, ips_athena, start_epoch, end_epoch, limit=3)
+        distributed_ips[ja4] = [r2.get("httpRequest.clientIp", "?") for r2 in (ip_results or [])]
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
@@ -421,11 +446,15 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("### Single Tool Distributed Across Many IPs (JA4 aggregation)")
     if distributed:
-        lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique IPs':>10} |")
-        lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} |")
+        lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique IPs':>10} | {'Unique URIs':>11} | {'Top IPs':<45} |")
+        lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} | {'-'*11} | {'-'*45} |")
         for r in distributed:
-            lines.append(f"| {r.get('ja4Fingerprint', '?'):<34} | {r.get('total', '?'):>8} | {r.get('unique_ips', '?'):>10} |")
-        lines.append("  ⚠️  Single TLS fingerprint spread across many IPs — probable distributed scraping tool")
+            ja4 = r.get('ja4Fingerprint', '?')
+            top_ips = distributed_ips.get(ja4, [])
+            ips_str = ", ".join(top_ips[:3]) if top_ips else "?"
+            lines.append(f"| {ja4:<34} | {r.get('total', '?'):>8} | {r.get('unique_ips', '?'):>10} | {r.get('unique_uris', '?'):>11} | {ips_str:<45} |")
+        lines.append("  ⚠️  Candidate signal: single TLS fingerprint + high URI diversity across many IPs. Needs IP-level investigation to confirm.")
+        lines.append("  → For deeper analysis, call detect_bypass(step='investigate_ip', ip='<top IP from table above>')")
     else:
         lines.append("  (none found)")
 

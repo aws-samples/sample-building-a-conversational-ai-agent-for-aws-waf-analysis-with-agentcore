@@ -70,8 +70,9 @@ Follow this sequence — do NOT skip steps:
 1. get_waf_overview(query_type='top_rules', minutes=60) → identify which rules are blocking most
 2. run_logs_query(query_type='rule_uri_prefix', rule_name='<top blocking rule>') → attack target paths
 3. run_logs_query(query_type='top_ua_by_action') → attacker UA characteristics
-4. Pick top 1-2 blocked IPs → analyze_ip(ip='...') → source profiling (country, JA4, labels)
-5. Classify and recommend:
+4. run_logs_query(query_type='count_rule_top_ips', rule_name='<top blocking rule>') → top source IPs (use the BLOCK rule name; this template works for both COUNT and BLOCK rules)
+5. Pick top 1-2 IPs from step 4 → analyze_ip(ip='...') → source profiling (country, JA4, labels)
+6. Classify and recommend:
    - Many IPs + same JA4 → distributed bot attack, recommend Bot Control Targeted or rate-based
    - Few IPs + high volume → concentrated attack, recommend IP block or rate-based
    - Diverse IPs + diverse JA4 → distributed probing, current rules are working, keep monitoring
@@ -191,7 +192,7 @@ The tool will:
 
 If the user asks to evaluate multiple rules, the tool handles prioritization. Follow its step-by-step instructions. Do NOT attempt to evaluate all rules sequentially in one conversation — limit to 1-2 rules requiring deep analysis per round.
 
-**After the tool provides its output**, follow its "Your Next Action" instructions. The tool guides you through the full workflow (init → analyze_rule → check_clients). Do NOT manually query logs for COUNT evaluation — the tool does it.
+**After the tool provides its output**, follow its "Your Next Action" instructions. The tool guides you through the full workflow (init → analyze_rule → check_clients). After check_low_volume_clients, the tool may instruct you to call run_logs_query(query_type='ip_cross_query') for specific IPs — follow those instructions.
 
 ## False Positive Investigation
 
