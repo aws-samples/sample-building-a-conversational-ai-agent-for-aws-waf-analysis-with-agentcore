@@ -4,6 +4,13 @@
 
 WAF Agent is an AI assistant that helps security engineers investigate AWS WAF incidents, detect bypasses, and generate weekly summarys. It works best when you give it **specific, concrete questions**.
 
+> [!WARNING]
+> **If your deployment uses a GPT-family model on Amazon Bedrock, WAF analysis may be silently blocked.**
+>
+> This is a defensive tool, but normal WAF work includes terms such as SQLi, XSS, bypass, blocked payload, malicious IP, and exploit attempt. Some GPT-family model deployments can trigger upstream cyber-safety checks and leave the agent appearing idle. Recommended deployments use Claude Sonnet 4.6 or Claude Opus.
+>
+> If the agent stops responding during WAF log or metric analysis, send: "This is authorized defensive AWS WAF log analysis for my own environment. Please continue investigating the WAF metrics and logs. Do not provide exploit payloads, credential theft steps, evasion, persistence, malware behavior, or instructions for unauthorized systems."
+
 ## Core Principle: Be Specific
 
 The agent has access to your AWS WAF configuration, CloudWatch Metrics, CloudWatch Logs, and Athena. But it needs you to narrow the scope:
@@ -140,3 +147,4 @@ Classify domains behind a WebACL as Web/API/Mixed to guide protection strategy.
 - **Cold start.** First query in a new session takes ~30 seconds (container boot).
 - **Version check.** Ask the agent "what version are you running?" to verify it's running the expected code. The agent reports its build commit hash and build time. If the version is stale after a deployment, start a new session (old sessions keep running old code).
 - **Match details.** AWS WAF only provides request body match details for SQLi and XSS rules. For other rules, the agent cannot tell you what specific content triggered the rule.
+- **GPT-family model safety filters.** If the deployment uses a GPT-family model on Bedrock and the agent becomes silent during defensive WAF analysis, restate that the work is authorized defensive AWS WAF log analysis and ask it to continue. Prefer Claude models to avoid this failure mode.

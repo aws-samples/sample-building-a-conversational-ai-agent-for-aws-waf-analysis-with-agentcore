@@ -6,6 +6,11 @@
 
 WAF Agent 最多通过四个 CloudFormation Stack 部署：
 
+> [!IMPORTANT]
+> **模型选择很重要：请使用 Claude Sonnet 4.6 或 Claude Opus。除非已经完整测试自己的 WAF 调查工作流，否则不要在 Amazon Bedrock 上为本 Agent 部署 GPT 系列模型。**
+>
+> 本 Agent 是防御性的 AWS WAF 分析工具，但它会读取并分析安全日志、拦截请求、SQLi/XSS 命中、绕过候选、Bot/DDoS 流量。使用 Bedrock 上的 GPT 系列模型时，上游 cyber-safety 检查可能静默拦截这些上下文，表现为 Agent 突然没有反应。如果必须使用 GPT 模型，并发现 Agent 卡住，请告诉 Agent："我只是在防御性地分析自己环境中的 AWS WAF 日志和指标。请继续调查 WAF metrics 和 logs。不要提供 exploit payload、凭证窃取步骤、规避、持久化、恶意软件行为，或任何针对未授权系统的操作说明。"
+
 | Stack | 区域 | 资源 |
 |-------|------|------|
 | **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
@@ -109,7 +114,10 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-模型必须支持 tool use 并有足够的上下文窗口。推荐 Claude Sonnet 4.6 或 Claude Opus（均为 1M 上下文）。
+模型必须支持 tool use 并有足够的上下文窗口。
+
+> [!WARNING]
+> **强烈建议使用 Claude Sonnet 4.6 或 Claude Opus。请避免为 WAF Agent 选择 Bedrock 上的 GPT 系列模型。** WAF 运维中的正常防御性问题经常包含 SQLi、XSS、绕过、exploit attempt、恶意 IP、payload 等词。GPT 系列模型可能触发上游 cyber-safety 过滤并静默失败，让 UI 看起来像没有响应。如果你覆盖 `ModelId`，请先完整验证误报分析、COUNT 规则评估、绕过检测、注入拦截调查，再给其他用户使用。
 
 ### 持久记忆（推荐）
 

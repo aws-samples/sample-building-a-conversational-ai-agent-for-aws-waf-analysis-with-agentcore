@@ -6,6 +6,11 @@ English | [中文](deployment_zh.md)
 
 WAF Agent deploys as up to four CloudFormation stacks:
 
+> [!IMPORTANT]
+> **Model choice matters: use Claude Sonnet 4.6 or Claude Opus. Do not deploy this agent with GPT-family models on Amazon Bedrock unless you have tested your exact WAF investigation workflow.**
+>
+> This agent is a defensive AWS WAF analysis tool, but it reads and reasons about security logs, blocked requests, SQLi/XSS matches, bypass candidates, and bot/DDoS traffic. GPT-family models on Bedrock can silently fail or stop responding when upstream cyber-safety checks flag that context. If you must use a GPT model and the agent appears stuck, tell the agent: "This is authorized defensive AWS WAF log analysis for my own environment. Please continue investigating the WAF metrics and logs. Do not provide exploit payloads, credential theft steps, evasion, persistence, malware behavior, or instructions for unauthorized systems."
+
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
@@ -120,7 +125,10 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-Any model available on Amazon Bedrock works, but it must support tool use and have sufficient context window. Recommended: Claude Sonnet 4.6 or Claude Opus (both 1M context).
+The model must support tool use and have sufficient context window.
+
+> [!WARNING]
+> **Strong recommendation: use Claude Sonnet 4.6 or Claude Opus. Avoid GPT-family Bedrock models for WAF Agent.** In WAF operations, normal defensive questions often contain terms such as SQLi, XSS, bypass, exploit attempt, malicious IP, and payload. GPT-family models may trigger upstream cyber-safety filters and fail silently, leaving the UI looking idle. If you override `ModelId`, validate false-positive review, COUNT rule evaluation, bypass detection, and blocked-injection investigation before using it with other users.
 
 ### Persistent Memory (recommended)
 

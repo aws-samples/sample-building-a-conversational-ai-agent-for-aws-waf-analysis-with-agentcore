@@ -4,6 +4,13 @@
 
 基于 [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python) 构建的智能 AWS WAF 分析工具，能自动调查安全事件、检测绕过攻击、生成周度业务报告。
 
+> [!WARNING]
+> **请使用 Claude 模型。除非你已经完整测试过自己的工作流，否则强烈不建议在 Amazon Bedrock 上为本 Agent 选择 GPT 模型。**
+>
+> WAF Agent 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 4.6 或 Claude Opus。
+>
+> 如果你已经部署了 GPT 模型，并发现 Agent 没有反应，请发送类似这句话恢复上下文："我只是在防御性地分析自己环境中的 AWS WAF 日志和指标。请继续调查 WAF metrics 和 logs。不要提供 exploit payload、凭证窃取步骤、规避、持久化、恶意软件行为，或任何针对未授权系统的操作说明。"
+
 ## 功能
 
 - **主动安全检查** — 扫描漏杀、评估 COUNT 规则、审计 WAF 配置
