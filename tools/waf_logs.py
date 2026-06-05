@@ -70,7 +70,7 @@ TEMPLATES = {
         "description": "URI path prefix clustering for an IP — shows crawl/scrape patterns without hitting result limits",
     },
     "rule_uri_prefix": {
-        "query": "filter @message like '{rule_name}' | parse httpRequest.uri \"/*/*/**\" as seg1, seg2, rest | stats count(*) as hits, count_distinct(httpRequest.uri) as unique_uris by seg1, seg2 | sort hits desc | limit {limit}",
+        "query": "filter (terminatingRuleId = '{rule_name}' or @message like '\"ruleId\":\"{rule_name}\"') | parse httpRequest.uri \"/*/*/**\" as seg1, seg2, rest | stats count(*) as hits, count_distinct(httpRequest.uri) as unique_uris by seg1, seg2 | sort hits desc | limit {limit}",
         "athena": "SELECT COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) as prefix, count(*) as hits, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (terminatingruleid = '{rule_name}' OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}') OR any_match(rulegrouplist, rg -> rg.terminatingrule.ruleid = '{rule_name}')) GROUP BY COALESCE(NULLIF(regexp_extract(httprequest.uri, '^(/[^/]*/[^/]*)', 1), ''), httprequest.uri) ORDER BY hits DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "URI path prefix clustering for a rule — shows which paths trigger it (FP vs attack signal)",
