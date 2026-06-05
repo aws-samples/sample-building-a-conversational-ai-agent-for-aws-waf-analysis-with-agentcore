@@ -359,7 +359,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
 
     # Get both ends of client distribution
     cwl_bottom = (
-        f"filter @message like '{rule_name}' and @message like 'COUNT'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 5"
     )
@@ -371,7 +371,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 5"
     )
     cwl_top = (
-        f"filter @message like '{rule_name}' and @message like 'COUNT'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 5"
     )

@@ -341,6 +341,30 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
     auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10)
 
+    # Single tool distributed across many IPs (JA4 aggregation)
+    distributed_cwl = (
+        "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
+        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        " and @message not like 'bot:verified'"
+        " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips by ja4Fingerprint"
+        " | filter unique_ips > 10 and total > 500"
+        " | sort total desc | limit 10"
+    )
+    distributed_athena = (
+        "SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as total,"
+        " count(DISTINCT httprequest.clientip) as unique_ips"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        " AND ja4fingerprint IS NOT NULL AND ja4fingerprint != ''"
+        " AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+        " GROUP BY ja4fingerprint"
+        " HAVING count(DISTINCT httprequest.clientip) > 10 AND count(*) > 500"
+        " ORDER BY total DESC LIMIT 10"
+    )
+    distributed = _safe_query(distributed_cwl, distributed_athena, start_epoch, end_epoch, limit=10)
+
     # Build output
     lines = ["## Bypass Scan Results", ""]
 
@@ -394,7 +418,18 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append("  (none found)")
 
-    if not crawlers and not repeaters and not datacenter and not auto_ua:
+    lines.append("")
+    lines.append("### Single Tool Distributed Across Many IPs (JA4 aggregation)")
+    if distributed:
+        lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique IPs':>10} |")
+        lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} |")
+        for r in distributed:
+            lines.append(f"| {r.get('ja4Fingerprint', '?'):<34} | {r.get('total', '?'):>8} | {r.get('unique_ips', '?'):>10} |")
+        lines.append("  ⚠️  Single TLS fingerprint spread across many IPs — probable distributed scraping tool")
+    else:
+        lines.append("  (none found)")
+
+    if not crawlers and not repeaters and not datacenter and not auto_ua and not distributed:
         lines.append("")
         lines.append("### No Obvious Bypass Candidates Found")
         lines.append("No IPs matched the anomaly filters in this time window.")
@@ -406,7 +441,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("## Your Next Action")
     lines.append("")
-    if crawlers or repeaters or datacenter or auto_ua:
+    if crawlers or repeaters or datacenter or auto_ua or distributed:
         lines.append("Present candidates to user. For each:")
         lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
         lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")

@@ -317,9 +317,11 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         lines.append("**HIGH CONFIDENCE: Not a false positive.**")
         lines.append("Evidence: zero ALLOW, machine-speed frequency, multi-rule scanning pattern.")
     elif allow_count > 0 and allow_count / max(block_count, 1) > 10 and peak_val < 10 and rules_triggered == 1:
-        lines.append("**LIKELY FALSE POSITIVE** (needs user confirmation).")
+        lines.append("**WAF-side likely FP candidate** (needs business confirmation).")
         lines.append(f"Evidence: high Allow Ratio ({allow_ratio}), human-speed frequency, single rule trigger.")
-        lines.append("→ Ask user to confirm the blocked URIs are legitimate business paths.")
+        lines.append("→ This is NOT a confirmed false positive. Ask user to confirm the blocked URIs are legitimate business paths.")
+        lines.append("")
+        lines.append("**Missing confirmation**: user report, business owner verification, session/account evidence, or controlled replay.")
     else:
         lines.append("**CANNOT DETERMINE** — signals are mixed or insufficient.")
         lines.append(f"Evidence: Allow Ratio {allow_ratio}, frequency {peak_rpm}/min, {rules_triggered} rules triggered.")
