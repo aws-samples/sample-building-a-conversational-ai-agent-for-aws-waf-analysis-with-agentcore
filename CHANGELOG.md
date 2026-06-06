@@ -15,8 +15,8 @@ Bug fixes and hardening found during end-to-end demo testing. No new features.
 
 - **Delivery-method switch**: when a WebACL's log delivery changes (e.g. Vended Logs → Firehose), the scratch table kept pointing at the old S3 sub-path and every query scanned an empty location (0 rows while metrics showed traffic). `_create_named_table` now drops the stale same-named table before recreating, so any delivery/partition change self-heals on the next query
 - **WebACL-switch stale cache**: the process-lifetime table cache is now reset on every WebACL switch, so querying a new WebACL never reuses the previous one's table
-- **Concurrency**: serialized table setup with a lock + double-checked caching, so parallel queries can't drop a table mid-query
-- **Multi-WebACL shared bucket**: when a table location is shared by multiple WebACLs (Firehose bucket-root), queries now filter by `webaclid` to avoid cross-WebACL contamination
+- **Concurrency**: serialized table setup with a lock + double-checked caching, and the table DROP is now conditional on a location mismatch (same-location creates skip the DROP), so concurrent queries on different paths (`query_logs` vs `patrol_scan`) can never drop a table mid-query
+- **Multi-WebACL shared bucket**: when a table location is shared by multiple WebACLs (Firehose bucket-root), both Athena paths (`query_logs` and the independent `patrol_scan` detail path) now filter by `webaclid` to avoid cross-WebACL contamination
 - **Incompatible table reuse**: only reuse Glue tables that have a `log_time` partition compatible with our partition pruning
 
 ### Knowledge Base
