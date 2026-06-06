@@ -110,7 +110,7 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
     elif query_type == "targeted_signals":
         return _targeted_signals(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "rate_limits":
-        return _rate_limits(cw, webacl_name, scope, start, end, minutes, region)
+        return _rate_limits(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "challenge_solve_rate":
         return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes)
     elif query_type == "top_labels":
@@ -466,7 +466,7 @@ def _targeted_signals(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", 
     return "\n".join(lines)
 
 
-def _rate_limits(cw, webacl_name, scope, start, end, minutes, region):
+def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
     from tools.waf_patrol import _get_all_rules_metrics_search
     data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(minutes), scope=scope, region=region)
 
