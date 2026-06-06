@@ -572,6 +572,13 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                 sp = start.strftime("%Y/%m/%d/%H")
                 ep = end.strftime("%Y/%m/%d/%H")
             time_cond += f" AND log_time >= '{sp}' AND log_time <= '{ep}'"
+        # If the table location is shared by multiple WebACLs (e.g. a Firehose
+        # bucket-root prefix), scope to this WebACL by webaclid so per-rule top
+        # IPs/URIs don't include another WebACL's hits on the same managed rule.
+        # webaclid is the full ARN containing the WebACL name as a path segment.
+        webacl_scoped = webacl_name.lower() in s3_path.lower()
+        if not webacl_scoped and _re.fullmatch(r"[A-Za-z0-9_-]+", webacl_name):
+            time_cond += f" AND webaclid LIKE '%/{webacl_name}/%'"
 
         # Query top IPs and URIs per rule (parallel)
         details = {}

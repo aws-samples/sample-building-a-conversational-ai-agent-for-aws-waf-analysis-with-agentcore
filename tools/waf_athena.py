@@ -8,11 +8,18 @@ import gzip
 import json
 import tempfile
 import os
+import threading
 from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_webacl_name, get_scope
 
 MAX_POLL = 300
 TMP_DATABASE = "waf_analysis_tmp"
+
+# Serializes DROP+CREATE of a scratch table. _create_named_table is reachable
+# from two independent paths (query_logs via _ensure_athena_table, and
+# patrol_scan via _get_log_details_athena); without this lock a concurrent
+# call could drop a table another thread is creating/querying.
+_create_lock = threading.Lock()
 
 # Module-level state (lazy init on first query)
 _athena_state = {
@@ -311,16 +318,20 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     # would silently keep the wrong location. DROP guarantees the table
     # reflects the freshly-resolved S3 path. This is our managed scratch
     # table in TMP_DATABASE; dropping an EXTERNAL table never touches S3 data.
-    _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
+    # The DROP+CREATE pair is held under _create_lock so a concurrent caller
+    # (query_logs vs patrol_scan) cannot drop the table between our DROP and
+    # CREATE or observe it missing mid-recreate.
+    with _create_lock:
+        _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
 
-    ddl = DDL_TEMPLATE.format(
-        database=TMP_DATABASE, table=table_name,
-        s3_location=s3_path.rstrip("/") + "/",
-        partition_format=partition_format, partition_unit=partition_unit,
-        partition_interval=partition_interval,
-        storage_template=storage_template, range_start=range_start,
-    )
-    _run_athena_ddl(ddl, region, workgroup)
+        ddl = DDL_TEMPLATE.format(
+            database=TMP_DATABASE, table=table_name,
+            s3_location=s3_path.rstrip("/") + "/",
+            partition_format=partition_format, partition_unit=partition_unit,
+            partition_interval=partition_interval,
+            storage_template=storage_template, range_start=range_start,
+        )
+        _run_athena_ddl(ddl, region, workgroup)
     return f"{TMP_DATABASE}.{table_name}"
 
 
