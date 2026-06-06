@@ -26,6 +26,11 @@ Reviewed and improved the core analysis methodology for false positive, bypass, 
 - `rule_uri_prefix` Athena: added `rulegrouplist` sub-rule condition for managed rule groups (SQLi/XSS/LFI)
 - This fixes the main injection investigation case where blocks come from managed sub-rules
 
+### Athena COUNT Query: ruleGroupList Support
+
+- All COUNT-related Athena queries (`count_rule_top_ips/uris/uas`, `waf_count_eval check_clients`) now check **both** top-level `nonterminatingmatchingrules` AND `rulegrouplist[].nonterminatingmatchingrules`
+- RuleActionOverride COUNT entries live in ruleGroupList, not the top-level array — previous queries missed them entirely
+
 ### System Prompt Updates
 
 - **Injection attack investigation**: 6-step deterministic sequence (overview → rule_uri_prefix → top_ua → rule_block_top_ips → analyze_ip → classify)
@@ -37,6 +42,11 @@ Reviewed and improved the core analysis methodology for false positive, bypass, 
 
 - Changed from "LIKELY FALSE POSITIVE" to "WAF-side likely FP candidate (needs business confirmation)"
 - Added `missing_confirmation` note listing what evidence is needed to upgrade to confirmed FP
+
+### Legacy Cleanup
+
+- Removed `run_athena_query` decorated tool + `_build_query()` + `_time_filter()` from `waf_athena.py` (~310 lines of dead code)
+- This tool was not registered in agent `_TOOLS` and had no callers. Helpers used by `waf_query.py` routing layer retained.
 
 ### Documentation
 
