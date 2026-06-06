@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.10.1 (2026-06-06)
+
+Bug fixes and hardening found during end-to-end demo testing. No new features.
+
+### Critical Fix: Tool Calls Before get_waf_config
+
+- Tools that depend on session state (`investigate_block_fp`, `detect_bypass`, `evaluate_count_rules`, `check_challenge_compatibility`) could be called before `get_waf_config`, producing a misleading "no logging configured" error even when logging was active
+- Added an explicit `get_webacl_name()` guard returning an actionable error ("call get_waf_config first") instead of the misleading one
+- System prompt now requires `get_waf_config` immediately after WebACL selection
+- Declared the `get_waf_config` prerequisite in the affected tools' docstrings (the layer the LLM consumes)
+
+### Athena Table Detection Hardening
+
+- **Delivery-method switch**: when a WebACL's log delivery changes (e.g. Vended Logs → Firehose), the scratch table kept pointing at the old S3 sub-path and every query scanned an empty location (0 rows while metrics showed traffic). `_create_named_table` now drops the stale same-named table before recreating, so any delivery/partition change self-heals on the next query
+- **WebACL-switch stale cache**: the process-lifetime table cache is now reset on every WebACL switch, so querying a new WebACL never reuses the previous one's table
+- **Concurrency**: serialized table setup with a lock + double-checked caching, so parallel queries can't drop a table mid-query
+- **Multi-WebACL shared bucket**: when a table location is shared by multiple WebACLs (Firehose bucket-root), queries now filter by `webaclid` to avoid cross-WebACL contamination
+- **Incompatible table reuse**: only reuse Glue tables that have a `log_time` partition compatible with our partition pruning
+
+### Knowledge Base
+
+- Marked `AMAZON_BEDROCK_TEXT` / `AMAZON_BEDROCK_METADATA` as non-filterable in the S3 Vectors index to stay under the 2 KB filterable-metadata limit
+
+### Internal Refactors
+
+- Unified scope→region resolution on a single fail-loud `resolve_region(scope)` helper; retired the redundant `get_metrics_region` and the duplicated `"us-east-1" if CLOUDFRONT else ...` pattern across 6 call sites
+- Removed 15 dead imports across `tools/` and `agent.py`
+
 ## 0.10.0 (2026-06-05)
 
 ### Detection Methodology Refinements
