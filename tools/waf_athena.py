@@ -308,25 +308,40 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     """Create a permanent Athena table with the given name."""
     _ensure_database(region, workgroup)
     range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
+    target_location = s3_path.rstrip("/")
 
-    # Drop any stale same-named table first. A table can linger with an
-    # outdated LOCATION after the WAF log delivery method changes (e.g.
-    # Vended Logs -> Firehose moves data from AWSLogs/.../{webacl}/ to a
-    # custom bucket-root prefix). _find_existing_table only matches tables
-    # whose location is an ancestor of the resolved path, so a stale
-    # child-location table is invisible to it and CREATE ... IF NOT EXISTS
-    # would silently keep the wrong location. DROP guarantees the table
-    # reflects the freshly-resolved S3 path. This is our managed scratch
-    # table in TMP_DATABASE; dropping an EXTERNAL table never touches S3 data.
-    # The DROP+CREATE pair is held under _create_lock so a concurrent caller
-    # (query_logs vs patrol_scan) cannot drop the table between our DROP and
-    # CREATE or observe it missing mid-recreate.
+    # A same-named table can linger with an outdated LOCATION after the WAF log
+    # delivery method changes (e.g. Vended Logs -> Firehose moves data from
+    # AWSLogs/.../{webacl}/ to a custom bucket-root prefix). _find_existing_table
+    # only matches tables whose location is an ancestor of the resolved path, so
+    # a stale child-location table is invisible to it. We must replace it.
+    #
+    # But DROP unconditionally would open a window where a concurrent query on
+    # the other code path (query_logs vs patrol_scan) sees the table missing
+    # between DROP and CREATE. So we DROP only when an existing table actually
+    # points at a DIFFERENT location; when the location already matches (the
+    # common/steady case, and the case where another thread just created it),
+    # we skip the DROP entirely and let CREATE ... IF NOT EXISTS be a no-op.
+    # The whole check-then-act is held under _create_lock so the two paths
+    # cannot interleave. Dropping an EXTERNAL table never touches S3 data.
     with _create_lock:
-        _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
+        needs_drop = False
+        try:
+            glue = get_client("glue", region_name=region)
+            existing = glue.get_table(DatabaseName=TMP_DATABASE, Name=table_name)
+            existing_loc = existing["Table"]["StorageDescriptor"].get("Location", "").rstrip("/")
+            if existing_loc and existing_loc != target_location:
+                needs_drop = True
+        except Exception:
+            # Table absent (EntityNotFoundException) or Glue error → nothing to drop.
+            needs_drop = False
+
+        if needs_drop:
+            _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
 
         ddl = DDL_TEMPLATE.format(
             database=TMP_DATABASE, table=table_name,
-            s3_location=s3_path.rstrip("/") + "/",
+            s3_location=target_location + "/",
             partition_format=partition_format, partition_unit=partition_unit,
             partition_interval=partition_interval,
             storage_template=storage_template, range_start=range_start,
