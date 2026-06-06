@@ -21,6 +21,16 @@ Resources:
       DataType: float32
       Dimension: 1024
       DistanceMetric: cosine
+      # AMAZON_BEDROCK_TEXT (chunk text) and AMAZON_BEDROCK_METADATA (source
+      # metadata) grow with chunk size. S3 Vectors caps FILTERABLE metadata at
+      # 2 KB/vector; marking these non-filterable exempts them from that cap
+      # (they count only against the 40 KB total). Required for large chunks
+      # (e.g. MaxTokens 1000) — otherwise ingestion fails with
+      # "Filterable metadata must have at most 2048 bytes".
+      MetadataConfiguration:
+        NonFilterableMetadataKeys:
+          - AMAZON_BEDROCK_TEXT
+          - AMAZON_BEDROCK_METADATA
     DependsOn: VectorBucket
 
   # --- S3 bucket for source documents ---
