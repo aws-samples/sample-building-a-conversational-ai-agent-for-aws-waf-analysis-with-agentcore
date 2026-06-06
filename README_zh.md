@@ -121,7 +121,7 @@ graph TB
 - **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时。历史持久化到 DynamoDB（30 天 TTL）。
 - **记忆**：AgentCore Memory 提供跨会话 LTM（事实、偏好、摘要）。DynamoDB 存储完整消息历史。
 
-详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Agent？](docs/why-waf-agent_zh.md)
+详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Agent？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md)
 
 ## 支持的区域
 

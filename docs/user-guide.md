@@ -138,10 +138,11 @@ Classify domains behind a WebACL as Web/API/Mixed to guide protection strategy.
 
 ## Limitations
 
-- **No write operations.** The agent cannot modify your AWS WAF rules, create/delete resources (except temporary Athena tables which are auto-cleaned).
+- **No write operations.** The agent cannot modify your AWS WAF rules, create/delete resources (except Athena tables in the `waf_analysis_tmp` database — see [Athena Table Auto-Detection](athena-table-detection.md)).
 - **Log availability.** If logging is not enabled on your WebACL, only CloudWatch Metrics are available (no IP-level analysis).
 - **Athena output location.** If your WAF logs go to S3 (via Firehose or direct delivery), the agent uses Athena for log queries. It auto-detects the output location from your Athena workgroup. If your workgroup has no output location configured, the agent falls back to writing results under `athena-results/` in your WAF log bucket. **Recommended:** Configure a query result location in the Athena console (Workgroups → primary → Edit → Query result location) to avoid any permission issues.
 - **Athena query performance.** If your WAF logs are delivered via Firehose with the default hourly prefix, Athena queries may be slow or time out on high-traffic WebACLs. See [Firehose Optimization Guide](firehose-minute-partitioning.md) to add minute-level partitioning (one-time, 2-minute fix).
+- **Athena table detection.** See [Athena Table Auto-Detection](athena-table-detection.md) for how the agent finds or creates Athena tables, what partition schemes are supported, and how to use your own existing table.
 - **Metric discovery (14-day window).** CloudWatch can only auto-discover metrics that had activity in the last 14 days. If your WebACL had no traffic of a certain type (e.g., no blocked requests from a specific country) for 14+ days, that section of the report will be empty. **Fix:** Generate a few matching requests (e.g., trigger the rule with a test request), then re-run the report — this reactivates the metric index and unlocks up to 63 days of historical data.
 - **Session timeout.** Container idles out after 15 minutes. Download reports promptly.
 - **Cold start.** First query in a new session takes ~30 seconds (container boot).

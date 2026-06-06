@@ -41,6 +41,11 @@ Reviewed and improved the core analysis methodology for false positive, bypass, 
 ### Documentation
 
 - Added model choice warning (Claude recommended, GPT-family may silently fail) to README, README_zh, deployment, deployment_zh, user-guide, user-guide_zh
+- New doc: `docs/athena-table-detection.md` — explains partition projection usage, existing table detection logic, match conditions, and known limitations
+- New doc: `docs/athena-table-detection_zh.md` — Chinese version
+- Fixed user-guide misleading "temporary Athena tables" wording → clarified tables are permanent and reused across sessions
+- Added Athena query performance limitation to user-guide_zh (was missing compared to English version)
+- Added doc links to README and README_zh
 
 ## 0.9.0 (2026-05-25)
 
