@@ -19,7 +19,20 @@ _athena_state = {
     "table": None,           # "database.table_name"
     "partition_format": None, # "yyyy/MM/dd/HH" or "yyyy/MM/dd/HH/mm"
     "temp_created": False,
+    "webacl_scoped": True,   # True if table location is specific to one WebACL
 }
+
+
+def reset_table_cache():
+    """Reset the cached Athena table metadata.
+
+    Must be called whenever the active WebACL changes — the cached table is
+    keyed to the previous WebACL's resolved S3 path, and reusing it would
+    query the wrong logs (stale-table bug)."""
+    _athena_state["table"] = None
+    _athena_state["partition_format"] = None
+    _athena_state["temp_created"] = False
+    _athena_state["webacl_scoped"] = True
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +275,16 @@ def _find_existing_table(s3_path: str, region: str) -> str | None:
                 if s3_normalized == location or s3_normalized.startswith(location):
                     # Verify it has AWS WAF log columns
                     cols = [c["Name"] for c in tbl["StorageDescriptor"].get("Columns", [])]
-                    if "action" in cols and "httprequest" in cols:
-                        return f"{db_name}.{tbl['Name']}"
+                    if "action" not in cols or "httprequest" not in cols:
+                        continue
+                    # Verify partitioning is compatible with our queries: we prune
+                    # on a `log_time` partition column. A table partitioned some
+                    # other way (or unpartitioned) would make our WHERE log_time
+                    # clause invalid or scan nothing — skip it and build our own.
+                    part_keys = [p["Name"] for p in tbl.get("PartitionKeys", [])]
+                    if "log_time" not in part_keys:
+                        continue
+                    return f"{db_name}.{tbl['Name']}"
         except Exception:
             continue
     return None

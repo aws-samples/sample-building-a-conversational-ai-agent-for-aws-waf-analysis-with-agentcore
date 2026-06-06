@@ -14,6 +14,16 @@ POLL_INTERVAL = 2
 
 # Athena state (reuse existing table if already created)
 _athena_table: str | None = None
+_table_setup_lock = threading.Lock()
+
+
+def reset_table_cache():
+    """Reset the cached Athena table name. Called on WebACL switch so a stale
+    table from the previous WebACL is not reused."""
+    global _athena_table
+    _athena_table = None
+    from tools.waf_athena import reset_table_cache as _reset_state
+    _reset_state()
 
 
 
@@ -81,6 +91,15 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
             partition_clause = f"AND log_time >= '{sp}' AND log_time <= '{ep}'"
         else:
             partition_clause = ""
+        # If the table is not WebACL-specific (e.g. a Firehose bucket-root table
+        # shared by multiple WebACLs), filter by webaclid so we never count
+        # another WebACL's traffic. webaclid in the logs is the full ARN, which
+        # contains the WebACL name as a path segment. WebACL names are limited to
+        # [A-Za-z0-9-_] by AWS, so no SQL-escaping is needed.
+        if not _athena_state.get("webacl_scoped", True):
+            wn = get_webacl_name()
+            if wn and re.fullmatch(r"[A-Za-z0-9_-]+", wn):
+                partition_clause += f" AND webaclid LIKE '%/{wn}/%'"
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
         return _run_athena(sql)
     raise RuntimeError(f"Unsupported log destination format: {dest}")
@@ -133,74 +152,96 @@ def _ensure_athena_table(dest: str) -> str | None:
     if _athena_table:
         return _athena_table
 
-    try:
-        from tools.waf_athena import (
-            _resolve_s3_path, _try_standard_path, _get_account_id,
-            _find_existing_table, _validate_waf_log, _detect_partitions,
-            _create_named_table, _athena_state,
-        )
+    # Serialize table setup. The agent fires Athena queries in parallel; without
+    # this lock two threads could both run the DROP/CREATE in _create_named_table,
+    # and one could drop the table while the other queries it.
+    with _table_setup_lock:
+        # Double-checked: another thread may have built it while we waited.
+        if _athena_table:
+            return _athena_table
 
-        s3_base = _resolve_s3_path(dest)
-        bucket = s3_base.replace("s3://", "").split("/")[0]
-        scope = get_scope()
-        webacl_name = get_webacl_name() or "unknown"
-        region = get_logs_region()
+        try:
+            from tools.waf_athena import (
+                _resolve_s3_path, _try_standard_path, _get_account_id,
+                _find_existing_table, _validate_waf_log, _detect_partitions,
+                _create_named_table, _athena_state,
+            )
 
-        # Try standard path for S3 direct delivery
-        s3_path = None
-        if ":s3:::" in dest:
-            account_id = _get_account_id()
-            s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
-        if not s3_path:
-            s3_path = s3_base
+            s3_base = _resolve_s3_path(dest)
+            bucket = s3_base.replace("s3://", "").split("/")[0]
+            scope = get_scope()
+            webacl_name = get_webacl_name() or "unknown"
+            region = get_logs_region()
 
-        # Check for existing table
-        existing = _find_existing_table(s3_path, region)
-        if existing:
-            # Validate partition config and path match S3 structure
-            try:
-                from tools.aws_session import get_client as _gc
-                glue = _gc("glue", region_name=region)
-                db, tbl_name = existing.split(".", 1)
-                tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
-                tbl_params = tbl_resp["Table"].get("Parameters", {})
-                existing_interval = tbl_params.get("projection.log_time.interval", "1")
-                table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
-                resolved = s3_path.rstrip("/")
-                _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
-                interval_mismatch = str(actual_interval) != str(existing_interval)
-                # Path mismatch: resolved must be equal to or more specific than table location.
-                # If resolved is just bucket root but table points to a sub-path, it's a mismatch
-                # (log delivery method changed — e.g., Vended Logs → Firehose).
-                path_mismatch = not resolved.startswith(table_location)
-                if interval_mismatch or path_mismatch:
-                    if db == "waf_analysis_tmp":
-                        glue.delete_table(DatabaseName=db, Name=tbl_name)
-                        # Fall through to create new table
+            # Try standard path for S3 direct delivery
+            s3_path = None
+            if ":s3:::" in dest:
+                account_id = _get_account_id()
+                s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
+            if not s3_path:
+                s3_path = s3_base
+
+            # A table whose location does NOT include the WebACL name (e.g. a
+            # Firehose bucket-root prefix) may hold logs from multiple WebACLs.
+            # Record this so query_logs can add a webaclid filter to avoid
+            # cross-WebACL contamination.
+            webacl_scoped = webacl_name.lower() in s3_path.lower()
+            _athena_state["webacl_scoped"] = webacl_scoped
+
+            # Check for existing table
+            existing = _find_existing_table(s3_path, region)
+            if existing:
+                # Validate partition config and path match S3 structure
+                try:
+                    from tools.aws_session import get_client as _gc
+                    glue = _gc("glue", region_name=region)
+                    db, tbl_name = existing.split(".", 1)
+                    tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
+                    tbl_params = tbl_resp["Table"].get("Parameters", {})
+                    existing_interval = tbl_params.get("projection.log_time.interval", "1")
+                    table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
+                    resolved = s3_path.rstrip("/")
+                    _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
+                    interval_mismatch = str(actual_interval) != str(existing_interval)
+                    # Path mismatch: resolved must be equal to or more specific than table location.
+                    # If resolved is just bucket root but table points to a sub-path, it's a mismatch
+                    # (log delivery method changed — e.g., Vended Logs → Firehose).
+                    path_mismatch = not resolved.startswith(table_location)
+                    if interval_mismatch or path_mismatch:
+                        if db == "waf_analysis_tmp":
+                            glue.delete_table(DatabaseName=db, Name=tbl_name)
+                            # Fall through to create new table
+                        else:
+                            pass  # External table — create our own below
                     else:
-                        pass  # External table — create our own below
-                else:
+                        _athena_table = existing
+                        _athena_state["table"] = existing
+                        _athena_state["partition_format"] = part_fmt
+                        return existing
+                except Exception:
                     _athena_table = existing
                     _athena_state["table"] = existing
-                    _athena_state["partition_format"] = part_fmt
+                    # Best-effort partition_format so query_logs can prune and
+                    # apply the hourly-partition guard.
+                    try:
+                        _, pf, _, _ = _detect_partitions(s3_path)
+                        _athena_state["partition_format"] = pf
+                    except Exception:
+                        pass
                     return existing
-            except Exception:
-                _athena_table = existing
-                _athena_state["table"] = existing
-                return existing
 
-        # Create permanent table
-        if not _validate_waf_log(s3_path):
-            raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log destination is correct.")
-        storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
-        safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-        full_table = _create_named_table(
-            s3_path, storage_template, part_fmt, part_unit, part_interval,
-            region, "primary", f"waf_logs_{safe_name}"
-        )
-        _athena_table = full_table
-        _athena_state["table"] = full_table
-        _athena_state["partition_format"] = part_fmt
-        return full_table
-    except Exception as e:
-        raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e
+            # Create permanent table
+            if not _validate_waf_log(s3_path):
+                raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log destination is correct.")
+            storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
+            safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
+            full_table = _create_named_table(
+                s3_path, storage_template, part_fmt, part_unit, part_interval,
+                region, "primary", f"waf_logs_{safe_name}"
+            )
+            _athena_table = full_table
+            _athena_state["table"] = full_table
+            _athena_state["partition_format"] = part_fmt
+            return full_table
+        except Exception as e:
+            raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e

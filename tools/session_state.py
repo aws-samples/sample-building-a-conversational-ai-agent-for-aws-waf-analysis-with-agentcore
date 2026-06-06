@@ -19,6 +19,16 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["log_filter_default"] = log_filter_default
     _state["findings"] = []
 
+    # The Athena table caches (waf_query._athena_table, waf_athena._athena_state)
+    # are keyed to the previous WebACL's resolved S3 path. Reset them on every
+    # WebACL switch so we never reuse a stale, wrong-location table. Local import
+    # avoids a module-level circular dependency.
+    try:
+        from tools.waf_query import reset_table_cache
+        reset_table_cache()
+    except Exception:
+        pass
+
 
 def set_capabilities(capabilities: dict):
     """Store detected AWS WAF capabilities."""
