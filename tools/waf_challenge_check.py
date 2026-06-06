@@ -6,7 +6,7 @@ import time
 import threading
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, is_log_filter_active
+from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
 _cwl_semaphore = threading.Semaphore(8)
@@ -34,8 +34,12 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     from tools.waf_logs import _parse_start_time
     _duration = min(duration_minutes, 360)
 
+    if not get_webacl_name():
+        return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
+                "or call list_webacls() to see available WebACLs.")
+
     if get_log_type() == "none":
-        return ("Error: No logging configured. "
+        return ("Error: No logging configured for this WebACL. "
                 "Cannot query Challenge/CAPTCHA logs. Enable WAF logging first.")
     from tools.waf_query import check_hourly_partition_block
     hourly_err = check_hourly_partition_block()

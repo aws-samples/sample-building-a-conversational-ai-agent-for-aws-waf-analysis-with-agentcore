@@ -729,7 +729,12 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     start_last = start - timedelta(days=7)  # WoW: same day last week
     end_last = end - timedelta(days=7)
 
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+    from tools.session_state import resolve_region
+    region = resolve_region(scope)
+    if region is None:
+        return ("Error: REGIONAL scope requires get_waf_config to be called first "
+                "(need to know which region the WebACL is in). "
+                "Call get_waf_config(webacl_name='...') first.")
 
     global _latest_patrol_html
 

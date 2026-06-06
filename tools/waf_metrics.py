@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_metrics_region, get_scope
+from tools.session_state import get_scope
 
 MAX_RESULTS = 25
 
@@ -41,7 +41,13 @@ def get_waf_metrics(
         Metric data points formatted as a table, or SEARCH results.
     """
     if region == "auto":
-        region = get_metrics_region()
+        from tools.session_state import resolve_region
+        scope = get_scope()
+        region = resolve_region(scope)
+        if region is None:
+            return ("Error: REGIONAL scope requires get_waf_config to be called first "
+                    "(need to know which region the WebACL is in). "
+                    "Call get_waf_config(webacl_name='...') first.")
     client = get_client("cloudwatch", region_name=region)
     end_time = datetime.now(timezone.utc)
     start_time = end_time - timedelta(hours=period_hours)

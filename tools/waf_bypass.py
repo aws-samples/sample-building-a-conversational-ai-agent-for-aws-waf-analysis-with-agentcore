@@ -56,9 +56,14 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
     if step == "volume_anomaly":
         return _step_volume_anomaly()
 
+    # Ensure session state is populated
+    if not get_webacl_name():
+        return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
+                "or call list_webacls() to see available WebACLs.")
+
     # scan and investigate_ip require logging
     if get_log_type() == "none":
-        return ("Error: No logging configured. Cannot analyze ALLOW traffic without logs.\n"
+        return ("Error: No logging configured for this WebACL. Cannot analyze ALLOW traffic without logs.\n"
                 "Enable WAF logging (S3 or CloudWatch Logs) first.\n"
                 "For a metrics-only volume check, call detect_bypass(step='volume_anomaly').")
     from tools.waf_query import check_hourly_partition_block

@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_metrics_region, get_scope, get_user_timezone
+from tools.session_state import get_scope, get_user_timezone
 
 
 def _log(msg: str):
@@ -55,7 +55,12 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
     _log(f"query_type={query_type} webacl={webacl_name} minutes={minutes} start_time={start_time}")
     if not scope:
         scope = get_scope() or "CLOUDFRONT"
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+    from tools.session_state import resolve_region
+    region = resolve_region(scope)
+    if region is None:
+        return ("Error: REGIONAL scope requires get_waf_config to be called first "
+                "(need to know which region the WebACL is in). "
+                "Call get_waf_config(webacl_name='...') first.")
 
     # Validate WebACL exists
     try:
@@ -463,13 +468,13 @@ def _targeted_signals(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", 
 
 def _rate_limits(cw, webacl_name, scope, start, end, minutes):
     from tools.waf_patrol import _get_all_rules_metrics_search
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+    from tools.session_state import resolve_region
+    region = resolve_region(scope)
     data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=_calc_period(minutes), scope=scope, region=region)
 
     # Get rate-based rule names from WebACL config
     rate_rule_names = set()
     try:
-        region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
         waf = get_client("wafv2", region_name=region)
         resp = waf.list_web_acls(Scope="CLOUDFRONT" if scope == "CLOUDFRONT" else "REGIONAL")
         arn = next((w["ARN"] for w in resp.get("WebACLs", []) if w["Name"] == webacl_name), None)

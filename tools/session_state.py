@@ -64,6 +64,20 @@ def get_webacl_name() -> str | None:
     return _state.get("webacl_name")
 
 
+def resolve_region(scope: str) -> str | None:
+    """Resolve the correct AWS region for a given scope.
+
+    Returns the region string, or None if REGIONAL scope is used but session
+    state hasn't been initialized (caller should return error to LLM).
+    """
+    if scope == "CLOUDFRONT":
+        return "us-east-1"
+    # REGIONAL: need session state to know the region
+    if not _state.get("webacl_name"):
+        return None
+    return _state.get("metrics_region", "us-east-1")
+
+
 def get_scope() -> str:
     return _state.get("scope", "CLOUDFRONT")
 

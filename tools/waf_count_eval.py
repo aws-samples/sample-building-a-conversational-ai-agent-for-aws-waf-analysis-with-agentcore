@@ -70,6 +70,10 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
         start_time: Start time for log queries (required for check_low_volume_clients).
         duration_minutes: Duration in minutes (default 60, max 360 for CWL, 60 for Athena).
     """
+    if not get_webacl_name():
+        return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
+                "or call list_webacls() to see available WebACLs.")
+
     if step == "init":
         return _step_init(rule_name=rule_name)
     elif step == "analyze_rule":

@@ -347,7 +347,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     days = min(days, 7)
 
     # Parse start_time (use session timezone)
-    from tools.session_state import get_metrics_region, get_log_destination, get_capabilities, get_user_timezone
+    from tools.session_state import get_log_destination, get_capabilities, get_user_timezone
     _tz_off = get_user_timezone()
     _user_tz = timezone(timedelta(hours=_tz_off)) if _tz_off is not None else timezone.utc
     try:
@@ -363,7 +363,12 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     _tz_offset = timedelta(hours=_tz_off) if _tz_off is not None else timedelta(0)
     tz_label = f"UTC{_tz_off:+g}" if _tz_off is not None and _tz_off != 0 else "UTC"
     L = {k: v.format(tz=tz_label) if isinstance(v, str) and "{tz}" in v else v for k, v in L.items()}
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_metrics_region()
+    from tools.session_state import resolve_region
+    region = resolve_region(scope)
+    if region is None:
+        return ("Error: REGIONAL scope requires get_waf_config to be called first "
+                "(need to know which region the WebACL is in). "
+                "Call get_waf_config(webacl_name='...') first.")
 
     # Validate WebACL exists
     try:
