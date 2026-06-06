@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_logs_region, get_webacl_name, get_scope, is_log_filter_active
+from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
 # Rules that should NEVER be recommended to switch from Count.
@@ -100,9 +100,8 @@ def _step_init(rule_name: str = "") -> str:
     # Get all COUNT rules from WebACL config
     webacl_name = get_webacl_name()
     scope = get_scope()
-    region = get_logs_region()
-    waf_region = "us-east-1" if scope == "CLOUDFRONT" else region
-    all_count_rules = _get_all_count_rules(waf_region, scope)
+    region = resolve_region(scope)
+    all_count_rules = _get_all_count_rules(region, scope)
 
     # Filter to target rules if specified
     if target_rules:
@@ -116,7 +115,7 @@ def _step_init(rule_name: str = "") -> str:
     # Get hit counts from CloudWatch Metrics (accurate, works for both CWL and S3 users)
     from datetime import datetime as dt, timedelta, timezone as tz
     from tools.waf_patrol import _get_all_rules_metrics_search
-    cw = get_client("cloudwatch", region_name="us-east-1" if scope == "CLOUDFRONT" else region)
+    cw = get_client("cloudwatch", region_name=region)
     end_dt = dt.now(tz.utc)
     start_dt = end_dt - timedelta(days=14)
     metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=14 * 86400, scope=scope, region=region)
@@ -295,7 +294,7 @@ def _step_analyze_rule(rule_name: str) -> str:
     from datetime import datetime as dt, timedelta, timezone as tz
     from tools.waf_patrol import _get_all_rules_metrics_search
     scope = get_scope() or "CLOUDFRONT"
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    region = resolve_region(scope)
     cw = get_client("cloudwatch", region_name=region)
     end_dt = dt.now(tz.utc)
     start_dt = end_dt - timedelta(days=14)

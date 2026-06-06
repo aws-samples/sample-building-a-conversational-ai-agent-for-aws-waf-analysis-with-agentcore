@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_webacl_name, get_scope, get_logs_region, is_log_filter_active
+from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
 
@@ -118,7 +118,7 @@ def _step_volume_anomaly() -> str:
         return "Error: No WebACL configured. Call get_waf_config first."
 
     scope = get_scope()
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    region = resolve_region(scope)
     cw = get_client("cloudwatch", region_name=region)
 
     from tools.waf_patrol import _get_all_rules_metrics_search
@@ -237,7 +237,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     try:
         webacl_name = get_webacl_name()
         scope = get_scope()
-        region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+        region = resolve_region(scope)
         cw = get_client("cloudwatch", region_name=region)
         from tools.waf_patrol import _get_all_rules_metrics_search
         end_dt = datetime.now(timezone.utc)
@@ -760,7 +760,7 @@ def _check_coverage_gaps() -> list[str]:
     if not webacl_name:
         return gaps
 
-    region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    region = resolve_region(scope)
     waf = get_client("wafv2", region_name=region)
 
     try:

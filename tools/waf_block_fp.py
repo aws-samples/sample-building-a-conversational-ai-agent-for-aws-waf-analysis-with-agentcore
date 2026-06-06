@@ -8,7 +8,7 @@ import threading
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import (
-    get_log_destination, get_logs_region, get_webacl_name, get_scope,
+    get_log_destination, get_webacl_name, get_scope, resolve_region,
     is_log_filter_active,
 )
 from tools.waf_query import query_logs, get_log_type
@@ -468,7 +468,7 @@ def _get_text_transformations(rule_group_name: str, sub_rule_name: str) -> str:
     if not webacl_name:
         return ""
 
-    waf_region = "us-east-1" if scope == "CLOUDFRONT" else get_logs_region()
+    waf_region = resolve_region(scope)
     waf = get_client("wafv2", region_name=waf_region)
 
     try:

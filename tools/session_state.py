@@ -30,13 +30,14 @@ def get_capabilities() -> dict:
     return _state.get("capabilities", {})
 
 
-def get_metrics_region() -> str:
-    """Get the correct region for CloudWatch Metrics queries."""
-    return _state.get("metrics_region", "us-east-1")
-
-
 def get_logs_region() -> str:
-    """Get the correct region for CW Logs queries."""
+    """Raw accessor for the region where WAF logs live (CWL group / Athena S3).
+
+    Used by the query executors (waf_query, waf_logs) which run only AFTER the
+    log destination has been resolved, so session state is always initialized.
+    For scope-based region derivation use resolve_region(scope) instead — it is
+    fail-loud (returns None when REGIONAL session state is missing).
+    """
     return _state.get("metrics_region", "us-east-1")
 
 
