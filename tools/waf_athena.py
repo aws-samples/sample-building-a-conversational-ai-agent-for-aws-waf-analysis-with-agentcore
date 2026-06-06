@@ -281,6 +281,17 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     _ensure_database(region, workgroup)
     range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
 
+    # Drop any stale same-named table first. A table can linger with an
+    # outdated LOCATION after the WAF log delivery method changes (e.g.
+    # Vended Logs -> Firehose moves data from AWSLogs/.../{webacl}/ to a
+    # custom bucket-root prefix). _find_existing_table only matches tables
+    # whose location is an ancestor of the resolved path, so a stale
+    # child-location table is invisible to it and CREATE ... IF NOT EXISTS
+    # would silently keep the wrong location. DROP guarantees the table
+    # reflects the freshly-resolved S3 path. This is our managed scratch
+    # table in TMP_DATABASE; dropping an EXTERNAL table never touches S3 data.
+    _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
+
     ddl = DDL_TEMPLATE.format(
         database=TMP_DATABASE, table=table_name,
         s3_location=s3_path.rstrip("/") + "/",
