@@ -249,7 +249,6 @@ def _render_html(md: str) -> str:
     # Simple conversion — use basic HTML wrapping
     # Mermaid blocks rendered client-side via mermaid.js
     import html as html_mod
-    import re
     lines = md.split("\n")
     html_lines = []
     in_code = False

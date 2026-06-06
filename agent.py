@@ -309,7 +309,7 @@ def _get_version() -> str:
 
 def _build_system_prompt(tz_offset: float | None = None) -> str:
     """Build system prompt with current date and timezone injected."""
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timezone
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     tz_str = f"UTC{tz_offset:+g}" if tz_offset is not None else "UTC (not set by user)"
     version = _get_version()

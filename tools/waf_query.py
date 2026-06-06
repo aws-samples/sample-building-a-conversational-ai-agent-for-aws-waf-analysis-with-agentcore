@@ -137,7 +137,7 @@ def _ensure_athena_table(dest: str) -> str | None:
         from tools.waf_athena import (
             _resolve_s3_path, _try_standard_path, _get_account_id,
             _find_existing_table, _validate_waf_log, _detect_partitions,
-            _create_named_table, _ensure_database, _athena_state,
+            _create_named_table, _athena_state,
         )
 
         s3_base = _resolve_s3_path(dest)

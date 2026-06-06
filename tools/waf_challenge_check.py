@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: MIT-0
 """Challenge/CAPTCHA compatibility check — one-shot query tool."""
 
-import time
 import threading
 from strands import tool
-from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_webacl_name, is_log_filter_active
+from tools.session_state import get_webacl_name, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
 _cwl_semaphore = threading.Semaphore(8)

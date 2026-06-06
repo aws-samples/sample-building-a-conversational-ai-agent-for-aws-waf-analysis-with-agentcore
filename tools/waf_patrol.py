@@ -528,7 +528,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
     try:
         from tools.waf_athena import _resolve_s3_path, _try_standard_path, _get_account_id, \
             _find_existing_table, _validate_waf_log, _detect_partitions, _create_named_table, \
-            _run_athena_select, _athena_state, _ensure_database
+            _run_athena_select, _ensure_database
         import re as _re
 
         # Resolve S3 path

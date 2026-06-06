@@ -2,13 +2,11 @@
 # SPDX-License-Identifier: MIT-0
 """Block false positive investigation tool — targeted verification and proactive scan."""
 
-import json
-import time
 import threading
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import (
-    get_log_destination, get_webacl_name, get_scope, resolve_region,
+    get_webacl_name, get_scope, resolve_region,
     is_log_filter_active,
 )
 from tools.waf_query import query_logs, get_log_type

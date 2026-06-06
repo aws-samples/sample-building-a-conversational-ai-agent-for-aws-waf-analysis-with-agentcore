@@ -8,8 +8,6 @@ import gzip
 import json
 import tempfile
 import os
-from datetime import datetime, timezone
-from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_webacl_name, get_scope
 
