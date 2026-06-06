@@ -51,6 +51,13 @@ Reviewed and improved the core analysis methodology for false positive, bypass, 
 ### Documentation
 
 - Added model choice warning (Claude recommended, GPT-family may silently fail) to README, README_zh, deployment, deployment_zh, user-guide, user-guide_zh
+
+### Knowledge Base
+
+- New KB doc: `false-positive-scope-down.md` — 3 methods (label match, scope-down, sensitivity level) with complete JSON configs
+- New KB doc: `sqli-xss-false-positives.md` — common FP scenarios by industry (financial/UNION+SELECT, WordPress/XML, SaaS/webhooks, base64 event handlers)
+- New KB doc: `wordpress-waf-config.md` — full WordPress WAF configuration (recommended AMRs, priority order, custom rules, admin protection, FP handling)
+- KB chunking: increased from 300 to 1000 tokens for better retrieval coherence
 - New doc: `docs/athena-table-detection.md` — explains partition projection usage, existing table detection logic, match conditions, and known limitations
 - New doc: `docs/athena-table-detection_zh.md` — Chinese version
 - Fixed user-guide misleading "temporary Athena tables" wording → clarified tables are permanent and reused across sessions

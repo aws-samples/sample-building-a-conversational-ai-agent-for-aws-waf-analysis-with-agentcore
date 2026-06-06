@@ -1,71 +1,109 @@
-# Common SQLi/XSS False Positive Scenarios
+# Common SQLi and XSS False Positive Scenarios
 
-## SQLi False Positives by Industry
+## SQLi False Positives
 
-### Financial Services
+### Financial Services — UNION + SELECT in Natural Language
 
-The most common SQLi FP pattern. Users searching for financial products trigger UNION + SELECT keyword detection.
+**Trigger**: Users search for financial products containing SQL keywords.
 
-Examples that trigger AWS SQLi rules:
-- "credit UNION members SELECT best savings plan"
-- "federal UNION SELECT retirement benefits"
-- "trade UNION SELECT worker compensation"
+**Examples that trigger AWS SQLi rules**:
+- `credit UNION members SELECT best savings plan`
+- `federal UNION SELECT retirement benefits`
+- `trade UNION SELECT worker compensation`
 
-The word "union" (labor/credit union) combined with "select" (choose) forms a SQL keyword pair that the SQLi engine detects as injection syntax.
+**Why it triggers**: `UNION` + `SELECT` is a SQL keyword pair. The SQLi engine detects this pattern regardless of surrounding natural language text.
 
-**Recommended fix**: Scope-down the SQLi rule for the /search path using Method 1 (label match) or Method 3 (LOW sensitivity). Do NOT disable SQLi for the entire site.
+**Fix**: Scope-down SQLi for /search path (Method 1: label match, or Method 3: LOW sensitivity). Do NOT disable SQLi site-wide.
 
-### E-commerce / Content Sites
+---
 
-Rich text editors, product descriptions, and user comments commonly trigger XSS rules.
+### E-commerce / Content — HTML in User Input
 
-Examples:
-- HTML in comments: `<b>great product</b>` triggers CrossSiteScripting
-- Price comparisons: `price <100` triggers angle bracket detection
-- Code snippets in tech forums: `<script>` in code blocks
+**Trigger**: Rich text, product descriptions, comments contain HTML-like syntax.
 
-**Recommended fix**: For user-generated content paths (/comments, /reviews, /posts), use Method 1 with label match or Method 2 scope-down. Keep XSS protection active on admin/login/checkout paths.
+**Examples**:
+- `<b>great product</b>` → CrossSiteScripting_QUERYARGUMENTS
+- `price <100` → angle bracket detection
+- `<script>` in code block discussions → CrossSiteScripting
 
-### SaaS / API Platforms
+**Fix**: Scope-down XSS rules for user-content paths (/comments, /reviews, /posts). Keep XSS protection on /login, /checkout, /admin.
 
-Webhook payloads, JSONP callbacks, and OAuth redirect URIs trigger RFI rules.
+---
 
-Examples:
-- `?callback=http://partner.com/handler` triggers GenericRFI
-- `?redirect_uri=https://oauth.provider.com/callback` triggers GenericRFI
-- JSON body containing URLs triggers GenericRFI_BODY
+### SaaS / API — URLs in Query Parameters
 
-**Recommended fix**: Scope-down RFI rules for known webhook/callback endpoints. Use IP-based or signature-based allow for trusted partner integrations.
+**Trigger**: Webhook callbacks, OAuth redirects, share URLs in query params.
+
+**Examples**:
+- `?callback=http://partner.com/handler` → GenericRFI_QUERYARGUMENTS
+- `?redirect_uri=https://oauth.provider.com/callback` → GenericRFI_QUERYARGUMENTS
+
+**Fix**: Scope-down RFI for webhook/callback endpoints. Use IP-based scope-down for trusted partner sources.
+
+---
 
 ## XSS False Positives
 
-### Common Triggers
+### XML Processing Instructions
 
-- HTML formatting in user content (`<b>`, `<i>`, `<em>`)
-- Template syntax (`{{variable}}`, `<%= code %>`)
-- Mathematical expressions (`x<10`, `a>b`)
-- SVG/image markup in rich editors
-- Email content with HTML signatures
+**Trigger**: `<?xml version="1.0"?>` in request body.
 
-### Less Common but Valid
+**What WAF logs show**: `CrossSiteScripting_BODY`, matchedData: `["<?", "xml"]`
 
-- Search queries containing HTML examples (tech documentation sites)
-- API endpoints accepting HTML email templates
-- CMS endpoints saving page templates
-- Chat/messaging with HTML preview
+**Why**: AWS WAF XSS engine interprets `<?` followed by tag name as potential processing instruction injection.
+
+**Common in**: SOAP APIs, XML document upload, RSS feed submissions, WordPress post editing with embedded XML.
+
+---
+
+### WordPress / CMS Post Editing (Most Common Enterprise FP)
+
+**Trigger**: Admin saves post via /wp-admin, POST body contains HTML/JS/XML.
+
+**Content that triggers**:
+- Gutenberg block markup: `<!-- wp:paragraph -->`, `<!-- wp:image -->`
+- Embedded media: `<iframe>`, `<script>`, `<svg>`, `<object>`
+- XML declarations: `<?xml version="1.0" encoding="UTF-8"?>`
+- oEmbed markup from video/social media embeds
+- Event handlers in content: `onerror`, `onload`, `onclick`
+
+**Rules triggered**:
+- `CrossSiteScripting_BODY` — HTML/script/XML in POST body
+- `SizeRestrictions_BODY` — Large posts exceeding 8KB default limit
+
+**Fix**:
+1. Override `CrossSiteScripting_BODY` to Count
+2. Override `SizeRestrictions_BODY` to Count (keep permanently — WordPress posts routinely exceed limits)
+3. Add label match rule: `label=awswaf:managed:aws:core-rule-set:CrossSiteScripting_Body AND URI NOT /wp-admin → Block`
+
+**Result**: XSS body protection active on public paths; admin content editing allowed.
+
+---
+
+### Base64 Data with Event Handler Patterns
+
+**Trigger**: Base64-encoded strings containing `+on` or `/on` substrings.
+
+**Example**: `"dBV6+ON23vgWCNw=="` blocked because `+ON` matches XSS event handler pattern.
+
+**Fix**: Scope-down XSS for API endpoints that transmit base64 data, or use a custom rule with specific field targeting.
+
+---
 
 ## Path-Based Risk Assessment
 
-| Path Type | SQLi Risk | XSS Risk | Recommended Action |
-|-----------|-----------|----------|-------------------|
+| Path | SQLi Risk | XSS Risk | Action |
+|------|-----------|----------|--------|
 | /login, /auth | HIGH | LOW | Keep full Block |
-| /admin, /dashboard | HIGH | HIGH | Keep full Block |
-| /search | LOW (user queries) | LOW | Scope-down SQLi, keep or lower XSS |
+| /admin, /wp-admin | HIGH | HIGH (FP on body) | Block on query; Count + label match on body for admin paths |
+| /search | LOW | LOW | Scope-down SQLi; keep or lower XSS |
 | /api/webhook | LOW | LOW | Scope-down both for verified sources |
-| /comments, /reviews | LOW | MEDIUM | Scope-down XSS, keep SQLi |
-| /upload | LOW | LOW | Focus on size restrictions instead |
+| /comments, /reviews | LOW | MEDIUM | Scope-down XSS; keep SQLi |
+| /upload | LOW | LOW | Focus on SizeRestrictions instead |
 | /checkout, /payment | HIGH | HIGH | Keep full Block, never scope-down |
+
+---
 
 ## Key Principle
 
-A false positive on /search does NOT mean SQLi protection is wrong — it means the path accepts content that legitimately contains SQL-like keywords. The correct response is to narrow the protection scope, not to question the rule's validity.
+A false positive does NOT mean the rule is wrong. It means the path accepts content that legitimately resembles an attack pattern. The correct response is to narrow the protection scope for that path, not to disable the rule globally.
