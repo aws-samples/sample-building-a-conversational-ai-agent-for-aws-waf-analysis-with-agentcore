@@ -29,19 +29,19 @@ def _log(msg: str):
 TEMPLATES = {
     "count_rule_top_ips": {
         "query": "filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top IPs triggering a COUNT rule",
     },
     "count_rule_top_uris": {
         "query": "filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
         "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
-        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
+        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
     },

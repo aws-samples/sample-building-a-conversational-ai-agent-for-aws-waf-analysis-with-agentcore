@@ -27,7 +27,7 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
     """Fast metrics-based overview of WAF activity. No log queries — answers in 2-3 seconds.
 
     Use this for "what happened" questions. For "who did it" (IPs, URIs, request details),
-    use run_logs_query or run_athena_query instead.
+    use run_logs_query instead.
 
     Args:
         query_type: Type of overview to return:

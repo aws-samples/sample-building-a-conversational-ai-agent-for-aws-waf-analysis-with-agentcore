@@ -358,6 +358,8 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     end_epoch = start_epoch + duration_minutes * 60
 
     # Get both ends of client distribution
+    # Note: RuleActionOverride COUNT entries appear in ruleGroupList[].nonTerminatingMatchingRules,
+    # not in the top-level nonTerminatingMatchingRules. Check both locations.
     cwl_bottom = (
         f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
         " | stats count(*) as hits by httpRequest.clientIp"
@@ -367,7 +369,8 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
         f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 5"
     )
     cwl_top = (
@@ -379,7 +382,8 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 5"
     )
 
