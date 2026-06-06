@@ -40,6 +40,9 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
     This tool provides evidence for human judgment. It does NOT make definitive
     bypass verdicts without quantifiable signal support.
 
+    Prerequisite: call get_waf_config first (after selecting the WebACL). This tool
+    reads session state populated there; without it scan/investigate_ip error out.
+
     Steps:
     - "scan": Proactive check — run anomaly filters on ALLOW traffic to find suspicious IPs.
     - "investigate_ip": Deep-dive a specific IP's behavior in ALLOW logs.

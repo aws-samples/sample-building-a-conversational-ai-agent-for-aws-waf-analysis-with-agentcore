@@ -24,6 +24,9 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     Use when user reports API/native-app requests failing after enabling Challenge/CAPTCHA rules,
     or when user wants to check Challenge/CAPTCHA compatibility proactively.
 
+    Prerequisite: call get_waf_config first (after selecting the WebACL). This tool
+    reads session state populated there; without it it errors out.
+
     Args:
         start_time: Start time for log query (e.g., "2026-05-12T14:00").
         duration_minutes: Duration in minutes (default 180, max 360 for CWL, 60 for Athena).

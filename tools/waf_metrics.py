@@ -32,7 +32,8 @@ def get_waf_metrics(
         stat: Statistic — Sum, Average, Maximum, SampleCount.
         dimension_filters: Optional JSON string of extra dimensions, e.g.
             '{"Rule": "my-rate-rule"}' or '{"Country": "CN"}'.
-        region: AWS region. Auto-detected from WebACL context if not specified.
+        region: AWS region. Defaults to "auto" (resolved from WebACL context);
+            REGIONAL scope requires get_waf_config to have been called first.
         use_search: If true, use SEARCH expression instead of specific metric.
         search_expression: CloudWatch SEARCH expression. Only used if use_search=true.
             Example: SEARCH('{AWS/WAFV2,LabelName,LabelNamespace,WebACL} WebACL="xxx"', 'Sum', 3600)

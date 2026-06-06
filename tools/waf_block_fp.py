@@ -30,6 +30,9 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     This tool provides evidence for human judgment — do not make definitive FP/TP verdicts
     without quantifiable signal support.
 
+    Prerequisite: call get_waf_config first (after selecting the WebACL). This tool
+    reads session state populated there; without it it errors out.
+
     Steps:
     - "investigate": User reports a specific IP being blocked. Collects evidence for that IP.
     - "scan": Proactive audit — find IPs in BLOCK logs that don't look like attackers.

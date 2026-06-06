@@ -56,6 +56,9 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
     This is a multi-step skill. Call with step="init" for bulk evaluation (all COUNT rules),
     or jump directly to step="analyze_rule" for a single specific rule.
 
+    Prerequisite: call get_waf_config first (after selecting the WebACL). This tool
+    reads session state populated there; without it it errors out.
+
     Steps:
     - "init": Inventory all COUNT rules, classify them, find peak hour. Returns full assessment plan.
     - "analyze_rule": Deep-dive a specific rule — finds peak hour and hit count. Does NOT auto-query logs. Requires rule_name.
