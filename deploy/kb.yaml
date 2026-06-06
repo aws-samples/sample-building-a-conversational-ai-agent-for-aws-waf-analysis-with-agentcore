@@ -133,7 +133,7 @@ Resources:
         ChunkingConfiguration:
           ChunkingStrategy: FIXED_SIZE
           FixedSizeChunkingConfiguration:
-            MaxTokens: 300
+            MaxTokens: 1000
             OverlapPercentage: 20
 
 Outputs:
