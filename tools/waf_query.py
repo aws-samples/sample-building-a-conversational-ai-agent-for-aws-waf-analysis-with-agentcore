@@ -48,7 +48,16 @@ def inspection_location(rule_name: str):
         return ("Cookie header", "cookie")
     if rn.endswith("_HEADER") or rn.endswith("HEADERS") or "NOUSERAGENT" in rn or "USERAGENT" in rn:
         return ("HTTP headers", "header")
-    return None  # BODY (not logged) or unknown
+    if rn.endswith("_BODY") or rn.endswith("BODY"):
+        return None  # request body is never present in WAF logs
+    # No explicit location suffix (e.g. a managed rule-GROUP name like
+    # AWS-AWSManagedRulesSQLiRuleSet). For injection / web-exploit families the
+    # query string is the most common and the only reliably-logged attack
+    # location, so default to it — lets group-level findings still show payloads.
+    if any(k in rn for k in ("SQLI", "XSS", "CROSSSITESCRIPTING", "RFI", "LFI",
+                             "LOG4J", "GENERICRFI", "JAVADESERIALIZATION", "INJECTION")):
+        return ("query string", "args")
+    return None  # rate-based / bot / size / unknown — no single content location
 
 
 # Header/param names whose VALUES are secrets and must never be shown to the
@@ -172,6 +181,22 @@ def _redact(kind: str, raw: str):
             return ("", False)
         return _redact_headers(headers)
     return (raw, False)
+
+
+def athena_content_expr(kind: str) -> str | None:
+    """Athena SELECT expression for the request component of a given location
+    kind. Shared so direct-Athena callers (e.g. patrol) build the same query as
+    sample_inspection_content. Returns None for kinds with no useful content."""
+    if kind == "args":
+        return "httprequest.args"
+    if kind == "uri":
+        return "httprequest.uri"
+    if kind == "cookie":
+        return ("array_join(transform(filter(httprequest.headers,"
+                " h -> lower(h.name) = 'cookie'), h -> h.value), '; ')")
+    if kind == "header":
+        return "cast(httprequest.headers as json)"
+    return None
 
 
 def _headers_from_message(message: str) -> list:

@@ -581,6 +581,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             time_cond += f" AND webaclid LIKE '%/{webacl_name}/%'"
 
         # Query top IPs and URIs per rule (parallel)
+        from tools.waf_query import inspection_location, athena_content_expr
         details = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             futures = {}
@@ -590,6 +591,20 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                 uri_sql = f'SELECT httprequest.uri AS "httpRequest.uri", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = \'{safe_rule}\' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT 5'
                 futures[executor.submit(_run_athena_select, ip_sql, region)] = (rule_name, "ips")
                 futures[executor.submit(_run_athena_select, uri_sql, region)] = (rule_name, "uris")
+                # Inspected content (the WHY) for rules whose name encodes a
+                # location — covers BLOCK (terminating) and COUNT (non-terminating).
+                loc = inspection_location(rule_name)
+                if loc and loc[1] != "uri":  # uri already shown above
+                    expr = athena_content_expr(loc[1])
+                    rule_pred = (
+                        f"(terminatingruleid = '{safe_rule}'"
+                        f" OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{safe_rule}')"
+                        f" OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{safe_rule}')))"
+                    )
+                    content_sql = (f"SELECT {expr} AS content, COUNT(*) AS cnt FROM {full_table}"
+                                   f" WHERE {time_cond} AND {rule_pred} AND {expr} <> ''"
+                                   f" GROUP BY {expr} ORDER BY cnt DESC LIMIT 5")
+                    futures[executor.submit(_run_athena_select, content_sql, region)] = (rule_name, "content")
             for future in concurrent.futures.as_completed(futures, timeout=120):
                 rule_name, qtype = futures[future]
                 try:
@@ -666,6 +681,41 @@ def _query_top_uris_by_rule(logs_client, log_group: str, start: int, end: int, r
     return _poll_log_query(logs_client, log_group, start, end, query)
 
 
+def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str) -> list[dict]:
+    """Get the inspected request component (the WHY) for a rule, redacted.
+    Fetches matching messages and extracts the location keyed by the rule name."""
+    import json as _json
+    from collections import Counter
+    from tools.waf_query import inspection_location, _redact
+    loc = inspection_location(rule_name)
+    if not loc or loc[1] == "uri":  # uri already shown separately
+        return []
+    kind = loc[1]
+    safe_name = rule_name.replace("'", "\\'")
+    query = f"filter terminatingRuleId = '{safe_name}' | fields @message | limit 25"
+    rows = _poll_log_query(logs_client, log_group, start, end, query)
+    counter = Counter()
+    for r in rows:
+        try:
+            rec = _json.loads(r.get("@message", ""))
+        except Exception:
+            continue
+        hr = rec.get("httpRequest", {})
+        if kind == "args":
+            raw = hr.get("args", "")
+        elif kind == "cookie":
+            raw = "; ".join(h.get("value", "") for h in hr.get("headers", []) if h.get("name", "").lower() == "cookie")
+        elif kind == "header":
+            raw = _json.dumps(hr.get("headers", []))
+        else:
+            raw = ""
+        if raw:
+            red, _ = _redact(kind, raw)
+            if red:
+                counter[red] += 1
+    return [{"content": c, "cnt": n} for c, n in counter.most_common(5)]
+
+
 def _get_log_details(logs_client, log_group: str, start: int, end: int, attention_rules: list[str]) -> dict:
     """Query log details for rules that need attention. Parallel execution."""
     details = {}
@@ -674,6 +724,7 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
         for rule_name in attention_rules[:5]:  # max 5 rules
             futures[executor.submit(_query_top_ips_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "ips")
             futures[executor.submit(_query_top_uris_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "uris")
+            futures[executor.submit(_query_content_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "content")
         for future in concurrent.futures.as_completed(futures, timeout=120):
             rule_name, query_type = futures[future]
             try:
@@ -1060,6 +1111,33 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
             summary += f"- {icon} [{item['rule']}] {item['text']}\n"
         if len(action_items) > 5:
             summary += f"- ... and {len(action_items) - 5} more (see full report)\n"
+
+    # Per-rule log detail (top IPs / URIs / inspected content). The HTML report
+    # does not yet render this (see #7 refactor); surface it in the text the
+    # agent reads so weekly reports judge attack vs FP from real payloads, not
+    # guesses. Content values are already redacted by the detail queries.
+    detail_lines = []
+    from tools.waf_query import inspection_location
+    for rule in rules_table:
+        ld = rule.get("log_detail") or {}
+        ips, uris, content = ld.get("ips") or [], ld.get("uris") or [], ld.get("content") or []
+        if not (ips or uris or content):
+            continue
+        detail_lines.append(f"\n### {rule['name']} (blocked {rule['blocked']}, counted {rule['counted']})")
+        if ips:
+            top_ips = ", ".join(f"{r.get('httpRequest.clientIp', '?')} ({r.get('cnt', '?')})" for r in ips[:5])
+            detail_lines.append(f"  Top IPs: {top_ips}")
+        if uris:
+            top_uris = ", ".join(f"{r.get('httpRequest.uri', '?')} ({r.get('cnt', '?')})" for r in uris[:5])
+            detail_lines.append(f"  Top URIs: {top_uris}")
+        if content:
+            loc = inspection_location(rule["name"])
+            label = loc[0] if loc else "content"
+            detail_lines.append(f"  Inspected {label} (raw, redacted — show to user, do NOT verdict):")
+            for r in content[:5]:
+                detail_lines.append(f"    [{r.get('cnt', '?')} hits] {str(r.get('content', ''))[:200]}")
+    if detail_lines:
+        summary += "\n\n**Per-Rule Detail (attention rules):**" + "\n".join(detail_lines) + "\n"
 
     if table_msg:
         summary += f"\n📋 {table_msg}\n"
