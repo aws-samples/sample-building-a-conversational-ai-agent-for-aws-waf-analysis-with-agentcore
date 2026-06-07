@@ -702,7 +702,11 @@ def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, ru
         return []
     kind = loc[1]
     safe_name = rule_name.replace("'", "\\'")
-    query = f"filter terminatingRuleId = '{safe_name}' | fields @message | limit 25"
+    # Cover BLOCK (terminatingRuleId) AND COUNT (non-terminating match, where the
+    # entry is {"ruleId":"X","action":"COUNT"...}), matching the Athena path.
+    query = (f"filter terminatingRuleId = '{safe_name}'"
+             f" or @message like '\"ruleId\":\"{safe_name}\",\"action\":\"COUNT\"'"
+             f" | fields @message | limit 25")
     rows = _poll_log_query(logs_client, log_group, start, end, query)
     counter = Counter()
     for r in rows:

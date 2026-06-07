@@ -364,7 +364,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     # Note: RuleActionOverride COUNT entries appear in ruleGroupList[].nonTerminatingMatchingRules,
     # not in the top-level nonTerminatingMatchingRules. Check both locations.
     cwl_bottom = (
-        f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 5"
     )
@@ -377,7 +377,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 5"
     )
     cwl_top = (
-        f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 5"
     )
@@ -422,7 +422,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     # analyst can judge attack vs FP from the actual content.
     from tools.waf_query import sample_inspection_content, PRIVACY_MASK_HINT, REDACTION_POSSIBLE_HINT
     cwl_filter = (
-        f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
     )
     athena_where = (
         f"(any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
