@@ -609,6 +609,16 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                 rule_name, qtype = futures[future]
                 try:
                     result = future.result()
+                    if qtype == "content" and result:
+                        # Redact secret values before storing — the Athena query
+                        # returns RAW args/cookie/header. Align with the CWL path
+                        # so the "redacted" label is truthful on both backends.
+                        from tools.waf_query import _redact
+                        _loc = inspection_location(rule_name)
+                        _kind = _loc[1] if _loc else "args"
+                        for _row in result:
+                            _red, _ = _redact(_kind, _row.get("content", ""))
+                            _row["content"] = _red
                     if rule_name not in details:
                         details[rule_name] = {}
                     details[rule_name][qtype] = result
