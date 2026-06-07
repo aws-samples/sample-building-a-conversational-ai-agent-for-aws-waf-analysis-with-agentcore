@@ -216,7 +216,8 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     uri_results = _run_query(uri_cwl, uri_athena, start_epoch, end_epoch)
 
-    # 7. Match detail (SQLi/XSS only) — CWL only (Athena struct access is complex)
+    # 7. Match detail (SQLi/XSS only) — pinpoints WHY the request was blocked.
+    # Supplementary: a failure here must NOT abort the whole investigation.
     match_detail = ""
     if sub_rule and ("SQLi" in sub_rule or "XSS" in sub_rule or "CrossSiteScripting" in sub_rule):
         md_cwl = (
@@ -225,16 +226,24 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
             " | filter ispresent(md) and md != ''"
             " | limit 3"
         )
+        # terminatingrulematchdetails is array<struct<conditiontype, sensitivitylevel,
+        # location, matcheddata:array<string>>> — it CANNOT be CAST to varchar.
+        # Flatten it into a readable string with transform + array_join instead.
         md_athena = (
-            f"SELECT CAST(terminatingrulematchdetails AS VARCHAR) as md"
+            f"SELECT array_join(transform(terminatingrulematchdetails, x ->"
+            f" coalesce(x.conditiontype, '') || ' location=' || coalesce(x.location, '')"
+            f" || ' matched=' || coalesce(array_join(x.matcheddata, ','), '')), ' | ') as md"
             f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
             f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
             f" AND cardinality(terminatingrulematchdetails) > 0"
             f" LIMIT 3"
         )
-        md_results = _run_query(md_cwl, md_athena, start_epoch, end_epoch)
-        if md_results:
-            match_detail = "\n".join(r.get("md", "") for r in md_results[:3])
+        try:
+            md_results = _run_query(md_cwl, md_athena, start_epoch, end_epoch)
+            if md_results:
+                match_detail = "\n".join(r.get("md", "") for r in md_results[:3])
+        except Exception:
+            match_detail = ""  # degrade gracefully — core FP analysis still returns
 
     # 8. Get text transformation config
     text_transforms = _get_text_transformations(rule_id, sub_rule)
