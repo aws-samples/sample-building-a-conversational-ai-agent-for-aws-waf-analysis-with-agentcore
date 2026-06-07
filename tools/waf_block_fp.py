@@ -29,6 +29,8 @@ def _format_match_details(details: list) -> str:
         matched = d.get("matchedData") or []
         parts.append(f"{ct} location={loc} matched={','.join(matched)}")
     return " | ".join(parts)
+
+
 MAX_POLL = 120
 POLL_INTERVAL = 2
 
@@ -260,6 +262,10 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
                 except Exception:
                     continue
             match_detail = "\n".join(p for p in parts if p)
+            # Rows matched the match-detail filter but none parsed — flag it so
+            # the absence is not mistaken for "no match details exist".
+            if rows and not match_detail:
+                match_detail_note = "match details were present in logs but could not be parsed"
         else:
             # Athena: terminatingrulematchdetails is array<struct<...>> — it CANNOT
             # be CAST to varchar. Flatten with transform + array_join instead.
@@ -275,6 +281,8 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
             rows = _run_query(md_athena, md_athena, start_epoch, end_epoch)
             if rows:
                 match_detail = "\n".join(r.get("md", "") for r in rows[:3] if r.get("md"))
+                if not match_detail:
+                    match_detail_note = "match details were present but came back empty"
     except Exception as e:
         # Degrade gracefully — core FP analysis still returns. Record the reason
         # so the agent can state it explicitly instead of guessing the content.
