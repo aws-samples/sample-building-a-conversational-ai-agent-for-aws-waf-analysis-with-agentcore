@@ -124,8 +124,17 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
 
 
 def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str) -> str:
-    """Targeted investigation of a specific blocked IP."""
+    """Targeted investigation of a specific blocked IP. Orchestrates gather + render."""
+    data = _investigate_gather(ip, start_epoch, end_epoch)
+    if data is None:
+        return (f"No BLOCK records found for IP {ip} in this time window.\n"
+                "The IP may not have been blocked during this period, or BLOCK logs are filtered.")
+    return _render_investigation(ip, start_epoch, end_epoch, data)
 
+
+def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | None:
+    """Run all investigation queries for an IP. Returns a dict of signals, or
+    None if the IP had no BLOCK records in the window."""
     # 1. Find what blocked this IP
     block_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
@@ -141,8 +150,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     block_results = _run_query(block_cwl, block_athena, start_epoch, end_epoch)
 
     if not block_results:
-        return (f"No BLOCK records found for IP {ip} in this time window.\n"
-                "The IP may not have been blocked during this period, or BLOCK logs are filtered.")
+        return None
 
     # 2. If managed rule group, find sub-rule
     primary_rule = block_results[0]
@@ -235,11 +243,44 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     uri_results = _run_query(uri_cwl, uri_athena, start_epoch, end_epoch)
 
-    # 7. Match detail — pinpoints WHY the request was blocked. Populated for any
-    # SQLi/XSS terminating statement, whether a MANAGED_RULE_GROUP sub-rule or a
-    # custom REGULAR rule, so there is NO rule-name gate: the cardinality / JSON
-    # filter naturally scopes this to blocks that actually carry match details.
-    # Supplementary — a failure here must NOT abort the core FP analysis.
+    # 7. Match detail (see _gather_match_detail for the why/how)
+    match_detail, match_detail_note = _gather_match_detail(ip, start_epoch, end_epoch)
+
+    # 8. Text transformation config
+    text_transforms = _get_text_transformations(rule_id, sub_rule)
+
+    # 8.5 Inspected-location content. WAF records matchedData only for SQLi/XSS;
+    # for any other rule the name encodes which component was inspected. Surface
+    # that component (query string / URI / cookie) for this IP's blocks so the
+    # analyst sees the actual content even when match detail is absent.
+    from tools.waf_query import sample_inspection_content
+    loc_rule = sub_rule or rule_id
+    insp_label, insp_samples, insp_masked = (None, None, False)
+    safe_rule_id = rule_id.replace("'", "''")
+    insp_cwl_filter = f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
+    insp_athena_where = f"httprequest.clientip = '{ip}' AND action = 'BLOCK' AND terminatingruleid = '{safe_rule_id}'"
+    try:
+        insp_label, insp_samples, insp_masked = sample_inspection_content(
+            loc_rule, insp_cwl_filter, insp_athena_where, start_epoch, end_epoch, limit=5)
+    except Exception:
+        insp_label, insp_samples, insp_masked = (None, None, False)
+
+    return {
+        "rule_id": rule_id, "rule_type": rule_type, "sub_rule": sub_rule,
+        "allow_count": allow_count, "block_count": block_count, "total": total,
+        "peak_rpm": peak_rpm, "avg_rpm": avg_rpm, "rules_triggered": rules_triggered,
+        "uri_results": uri_results,
+        "match_detail": match_detail, "match_detail_note": match_detail_note,
+        "text_transforms": text_transforms,
+        "insp_label": insp_label, "insp_samples": insp_samples, "insp_masked": insp_masked,
+    }
+
+
+def _gather_match_detail(ip: str, start_epoch: int, end_epoch: int) -> tuple[str, str]:
+    """Pinpoint WHY the request was blocked (SQLi/XSS matchedData). Populated for
+    any SQLi/XSS terminating statement (managed sub-rule OR custom REGULAR), so
+    there is NO rule-name gate — the cardinality/JSON filter scopes it. A failure
+    here must NOT abort the core FP analysis. Returns (match_detail, note)."""
     match_detail = ""
     match_detail_note = ""  # observability: set only when retrieval actually failed
     try:
@@ -288,27 +329,20 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         # so the agent can state it explicitly instead of guessing the content.
         match_detail = ""
         match_detail_note = f"could not retrieve match details (tool error: {type(e).__name__})"
+    return match_detail, match_detail_note
 
-    # 8. Get text transformation config
-    text_transforms = _get_text_transformations(rule_id, sub_rule)
 
-    # 8.5 Inspected-location content. WAF records matchedData only for SQLi/XSS;
-    # for any other rule the name encodes which component was inspected. Surface
-    # that component (query string / URI / cookie) for this IP's blocks so the
-    # analyst sees the actual content even when match detail is absent.
-    from tools.waf_query import sample_inspection_content
-    loc_rule = sub_rule or rule_id
-    insp_label, insp_samples, insp_masked = (None, None, False)
-    safe_rule_id = rule_id.replace("'", "''")
-    insp_cwl_filter = f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
-    insp_athena_where = f"httprequest.clientip = '{ip}' AND action = 'BLOCK' AND terminatingruleid = '{safe_rule_id}'"
-    try:
-        insp_label, insp_samples, insp_masked = sample_inspection_content(
-            loc_rule, insp_cwl_filter, insp_athena_where, start_epoch, end_epoch, limit=5)
-    except Exception:
-        insp_label, insp_samples, insp_masked = (None, None, False)
+def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) -> str:
+    """Render the investigation report from gathered signals (dict from
+    _investigate_gather). Pure formatting — no queries."""
+    rule_id, rule_type, sub_rule = d["rule_id"], d["rule_type"], d["sub_rule"]
+    allow_count, block_count, total = d["allow_count"], d["block_count"], d["total"]
+    peak_rpm, avg_rpm, rules_triggered = d["peak_rpm"], d["avg_rpm"], d["rules_triggered"]
+    uri_results = d["uri_results"]
+    match_detail, match_detail_note = d["match_detail"], d["match_detail_note"]
+    text_transforms = d["text_transforms"]
+    insp_label, insp_samples, insp_masked = d["insp_label"], d["insp_samples"], d["insp_masked"]
 
-    # Build output
     display_rule = f"{sub_rule} (inside {rule_id})" if sub_rule else rule_id
     allow_ratio = f"{allow_count}:{block_count}" if block_count > 0 else f"{allow_count}:0"
 
@@ -440,7 +474,6 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     lines.append("")
     lines.append("If user confirms FP → use search_waf_knowledge to help design scope-down exclusion.")
     lines.append("If user confirms NOT FP → call record_finding with 'correct block' conclusion.")
-
     return "\n".join(lines)
 
 
