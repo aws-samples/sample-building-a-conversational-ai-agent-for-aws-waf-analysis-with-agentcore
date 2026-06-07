@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.4 (2026-06-07)
+
+Review follow-ups to 0.10.3 — redaction precision and the patrol content gap.
+
+### Redaction precision (keep attacks visible, fix over-masking)
+
+- Sensitive-name matching now tokenizes the name (camelCase + non-alphanumeric split) and matches whole tokens, instead of a substring regex. Fixes false positives (`author`→auth, `design`/`signal`/`assignee`→sig, `user_agent`) while still catching `accessToken`, `x-api-key`, `session_id`
+- Query-string values: password-family params are always masked; other sensitive-named params are masked only when the value looks like an opaque credential. Attack payloads (e.g. `token=<script>alert(1)</script>`) now stay visible — an attacker can no longer hide an attack by naming the param `token`. Real JWTs / API keys / `Bearer …` tokens are still masked
+- `redact_row_fields` gains a value-level fallback: masks a cell whose value contains an embedded credential assignment (`sessionid=…`, `Bearer …`) even when the column name is innocuous
+
+### Patrol: per-rule detail + inspected content
+
+- `patrol_scan` fetched per-rule top IPs/URIs but never rendered them (dead data) and never fetched the request payload. It now surfaces top IPs, top URIs, and the inspected content (redacted) for attention rules in the returned summary, so weekly reports judge attack vs. false positive from real payloads. Both CloudWatch Logs and Athena backends
+- `inspection_location` now returns `None` for `_BODY` rules (body is never logged) and defaults injection/web-exploit rule-group names (SQLi/XSS/RFI/LFI/Log4J/…) to the query string, so group-level findings still show payloads
+
 ## 0.10.3 (2026-06-07)
 
 Investigation depth + privacy, found while demo-testing false-positive and COUNT analysis.
