@@ -532,6 +532,21 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"
     total_reqs = uri_data[0].get("total", "?") if uri_data else "?"
 
+    # 2b. Query strings on ALLOW traffic — attack-like payloads that were NOT
+    # blocked are a direct bypass signal. Sensitive params redacted below.
+    qs_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
+        " and ispresent(httpRequest.args) and httpRequest.args != ''"
+        " | stats count(*) as hits by httpRequest.args | sort hits desc | limit 8"
+    )
+    qs_athena = (
+        f"SELECT httprequest.args as args, count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW' AND httprequest.args <> ''"
+        f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
+    )
+    qs_data = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8)
+
     # 3. Action breakdown
     action_cwl = (
         f"filter httpRequest.clientIp = '{ip}'"
@@ -696,6 +711,21 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         lines.append("  (no labels found — Bot Control may not be deployed or IP has no label matches)")
 
     # Directional judgment
+    lines.append("")
+    lines.append("### Query Strings on ALLOW Traffic (bypass signal if attack-like)")
+    if qs_data:
+        from tools.waf_query import _redact, PRIVACY_MASK_HINT
+        _qs_masked = False
+        for r in qs_data[:8]:
+            red, m = _redact("args", r.get("args", ""))
+            _qs_masked = _qs_masked or m
+            if red:
+                lines.append(f"  [{r.get('hits', '?')} hits] {red[:200]}")
+        if _qs_masked:
+            lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
+    else:
+        lines.append("  (no query strings on ALLOW traffic)")
+
     lines.append("")
     lines.append("---")
     lines.append("## Directional Judgment")
