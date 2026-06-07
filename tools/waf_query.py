@@ -6,6 +6,7 @@ import re
 import json
 import time
 import threading
+from collections import Counter
 from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope
 
@@ -266,13 +267,17 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
                 raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
         elif kind == "cookie":
             if backend == "cwl":
-                cwl = f"{cwl_filter} | fields @message | limit {limit}"
-                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=limit) or []
+                # Aggregate over a sample of messages so hits are real frequencies
+                # (consistent with the args/uri stats and the Athena GROUP BY).
+                cwl = f"{cwl_filter} | fields @message | limit 25"
+                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=25) or []
+                counter = Counter()
                 for r in rows:
                     hdrs = _headers_from_message(r.get("@message", ""))
                     val = "; ".join(h.get("value", "") for h in hdrs if h.get("name", "").lower() == "cookie")
                     if val:
-                        raw_samples.append((val, 1))
+                        counter[val] += 1
+                raw_samples = counter.most_common(limit)
             else:
                 expr = ("array_join(transform(filter(httprequest.headers,"
                         " h -> lower(h.name) = 'cookie'), h -> h.value), '; ')")
@@ -285,12 +290,14 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
                 raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
         elif kind == "header":
             if backend == "cwl":
-                cwl = f"{cwl_filter} | fields @message | limit {limit}"
-                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=limit) or []
+                cwl = f"{cwl_filter} | fields @message | limit 25"
+                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=25) or []
+                counter = Counter()
                 for r in rows:
                     hdrs = _headers_from_message(r.get("@message", ""))
                     if hdrs:
-                        raw_samples.append((json.dumps(hdrs), 1))
+                        counter[json.dumps(hdrs)] += 1
+                raw_samples = counter.most_common(limit)
             else:
                 expr = "cast(httprequest.headers as json)"
                 athena = (
