@@ -398,7 +398,8 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         elif insp_samples is None:
             lines.append(f"  ⚠️  Could not retrieve {insp_label} content on this log backend — state this; do not guess.")
         else:
-            lines.append(f"  (no {insp_label} content found for these blocks)")
+            from tools.waf_query import REDACTION_POSSIBLE_HINT
+            lines.append(f"  HINT: {REDACTION_POSSIBLE_HINT}")
 
     # Directional judgment
     lines.append("")

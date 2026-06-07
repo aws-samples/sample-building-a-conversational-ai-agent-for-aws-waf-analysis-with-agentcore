@@ -18,6 +18,7 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 - **Bypass detection** — find crawlers, bots, and DDoS traffic that evade WAF rules
 - **Reports** — security patrol, weekly summaries, deep rule reviews (all as downloadable HTML)
 - **Best practice guidance** — WAF configuration advice backed by AWS documentation
+- **Privacy-aware** — masks secret values (cookies, auth/session tokens, API keys) when showing inspected request content; it will not display or judge attacks inside those secrets. See [Data Privacy](docs/data-privacy.md).
 
 See [docs/capabilities.md](docs/capabilities.md) for full details and example questions.
 

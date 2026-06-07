@@ -227,6 +227,18 @@ PRIVACY_MASK_HINT = (
     "This is a deliberate safeguard, not a limitation."
 )
 
+# Hint when a location yielded no content. Absence is ambiguous: the field may
+# genuinely be empty, OR the user configured AWS WAF logging RedactedFields to
+# strip it (shows as REDACTED / drops from the log). The agent must surface this
+# so a "no data" result is never mistaken for "no attack / no false positive".
+REDACTION_POSSIBLE_HINT = (
+    "No content was found at this location. This may be because the field was "
+    "empty, OR because you configured AWS WAF logging RedactedFields to redact "
+    "it (e.g. the Cookie/Authorization header or query string). Tell the user we "
+    "could not inspect this location and that, if it is redacted in their WAF "
+    "logging config, we cannot assess false positives or injection there."
+)
+
 
 _HOURLY_PARTITION_ERROR = (
     "Error: Firehose hourly partition detected. Queries will timeout on production traffic.\n"

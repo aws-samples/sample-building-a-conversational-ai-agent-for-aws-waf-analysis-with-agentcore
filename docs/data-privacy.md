@@ -33,6 +33,17 @@ For environments requiring per-user encryption at rest:
 
 This is not implemented by default — for a 5–20 person internal tool, the operational overhead outweighs the benefit. Consider it if deploying for larger teams or regulated environments.
 
+## Sensitive Request Content
+
+When investigating a block, false positive, or COUNT rule, the agent shows the request component the rule inspected (query string, URI, cookie, or headers) so you can judge attack vs. false positive from the real content. It deliberately **does not display secret values**:
+
+- Cookie values, `Authorization` / session tokens, API keys, CSRF tokens and similar are masked as `<redacted len=N>` (the length is kept so size-based rules can still be assessed).
+- The AWS WAF rule still inspects the full value — masking only affects what the agent prints back to you. Any matched attack substring still appears in the rule's match detail.
+
+A direct consequence: **the agent does not independently assess false positives or injection attacks inside a secret value it does not display** (e.g. the contents of a session cookie or an auth header). For those locations it relies on the WAF rule's own match detail.
+
+If you have configured [AWS WAF logging `RedactedFields`](https://docs.aws.amazon.com/waf/latest/developerguide/logging-fields.html) to strip a field (e.g. the Cookie header, a query string, or the URI), that field is absent from the logs. The agent will tell you it could not inspect that location and that it cannot evaluate false positives or injection there — a "no data" result is never reported as "no attack".
+
 ## Data Deletion
 
 - **Automatic**: 30-day TTL on all DynamoDB items

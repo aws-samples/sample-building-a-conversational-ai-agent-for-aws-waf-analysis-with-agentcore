@@ -420,7 +420,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     # record matchedData for most managed rules, but the rule name tells us
     # which request component it inspected — surface that component so the
     # analyst can judge attack vs FP from the actual content.
-    from tools.waf_query import sample_inspection_content, PRIVACY_MASK_HINT
+    from tools.waf_query import sample_inspection_content, PRIVACY_MASK_HINT, REDACTION_POSSIBLE_HINT
     cwl_filter = (
         f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
     )
@@ -444,7 +444,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         elif samples is None:
             lines.append(f"  ⚠️  Could not retrieve {label} content on this log backend — state this; do not guess.")
         else:
-            lines.append(f"  (no {label} content found for these hits)")
+            lines.append(f"  HINT: {REDACTION_POSSIBLE_HINT}")
 
     lines.append("")
     lines.append("---")
