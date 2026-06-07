@@ -241,6 +241,8 @@ aws cloudformation deploy \
 
 > **后续更新文档**：只需运行 `./deploy/sync-kb.sh`，无需重新部署。
 
+> **S3 Vectors 元数据上限**：S3 Vectors 对*可过滤*元数据有 2 KB/向量的上限。`kb.yaml` 已将 `AMAZON_BEDROCK_TEXT` 和 `AMAZON_BEDROCK_METADATA`（chunk 文本 + 来源元数据，会随 chunk size 增长）标记为**非可过滤**以避开该上限。如果你调大 chunk size，请保持它们为非可过滤——否则 ingestion 会失败。
+
 ## 第 6 步：构建并上传前端
 
 ```bash

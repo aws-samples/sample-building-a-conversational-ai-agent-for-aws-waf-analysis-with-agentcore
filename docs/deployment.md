@@ -252,6 +252,8 @@ aws cloudformation deploy \
 
 > **Updating KB documents later**: Just run `./deploy/sync-kb.sh`. No redeployment needed.
 
+> **S3 Vectors metadata limit**: S3 Vectors caps *filterable* metadata at 2 KB per vector. `kb.yaml` marks `AMAZON_BEDROCK_TEXT` and `AMAZON_BEDROCK_METADATA` (chunk text + source metadata, which grow with chunk size) as **non-filterable** to stay under that cap. If you increase the chunk size, keep them non-filterable — otherwise ingestion will fail.
+
 ## Step 6: Build and Upload Frontend
 
 ```bash

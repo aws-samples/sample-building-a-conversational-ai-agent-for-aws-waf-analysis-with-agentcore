@@ -30,7 +30,7 @@ Produces a full security audit: checks for overly broad Allow rules, missing pro
 
 > "My customer says they're being blocked, around 10am today"
 
-The agent locates the blocking rule, computes the IP's Allow Ratio, and provides a confidence-level assessment of whether it's a true false positive. It shows the actual content that matched — the rule's match detail (SQLi/XSS) **and** the inspected request component (query string, URI, or cookie) — so you can see *why* the request was flagged. Secret values (cookies, auth/session tokens) are masked.
+The agent locates the blocking rule, computes the IP's Allow Ratio, and provides a confidence-level assessment of whether it's a true false positive. It shows the actual content that matched — the rule's match detail (SQLi/XSS) **and** the inspected request component (query string, URI, cookie, or headers) — so you can see *why* the request was flagged. Secret values (cookies, auth/session tokens) are masked.
 
 > "Traffic spiked 5x yesterday afternoon, is it DDoS?"
 
