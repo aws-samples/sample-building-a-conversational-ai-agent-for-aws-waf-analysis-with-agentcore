@@ -47,7 +47,9 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     """Investigate whether a blocked request is a false positive, or proactively scan for suspected FPs.
 
     This tool provides evidence for human judgment — do not make definitive FP/TP verdicts
-    without quantifiable signal support.
+    without quantifiable signal support. Surfaces Match Detail (SQLi/XSS matchedData) and the
+    inspected request component (query string / URI / cookie) for the IP's blocks, with secrets
+    redacted — so you can show the user the actual content that matched.
 
     Prerequisite: call get_waf_config first (after selecting the WebACL). This tool
     reads session state populated there; without it it errors out.
@@ -61,7 +63,7 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
         ip: Client IP address (required for investigate).
         start_time: Start time for log query (required).
         duration_minutes: Duration in minutes (default 60, max 360 for CWL, 60 for Athena).
-        rule_name: Optional — filter to a specific rule.
+        rule_name: Optional — only used by step="scan" to filter the audit to one rule; ignored by step="investigate".
     """
     from tools.waf_logs import _parse_start_time
 

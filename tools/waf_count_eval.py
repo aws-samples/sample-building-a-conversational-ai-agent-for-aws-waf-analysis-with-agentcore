@@ -62,7 +62,7 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
     Steps:
     - "init": Inventory all COUNT rules, classify them, find peak hour. Returns full assessment plan.
     - "analyze_rule": Deep-dive a specific rule — finds peak hour and hit count. Does NOT auto-query logs. Requires rule_name.
-    - "check_low_volume_clients": Check low-volume clients for a rule (FP signal). Requires rule_name + start_time.
+    - "check_low_volume_clients": Check low-volume clients for a rule (FP signal). Requires rule_name + start_time. Also surfaces the triggering request content (redacted) so you can judge attack vs FP from the real payload.
 
     Args:
         step: Workflow step to execute.

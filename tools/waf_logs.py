@@ -320,7 +320,8 @@ def run_logs_query(
     host: str = "",
     limit: int = 25,
 ) -> str:
-    """Run a predefined AWS WAF log query against CloudWatch Logs Insights.
+    """Run a predefined AWS WAF log query. Routes automatically to CloudWatch
+    Logs Insights or Athena (S3 logs) based on the WebACL's logging destination.
 
     IMPORTANT: You MUST provide start_time. Ask the user for the time period to investigate.
     Default window is 180 min (3h). Athena backend auto-caps at 60 min.
@@ -371,7 +372,7 @@ def run_logs_query(
         ip: Client IP address (for ip_* queries).
         label: AWS WAF label name (for label_top_ips).
         action: Action value — BLOCK, ALLOW, COUNT (for action_timeline).
-        host: Hostname (for host_uri_pattern, host_method_distribution).
+        host: Hostname (for host_top_ips, host_traffic_profile, host_uri_pattern, host_method_distribution).
         limit: Max results (default 25, max 25).
 
     Returns:
@@ -757,7 +758,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         duration_minutes: Duration in minutes from start_time (default 180, max 360 for CWL, 60 for Athena).
 
     Returns:
-        Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs.
+        Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs, top query strings (sensitive values redacted).
     """
     import ipaddress
     try:

@@ -38,7 +38,8 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
     """Detect potential WAF bypass — find malicious traffic in ALLOW logs.
 
     This tool provides evidence for human judgment. It does NOT make definitive
-    bypass verdicts without quantifiable signal support.
+    bypass verdicts without quantifiable signal support. For ALLOW traffic it also
+    surfaces the top query strings (redacted) as a bypass signal.
 
     Prerequisite: call get_waf_config first (after selecting the WebACL). This tool
     reads session state populated there; without it scan/investigate_ip error out.
