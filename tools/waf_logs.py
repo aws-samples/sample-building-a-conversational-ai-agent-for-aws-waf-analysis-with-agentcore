@@ -892,6 +892,20 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     ja4 = query_logs(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5) or []
     uri_div = query_logs(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1) or []
 
+    # Query strings this IP sent — the content that triggers QUERYARGUMENTS rules
+    # (XSS/SQLi/LFI payloads show up here). Sensitive params are redacted below.
+    qs_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}" and ispresent(httpRequest.args) and httpRequest.args != ""'
+        ' | stats count(*) as hits by httpRequest.args | sort hits desc | limit 8'
+    )
+    qs_athena = (
+        f"SELECT httprequest.args as args, count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}' AND httprequest.args <> ''"
+        f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
+    )
+    query_strings = query_logs(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8) or []
+
     # Format output
     lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]
 
@@ -931,6 +945,20 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         total_ns = u.get("total_non_static", "0")
         lines.append(f"**URI diversity** (non-static): {unique} unique URIs out of {total_ns} requests")
     lines.append("")
+
+    # Query strings (raw request content; QUERYARGUMENTS attack payloads land here)
+    if query_strings:
+        from tools.waf_query import _redact, PRIVACY_MASK_HINT
+        lines.append("**Top query strings** (raw, as logged — show to user, do NOT verdict):")
+        _qs_masked = False
+        for row in query_strings[:8]:
+            red, m = _redact("args", row.get("args", ""))
+            _qs_masked = _qs_masked or m
+            if red:
+                lines.append(f"  [{row.get('hits', '?')} hits] {red[:200]}")
+        if _qs_masked:
+            lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
+        lines.append("")
 
     # Confidence assessment
     lines.append("---")
