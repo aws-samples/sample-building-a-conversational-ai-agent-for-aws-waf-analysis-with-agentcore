@@ -53,13 +53,54 @@ def inspection_location(rule_name: str):
 
 # Header/param names whose VALUES are secrets and must never be shown to the
 # user. We display the name (and length) but mask the value. Matching is on a
-# substring of the (lower-cased) name.
-_SENSITIVE_KEY = re.compile(
-    r"(authorization|auth|cookie|token|session|sess[-_]?id|secret|password|passwd|"
-    r"pwd|api[-_]?key|apikey|x-api|csrf|xsrf|signature|sig|bearer|"
-    r"access[-_]?token|id[-_]?token|refresh[-_]?token|x-amz-security-token|credential)",
-    re.I,
+# Sensitive name tokens, matched against the TOKENS of a field/param/header
+# name (split on camelCase and non-alphanumeric). Tokenizing avoids substring
+# false positives like author->auth, design/signal->sig, assignee->sig.
+_SENSITIVE_TOKENS = {
+    "authorization", "auth", "cookie", "cookies", "token", "tokens",
+    "accesstoken", "idtoken", "refreshtoken", "session", "sessionid", "sid",
+    "secret", "secrets", "apisecret", "apikey", "key", "csrf", "xsrf",
+    "signature", "sig", "bearer", "credential", "credentials", "jwt",
+    "password", "passwd", "pwd", "pass", "proxyauthorization",
+}
+# Concatenated forms (no separator) to catch e.g. apikey/accesstoken/sessionid.
+_SENSITIVE_COMPOUNDS = (
+    "apikey", "accesstoken", "idtoken", "refreshtoken", "sessionid",
+    "csrftoken", "authtoken", "xapikey", "securitytoken", "clientsecret",
 )
+# Names whose value must ALWAYS be masked regardless of its shape — a password
+# is never an attack payload an analyst needs to read.
+_ALWAYS_MASK_TOKENS = {"password", "passwd", "pwd", "pass", "secret", "secrets",
+                       "apisecret", "credential", "credentials"}
+# An opaque credential (JWT, API key, session id): only token charset, length
+# >= 8. An attack payload contains <,>,',",(,),;,%,space etc. and fails this,
+# so it stays visible even when carried in a sensitive-named parameter.
+_OPAQUE_TOKEN = re.compile(r"[A-Za-z0-9._~/=+-]{8,}")
+# Value-level fallback: an embedded credential assignment in any column.
+_VALUE_SENSITIVE = re.compile(
+    r"(?i)((session|sess|auth|token|secret|csrf|xsrf|password|passwd|sid|apikey|"
+    r"api[-_]?key|access[-_]?token|bearer)\w*\s*[=:]\s*\S)|^(bearer|basic)\s+\S")
+
+
+def _name_tokens(name: str) -> set:
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", name or "")
+    return {t for t in re.split(r"[^A-Za-z0-9]+", s.lower()) if t}
+
+
+def _name_is_sensitive(name: str) -> bool:
+    toks = _name_tokens(name)
+    if toks & _SENSITIVE_TOKENS:
+        return True
+    flat = "".join(re.split(r"[^a-z0-9]+", (name or "").lower()))
+    return any(c in flat for c in _SENSITIVE_COMPOUNDS)
+
+
+def _name_always_mask(name: str) -> bool:
+    return bool(_name_tokens(name) & _ALWAYS_MASK_TOKENS)
+
+
+def _looks_like_credential(value: str) -> bool:
+    return bool(_OPAQUE_TOKEN.fullmatch(value or ""))
 
 
 def _mask_value(value: str) -> str:
@@ -68,8 +109,10 @@ def _mask_value(value: str) -> str:
 
 def _redact_pairs(raw: str, sep: str, mask_all: bool):
     """Redact a delimited 'name=value' string (query string or cookie).
-    mask_all=True masks every value (cookies); else only sensitive-named ones.
-    Returns (redacted_str, masked_bool)."""
+    Cookies (mask_all=True): every value masked. Query string: password-family
+    always masked; other sensitive-named params masked only when the value
+    looks like an opaque credential — so attack payloads (q=<script>, even in a
+    param named 'token') stay visible. Returns (redacted_str, masked_bool)."""
     out, masked = [], False
     for pair in raw.split(sep):
         pair = pair.strip()
@@ -77,26 +120,34 @@ def _redact_pairs(raw: str, sep: str, mask_all: bool):
             continue
         if "=" in pair:
             name, _, value = pair.partition("=")
-            if value and (mask_all or _SENSITIVE_KEY.search(name)):
-                out.append(f"{name.strip()}={_mask_value(value)}")
+            nm = name.strip()
+            do_mask = False
+            if value:
+                if mask_all or _name_always_mask(nm):
+                    do_mask = True
+                elif _name_is_sensitive(nm) and _looks_like_credential(value):
+                    do_mask = True
+            if do_mask:
+                out.append(f"{nm}={_mask_value(value)}")
                 masked = True
             else:
-                out.append(f"{name.strip()}={value}")
+                out.append(f"{nm}={value}")
         else:
             out.append(pair)
     return (sep.join(out), masked)
 
 
 def _redact_headers(headers: list):
-    """headers: list of {'name','value'}. Mask values of sensitive headers,
-    keep names. Returns (formatted_str, masked_bool)."""
+    """headers: list of {'name','value'}. Mask values of sensitive-named headers
+    wholesale (e.g. 'Authorization: Bearer ...' contains a space and cannot be
+    opaque-token-checked), keep names. Returns (formatted_str, masked_bool)."""
     out, masked = [], False
     for h in headers or []:
         if not isinstance(h, dict):
             continue
         name = h.get("name", "") or ""
         value = h.get("value", "") or ""
-        if name and _SENSITIVE_KEY.search(name):
+        if name and value and _name_is_sensitive(name):
             out.append(f"{name}: {_mask_value(value)}")
             masked = True
         else:
@@ -132,10 +183,12 @@ def _headers_from_message(message: str) -> list:
 
 
 def redact_row_fields(rows: list) -> bool:
-    """Mask sensitive VALUES in query-result rows in place, keyed by the field
-    NAME (e.g. a 'cookie' / 'authorization' / 'token' column). Used by generic
-    result formatters (run_logs_query) so any template returning a secret field
-    never prints the raw value. Returns True if anything was masked."""
+    """Mask sensitive VALUES in query-result rows in place. Masks a cell when
+    its column NAME is sensitive (cookie/authorization/token/...), OR — as a
+    column-name-agnostic fallback (#3) — when the VALUE itself contains an
+    embedded credential assignment (e.g. 'sessionid=...', 'Bearer ...'), so a
+    future template that selects a secret into an innocuously-named column is
+    still covered. Returns True if anything was masked."""
     masked = False
     for row in rows or []:
         if not isinstance(row, dict):
@@ -143,7 +196,7 @@ def redact_row_fields(rows: list) -> bool:
         for key, val in list(row.items()):
             if not isinstance(val, str) or not val:
                 continue
-            if _SENSITIVE_KEY.search(key):
+            if _name_is_sensitive(key) or _VALUE_SENSITIVE.search(val):
                 row[key] = _mask_value(val)
                 masked = True
     return masked
