@@ -131,6 +131,24 @@ def _headers_from_message(message: str) -> list:
         return []
 
 
+def redact_row_fields(rows: list) -> bool:
+    """Mask sensitive VALUES in query-result rows in place, keyed by the field
+    NAME (e.g. a 'cookie' / 'authorization' / 'token' column). Used by generic
+    result formatters (run_logs_query) so any template returning a secret field
+    never prints the raw value. Returns True if anything was masked."""
+    masked = False
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        for key, val in list(row.items()):
+            if not isinstance(val, str) or not val:
+                continue
+            if _SENSITIVE_KEY.search(key):
+                row[key] = _mask_value(val)
+                masked = True
+    return masked
+
+
 def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str,
                               start_epoch: int, end_epoch: int, limit: int = 5):
     """Sample the request component a rule inspects, for the rows the caller is
