@@ -26,6 +26,83 @@ def reset_table_cache():
     _reset_state()
 
 
+def inspection_location(rule_name: str):
+    """Map an AWS Managed Rule name to the request component it inspects.
+
+    AWS WAF only records matchedData (terminatingRuleMatchDetails) for SQLi/XSS
+    statements. For every other managed rule the rule name encodes the inspected
+    component (e.g. ..._QUERYARGUMENTS, ..._COOKIE), so to show WHY a request
+    matched we must pull that component out of the log ourselves.
+
+    Returns (label, athena_expr, cwl_field) or None when the component is not
+    determinable or not present in WAF logs (BODY is never logged; a bare
+    _HEADER rule does not say which header). cwl_field is None when CWL cannot
+    extract it with a simple field reference (caller falls back to raw parsing
+    or reports it as unavailable on the CWL backend).
+    """
+    rn = (rule_name or "").upper()
+    if "QUERYARGUMENT" in rn or rn.endswith("QUERYSTRING") or rn.endswith("_QS"):
+        return ("query string", "httprequest.args", "httpRequest.args")
+    if rn.endswith("URIPATH") or rn.endswith("_URI") or rn.endswith("_PATH") or rn.endswith("URIFRAGMENT"):
+        return ("URI path", "httprequest.uri", "httpRequest.uri")
+    if rn.endswith("COOKIE") or "COOKIE" in rn:
+        # Cookie lives in the headers array; flatten the cookie header value(s).
+        athena_expr = ("array_join(transform(filter(httprequest.headers,"
+                       " h -> lower(h.name) = 'cookie'), h -> h.value), '; ')")
+        return ("Cookie header", athena_expr, None)
+    return None  # BODY (not logged), generic HEADER (ambiguous), or unknown
+
+
+def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str,
+                              start_epoch: int, end_epoch: int, limit: int = 5):
+    """Sample the request component a rule inspects, for the rows the caller is
+    analysing. Returns (label, samples) where samples is a list of
+    {"content": str, "hits": int}; or (label, None) if the component exists but
+    is not retrievable on this backend; or (None, None) if not determinable.
+
+    cwl_filter / athena_where are the caller's row-selection predicates (e.g.
+    "this rule's COUNT hits" or "this IP's BLOCK on this rule"). athena_where is
+    inserted into the WHERE clause; cwl_filter is a full CWL `filter ...` line.
+    """
+    loc = inspection_location(rule_name)
+    if not loc:
+        return (None, None)
+    label, athena_expr, cwl_field = loc
+
+    backend = get_log_type()
+    if backend == "cwl":
+        if not cwl_field:
+            return (label, None)  # e.g. cookie on CWL — not simply extractable
+        cwl = (
+            f"{cwl_filter}"
+            f" | stats count(*) as hits by {cwl_field}"
+            f" | sort hits desc | limit {limit}"
+        )
+        athena = ""  # unused on cwl backend
+        field_key = cwl_field
+    else:
+        athena = (
+            f"SELECT {athena_expr} as content, count(*) as hits"
+            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+            f" AND {athena_where}"
+            f" GROUP BY {athena_expr} ORDER BY hits DESC LIMIT {limit}"
+        )
+        cwl = ""  # unused on athena backend
+        field_key = "content"
+
+    try:
+        rows = query_logs(cwl, athena, start_epoch, end_epoch, limit=limit)
+    except Exception:
+        return (label, None)
+    if rows is None:
+        return (label, None)
+    samples = []
+    for r in rows:
+        content = r.get(field_key, "")
+        if content:
+            samples.append({"content": content, "hits": int(r.get("hits", 0) or 0)})
+    return (label, samples)
+
 
 _HOURLY_PARTITION_ERROR = (
     "Error: Firehose hourly partition detected. Queries will timeout on production traffic.\n"

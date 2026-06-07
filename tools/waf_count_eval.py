@@ -416,6 +416,34 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     else:
         lines.append("  (no results)")
 
+    # Triggering content at the rule's inspection location. AWS WAF does not
+    # record matchedData for most managed rules, but the rule name tells us
+    # which request component it inspected — surface that component so the
+    # analyst can judge attack vs FP from the actual content.
+    from tools.waf_query import sample_inspection_content
+    cwl_filter = (
+        f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
+    )
+    athena_where = (
+        f"(any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+        f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
+    )
+    try:
+        label, samples = sample_inspection_content(rule_name, cwl_filter, athena_where, start_epoch, end_epoch, limit=8)
+    except Exception:
+        label, samples = (None, None)
+    if label:
+        lines.append("")
+        lines.append(f"### Triggering Content — inspected location: {label}")
+        lines.append("(raw, URL-encoded as logged — show to user, do NOT interpret/verdict)")
+        if samples:
+            for s in samples:
+                lines.append(f"  [{s['hits']:>4} hits] {s['content'][:160]}")
+        elif samples is None:
+            lines.append(f"  ⚠️  Could not retrieve {label} content on this log backend — state this; do not guess.")
+        else:
+            lines.append(f"  (no {label} content found for these hits)")
+
     lines.append("")
     lines.append("---")
     lines.append("## Your Next Action")

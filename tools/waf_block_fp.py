@@ -292,6 +292,22 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     # 8. Get text transformation config
     text_transforms = _get_text_transformations(rule_id, sub_rule)
 
+    # 8.5 Inspected-location content. WAF records matchedData only for SQLi/XSS;
+    # for any other rule the name encodes which component was inspected. Surface
+    # that component (query string / URI / cookie) for this IP's blocks so the
+    # analyst sees the actual content even when match detail is absent.
+    from tools.waf_query import sample_inspection_content
+    loc_rule = sub_rule or rule_id
+    insp_label, insp_samples = (None, None)
+    safe_rule_id = rule_id.replace("'", "''")
+    insp_cwl_filter = f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
+    insp_athena_where = f"httprequest.clientip = '{ip}' AND action = 'BLOCK' AND terminatingruleid = '{safe_rule_id}'"
+    try:
+        insp_label, insp_samples = sample_inspection_content(
+            loc_rule, insp_cwl_filter, insp_athena_where, start_epoch, end_epoch, limit=5)
+    except Exception:
+        insp_label, insp_samples = (None, None)
+
     # Build output
     display_rule = f"{sub_rule} (inside {rule_id})" if sub_rule else rule_id
     allow_ratio = f"{allow_count}:{block_count}" if block_count > 0 else f"{allow_count}:0"
@@ -366,6 +382,20 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         lines.append("### Match Detail")
         lines.append(f"⚠️  {match_detail_note}. Do NOT speculate about the matched content — "
                      "state that the match detail could not be retrieved.")
+
+    # Inspected-location content (query string / URI / cookie) — the WHY for
+    # non-SQLi/XSS rules, and useful corroboration for SQLi/XSS query-arg rules.
+    if insp_label:
+        lines.append("")
+        lines.append(f"### Inspected Content — location: {insp_label}")
+        lines.append("(raw, as logged — show to user, do NOT interpret/verdict)")
+        if insp_samples:
+            for s in insp_samples:
+                lines.append(f"  [{s['hits']:>3} hits] {s['content'][:160]}")
+        elif insp_samples is None:
+            lines.append(f"  ⚠️  Could not retrieve {insp_label} content on this log backend — state this; do not guess.")
+        else:
+            lines.append(f"  (no {insp_label} content found for these blocks)")
 
     # Directional judgment
     lines.append("")
