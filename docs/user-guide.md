@@ -32,7 +32,7 @@ Find traffic that passes all AWS WAF rules (default ALLOW) but looks suspicious.
 - "Find high-volume IPs that weren't blocked in the last 6 hours"
 - "Are there any bots getting through Bot Control?"
 
-**What the agent does:** Queries metrics to find peak ALLOW windows → runs log queries for high-frequency/high-diversity IPs → analyzes top suspicious IPs (NAT detection, frequency, cross-validation).
+**What the agent does:** Queries metrics to find peak ALLOW windows → runs log queries for high-frequency/high-diversity IPs → analyzes top suspicious IPs (NAT detection, frequency, cross-validation) → shows query strings sent on ALLOW traffic (redacted) as a bypass signal.
 
 ### 2. Attack Source Investigation
 
@@ -54,7 +54,7 @@ Determine if a COUNT rule is catching real attacks or causing false positives.
 - "Should I switch CrossSiteScripting_BODY from COUNT to BLOCK?"
 - "Analyze who is triggering the GenericRFI rule"
 
-**What the agent does:** Gets top IPs triggering the rule → cross-validates each IP (other rules triggered? URI patterns? time distribution?) → concludes attack/FP/mixed.
+**What the agent does:** Gets top IPs triggering the rule → cross-validates each IP (other rules triggered? URI patterns? time distribution?) → shows the actual triggering request content (redacted) → concludes attack/FP/mixed.
 
 ### 4. IP Deep Analysis
 
@@ -65,7 +65,7 @@ Full behavioral profile of a specific IP address.
 - "Is 47.128.14.206 a bot or a real user?"
 - "Check if 13.219.181.182 is behind a NAT"
 
-**What the agent does:** Checks UA/JA4 diversity (NAT detection) → request frequency → URI breakdown → AWS WAF labels → cross-query with all rules.
+**What the agent does:** Checks UA/JA4 diversity (NAT detection) → request frequency → URI breakdown → AWS WAF labels → cross-query with all rules → top query strings (redacted).
 
 ### 5. AWS WAF Rule Review
 
@@ -87,7 +87,7 @@ Comprehensive security event summary across all WebACLs — designed for operati
 - "Weekly security summary"
 - "What happened this week?"
 
-**What the agent does:** Scans all WebACLs → collects 7 days of metrics per rule → detects anomalies (concentration, spikes) → queries logs for top IPs/URIs on flagged rules → generates HTML report with 3 charts (Traffic, Threats by Category, Challenge Effectiveness).
+**What the agent does:** Scans all WebACLs → collects 7 days of metrics per rule → detects anomalies (concentration, spikes) → queries logs for top IPs/URIs and the triggering content (redacted) on flagged rules → generates HTML report with 3 charts (Traffic, Threats by Category, Challenge Effectiveness).
 
 ### 7. Weekly Summary Generation
 
