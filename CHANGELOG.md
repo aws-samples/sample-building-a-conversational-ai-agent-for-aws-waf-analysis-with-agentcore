@@ -9,11 +9,13 @@ Investigation depth + privacy, found while demo-testing false-positive and COUNT
 AWS WAF only records matchedData for SQLi/XSS statements. For every other managed rule the rule name encodes which request component it inspected, but the tools never pulled that component from the log — so the agent could not see WHY a request matched and resorted to guessing (e.g. it leaned toward "false positive" on COUNT hits that were actually XSS payloads in the query string).
 
 - `investigate_block_fp` and `evaluate_count_rules` now surface the inspected component for the analysed rows, derived from the rule-name suffix: query string (`_QUERYARGUMENTS`/`_QUERYSTRING`), URI path (`_URIPATH`/`_URI`/`_PATH`), cookie (`_COOKIE`), and HTTP headers (`_HEADER`)
+- `analyze_ip` now shows the IP's top query strings; `detect_bypass` (investigate_ip) shows query strings on ALLOW traffic — attack-like payloads that were allowed through are a direct bypass signal
 - Works on both backends (CloudWatch Logs and Athena/S3); verified against real logs
 
 ### Privacy: Sensitive-Value Masking
 
 - Secret values are masked as `<redacted len=N>` before display: all cookie values, sensitive headers (Authorization/Cookie/token/API-key/CSRF/…), and sensitive-named query params (token/secret/password/…). Attack payloads in non-secret params (e.g. `q=<script>…`) stay visible, and the WAF rule still inspected the full value
+- `run_logs_query` masks sensitive columns (e.g. the raw Cookie value in `token_reuse_ips`) centrally in its result formatter, so every query type — current and future — is covered
 - When content is masked, the tool instructs the agent to tell the user the masking is a deliberate privacy safeguard — not the agent being unable to see the data
 - When a location yields no content, the tool flags that it may be empty OR redacted via AWS WAF logging `RedactedFields`, so "no data" is never reported as "no attack"
 - System prompt and `docs/data-privacy.md` updated to state the agent does not display or judge attacks inside secret values
