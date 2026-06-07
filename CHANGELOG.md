@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0 (2026-06-07)
+
+Internal refactor + CloudWatch Logs query precision. No user-facing behavior change.
+
+### CloudWatch Logs COUNT precision (#8)
+
+- `evaluate_count_rules` CWL queries used two independent substring filters (`like '"ruleId":"X"'` AND `like '"action":"COUNT"'`), which over-matched when rule X co-occurred with a different rule's COUNT action. Replaced all three with a single contiguous match `'"ruleId":"X","action":"COUNT"'`, matching the precision the Athena path already had
+- `patrol_scan` CWL content query now also matches COUNT rules (not only terminating ones), aligning the two backends
+
+### Refactor (#7)
+
+- Split the ~330-line `_step_investigate` into `_investigate_gather` (queries → dict), `_gather_match_detail`, and `_render_investigation` (pure formatting). Output is byte-for-byte identical; verified end-to-end
+
 ## 0.10.4 (2026-06-07)
 
 Review follow-ups to 0.10.3 — redaction precision and the patrol content gap.
@@ -13,6 +26,7 @@ Review follow-ups to 0.10.3 — redaction precision and the patrol content gap.
 ### Patrol: per-rule detail + inspected content
 
 - `patrol_scan` fetched per-rule top IPs/URIs but never rendered them (dead data) and never fetched the request payload. It now surfaces top IPs, top URIs, and the inspected content (redacted) for attention rules in the returned summary, so weekly reports judge attack vs. false positive from real payloads. Both CloudWatch Logs and Athena backends
+- Content is redacted on both backends (the Athena content path originally returned raw args/cookie/headers under a "redacted" label — fixed so the label is truthful)
 - `inspection_location` now returns `None` for `_BODY` rules (body is never logged) and defaults injection/web-exploit rule-group names (SQLi/XSS/RFI/LFI/Log4J/…) to the query string, so group-level findings still show payloads
 
 ## 0.10.3 (2026-06-07)
