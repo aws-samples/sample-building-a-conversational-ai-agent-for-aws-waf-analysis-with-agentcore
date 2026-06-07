@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """Block false positive investigation tool — targeted verification and proactive scan."""
 
+import json
 import threading
 from strands import tool
 from tools.aws_session import get_client
@@ -12,6 +13,22 @@ from tools.session_state import (
 from tools.waf_query import query_logs, get_log_type
 
 _cwl_semaphore = threading.Semaphore(8)
+
+
+def _format_match_details(details: list) -> str:
+    """Flatten WAF terminatingRuleMatchDetails into a readable one-line summary.
+    Produces the same shape on both backends, e.g.:
+      SQL_INJECTION location=ALL_QUERY_ARGS matched=credit,UNION,SELECT
+    """
+    parts = []
+    for d in details or []:
+        if not isinstance(d, dict):
+            continue
+        ct = d.get("conditionType", "") or ""
+        loc = d.get("location", "") or ""
+        matched = d.get("matchedData") or []
+        parts.append(f"{ct} location={loc} matched={','.join(matched)}")
+    return " | ".join(parts)
 MAX_POLL = 120
 POLL_INTERVAL = 2
 
@@ -216,34 +233,53 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     )
     uri_results = _run_query(uri_cwl, uri_athena, start_epoch, end_epoch)
 
-    # 7. Match detail (SQLi/XSS only) — pinpoints WHY the request was blocked.
-    # Supplementary: a failure here must NOT abort the whole investigation.
+    # 7. Match detail — pinpoints WHY the request was blocked. Populated for any
+    # SQLi/XSS terminating statement, whether a MANAGED_RULE_GROUP sub-rule or a
+    # custom REGULAR rule, so there is NO rule-name gate: the cardinality / JSON
+    # filter naturally scopes this to blocks that actually carry match details.
+    # Supplementary — a failure here must NOT abort the core FP analysis.
     match_detail = ""
-    if sub_rule and ("SQLi" in sub_rule or "XSS" in sub_rule or "CrossSiteScripting" in sub_rule):
-        md_cwl = (
-            f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
-            " | parse @message /\"terminatingRuleMatchDetails\":\\[(?<md>.*?)\\]/"
-            " | filter ispresent(md) and md != ''"
-            " | limit 3"
-        )
-        # terminatingrulematchdetails is array<struct<conditiontype, sensitivitylevel,
-        # location, matcheddata:array<string>>> — it CANNOT be CAST to varchar.
-        # Flatten it into a readable string with transform + array_join instead.
-        md_athena = (
-            f"SELECT array_join(transform(terminatingrulematchdetails, x ->"
-            f" coalesce(x.conditiontype, '') || ' location=' || coalesce(x.location, '')"
-            f" || ' matched=' || coalesce(array_join(x.matcheddata, ','), '')), ' | ') as md"
-            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-            f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
-            f" AND cardinality(terminatingrulematchdetails) > 0"
-            f" LIMIT 3"
-        )
-        try:
-            md_results = _run_query(md_cwl, md_athena, start_epoch, end_epoch)
-            if md_results:
-                match_detail = "\n".join(r.get("md", "") for r in md_results[:3])
-        except Exception:
-            match_detail = ""  # degrade gracefully — core FP analysis still returns
+    match_detail_note = ""  # observability: set only when retrieval actually failed
+    try:
+        if get_log_type() == "cwl":
+            # CWL: fetch raw messages and parse JSON in Python. (Regex parsing of
+            # the nested array truncates at the first ']', so we don't use it.)
+            md_cwl = (
+                f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
+                " and @message like '\"terminatingRuleMatchDetails\":[{'"
+                " | fields @message | limit 3"
+            )
+            rows = _run_query(md_cwl, md_cwl, start_epoch, end_epoch)
+            parts = []
+            for r in rows[:3]:
+                try:
+                    rec = json.loads(r.get("@message", ""))
+                    d = rec.get("terminatingRuleMatchDetails") or []
+                    if d:
+                        parts.append(_format_match_details(d))
+                except Exception:
+                    continue
+            match_detail = "\n".join(p for p in parts if p)
+        else:
+            # Athena: terminatingrulematchdetails is array<struct<...>> — it CANNOT
+            # be CAST to varchar. Flatten with transform + array_join instead.
+            md_athena = (
+                f"SELECT array_join(transform(terminatingrulematchdetails, x ->"
+                f" coalesce(x.conditiontype, '') || ' location=' || coalesce(x.location, '')"
+                f" || ' matched=' || coalesce(array_join(x.matcheddata, ','), '')), ' | ') as md"
+                f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
+                f" AND cardinality(terminatingrulematchdetails) > 0"
+                f" LIMIT 3"
+            )
+            rows = _run_query(md_athena, md_athena, start_epoch, end_epoch)
+            if rows:
+                match_detail = "\n".join(r.get("md", "") for r in rows[:3] if r.get("md"))
+    except Exception as e:
+        # Degrade gracefully — core FP analysis still returns. Record the reason
+        # so the agent can state it explicitly instead of guessing the content.
+        match_detail = ""
+        match_detail_note = f"could not retrieve match details (tool error: {type(e).__name__})"
 
     # 8. Get text transformation config
     text_transforms = _get_text_transformations(rule_id, sub_rule)
@@ -315,6 +351,13 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
             lines.append(f"⚠️  Text Transformations applied: {text_transforms}")
             lines.append("→ Fragments below are POST-transformation. Original request content may differ.")
         lines.append(f"```\n{match_detail}\n```")
+    elif match_detail_note:
+        # Retrieval failed — tell the agent explicitly so it does NOT guess the
+        # matched content. (Aligns with the system-prompt honesty guidance.)
+        lines.append("")
+        lines.append("### Match Detail")
+        lines.append(f"⚠️  {match_detail_note}. Do NOT speculate about the matched content — "
+                     "state that the match detail could not be retrieved.")
 
     # Directional judgment
     lines.append("")
