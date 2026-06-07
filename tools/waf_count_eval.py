@@ -435,7 +435,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     if label:
         lines.append("")
         lines.append(f"### Triggering Content — inspected location: {label}")
-        lines.append("(raw, URL-encoded as logged — show to user, do NOT interpret/verdict)")
+        lines.append("(raw, as logged; query strings/URIs are URL-encoded — show to user, do NOT interpret/verdict)")
         if samples:
             for s in samples:
                 lines.append(f"  [{s['hits']:>4} hits] {s['content'][:200]}")

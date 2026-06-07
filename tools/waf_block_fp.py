@@ -388,7 +388,7 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     if insp_label:
         lines.append("")
         lines.append(f"### Inspected Content — location: {insp_label}")
-        lines.append("(raw, as logged — show to user, do NOT interpret/verdict)")
+        lines.append("(raw, as logged; query strings/URIs are URL-encoded — show to user, do NOT interpret/verdict)")
         if insp_samples:
             for s in insp_samples:
                 lines.append(f"  [{s['hits']:>3} hits] {s['content'][:200]}")
