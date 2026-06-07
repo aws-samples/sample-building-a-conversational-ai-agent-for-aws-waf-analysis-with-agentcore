@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.2 (2026-06-07)
+
+Bug fixes found during demo testing of the false-positive investigation flow.
+
+### Block FP Investigation: Match-Detail Extraction
+
+- **Athena TYPE_MISMATCH fix**: `investigate_block_fp(step="investigate")` crashed on the Athena backend with `Cannot cast array(row(...)) to varchar` — the match-detail query did `CAST(terminatingrulematchdetails AS VARCHAR)` on an `array<struct<...>>`. The whole investigation aborted. Now flattened with `transform` + `array_join` into a readable line (e.g. `SQL_INJECTION location=ALL_QUERY_ARGS matched=credit,UNION,SELECT`)
+- **Custom rules now covered**: match-detail extraction was gated on the managed-rule-group sub-rule name, so blocks by custom/REGULAR SQLi/XSS rules never showed why they matched. Removed the name gate — extraction runs for every block and is scoped by the match-details cardinality
+- **CWL truncation fix**: the CWL path used a regex that truncated the nested match-details array at the first `]`. Replaced with a raw-message fetch + JSON parse
+- **Consistent output**: CWL and Athena now emit the identical one-line match-detail format
+- **Graceful degradation + observability**: a match-detail query failure no longer aborts the investigation; when details cannot be retrieved or parsed, the output says so explicitly so the agent reports it instead of guessing
+
+### Agent Honesty Guidance
+
+- System prompt now requires reporting tool errors verbatim: do not invent explanations ("query limitation"), do not silently fall back to another method and present it as success, and never fabricate or guess matched content when match details are unavailable
+
 ## 0.10.1 (2026-06-06)
 
 Bug fixes and hardening found during end-to-end demo testing. No new features.

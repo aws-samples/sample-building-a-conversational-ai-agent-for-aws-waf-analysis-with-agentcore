@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "waf-agent"
-version = "0.10.1"
+version = "0.10.2"
 requires-python = ">=3.12"
 dependencies = [
     "strands-agents>=1.25.0",
