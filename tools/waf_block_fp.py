@@ -298,15 +298,15 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     # analyst sees the actual content even when match detail is absent.
     from tools.waf_query import sample_inspection_content
     loc_rule = sub_rule or rule_id
-    insp_label, insp_samples = (None, None)
+    insp_label, insp_samples, insp_masked = (None, None, False)
     safe_rule_id = rule_id.replace("'", "''")
     insp_cwl_filter = f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
     insp_athena_where = f"httprequest.clientip = '{ip}' AND action = 'BLOCK' AND terminatingruleid = '{safe_rule_id}'"
     try:
-        insp_label, insp_samples = sample_inspection_content(
+        insp_label, insp_samples, insp_masked = sample_inspection_content(
             loc_rule, insp_cwl_filter, insp_athena_where, start_epoch, end_epoch, limit=5)
     except Exception:
-        insp_label, insp_samples = (None, None)
+        insp_label, insp_samples, insp_masked = (None, None, False)
 
     # Build output
     display_rule = f"{sub_rule} (inside {rule_id})" if sub_rule else rule_id
@@ -391,7 +391,10 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
         lines.append("(raw, as logged — show to user, do NOT interpret/verdict)")
         if insp_samples:
             for s in insp_samples:
-                lines.append(f"  [{s['hits']:>3} hits] {s['content'][:160]}")
+                lines.append(f"  [{s['hits']:>3} hits] {s['content'][:200]}")
+            if insp_masked:
+                from tools.waf_query import PRIVACY_MASK_HINT
+                lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
         elif insp_samples is None:
             lines.append(f"  ⚠️  Could not retrieve {insp_label} content on this log backend — state this; do not guess.")
         else:

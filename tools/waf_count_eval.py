@@ -420,7 +420,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     # record matchedData for most managed rules, but the rule name tells us
     # which request component it inspected — surface that component so the
     # analyst can judge attack vs FP from the actual content.
-    from tools.waf_query import sample_inspection_content
+    from tools.waf_query import sample_inspection_content, PRIVACY_MASK_HINT
     cwl_filter = (
         f"filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"'"
     )
@@ -429,16 +429,18 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
     )
     try:
-        label, samples = sample_inspection_content(rule_name, cwl_filter, athena_where, start_epoch, end_epoch, limit=8)
+        label, samples, masked = sample_inspection_content(rule_name, cwl_filter, athena_where, start_epoch, end_epoch, limit=8)
     except Exception:
-        label, samples = (None, None)
+        label, samples, masked = (None, None, False)
     if label:
         lines.append("")
         lines.append(f"### Triggering Content — inspected location: {label}")
         lines.append("(raw, URL-encoded as logged — show to user, do NOT interpret/verdict)")
         if samples:
             for s in samples:
-                lines.append(f"  [{s['hits']:>4} hits] {s['content'][:160]}")
+                lines.append(f"  [{s['hits']:>4} hits] {s['content'][:200]}")
+            if masked:
+                lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
         elif samples is None:
             lines.append(f"  ⚠️  Could not retrieve {label} content on this log backend — state this; do not guess.")
         else:

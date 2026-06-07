@@ -3,6 +3,7 @@
 """Unified WAF log query layer — routes to CWL or Athena based on log destination."""
 
 import re
+import json
 import time
 import threading
 from tools.aws_session import get_client
@@ -31,77 +32,200 @@ def inspection_location(rule_name: str):
 
     AWS WAF only records matchedData (terminatingRuleMatchDetails) for SQLi/XSS
     statements. For every other managed rule the rule name encodes the inspected
-    component (e.g. ..._QUERYARGUMENTS, ..._COOKIE), so to show WHY a request
-    matched we must pull that component out of the log ourselves.
+    component (e.g. ..._QUERYARGUMENTS, ..._COOKIE, ..._HEADER), so to show WHY a
+    request matched we must pull that component out of the log ourselves.
 
-    Returns (label, athena_expr, cwl_field) or None when the component is not
-    determinable or not present in WAF logs (BODY is never logged; a bare
-    _HEADER rule does not say which header). cwl_field is None when CWL cannot
-    extract it with a simple field reference (caller falls back to raw parsing
-    or reports it as unavailable on the CWL backend).
+    Returns (label, kind) where kind is one of "args" | "uri" | "cookie" |
+    "header", or None when the component is not determinable or not present in
+    WAF logs (BODY is never logged).
     """
     rn = (rule_name or "").upper()
     if "QUERYARGUMENT" in rn or rn.endswith("QUERYSTRING") or rn.endswith("_QS"):
-        return ("query string", "httprequest.args", "httpRequest.args")
+        return ("query string", "args")
     if rn.endswith("URIPATH") or rn.endswith("_URI") or rn.endswith("_PATH") or rn.endswith("URIFRAGMENT"):
-        return ("URI path", "httprequest.uri", "httpRequest.uri")
-    if rn.endswith("COOKIE") or "COOKIE" in rn:
-        # Cookie lives in the headers array; flatten the cookie header value(s).
-        athena_expr = ("array_join(transform(filter(httprequest.headers,"
-                       " h -> lower(h.name) = 'cookie'), h -> h.value), '; ')")
-        return ("Cookie header", athena_expr, None)
-    return None  # BODY (not logged), generic HEADER (ambiguous), or unknown
+        return ("URI path", "uri")
+    if "COOKIE" in rn:
+        return ("Cookie header", "cookie")
+    if rn.endswith("_HEADER") or rn.endswith("HEADERS") or "NOUSERAGENT" in rn or "USERAGENT" in rn:
+        return ("HTTP headers", "header")
+    return None  # BODY (not logged) or unknown
+
+
+# Header/param names whose VALUES are secrets and must never be shown to the
+# user. We display the name (and length) but mask the value. Matching is on a
+# substring of the (lower-cased) name.
+_SENSITIVE_KEY = re.compile(
+    r"(authorization|auth|cookie|token|session|sess[-_]?id|secret|password|passwd|"
+    r"pwd|api[-_]?key|apikey|x-api|csrf|xsrf|signature|sig|bearer|"
+    r"access[-_]?token|id[-_]?token|refresh[-_]?token|x-amz-security-token|credential)",
+    re.I,
+)
+
+
+def _mask_value(value: str) -> str:
+    return f"<redacted len={len(value)}>"
+
+
+def _redact_pairs(raw: str, sep: str, mask_all: bool):
+    """Redact a delimited 'name=value' string (query string or cookie).
+    mask_all=True masks every value (cookies); else only sensitive-named ones.
+    Returns (redacted_str, masked_bool)."""
+    out, masked = [], False
+    for pair in raw.split(sep):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" in pair:
+            name, _, value = pair.partition("=")
+            if value and (mask_all or _SENSITIVE_KEY.search(name)):
+                out.append(f"{name.strip()}={_mask_value(value)}")
+                masked = True
+            else:
+                out.append(f"{name.strip()}={value}")
+        else:
+            out.append(pair)
+    return (sep.join(out), masked)
+
+
+def _redact_headers(headers: list):
+    """headers: list of {'name','value'}. Mask values of sensitive headers,
+    keep names. Returns (formatted_str, masked_bool)."""
+    out, masked = [], False
+    for h in headers or []:
+        if not isinstance(h, dict):
+            continue
+        name = h.get("name", "") or ""
+        value = h.get("value", "") or ""
+        if name and _SENSITIVE_KEY.search(name):
+            out.append(f"{name}: {_mask_value(value)}")
+            masked = True
+        else:
+            out.append(f"{name}: {value}")
+    return (" | ".join(out), masked)
+
+
+def _redact(kind: str, raw: str):
+    """Redact one raw sample for display. Returns (redacted, masked_bool)."""
+    if not raw:
+        return ("", False)
+    if kind == "uri":
+        return (raw, False)  # path — no secrets
+    if kind == "args":
+        return _redact_pairs(raw, "&", mask_all=False)
+    if kind == "cookie":
+        return _redact_pairs(raw, ";", mask_all=True)  # cookie values are always secret
+    if kind == "header":
+        try:
+            headers = json.loads(raw)
+        except Exception:
+            return ("", False)
+        return _redact_headers(headers)
+    return (raw, False)
+
+
+def _headers_from_message(message: str) -> list:
+    try:
+        rec = json.loads(message)
+        return rec.get("httpRequest", {}).get("headers", []) or []
+    except Exception:
+        return []
 
 
 def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str,
                               start_epoch: int, end_epoch: int, limit: int = 5):
     """Sample the request component a rule inspects, for the rows the caller is
-    analysing. Returns (label, samples) where samples is a list of
-    {"content": str, "hits": int}; or (label, None) if the component exists but
-    is not retrievable on this backend; or (None, None) if not determinable.
+    analysing, with sensitive values redacted.
 
-    cwl_filter / athena_where are the caller's row-selection predicates (e.g.
-    "this rule's COUNT hits" or "this IP's BLOCK on this rule"). athena_where is
-    inserted into the WHERE clause; cwl_filter is a full CWL `filter ...` line.
+    Returns (label, samples, masked):
+      - label: human location label, or None if not determinable
+      - samples: list of {"content": str, "hits": int}; [] if none found;
+        None if the component could not be retrieved on this backend
+      - masked: True if any value was redacted (caller must tell the user the
+        masking is an intentional privacy safeguard, not a tool limitation)
+
+    cwl_filter / athena_where are the caller's row-selection predicates.
     """
     loc = inspection_location(rule_name)
     if not loc:
-        return (None, None)
-    label, athena_expr, cwl_field = loc
-
+        return (None, None, False)
+    label, kind = loc
     backend = get_log_type()
-    if backend == "cwl":
-        if not cwl_field:
-            return (label, None)  # e.g. cookie on CWL — not simply extractable
-        cwl = (
-            f"{cwl_filter}"
-            f" | stats count(*) as hits by {cwl_field}"
-            f" | sort hits desc | limit {limit}"
-        )
-        athena = ""  # unused on cwl backend
-        field_key = cwl_field
-    else:
-        athena = (
-            f"SELECT {athena_expr} as content, count(*) as hits"
-            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-            f" AND {athena_where}"
-            f" GROUP BY {athena_expr} ORDER BY hits DESC LIMIT {limit}"
-        )
-        cwl = ""  # unused on athena backend
-        field_key = "content"
 
+    raw_samples = []  # list of (raw_content, hits)
     try:
-        rows = query_logs(cwl, athena, start_epoch, end_epoch, limit=limit)
+        if kind in ("args", "uri"):
+            fa = "httprequest.args" if kind == "args" else "httprequest.uri"
+            fc = "httpRequest.args" if kind == "args" else "httpRequest.uri"
+            if backend == "cwl":
+                cwl = f"{cwl_filter} | stats count(*) as hits by {fc} | sort hits desc | limit {limit}"
+                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=limit) or []
+                raw_samples = [(r.get(fc, ""), int(r.get("hits", 0) or 0)) for r in rows]
+            else:
+                athena = (
+                    f"SELECT {fa} as content, count(*) as hits FROM {{TABLE}}"
+                    f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                    f" AND {athena_where} GROUP BY {fa} ORDER BY hits DESC LIMIT {limit}"
+                )
+                rows = query_logs("", athena, start_epoch, end_epoch, limit=limit) or []
+                raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
+        elif kind == "cookie":
+            if backend == "cwl":
+                cwl = f"{cwl_filter} | fields @message | limit {limit}"
+                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=limit) or []
+                for r in rows:
+                    hdrs = _headers_from_message(r.get("@message", ""))
+                    val = "; ".join(h.get("value", "") for h in hdrs if h.get("name", "").lower() == "cookie")
+                    if val:
+                        raw_samples.append((val, 1))
+            else:
+                expr = ("array_join(transform(filter(httprequest.headers,"
+                        " h -> lower(h.name) = 'cookie'), h -> h.value), '; ')")
+                athena = (
+                    f"SELECT {expr} as content, count(*) as hits FROM {{TABLE}}"
+                    f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                    f" AND {athena_where} AND {expr} <> '' GROUP BY {expr} ORDER BY hits DESC LIMIT {limit}"
+                )
+                rows = query_logs("", athena, start_epoch, end_epoch, limit=limit) or []
+                raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
+        elif kind == "header":
+            if backend == "cwl":
+                cwl = f"{cwl_filter} | fields @message | limit {limit}"
+                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=limit) or []
+                for r in rows:
+                    hdrs = _headers_from_message(r.get("@message", ""))
+                    if hdrs:
+                        raw_samples.append((json.dumps(hdrs), 1))
+            else:
+                expr = "cast(httprequest.headers as json)"
+                athena = (
+                    f"SELECT {expr} as content, count(*) as hits FROM {{TABLE}}"
+                    f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                    f" AND {athena_where} GROUP BY {expr} ORDER BY hits DESC LIMIT {limit}"
+                )
+                rows = query_logs("", athena, start_epoch, end_epoch, limit=limit) or []
+                raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
     except Exception:
-        return (label, None)
-    if rows is None:
-        return (label, None)
-    samples = []
-    for r in rows:
-        content = r.get(field_key, "")
-        if content:
-            samples.append({"content": content, "hits": int(r.get("hits", 0) or 0)})
-    return (label, samples)
+        return (label, None, False)
+
+    samples, masked = [], False
+    for raw, hits in raw_samples:
+        red, m = _redact(kind, raw)
+        masked = masked or m
+        if red:
+            samples.append({"content": red, "hits": hits})
+    return (label, samples, masked)
+
+
+# Hint the agent MUST relay to the user whenever inspected content was masked,
+# so masking reads as a deliberate privacy safeguard rather than the agent
+# being unable to see the data.
+PRIVACY_MASK_HINT = (
+    "Sensitive values (cookies, auth/session tokens, API keys) were masked as "
+    "<redacted len=N>. Tell the user EXPLICITLY that you intentionally do not "
+    "display these secret values to protect their privacy — the WAF rule still "
+    "inspected the full value, and any attack match is shown in Match Detail. "
+    "This is a deliberate safeguard, not a limitation."
+)
 
 
 _HOURLY_PARTITION_ERROR = (
