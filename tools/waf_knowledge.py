@@ -38,7 +38,10 @@ def search_waf_knowledge(query: str) -> str:
 
     results = resp.get("retrievalResults", [])
     if not results:
-        return "No relevant AWS WAF documentation found for this query."
+        return ("No relevant AWS WAF documentation found for this query.\n"
+                "HINT: The knowledge base returned nothing for this query. Tell the user you "
+                "could not find documentation on it — do not answer from assumption as if it "
+                "were documented best practice.")
 
     formatted = []
     for i, r in enumerate(results, 1):
@@ -46,4 +49,19 @@ def search_waf_knowledge(query: str) -> str:
         score = r.get("score", 0)
         formatted.append(f"[{i}] (relevance: {score:.2f})\n{text}")
 
-    return "\n\n---\n\n".join(formatted)
+    top_score = max((r.get("score", 0) for r in results), default=0)
+    hint = (
+        "\n\n---\n\n"
+        "HINT: These are retrieved documentation excerpts, not a finished answer. "
+        "Synthesize across the relevant ones, cite them inline as [N], and base your "
+        "guidance only on what they actually say. If none of them address the user's "
+        "question, say so explicitly instead of inventing an answer — never present "
+        "unsupported guidance as documented best practice."
+    )
+    if top_score < 0.4:
+        hint += (
+            "\n⚠️ Top relevance is low — these excerpts may not directly answer the "
+            "question. Treat them as weak signal and tell the user if they don't fit."
+        )
+
+    return "\n\n---\n\n".join(formatted) + hint
