@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Security / Dependencies
+
+- Dependency maintenance (Dependabot). No user-facing behavior change.
+  - Frontend: `vite` `^6` → `^8`, `@vitejs/plugin-react` `^4` → `^6` (clears the esbuild dev-server advisory; `npm audit` now reports 0 vulnerabilities), `@babel/core` `7.29.0` → `7.29.7`
+  - Backend: `starlette` `1.0.1` → `1.3.1`, `cryptography` `48.0.0` → `48.0.1`, `python-multipart` `0.0.29` → `0.0.31`, `pydantic-settings` `2.14.1` → `2.14.2`
+
 ## 0.11.0 (2026-06-07)
 
 Internal refactor + CloudWatch Logs query precision. No user-facing behavior change.
