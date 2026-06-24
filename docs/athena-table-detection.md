@@ -81,7 +81,7 @@ The agent searches **all Glue databases** (not just `waf_analysis_tmp`) for a ta
 - Resolved path: calls `DescribeDeliveryStream` → extracts S3 bucket + static prefix (dynamic expressions like `!{timestamp:...}` are stripped)
 - Partition format: detected from S3 directory structure — hourly (`yyyy/MM/dd/HH`) or minute-level (`yyyy/MM/dd/HH/mm`)
 
-**Important:** If your Firehose uses hourly partitions (default), the agent blocks queries because they timeout on production traffic. See [Firehose Optimization Guide](firehose-minute-partitioning.md) to fix this.
+**Important:** If your Firehose uses hourly partitions (default), the agent blocks log-detail queries because they time out on production traffic. When this happens the agent retrieves the fix from its knowledge base and explains the cause and the one-time Firehose change to you inline. See the [Firehose Optimization Guide](firehose-minute-partitioning.md) for the same steps.
 
 ## Tables Created by the Agent
 

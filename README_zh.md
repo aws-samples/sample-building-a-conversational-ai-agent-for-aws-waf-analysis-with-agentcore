@@ -150,7 +150,7 @@ python agent.py "my-webacl 有没有流量绕过了 WAF？"
 VITE_BRAND_NAME=我的公司 WAF Agent
 ```
 
-会影响页面标题、浏览器标签页和对话导出。未设置时默认为 "AWS WAF Agent"。
+会影响页面标题、浏览器标签页和对话导出。未设置时默认为 "WAF Analyst"。
 
 ## 项目结构
 

@@ -1,10 +1,49 @@
 # Changelog
 
-## [Unreleased]
+## 0.12.0 (2026-06-24)
+
+New detection/diagnostic signals, knowledge-base monitoring guidance, a friendlier
+hourly-partition flow, a brand rename, and the dependency maintenance below.
+
+### Bypass detection
+
+- `detect_bypass` scan adds a **UA-rotation** filter: flags a single JA4 TLS fingerprint
+  used behind many different User-Agents from few IPs (UA spoofing). Complements the
+  existing single-JA4-many-IPs (distributed) filter; excludes `bot:verified`.
+
+### Challenge/CAPTCHA investigation
+
+- `check_challenge_compatibility` now reports a **Token Failure Reasons** breakdown
+  (`TOKEN_MISSING` / `TOKEN_INVALID` / `TOKEN_EXPIRED` / `TOKEN_DOMAIN_MISMATCH` /
+  `TOKEN_NOT_SOLVED`) alongside the existing URI/method compatibility table, so "why can't
+  real users pass the challenge" covers both client-type and token-side causes.
+
+### Hourly-partition handling
+
+- When an Athena/Firehose table uses hourly partitioning, the agent still stops log-detail
+  queries (scan-time/UX), but now retrieves the fix from the knowledge base and explains the
+  cause + one-time Firehose change to the user inline, instead of dropping a repo link.
+
+### Knowledge base
+
+- New KB doc: **WAF hit-rate monitoring** — how to set up CloudWatch metric-math ratio
+  alarms (and per-URI metric filters) to watch a rule's block/false-positive rate after a
+  Count→Block switch. Agent advises; it does not create alarms (stays read-only).
+- New KB doc: **Firehose minute-level partitioning** — why it's required and the exact
+  one-time fix, retrieved when the agent blocks hourly-partition queries.
+- Added a token-id cross-IP abuse note (one issued token across >5 IPs = reuse/botnet signal).
+
+### Frontend
+
+- Default UI brand renamed **"Amazon WAF Agent" → "WAF Analyst"** to avoid implying an
+  official AWS product. Override via `VITE_BRAND_NAME` is unchanged.
+- Fixed a white-screen bug introduced by the Vite 8 bump: `amazon-cognito-identity-js`
+  references Node's `global`, which Vite 8 no longer shims — mapped `global` → `globalThis`
+  in the build so the production bundle runs in the browser.
 
 ### Security / Dependencies
 
-- Dependency maintenance (Dependabot). No user-facing behavior change.
+- Dependency maintenance (Dependabot).
   - Frontend: `vite` `^6` → `^8`, `@vitejs/plugin-react` `^4` → `^6` (clears the esbuild dev-server advisory; `npm audit` now reports 0 vulnerabilities), `@babel/core` `7.29.0` → `7.29.7`
   - Backend: `starlette` `1.0.1` → `1.3.1`, `cryptography` `48.0.0` → `48.0.1`, `python-multipart` `0.0.29` → `0.0.31`, `pydantic-settings` `2.14.1` → `2.14.2`
 

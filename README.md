@@ -151,7 +151,7 @@ The frontend agent name can be customized via environment variable — no code c
 VITE_BRAND_NAME=My Company WAF Agent
 ```
 
-This changes the header, browser tab title, and conversation exports. Defaults to "AWS WAF Agent" if not set.
+This changes the header, browser tab title, and conversation exports. Defaults to "WAF Analyst" if not set.
 
 ## Project Structure
 

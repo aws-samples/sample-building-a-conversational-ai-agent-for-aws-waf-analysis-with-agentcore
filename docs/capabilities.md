@@ -12,7 +12,7 @@ The agent scans BLOCK logs for IPs that also have high ALLOW traffic — potenti
 
 > "Are there any crawlers bypassing my WAF? Check yesterday 2pm-3pm."
 
-The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI diversity, automation user-agents, and data-center IPs without bot labels. When investigating an IP it also shows the query strings it sent on ALLOW traffic — attack-like payloads that were let through are a direct bypass signal.
+The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI diversity, automation user-agents, data-center IPs without bot labels, and UA rotation (a single JA4 TLS fingerprint used behind many different User-Agents, indicating UA spoofing). When investigating an IP it also shows the query strings it sent on ALLOW traffic — attack-like payloads that were let through are a direct bypass signal.
 
 > "Evaluate my COUNT rules — can I switch them to Block?"
 
@@ -42,7 +42,7 @@ Profiles the IP across all dimensions: frequency, URI diversity, JA4 fingerprint
 
 > "Our API is returning 202 after enabling Challenge, check the past hour"
 
-Lists all URIs/methods being challenged, flags incompatible requests (non-GET, API endpoints), and explains Challenge technical requirements.
+Lists all URIs/methods being challenged, flags incompatible requests (non-GET, API endpoints), breaks down token failure reasons (TOKEN_MISSING / TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_DOMAIN_MISMATCH / TOKEN_NOT_SOLVED), and explains Challenge technical requirements.
 
 > "We found malicious requests in our backend logs around May 15 14:00"
 

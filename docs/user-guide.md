@@ -32,7 +32,7 @@ Find traffic that passes all AWS WAF rules (default ALLOW) but looks suspicious.
 - "Find high-volume IPs that weren't blocked in the last 6 hours"
 - "Are there any bots getting through Bot Control?"
 
-**What the agent does:** Queries metrics to find peak ALLOW windows → runs log queries for high-frequency/high-diversity IPs → analyzes top suspicious IPs (NAT detection, frequency, cross-validation) → shows query strings sent on ALLOW traffic (redacted) as a bypass signal.
+**What the agent does:** Queries metrics to find peak ALLOW windows → runs log queries for high-frequency/high-diversity IPs → detects UA rotation (a single JA4 fingerprint behind many User-Agents = UA spoofing) → analyzes top suspicious IPs (NAT detection, frequency, cross-validation) → shows query strings sent on ALLOW traffic (redacted) as a bypass signal.
 
 ### 2. Attack Source Investigation
 
