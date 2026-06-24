@@ -9,5 +9,9 @@ export default defineConfig({
   plugins: [react()],
   define: {
     __APP_VERSION__: JSON.stringify(version),
+    // amazon-cognito-identity-js references Node's `global`, which doesn't exist
+    // in the browser. Vite 7+ no longer shims it, so map it to globalThis or the
+    // app throws "global is not defined" at runtime (white screen).
+    global: 'globalThis',
   },
 });
