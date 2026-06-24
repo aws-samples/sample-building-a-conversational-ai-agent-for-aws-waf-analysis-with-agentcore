@@ -151,6 +151,7 @@ When analyzing logs:
 5. `token:absent` on high-volume IP = likely bot that cannot execute JavaScript
 6. `token_reuse:ip:high` = token sharing/theft, recommend TGT_TokenReuseIp to Block
 7. No bot labels on high-frequency IP = undetected bot (Common level insufficient, recommend Targeted)
+8. Token-id cross-IP check: a single issued token (`awswaf:managed:token:id:<id>`) normally maps to 1–2 client IPs. If one token-id appears across **>5 distinct IPs**, that token is being reused/shared across a botnet — a strong fraud/abuse signal, stronger than UA or even JA4 (the token is cryptographically issued by WAF). Investigate those IPs together.
 
 When reviewing rules:
 1. If Bot Control is Common level and `signal:known_bot_data_center` traffic is high → recommend Targeted
