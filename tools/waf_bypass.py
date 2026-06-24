@@ -403,6 +403,37 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         ip_results = _safe_query(ips_cwl, ips_athena, start_epoch, end_epoch, limit=3)
         distributed_ips[ja4] = [r2.get("httpRequest.clientIp", "?") for r2 in (ip_results or [])]
 
+    # UA rotation: one TLS fingerprint (JA4) behind many different User-Agents.
+    # A real client has a stable UA per TLS stack; many UAs on a single JA4 means
+    # one client faking multiple browsers (UA spoofing/rotation). JA4 is much
+    # harder to forge than the UA string, so this is a low-false-positive signal.
+    # Keep unique_ips low to avoid flagging large NAT/CDN egress points that
+    # legitimately share a JA4 across many real users.
+    ua_rotation_cwl = (
+        "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
+        " and @message not like 'bot:verified'"
+        " | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/"
+        " | stats count(*) as total, count_distinct(ua) as unique_uas,"
+        " count_distinct(httpRequest.clientIp) as unique_ips by ja4Fingerprint"
+        " | filter unique_uas > 5 and unique_ips < 5"
+        " | sort unique_uas desc | limit 10"
+    )
+    ua_rotation_athena = (
+        "SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as total,"
+        " count(DISTINCT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value) as unique_uas,"
+        " count(DISTINCT httprequest.clientip) as unique_ips"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        " AND ja4fingerprint IS NOT NULL AND ja4fingerprint != ''"
+        " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+        " GROUP BY ja4fingerprint"
+        " HAVING count(DISTINCT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value) > 5"
+        " AND count(DISTINCT httprequest.clientip) < 5"
+        " ORDER BY unique_uas DESC LIMIT 10"
+    )
+    ua_rotation = _safe_query(ua_rotation_cwl, ua_rotation_athena, start_epoch, end_epoch, limit=10)
+
     # Build output
     lines = ["## Bypass Scan Results", ""]
 
@@ -471,7 +502,19 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append("  (none found)")
 
-    if not crawlers and not repeaters and not datacenter and not auto_ua and not distributed:
+    lines.append("")
+    lines.append("### UA Rotation — Single JA4 Behind Many User-Agents (UA spoofing)")
+    if ua_rotation:
+        lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique UAs':>10} | {'Unique IPs':>10} |")
+        lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} | {'-'*10} |")
+        for r in ua_rotation:
+            lines.append(f"| {r.get('ja4Fingerprint', '?'):<34} | {r.get('total', '?'):>8} | {r.get('unique_uas', '?'):>10} | {r.get('unique_ips', '?'):>10} |")
+        lines.append("  ⚠️  Candidate signal: one TLS fingerprint faking many User-Agents from few IPs. JA4 is hard to forge, so this is a strong UA-spoofing indicator. Needs IP-level investigation to confirm.")
+        lines.append("  → For deeper analysis, call detect_bypass(step='investigate_ip', ip='<an IP behind this JA4>')")
+    else:
+        lines.append("  (none found)")
+
+    if not crawlers and not repeaters and not datacenter and not auto_ua and not distributed and not ua_rotation:
         lines.append("")
         lines.append("### No Obvious Bypass Candidates Found")
         lines.append("No IPs matched the anomaly filters in this time window.")
@@ -483,7 +526,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("## Your Next Action")
     lines.append("")
-    if crawlers or repeaters or datacenter or auto_ua or distributed:
+    if crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation:
         lines.append("Present candidates to user. For each:")
         lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
         lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")
