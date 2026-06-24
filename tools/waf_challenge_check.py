@@ -79,6 +79,28 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
             msg += f"\n⚠️  Log Filter is active — {action} logs may be filtered out."
         return msg
 
+    # Token failure-reason breakdown for the same action/window. Why a real user
+    # can't pass the challenge has two sides: the URI/method table above (client
+    # type — non-browser, non-GET) and this (token problems — missing/expired/
+    # domain mismatch). The response object follows the action: CHALLENGE →
+    # challengeResponse, CAPTCHA → captchaResponse. Field paths differ by backend:
+    # CWL is camelCase nested JSON (challengeResponse.failureReason); Athena is
+    # lowercase top-level columns (challengeresponse.failurereason). Verified live.
+    resp_obj_cwl = "challengeResponse" if action == "CHALLENGE" else "captchaResponse"
+    resp_col_athena = "challengeresponse" if action == "CHALLENGE" else "captcharesponse"
+    fr_cwl = (
+        f"filter action = '{action}' and ispresent({resp_obj_cwl}.failureReason)"
+        f" | stats count(*) as hits by {resp_obj_cwl}.failureReason"
+        " | sort hits desc | limit 10"
+    )
+    fr_athena = (
+        f"SELECT {resp_col_athena}.failurereason as \"failureReason\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND action = '{action}' AND {resp_col_athena}.failurereason IS NOT NULL"
+        f" GROUP BY {resp_col_athena}.failurereason ORDER BY hits DESC LIMIT 10"
+    )
+    fr_results = _run_q(fr_cwl, fr_athena, start_epoch, end_epoch)
+
     # Check for anti-ddos event (ChallengeAllDuringEvent)
     antiddos_note = ""
     if action == "CHALLENGE":
@@ -123,6 +145,31 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
             compat = "✅ Likely OK"
         lines.append(f"| {uri:<40} | {method:<7} | {hits:>6} | {compat} |")
 
+    # Token failure-reason distribution (the other half of "why can't they pass")
+    if fr_results:
+        # CWL returns the field keyed as e.g. "challengeResponse.failureReason";
+        # Athena as "failureReason". Read whichever is present.
+        def _fr(row):
+            return (row.get("failureReason")
+                    or row.get(f"{resp_obj_cwl}.failureReason")
+                    or "?")
+        lines.append("")
+        lines.append(f"### Token Failure Reasons ({action})")
+        lines.append("")
+        lines.append(f"| {'Failure Reason':<24} | {'Hits':>6} | Meaning |")
+        lines.append(f"| {'-'*24} | {'-'*6} | ------- |")
+        _fr_meaning = {
+            "TOKEN_MISSING": "No WAF token sent — non-browser client, or never solved the challenge",
+            "TOKEN_INVALID": "Token present but not valid — tampering, or wrong/forged token",
+            "TOKEN_EXPIRED": "Token expired — session older than the token TTL",
+            "TOKEN_DOMAIN_MISMATCH": "Token issued for a different domain — multi-domain/SDK misconfig",
+            "TOKEN_NOT_SOLVED": "Challenge/CAPTCHA was served but never solved",
+        }
+        for r in fr_results:
+            reason = _fr(r)
+            meaning = _fr_meaning.get(reason, "")
+            lines.append(f"| {reason:<24} | {r.get('hits', '?'):>6} | {meaning} |")
+
     lines.append("")
     lines.append("---")
     lines.append("## Challenge/CAPTCHA Technical Requirements")
@@ -140,7 +187,17 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     lines.append("")
     lines.append("## Your Next Action")
     lines.append("")
-    lines.append("Present the table above to the user. Ask:")
+    lines.append("Two angles on \"why can't they pass\": the URI/method table (client type) and the")
+    lines.append("Token Failure Reasons table (token problems). Read them together:")
+    lines.append("- Mostly **TOKEN_MISSING** on API/native-app URIs → those clients can't run the JS")
+    lines.append("  challenge at all. Recommend scope-down to EXCLUDE those URIs, or a different action.")
+    lines.append("- **TOKEN_DOMAIN_MISMATCH** → the WAF token SDK is misconfigured for the domain")
+    lines.append("  (common with multi-domain / CDN setups). Point the user at the token domain config.")
+    lines.append("- **TOKEN_EXPIRED / TOKEN_NOT_SOLVED** on browser URIs → real users hitting friction")
+    lines.append("  (slow solves, long sessions). Consider token TTL or whether the rule is too aggressive.")
+    lines.append("- **TOKEN_INVALID** → possible tampering/forgery; treat as a potential abuse signal, not FP.")
+    lines.append("")
+    lines.append("Present the URI/method table to the user. Ask:")
     lines.append("\"Which of these URIs are accessed by native apps, APIs, or non-browser clients?\"")
     lines.append("")
     lines.append("For URIs the user confirms as non-browser:")
