@@ -558,7 +558,12 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
 
         # Block queries on hourly partitions
         if part_fmt == "yyyy/MM/dd/HH":
-            return {}, "⚠️ Firehose hourly partition detected — log-level details skipped (timeout risk). See docs/firehose-minute-partitioning.md to optimize."
+            return {}, ("⚠️ Hourly Firehose partitioning detected — per-rule log details were "
+                        "skipped (hourly partitions make Athena scan too much data per query, "
+                        "timeout risk). This is a scan-time/UX stop, NOT a data error; the metrics "
+                        "in this report are unaffected and accurate. To enable log-level details, "
+                        "call search_waf_knowledge(query='Firehose minute-level partitioning for "
+                        "Athena WAF log queries') and walk the user through the one-time fix.")
 
         # Build time filter WITH partition pruning (critical for performance)
         start_ms = int(start.timestamp()) * 1000

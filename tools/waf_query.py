@@ -344,10 +344,16 @@ REDACTION_POSSIBLE_HINT = (
 
 
 _HOURLY_PARTITION_ERROR = (
-    "Error: Firehose hourly partition detected. Queries will timeout on production traffic.\n"
-    "Please configure minute-level partitioning on your Firehose stream.\n"
-    "Guide: https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/blob/main/docs/firehose-minute-partitioning.md\n"
-    "ACTION: Inform user about this limitation and share the guide link."
+    "BLOCKED: This table uses hourly partitioning (the Firehose default). Log-detail queries "
+    "are intentionally stopped here — on production traffic they would scan a whole hour per "
+    "query and take 30-60s or time out, which breaks interactive analysis. This is a deliberate "
+    "stop for query speed, NOT a data error and NOT a tool failure.\n"
+    "ACTION: Call search_waf_knowledge(query='Firehose minute-level partitioning for Athena WAF "
+    "log queries') to retrieve the guide, then explain to the user IN YOUR OWN WORDS: (1) why "
+    "the agent stopped (scan-time/UX, not correctness), (2) that aggregate CloudWatch metrics "
+    "still work meanwhile, and (3) the concrete one-time Firehose prefix change to fix it "
+    "(Console or CLI steps from the knowledge base). Do NOT just paste a link — walk them "
+    "through the cause and the fix."
 )
 
 
