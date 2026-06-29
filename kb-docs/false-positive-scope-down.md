@@ -99,7 +99,7 @@ Step 2 — Add a label match rule below the managed group that blocks all EXCEPT
 
 **When to use**: Frequent FP across many paths from user-generated content.
 
-**Problem**: HIGH sensitivity (default) catches too many legitimate patterns.
+**Problem**: A custom SQLi rule set to HIGH sensitivity catches too many legitimate patterns. (Note: LOW is the default for both custom `SqliMatchStatement` and the AWS managed SQLi rule group, which is fixed at LOW. HIGH only happens if you explicitly set it.)
 
 **Solution** — Override managed rule to Count, add custom SQLi rule with LOW sensitivity:
 ```json

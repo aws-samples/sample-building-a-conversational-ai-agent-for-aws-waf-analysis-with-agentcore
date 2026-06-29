@@ -10,6 +10,7 @@ build/
 *.egg-info/
 .cache/
 design/
+slides/
 test/
 *.html
 !frontend/index.html
