@@ -38,7 +38,7 @@ Dynamic label interpolation does NOT add new fields to AWS WAF logs. The `reques
 - If the namespace matched no labels, the header value is empty string in the log
 - `requestHeadersInserted` only appears for requests that reached a rule with CustomRequestHandling (Count or Allow actions)
 
-## How WAF Agent Should Use This
+## How WAF Analyst Should Use This
 
 When analyzing AWS WAF logs:
 1. Check `requestHeadersInserted` for resolved interpolation values — these reveal which Bot Control categories, signal types, or custom labels were active for each request

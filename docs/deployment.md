@@ -4,7 +4,7 @@ English | [中文](deployment_zh.md)
 
 ## Overview
 
-WAF Agent deploys as up to four CloudFormation stacks:
+WAF Analyst deploys as up to four CloudFormation stacks:
 
 > [!IMPORTANT]
 > **Model choice matters: use Claude Sonnet 4.6 or Claude Opus. Do not deploy this agent with GPT-family models on Amazon Bedrock unless you have tested your exact WAF investigation workflow.**
@@ -128,7 +128,7 @@ aws cloudformation deploy \
 The model must support tool use and have sufficient context window.
 
 > [!WARNING]
-> **Strong recommendation: use Claude Sonnet 4.6 or Claude Opus. Avoid GPT-family Bedrock models for WAF Agent.** In WAF operations, normal defensive questions often contain terms such as SQLi, XSS, bypass, exploit attempt, malicious IP, and payload. GPT-family models may trigger upstream cyber-safety filters and fail silently, leaving the UI looking idle. If you override `ModelId`, validate false-positive review, COUNT rule evaluation, bypass detection, and blocked-injection investigation before using it with other users.
+> **Strong recommendation: use Claude Sonnet 4.6 or Claude Opus. Avoid GPT-family Bedrock models for WAF Analyst.** In WAF operations, normal defensive questions often contain terms such as SQLi, XSS, bypass, exploit attempt, malicious IP, and payload. GPT-family models may trigger upstream cyber-safety filters and fail silently, leaving the UI looking idle. If you override `ModelId`, validate false-positive review, COUNT rule evaluation, bypass detection, and blocked-injection investigation before using it with other users.
 
 ### Persistent Memory (recommended)
 
@@ -270,7 +270,7 @@ VITE_SESSIONS_API_URL=<SessionsApiUrl from Step 3>
 EOF
 
 # Optional: customize the agent name shown in the UI
-# echo 'VITE_BRAND_NAME=My Company WAF Agent' >> .env
+# echo 'VITE_BRAND_NAME=My Company WAF Analyst' >> .env
 
 # Build
 npm install

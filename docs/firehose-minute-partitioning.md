@@ -1,4 +1,4 @@
-# Optimizing Firehose Log Delivery for WAF Agent
+# Optimizing Firehose Log Delivery for WAF Analyst
 
 English | [中文](firehose-minute-partitioning_zh.md)
 
@@ -92,7 +92,7 @@ Replace `YOUR_ACCOUNT_ID`, `YOUR_REGION`, and `YOUR_WEBACL_NAME` with actual val
 
 - **No downtime**: The stream stays active during the update. Changes take effect within a few minutes.
 - **Old data is not moved**: Existing files stay at their original paths. Only new data uses the new prefix.
-- **WAF Agent auto-detects**: After the prefix change, WAF Agent will detect the new partition structure on the next query and recreate its Athena table automatically.
+- **WAF Analyst auto-detects**: After the prefix change, WAF Analyst will detect the new partition structure on the next query and recreate its Athena table automatically.
 - **No extra cost**: Timestamp-based prefixes are a standard Firehose feature — no additional charges (unlike Dynamic Partitioning which charges per GB).
 - **ErrorOutputPrefix is required**: When `Prefix` contains `!{timestamp:...}` expressions, you must also set `ErrorOutputPrefix` with `!{firehose:error-output-type}`. Otherwise the API returns a validation error.
 - **Buffer interval**: Consider reducing buffer interval to 60s (from default 300s) for better real-time visibility. This increases S3 PUT costs slightly but improves log freshness.

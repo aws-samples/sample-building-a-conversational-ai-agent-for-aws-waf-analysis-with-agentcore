@@ -1,4 +1,4 @@
-# 优化 Firehose 日志投递以提升 WAF Agent 查询性能
+# 优化 Firehose 日志投递以提升 WAF Analyst 查询性能
 
 [English](firehose-minute-partitioning.md) | 中文
 
@@ -92,7 +92,7 @@ aws firehose update-destination \
 
 - **无停机**：更新期间 stream 保持活跃，几分钟内生效
 - **旧数据不受影响**：已有文件保持原位，仅新数据使用新前缀
-- **WAF Agent 自动适配**：前缀变更后，WAF Agent 会在下次查询时自动检测新分区结构并重建 Athena 表
+- **WAF Analyst 自动适配**：前缀变更后，WAF Analyst 会在下次查询时自动检测新分区结构并重建 Athena 表
 - **无额外费用**：时间戳前缀是 Firehose 标准功能，不产生额外费用（与 Dynamic Partitioning 不同，后者按 GB 收费）
 - **ErrorOutputPrefix 必填**：当 Prefix 包含 `!{timestamp:...}` 表达式时，必须同时设置 ErrorOutputPrefix 并包含 `!{firehose:error-output-type}`，否则 API 会返回验证错误
 - **Buffer interval 建议**：考虑将 buffer interval 从默认 300s 降低到 60s，以提升日志实时性。这会略微增加 S3 PUT 费用，但能改善日志新鲜度

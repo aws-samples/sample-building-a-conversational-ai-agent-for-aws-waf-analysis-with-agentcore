@@ -4,7 +4,7 @@
 
 ## 概述
 
-WAF Agent 最多通过四个 CloudFormation Stack 部署：
+WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 
 > [!IMPORTANT]
 > **模型选择很重要：请使用 Claude Sonnet 4.6 或 Claude Opus。除非已经完整测试自己的 WAF 调查工作流，否则不要在 Amazon Bedrock 上为本 Agent 部署 GPT 系列模型。**
@@ -117,7 +117,7 @@ aws cloudformation deploy \
 模型必须支持 tool use 并有足够的上下文窗口。
 
 > [!WARNING]
-> **强烈建议使用 Claude Sonnet 4.6 或 Claude Opus。请避免为 WAF Agent 选择 Bedrock 上的 GPT 系列模型。** WAF 运维中的正常防御性问题经常包含 SQLi、XSS、绕过、exploit attempt、恶意 IP、payload 等词。GPT 系列模型可能触发上游 cyber-safety 过滤并静默失败，让 UI 看起来像没有响应。如果你覆盖 `ModelId`，请先完整验证误报分析、COUNT 规则评估、绕过检测、注入拦截调查，再给其他用户使用。
+> **强烈建议使用 Claude Sonnet 4.6 或 Claude Opus。请避免为 WAF Analyst 选择 Bedrock 上的 GPT 系列模型。** WAF 运维中的正常防御性问题经常包含 SQLi、XSS、绕过、exploit attempt、恶意 IP、payload 等词。GPT 系列模型可能触发上游 cyber-safety 过滤并静默失败，让 UI 看起来像没有响应。如果你覆盖 `ModelId`，请先完整验证误报分析、COUNT 规则评估、绕过检测、注入拦截调查，再给其他用户使用。
 
 ### 持久记忆（推荐）
 

@@ -1,8 +1,8 @@
-# WAF Agent User Guide
+# WAF Analyst User Guide
 
 [中文版](user-guide_zh.md)
 
-WAF Agent is an AI assistant that helps security engineers investigate AWS WAF incidents, detect bypasses, and generate weekly summarys. It works best when you give it **specific, concrete questions**.
+WAF Analyst is an AI assistant that helps security engineers investigate AWS WAF incidents, detect bypasses, and generate weekly summarys. It works best when you give it **specific, concrete questions**.
 
 > [!WARNING]
 > **If your deployment uses a GPT-family model on Amazon Bedrock, WAF analysis may be silently blocked.**

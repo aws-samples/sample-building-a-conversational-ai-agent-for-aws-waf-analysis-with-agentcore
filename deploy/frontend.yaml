@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: WAF Agent — Frontend (CloudFront + S3 + WAF). Deploy in us-east-1.
+Description: WAF Analyst — Frontend (CloudFront + S3 + WAF). Deploy in us-east-1.
 
 Resources:
   # --- AWS WAF for Frontend ---

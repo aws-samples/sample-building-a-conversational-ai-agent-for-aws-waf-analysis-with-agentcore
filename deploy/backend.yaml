@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: WAF Agent — Backend (Cognito + AgentCore). Deploy in ap-northeast-1.
+Description: WAF Analyst — Backend (Cognito + AgentCore). Deploy in ap-northeast-1.
 
 Parameters:
   AgentContainerUri:
     Type: String
-    Description: ECR image URI for the WAF Agent (ARM64)
+    Description: ECR image URI for the WAF Analyst (ARM64)
     AllowedPattern: ^[0-9]+\.dkr\.ecr\..+\.amazonaws\.com/.+:.+$
     ConstraintDescription: Must be a valid ECR image URI
   AgentRuntimeName:

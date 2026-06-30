@@ -2,7 +2,7 @@
 
 [English](cost-estimation.md)
 
-WAF Agent 部署的月度成本估算。所有价格为美元。
+WAF Analyst 部署的月度成本估算。所有价格为美元。
 
 ## 成本组成
 

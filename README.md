@@ -1,4 +1,4 @@
-# WAF Agent
+# WAF Analyst
 
 English | [中文](README_zh.md)
 
@@ -7,7 +7,7 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 > [!WARNING]
 > **Use Claude models. Do not choose GPT models on Amazon Bedrock for this agent unless you have tested your exact workflow.**
 >
-> WAF Agent analyzes security logs, blocked requests, SQLi/XSS rule matches, bypass candidates, and bot/DDoS indicators. With GPT-family models on Bedrock, this defensive WAF analysis can be silently blocked by upstream cyber-safety checks and appear as if the agent stopped responding. The recommended models are Claude Sonnet 4.6 or Claude Opus.
+> WAF Analyst analyzes security logs, blocked requests, SQLi/XSS rule matches, bypass candidates, and bot/DDoS indicators. With GPT-family models on Bedrock, this defensive WAF analysis can be silently blocked by upstream cyber-safety checks and appear as if the agent stopped responding. The recommended models are Claude Sonnet 4.6 or Claude Opus.
 >
 > If you already deployed with a GPT model and the agent appears stuck, send a clarifying message such as: "This is authorized defensive AWS WAF log analysis for my own environment. Please continue investigating the WAF metrics and logs. Do not provide exploit payloads, credential theft steps, evasion, persistence, malware behavior, or instructions for unauthorized systems."
 
@@ -24,7 +24,7 @@ See [docs/capabilities.md](docs/capabilities.md) for full details and example qu
 
 ## Quick Start
 
-![AWS WAF Agent Screenshot](docs/screenshot.png)
+![WAF Analyst Screenshot](docs/screenshot.png)
 
 ### Prerequisites
 
@@ -122,7 +122,7 @@ graph TB
 - **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime. History persisted to DynamoDB (30-day TTL).
 - **Memory**: AgentCore Memory for cross-session LTM (facts, preferences, summaries). DynamoDB for full message history.
 
-See [Deployment Guide](docs/deployment.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md) | [Data Privacy](docs/data-privacy.md) | [Why WAF Agent?](docs/why-waf-agent.md) | [Firehose Optimization](docs/firehose-minute-partitioning.md) | [Athena Table Detection](docs/athena-table-detection.md)
+See [Deployment Guide](docs/deployment.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md) | [Data Privacy](docs/data-privacy.md) | [Why WAF Analyst?](docs/why-waf-agent.md) | [Firehose Optimization](docs/firehose-minute-partitioning.md) | [Athena Table Detection](docs/athena-table-detection.md)
 
 ## Supported Regions
 
@@ -148,7 +148,7 @@ The frontend agent name can be customized via environment variable — no code c
 
 ```bash
 # In frontend/.env
-VITE_BRAND_NAME=My Company WAF Agent
+VITE_BRAND_NAME=My Company WAF Analyst
 ```
 
 This changes the header, browser tab title, and conversation exports. Defaults to "WAF Analyst" if not set.

@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS WAF Agent — Knowledge Base (Bedrock KB + S3 Vectors). Deploy in same region as backend.
+Description: WAF Analyst — Knowledge Base (Bedrock KB + S3 Vectors). Deploy in same region as backend.
 
 Parameters:
   AppName:

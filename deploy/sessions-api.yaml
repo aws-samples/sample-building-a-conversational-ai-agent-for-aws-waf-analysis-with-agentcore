@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS WAF Agent — Sessions API (API Gateway + Lambda). Deploy in same region as backend.
+Description: WAF Analyst — Sessions API (API Gateway + Lambda). Deploy in same region as backend.
 
 Parameters:
   SessionsTableArn:

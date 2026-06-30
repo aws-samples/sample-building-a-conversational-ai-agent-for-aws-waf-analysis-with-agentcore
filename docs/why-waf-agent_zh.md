@@ -1,10 +1,10 @@
-# 为什么需要 AWS WAF Agent？
+# 为什么需要 WAF Analyst？
 
 截至 2026 年 5 月，AWS 没有任何原生服务能解决 WAF 日志调查和运维分析需求。
 
 ## 能力差距分析
 
-| 客户需求 | Security Agent | DevOps Agent | Security IR | Bot Control | WAF Agent |
+| 客户需求 | Security Agent | DevOps Agent | Security IR | Bot Control | WAF Analyst |
 |---------|:---:|:---:|:---:|:---:|:---:|
 | 判断 COUNT 规则是否误杀 | ❌ | ❌ | ❌ | ❌ | ✅ |
 | 确认流量是否为真实攻击 | ❌ | ❌ | ❌ | ❌ | ✅ |
@@ -45,7 +45,7 @@
 - **不能做**：事后分析、历史调查、运维报告
 - **差距**：标签在实时请求中生效，但没有内置工具来分析跨时间的模式、关联其他规则、或生成报告
 
-## WAF Agent 的核心能力
+## WAF Analyst 的核心能力
 
 ### 1. 交互式安全调查
 

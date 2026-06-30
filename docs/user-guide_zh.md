@@ -1,8 +1,8 @@
-# WAF Agent 使用指南
+# WAF Analyst 使用指南
 
 [English](user-guide.md)
 
-WAF Agent 是一个 AI 助手，帮助安全工程师调查 AWS WAF 安全事件、检测绕过攻击、生成 周报摘要。它在你提出**具体、明确的问题**时效果最好。
+WAF Analyst 是一个 AI 助手，帮助安全工程师调查 AWS WAF 安全事件、检测绕过攻击、生成 周报摘要。它在你提出**具体、明确的问题**时效果最好。
 
 > [!WARNING]
 > **如果部署时选择了 Amazon Bedrock 上的 GPT 系列模型，WAF 分析可能被静默拦截。**

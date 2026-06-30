@@ -2,11 +2,11 @@
 
 [English](iam-permissions.md)
 
-本文档列出 WAF Agent 需要的所有 IAM 权限、用途，以及是否会修改你的生产环境。
+本文档列出 WAF Analyst 需要的所有 IAM 权限、用途，以及是否会修改你的生产环境。
 
 ## 总结
 
-**WAF Agent 对你的生产资源是只读的。** 它不能修改 AWS WAF 规则、删除日志组、更改 CloudFront 分配或改动任何生产配置。唯一的写操作是：
+**WAF Analyst 对你的生产资源是只读的。** 它不能修改 AWS WAF 规则、删除日志组、更改 CloudFront 分配或改动任何生产配置。唯一的写操作是：
 
 1. 在专用 `waf_analysis_tmp` 数据库中创建**永久 Athena 表**（跨会话复用，避免重复创建开销）
 2. 写入自身的**容器日志**到 CloudWatch

@@ -2,7 +2,7 @@
 
 [中文版](cost-estimation_zh.md)
 
-Estimated monthly costs for WAF Agent deployment. All prices in USD.
+Estimated monthly costs for WAF Analyst deployment. All prices in USD.
 
 ## Cost Components
 

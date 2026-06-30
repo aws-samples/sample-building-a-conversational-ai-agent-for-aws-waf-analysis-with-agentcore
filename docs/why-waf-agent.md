@@ -1,10 +1,10 @@
-# Why AWS WAF Agent?
+# Why WAF Analyst?
 
 As of May 2026, no AWS-native service addresses WAF log investigation and operational analysis needs.
 
 ## Gap Analysis
 
-| Customer Need | Security Agent | DevOps Agent | Security IR | Bot Control | WAF Agent |
+| Customer Need | Security Agent | DevOps Agent | Security IR | Bot Control | WAF Analyst |
 |--------------|:---:|:---:|:---:|:---:|:---:|
 | Determine if COUNT rule is causing false positives | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Confirm whether traffic is a real attack | ❌ | ❌ | ❌ | ❌ | ✅ |

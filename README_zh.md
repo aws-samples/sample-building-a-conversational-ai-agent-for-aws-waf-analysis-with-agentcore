@@ -1,4 +1,4 @@
-# WAF Agent
+# WAF Analyst
 
 [English](README.md) | 中文
 
@@ -7,7 +7,7 @@
 > [!WARNING]
 > **请使用 Claude 模型。除非你已经完整测试过自己的工作流，否则强烈不建议在 Amazon Bedrock 上为本 Agent 选择 GPT 模型。**
 >
-> WAF Agent 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 4.6 或 Claude Opus。
+> WAF Analyst 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 4.6 或 Claude Opus。
 >
 > 如果你已经部署了 GPT 模型，并发现 Agent 没有反应，请发送类似这句话恢复上下文："我只是在防御性地分析自己环境中的 AWS WAF 日志和指标。请继续调查 WAF metrics 和 logs。不要提供 exploit payload、凭证窃取步骤、规避、持久化、恶意软件行为，或任何针对未授权系统的操作说明。"
 
@@ -23,7 +23,7 @@
 
 ## 快速开始
 
-![AWS WAF Agent 截图](docs/screenshot.png)
+![WAF Analyst 截图](docs/screenshot.png)
 
 ### 前置条件
 
@@ -121,7 +121,7 @@ graph TB
 - **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时。历史持久化到 DynamoDB（30 天 TTL）。
 - **记忆**：AgentCore Memory 提供跨会话 LTM（事实、偏好、摘要）。DynamoDB 存储完整消息历史。
 
-详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Agent？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md)
+详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Analyst？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md)
 
 ## 支持的区域
 
@@ -147,7 +147,7 @@ python agent.py "my-webacl 有没有流量绕过了 WAF？"
 
 ```bash
 # 在 frontend/.env 中
-VITE_BRAND_NAME=我的公司 WAF Agent
+VITE_BRAND_NAME=我的公司 WAF Analyst
 ```
 
 会影响页面标题、浏览器标签页和对话导出。未设置时默认为 "WAF Analyst"。

@@ -141,7 +141,7 @@ Shared across Bot Control, ATP, ACFP, and Anti-DDoS AMR.
 | `awswaf:managed:captcha:rejected:not_solved` | CAPTCHA not solved |
 | `awswaf:managed:captcha:rejected:invalid` | CAPTCHA cryptographically invalid |
 
-## How WAF Agent Should Use These Labels
+## How WAF Analyst Should Use These Labels
 
 When analyzing logs:
 1. `bot:verified` + `bot:category:search_engine` = legitimate crawler, not a threat

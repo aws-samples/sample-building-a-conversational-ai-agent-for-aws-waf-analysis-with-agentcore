@@ -2,11 +2,11 @@
 
 [中文版](iam-permissions_zh.md)
 
-This document lists every IAM permission WAF Agent requires, what it's used for, and whether it can modify your production environment.
+This document lists every IAM permission WAF Analyst requires, what it's used for, and whether it can modify your production environment.
 
 ## Summary
 
-**WAF Agent is read-only for your production resources.** It cannot modify AWS WAF rules, delete log groups, change CloudFront distributions, or alter any production configuration. The only write operations are:
+**WAF Analyst is read-only for your production resources.** It cannot modify AWS WAF rules, delete log groups, change CloudFront distributions, or alter any production configuration. The only write operations are:
 
 1. Creating **permanent Athena tables** in a dedicated `waf_analysis_tmp` database (reused across sessions to avoid recreation overhead)
 2. Writing its own **container logs** to CloudWatch
