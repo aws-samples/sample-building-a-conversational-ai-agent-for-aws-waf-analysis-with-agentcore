@@ -30,27 +30,25 @@
 - 已配置 AWS WAF 并开启日志的 AWS 账号
 - [Docker](https://docs.docker.com/get-docker/)（需要 buildx，用于构建 ARM64 镜像）
 - AWS CLI v2
+- Node.js 18+（用于构建前端）
 
-### 部署（3 步）
+部署是几个 CloudFormation 栈加一次容器构建。二选一：
 
-```bash
-# 1. 构建并推送 ARM64 镜像到 ECR
-aws ecr create-repository --repository-name waf-agent --region $REGION
-ECR_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/waf-agent
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
-docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+**方式一 —— 让你的 AI agent 帮你装（推荐）。** 把你的编码/运维 agent（Claude Code、Cursor 等）指向
+[AGENTS.md](AGENTS.md)，直接对话即可：
 
-# 2. 部署后端（Cognito + AgentCore）
-aws cloudformation deploy --template-file deploy/backend.yaml --stack-name waf-agent \
-  --region $REGION --parameter-overrides AgentContainerUri=$ECR_URI:latest \
-  --capabilities CAPABILITY_NAMED_IAM
+> 读一下 AGENTS.md，带我把 WAF Analyst 部署到我的 AWS 账号。
 
-# 3. 部署前端（CloudFront + WAF）— 必须在 us-east-1
-aws cloudformation deploy --template-file deploy/frontend.yaml \
-  --stack-name waf-agent-frontend --region us-east-1
-```
+`AGENTS.md` 是专门写给 LLM agent 看的方向性操作手册——讲清栈的部署顺序和依赖关系、需要向你收集的输入，以及各种坑
+（镜像必须 ARM64、前端必须 us-east-1、绝不能用 `:latest`、CloudFormation 会「忘记」参数）。它不重复具体命令，而是
+链接到部署指南里对应的步骤——agent 会边读边执行、先问你区域/profile，再逐步运行命令，并把每个栈的输出接到下一步。
 
-详细步骤见[部署指南](docs/deployment_zh.md)。
+**方式二 —— 自己手工部署。** 照着[部署指南](docs/deployment_zh.md)一步步来——它是具体命令的唯一来源，含区域选择、
+前端配置、成本说明和排错。
+
+> [!IMPORTANT]
+> 无论哪种方式：容器镜像**必须是 ARM64**，前端栈**必须在 us-east-1**，并且**请用 Claude 模型**（Bedrock 上的
+> GPT 系模型在 WAF 安全分析场景可能会静默卡住）。详见上面两份文档。
 
 ## 架构
 

@@ -31,27 +31,29 @@ See [docs/capabilities.md](docs/capabilities.md) for full details and example qu
 - AWS account with AWS WAF configured and logging enabled
 - [Docker](https://docs.docker.com/get-docker/) with buildx (for ARM64 images)
 - AWS CLI v2 configured with appropriate permissions
+- Node.js 18+ (for building the frontend)
 
-### Deploy (3 steps)
+Deployment is a few CloudFormation stacks plus a container build. Pick one of two paths:
 
-```bash
-# 1. Build and push ARM64 image to ECR
-aws ecr create-repository --repository-name waf-agent --region $REGION
-ECR_URI=$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/waf-agent
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URI
-docker buildx build --platform linux/arm64 -t $ECR_URI:latest --push .
+**Option 1 — Let your AI agent drive it (recommended).** Point your coding/ops agent (Claude Code,
+Cursor, etc.) at [AGENTS.md](AGENTS.md) and just talk to it:
 
-# 2. Deploy backend (Cognito + AgentCore)
-aws cloudformation deploy --template-file deploy/backend.yaml --stack-name waf-agent \
-  --region $REGION --parameter-overrides AgentContainerUri=$ECR_URI:latest \
-  --capabilities CAPABILITY_NAMED_IAM
+> Read AGENTS.md and walk me through deploying WAF Analyst to my AWS account.
 
-# 3. Deploy frontend (CloudFront + WAF) — must be us-east-1
-aws cloudformation deploy --template-file deploy/frontend.yaml \
-  --stack-name waf-agent-frontend --region us-east-1
-```
+`AGENTS.md` is a directional runbook written for LLM agents — the stack order and dependency flow,
+the inputs to collect from you, and the gotchas (ARM64-only image, us-east-1 frontend,
+never-use-`:latest`, CloudFormation forgetting parameters). It links to the exact commands in the
+Deployment Guide rather than duplicating them, so the agent reads each step there as it goes,
+collects your region/profile, runs the commands, and captures each stack's outputs for the next one.
 
-See [Deployment Guide](docs/deployment.md) for region selection, frontend config, and troubleshooting.
+**Option 2 — Deploy it yourself.** Follow the [Deployment Guide](docs/deployment.md) step by step —
+the single source of truth for the actual commands, with region selection, frontend config, cost
+notes, and troubleshooting.
+
+> [!IMPORTANT]
+> Whichever path you pick: the container image **must be ARM64**, the frontend stack **must be
+> us-east-1**, and you should **use a Claude model** (GPT-family Bedrock models can silently stall on
+> WAF security analysis). Details in both docs above.
 
 ## Architecture
 
