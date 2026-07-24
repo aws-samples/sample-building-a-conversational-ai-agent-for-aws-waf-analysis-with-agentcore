@@ -4,7 +4,7 @@ Description: WAF Analyst — Knowledge Base (Bedrock KB + S3 Vectors). Deploy in
 Parameters:
   AppName:
     Type: String
-    Default: waf-agent-kb
+    Default: waf-agent-kb-v1
 
 Resources:
   # --- S3 Vectors (vector store) ---

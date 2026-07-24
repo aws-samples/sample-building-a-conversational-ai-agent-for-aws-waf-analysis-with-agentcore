@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Bring your own log table
+
+- New `set_log_table` tool: the user can tell the agent in chat to query a specific
+  Athena/Glue table (e.g. *"use my table `my_db.my_waf_logs`"*) instead of relying on
+  auto-detection. The tool validates the table exists and has the required `action` /
+  `httprequest` columns and a supported time partition, then pins all log-detail queries for
+  the current WebACL to it. Say *"go back to auto-detection"* to clear it. The override is
+  cleared automatically on WebACL switch. See
+  [`docs/athena-table-detection.md` → Bring Your Own Table](docs/athena-table-detection.md#bring-your-own-table).
+- The "bring your own table" path accepts **any single `date`-projected partition column**,
+  not just `log_time` (e.g. `datehour`, `dt`). The query builders (`waf_query.query_logs`,
+  `waf_patrol`) now read the partition column name and its Java `SimpleDateFormat` from the
+  table's projection metadata and prune on it; the coarse-partition guard triggers on
+  granularity (no minute component) rather than an exact `yyyy/MM/dd/HH` match. Integer/enum
+  projections, non-projected Hive partitions, and multi-key partitioning are rejected with a
+  clear message. Auto-detection still requires the column to be named `log_time`.
+- A user-provided table **bypasses the coarse-partition guard**, so hourly (`yyyy/MM/dd/HH`)
+  and daily partitioned tables can run log-detail queries. This is an informed opt-in via
+  `set_log_table`; the confirmation warns about scan cost / timeout risk. Auto-detected and
+  Firehose hourly tables remain blocked.
+
 ## 0.12.0 (2026-06-24)
 
 New detection/diagnostic signals, knowledge-base monitoring guidance, a friendlier

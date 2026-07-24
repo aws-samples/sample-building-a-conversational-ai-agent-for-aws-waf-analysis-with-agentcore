@@ -25,6 +25,7 @@ from tools.waf_challenge_check import check_challenge_compatibility
 from tools.waf_bypass import detect_bypass
 from tools.finding import record_finding
 from tools.ask_user import ask_user
+from tools.waf_custom_table import set_log_table
 
 MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "jp.anthropic.claude-sonnet-4-6")
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "ap-northeast-1")
@@ -48,6 +49,7 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - Log query results are capped at 25 rows. If you see exactly 25 results, there are likely more. Do NOT state "only 25 IPs triggered this rule" — say "at least 25 IPs (results capped)."
 - **get_waf_config shows CURRENT state, not historical.** Rules may have been added/removed since the incident time. If top_rules or logs show a rule name that doesn't appear in get_waf_config, it was likely removed after the incident. Call ask_user() to confirm: "Rule X appears in historical data but not in the current WebACL config — was it removed? What was its purpose?"
 - **Log destination may have changed.** If log queries return 0 results but metrics show traffic existed, the current log destination may differ from what was configured at the incident time. Ask the user: "Log query returned 0 results but metrics show activity. Was the log destination (CWL group or S3 bucket) different during that time period?"
+- **User-provided log table.** If the user says "use my table X", "query my existing WAF table in database Y", or if auto-detection picked the wrong table / can't resolve the S3 path, call set_log_table(database='...', table='...'). This overrides auto-detection for the current WebACL; all later log-detail queries use it. The table must have `action` + `httprequest` columns and be partitioned by `log_time` — set_log_table validates this and returns the reason if it fails. Relay that reason to the user verbatim. To go back to auto-detection, call set_log_table(database='', table=''). Do NOT call this proactively; only when the user asks for their own table or auto-detection is clearly wrong.
 
 ## Tool Selection (user intent → tool)
 - "what's happening" / "any anomalies" / "bot situation" / "overview" → get_waf_overview
@@ -352,7 +354,7 @@ _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_l
           lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
           patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,
-          record_finding, ask_user]
+          record_finding, ask_user, set_log_table]
 
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
 

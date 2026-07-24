@@ -19,6 +19,12 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["log_filter_default"] = log_filter_default
     _state["findings"] = []
 
+    # A user-provided log table (set via set_log_table) was chosen for the
+    # previous WebACL's investigation. Clear it on every WebACL switch so we
+    # never silently query one WebACL's custom table for a different WebACL.
+    # The user can re-set it if their table spans multiple WebACLs.
+    _state.pop("custom_table", None)
+
     # The Athena table caches (waf_query._athena_table, waf_athena._athena_state)
     # are keyed to the previous WebACL's resolved S3 path. Reset them on every
     # WebACL switch so we never reuse a stale, wrong-location table. Local import
@@ -28,6 +34,29 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
         reset_table_cache()
     except Exception:
         pass
+
+
+def set_custom_table(database: str, table: str) -> None:
+    """Set (or clear) a user-provided Athena/Glue table for WAF log queries.
+
+    Passing empty database/table clears the override and restores
+    auto-detection. Resets the resolved-table cache so the next log query
+    re-resolves against the new setting."""
+    if not database or not table:
+        _state.pop("custom_table", None)
+    else:
+        _state["custom_table"] = {"database": database, "table": table}
+    # Force re-resolution on the next query (both waf_query and waf_athena caches).
+    try:
+        from tools.waf_query import reset_table_cache
+        reset_table_cache()
+    except Exception:
+        pass
+
+
+def get_custom_table() -> dict | None:
+    """Get the user-provided log table override, or None if auto-detecting."""
+    return _state.get("custom_table")
 
 
 def set_capabilities(capabilities: dict):
