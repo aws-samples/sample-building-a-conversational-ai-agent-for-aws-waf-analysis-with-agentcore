@@ -9,11 +9,12 @@ from tools.session_state import (
     get_custom_table,
     get_logs_region,
     get_webacl_name,
+    set_partition_timezone,
 )
 
 
 @tool
-def set_log_table(database: str = "", table: str = "") -> str:
+def set_log_table(database: str = "", table: str = "", partition_timezone: str = "") -> str:
     """Use a specific user-provided Athena/Glue table for WAF log queries instead of auto-detection.
 
     Call this when the user asks to "use my table", "query my existing WAF table",
@@ -39,9 +40,23 @@ def set_log_table(database: str = "", table: str = "") -> str:
       - The override applies to the current WebACL only; switching WebACL clears
         it, so re-set it if your table spans multiple WebACLs.
 
+    Partition timezone:
+      - WAF vended logs partition their S3 paths in UTC (the default assumption).
+      - If YOUR table's partition directories are written in LOCAL time (a custom
+        ETL, or a Firehose stream with a CustomTimeZone), pass `partition_timezone`
+        so pruning selects the right directories. Without it, a query for a local
+        12:00 event would look under the 16:00 (UTC) partition and return nothing
+        even though the row exists. Accepts an IANA name ("America/New_York") or a
+        fixed offset ("-04:00"). Only set this when the user tells you the logs are
+        partitioned in local time, or when queries return 0 rows while metrics show
+        traffic. Leave empty for UTC-partitioned tables.
+
     Args:
         database: Glue database containing the table (e.g. "waf_logs_db"). Empty clears the override.
         table: Table name (e.g. "my_waf_logs"). Empty clears the override.
+        partition_timezone: Timezone the S3 partition PATHS are written in — IANA
+            name or fixed offset. Empty = UTC (vended-log default). This is NOT the
+            display timezone; it only affects partition pruning.
 
     Returns:
         A confirmation describing the active table, its S3 location, and detected
@@ -50,10 +65,21 @@ def set_log_table(database: str = "", table: str = "") -> str:
     # Clear override → resume auto-detection.
     if not database or not table:
         set_custom_table("", "")
+        set_partition_timezone(None)
         return (
             "Cleared the custom log table. The agent will auto-detect or create a "
             "table from the WebACL's logging configuration on the next log query."
         )
+
+    # Validate the declared partition timezone (if any) before pinning the table.
+    if partition_timezone:
+        from tools.waf_athena import _zone_from_str
+        if _zone_from_str(partition_timezone) is None:
+            return (
+                f"Could not parse partition_timezone '{partition_timezone}'. Use an "
+                "IANA name like 'America/New_York' or a fixed offset like '-04:00'."
+            )
+    set_partition_timezone(partition_timezone or None)
 
     # Store first, then validate by resolving it (raises RuntimeError with an
     # actionable message on any problem). Resolution also populates the shared
@@ -67,6 +93,7 @@ def set_log_table(database: str = "", table: str = "") -> str:
         # Roll back the bad override so we don't leave the session pinned to an
         # unusable table.
         set_custom_table("", "")
+        set_partition_timezone(None)
         return f"Could not use `{database}.{table}`: {e}"
 
     from tools.waf_athena import _athena_state, _partition_has_minutes
@@ -93,10 +120,20 @@ def set_log_table(database: str = "", table: str = "") -> str:
         "table (no `webaclid` filter is added)."
     )
 
+    tz_note = (
+        f"\n- Partition paths interpreted as timezone: {partition_timezone} "
+        "(pruning derives directory bounds in this zone)."
+        if partition_timezone
+        else "\n- Partition paths assumed UTC. If queries return 0 rows while metrics "
+        "show traffic, your paths may be in local time — re-run with "
+        "partition_timezone set (e.g. 'America/New_York')."
+    )
+
     return (
         f"Now using `{full}` for WAF log queries in region {region}.\n"
         f"- Partition column: {part_col} (format {part_fmt})\n"
         f"- {scope_note}"
+        f"{tz_note}"
         f"{coarse_note}\n"
         "This applies to the current WebACL. Call set_log_table(database='', table='') "
         "to return to automatic detection."

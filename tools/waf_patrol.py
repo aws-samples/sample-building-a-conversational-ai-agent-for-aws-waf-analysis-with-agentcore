@@ -574,7 +574,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             # The custom-table path already set part_fmt from the table's projection.
             _, part_fmt, _, _ = _detect_partitions(s3_path)
 
-        from tools.waf_athena import _partition_has_minutes, _java_date_format_to_strftime
+        from tools.waf_athena import _partition_has_minutes, _java_date_format_to_strftime, _partition_zone
 
         # Block queries on coarse (hourly or coarser) partitions, unless the user
         # explicitly opted into this table via set_log_table.
@@ -592,8 +592,14 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
         time_cond = f'"timestamp" BETWEEN {start_ms} AND {end_ms}'
         if part_fmt:
             strftime_fmt = _java_date_format_to_strftime(part_fmt)
-            sp = start.strftime(strftime_fmt)
-            ep = end.strftime(strftime_fmt)
+            # Partition PATHS may be non-UTC (Firehose CustomTimeZone / custom
+            # local-time pipeline); derive the path bounds in that zone so we
+            # don't prune out real data. The epoch BETWEEN filter stays exact.
+            _pz = _partition_zone()
+            _s = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+            _e = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+            sp = _s.astimezone(_pz).strftime(strftime_fmt)
+            ep = _e.astimezone(_pz).strftime(strftime_fmt)
             time_cond += f" AND {part_col} >= '{sp}' AND {part_col} <= '{ep}'"
         # Automatic single-WebACL scoping is intentionally disabled: patrol scans
         # span every webaclid present in the table (no webaclid filter is added

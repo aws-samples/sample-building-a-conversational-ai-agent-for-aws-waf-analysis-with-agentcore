@@ -83,7 +83,7 @@ TEMPLATES = {
     },
     "ip_request_timeline": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as hits by action, bin(1m) as minute | sort minute | limit {limit}",
-        "athena": "SELECT action, from_unixtime((\"timestamp\" / 60000) * 60) as minute, count(*) as hits FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY action, (\"timestamp\" / 60000) * 60 ORDER BY minute LIMIT {LIMIT}",
+        "athena": "SELECT action, from_unixtime((\"timestamp\" / 60000) * 60 + {TZ_OFFSET_SECONDS}) as minute, count(*) as hits FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY action, (\"timestamp\" / 60000) * 60 ORDER BY minute LIMIT {LIMIT}",
         "params": ["ip"],
         "description": "Per-minute action timeline for an IP — see when BLOCK/Challenge kicked in",
     },
@@ -191,19 +191,19 @@ TEMPLATES = {
     },
     "action_timeline": {
         "query": "filter action = '{action}' | stats count(*) as cnt by bin(5m) | sort @timestamp asc | limit {limit}",
-        "athena": "SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as time_bucket, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = '{action}' GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') ORDER BY time_bucket ASC LIMIT {LIMIT}",
+        "athena": "SELECT date_format(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS}), '%Y-%m-%d %H:%i') as time_bucket, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = '{action}' GROUP BY date_format(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS}), '%Y-%m-%d %H:%i') ORDER BY time_bucket ASC LIMIT {LIMIT}",
         "params": ["action"],
         "description": "Timeline of a specific action (5-min buckets)",
     },
     "ip_request_rate": {
         "query": "filter httpRequest.clientIp = '{ip}' | stats count(*) as cnt by bin(1m) | sort @timestamp asc | limit {limit}",
-        "athena": "SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') ORDER BY minute ASC LIMIT {LIMIT}",
+        "athena": "SELECT date_format(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS}), '%Y-%m-%d %H:%i') as minute, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' GROUP BY date_format(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS}), '%Y-%m-%d %H:%i') ORDER BY minute ASC LIMIT {LIMIT}",
         "params": ["ip"],
         "description": "Per-minute request rate for a specific IP (detect automation)",
     },
     "ip_unique_uris": {
         "query": "filter httpRequest.clientIp = '{ip}' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
-        "athena": "SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_requests, min(from_unixtime(\"timestamp\"/1000)) as first_seen, max(from_unixtime(\"timestamp\"/1000)) as last_seen FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')",
+        "athena": "SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_requests, min(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS})) as first_seen, max(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS})) as last_seen FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')",
         "params": ["ip"],
         "description": "Unique non-static URI count and time span for an IP",
     },

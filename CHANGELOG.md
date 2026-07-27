@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Partition pruning now honors the partition-path timezone.** The `log_time` /
+  `dt` partition bounds were always derived in UTC, so a table whose S3 directories
+  are written in local time (a Firehose `CustomTimeZone`, or a custom local-time
+  ETL) had its data silently pruned out — e.g. a 12:16 local event lives under
+  `.../12/16` but the query looked under `.../16/16` (UTC), returning 0 rows while
+  metrics showed traffic. Pruning now derives the directory bounds in the actual
+  partition timezone, resolved with precedence: env `WAF_AGENT_PARTITION_TZ` >
+  `set_log_table(partition_timezone=...)` > auto-detected Firehose `CustomTimeZone`
+  > UTC (the vended-log default). Applies to both `waf_query.query_logs` and
+  `waf_patrol`. The `"timestamp" BETWEEN` epoch filter still enforces exact
+  correctness — this only changes which directories Athena scans. IANA names
+  (DST-aware) and fixed offsets are both accepted; added the `tzdata` dependency so
+  IANA zones resolve inside the slim container.
+- **Log-query timestamps now respect the session timezone.** Metrics
+  (`get_waf_overview`) already returned times in the user's session timezone, but
+  `run_logs_query` / `analyze_ip` returned log timestamps in UTC — Athena's
+  `from_unixtime()` renders in UTC, and CloudWatch Logs Insights `bin()`/`@timestamp`
+  are UTC. The mismatch made the agent misreport the hour of an event (e.g. a 14:00
+  EDT incident shown as 18:00) and "assume UTC" for logs while everything else was
+  local. The time-based Athena templates now offset the epoch by the session tz
+  inside `from_unixtime(... + {TZ_OFFSET_SECONDS})` (injected centrally in
+  `waf_query.query_logs`), and CWL results are shifted in Python via
+  `_shift_time_fields`. Grouping-only rate subqueries (peak/avg rpm) are unchanged
+  since their per-minute bucket is never displayed. The system prompt now states that
+  log-query timestamps are already session-local, so the agent must not re-label them
+  as UTC.
+
 ### Bring your own log table
 
 - New `set_log_table` tool: the user can tell the agent in chat to query a specific

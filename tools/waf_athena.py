@@ -26,6 +26,9 @@ _athena_state = {
     "table": None,           # "database.table_name"
     "partition_format": None, # Java date format, e.g. "yyyy/MM/dd/HH" or "yyyy/MM/dd/HH/mm"
     "partition_col": "log_time",  # partition column the SQL builders prune on
+    "partition_tz": None,    # IANA name / fixed offset the PARTITION PATHS are
+                             # written in (e.g. Firehose CustomTimeZone). None → UTC.
+                             # Independent of the user's display timezone.
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
     "allow_coarse": False,   # True when the user explicitly opted into a coarse
@@ -43,6 +46,7 @@ def reset_table_cache():
     _athena_state["table"] = None
     _athena_state["partition_format"] = None
     _athena_state["partition_col"] = "log_time"
+    _athena_state["partition_tz"] = None
     _athena_state["temp_created"] = False
     _athena_state["webacl_scoped"] = True
     _athena_state["allow_coarse"] = False
@@ -77,6 +81,62 @@ def _partition_has_minutes(java_fmt: str | None) -> bool:
     return bool(java_fmt) and "mm" in java_fmt
 
 
+def _zone_from_str(name: str | None):
+    """Resolve a timezone string to a tzinfo. Accepts an IANA name
+    ('America/New_York') or a fixed offset ('-04:00', '+05:30', '-4', 'UTC').
+    Returns None if the string is empty or unparseable (caller falls back)."""
+    from datetime import timezone, timedelta
+    if not name:
+        return None
+    name = name.strip()
+    if name.upper() in ("UTC", "Z", "GMT"):
+        return timezone.utc
+    # Fixed offset forms: ±HH:MM, ±HHMM, ±HH, or a bare number of hours.
+    import re as _re
+    m = _re.fullmatch(r"(?:UTC|GMT)?\s*([+-])(\d{1,2})(?::?(\d{2}))?", name)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        hours = int(m.group(2))
+        mins = int(m.group(3) or 0)
+        return timezone(sign * timedelta(hours=hours, minutes=mins))
+    try:
+        num = float(name)
+        return timezone(timedelta(hours=num))
+    except ValueError:
+        pass
+    # IANA name (needs the `tzdata` package in the slim container).
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+
+def _partition_zone():
+    """The timezone the S3 partition PATHS are written in, used to derive the
+    partition-pruning bounds. Precedence:
+
+      1. env WAF_AGENT_PARTITION_TZ (operator override)
+      2. session-declared timezone (set_log_table partition_timezone=...)
+      3. auto-detected Firehose CustomTimeZone (_athena_state['partition_tz'])
+      4. UTC (AWS vended logs and the default assumption)
+
+    Returns a tzinfo, never None. WAF vended logs partition in UTC, so the
+    common case stays UTC; only Firehose CustomTimeZone / custom local-time
+    pipelines need a non-UTC value."""
+    from datetime import timezone
+    z = _zone_from_str(os.environ.get("WAF_AGENT_PARTITION_TZ"))
+    if z is None:
+        try:
+            from tools.session_state import get_partition_timezone
+            z = _zone_from_str(get_partition_timezone())
+        except Exception:
+            z = None
+    if z is None:
+        z = _zone_from_str(_athena_state.get("partition_tz"))
+    return z if z is not None else timezone.utc
+
+
 # ---------------------------------------------------------------------------
 # S3 path resolution
 # ---------------------------------------------------------------------------
@@ -97,6 +157,12 @@ def _resolve_s3_path(log_dest_arn: str) -> str:
         dest = resp["DeliveryStreamDescription"]["Destinations"][0]
         # Try ExtendedS3 first, fallback to S3
         s3_dest = dest.get("ExtendedS3DestinationDescription") or dest.get("S3DestinationDescription", {})
+        # Firehose evaluates the !{timestamp:...} prefix in its CustomTimeZone
+        # (default UTC). If set to a non-UTC zone, the partition PATHS are in
+        # local time and pruning must derive bounds in that zone — record it.
+        _ctz = s3_dest.get("CustomTimeZone")
+        if _ctz and _ctz.upper() != "UTC":
+            _athena_state["partition_tz"] = _ctz
         bucket_arn = s3_dest.get("BucketARN", "")
         prefix = s3_dest.get("Prefix", "").rstrip("/")
         bucket = bucket_arn.split(":::")[1] if ":::" in bucket_arn else ""

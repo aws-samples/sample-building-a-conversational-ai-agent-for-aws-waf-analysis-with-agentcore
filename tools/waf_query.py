@@ -8,7 +8,7 @@ import time
 import threading
 from collections import Counter
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope
+from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone
 
 _cwl_semaphore = threading.Semaphore(8)
 MAX_POLL = 120
@@ -369,6 +369,41 @@ def check_hourly_partition_block() -> str | None:
         return _HOURLY_PARTITION_ERROR
     return None
 
+# Result columns that carry a wall-clock timestamp (produced by the time-based
+# query templates). Used to convert CWL Insights' UTC output to session-local.
+_TIME_FIELD_NAMES = {"first_seen", "last_seen", "minute", "time_bucket"}
+_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$")
+
+
+def _shift_time_fields(rows: list[dict] | None, tz_seconds: int) -> list[dict] | None:
+    """Shift UTC wall-clock strings in known time columns to the session tz.
+
+    CWL Insights renders bin()/@timestamp in UTC. We add the session offset so
+    these match Athena output (offset in-SQL) and get_waf_overview (local). A
+    field qualifies only if its NAME is a known time column (or a `bin(...)`
+    alias) AND its VALUE parses as a plain datetime — so non-time fields are
+    never touched. No-op when tz_seconds == 0."""
+    if not rows or not tz_seconds:
+        return rows
+    from datetime import datetime, timedelta
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, val in list(row.items()):
+            if not isinstance(val, str) or not val:
+                continue
+            if key not in _TIME_FIELD_NAMES and not key.startswith("bin("):
+                continue
+            if not _TS_RE.match(val.strip()):
+                continue
+            try:
+                dt = datetime.fromisoformat(val.strip()) + timedelta(seconds=tz_seconds)
+                row[key] = dt.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+    return rows
+
+
 def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict] | None:
     """Execute a log query, routing to CWL or Athena based on log destination.
 
@@ -389,7 +424,12 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
 
     if ":log-group:" in dest:
         log_group = dest.split(":log-group:")[-1].rstrip(":*")
-        return _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
+        rows = _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
+        # CWL Insights returns bin()/@timestamp fields in UTC. Shift the known
+        # time-valued columns to the session timezone so CWL output matches the
+        # Athena output (which is offset in-SQL) and the metrics overview.
+        _tz_off = get_user_timezone()
+        return _shift_time_fields(rows, int(round((_tz_off or 0) * 3600)))
     elif ":s3:::" in dest or ":firehose:" in dest:
         table = _ensure_athena_table(dest)
         # Block queries on coarse (hourly or coarser) partitions — they make
@@ -402,15 +442,31 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))
         sql = sql.replace("{LIMIT}", str(limit))
+        # Timezone: WAF log `timestamp` is epoch millis (UTC). Templates that
+        # DISPLAY a wall-clock time add {TZ_OFFSET_SECONDS} inside from_unixtime()
+        # so the returned string is in the user's session timezone — consistent
+        # with get_waf_overview (metrics), which already returns local times.
+        # Without this the agent gets UTC strings while everything else is local
+        # and misreports the hour of an event.
+        _tz_off = get_user_timezone()
+        _tz_seconds = int(round((_tz_off or 0) * 3600))
+        sql = sql.replace("{TZ_OFFSET_SECONDS}", str(_tz_seconds))
         # Inject partition pruning
-        from tools.waf_athena import _athena_state
-        from datetime import datetime, timezone as tz
+        from tools.waf_athena import _athena_state, _partition_zone
+        from datetime import datetime
         part_fmt = _athena_state.get("partition_format")
         part_col = _athena_state.get("partition_col", "log_time")
         if part_fmt:
             strftime_fmt = _java_date_format_to_strftime(part_fmt)
-            start_dt = datetime.fromtimestamp(start_epoch, tz=tz.utc)
-            end_dt = datetime.fromtimestamp(end_epoch, tz=tz.utc)
+            # The S3 partition PATHS may be written in a non-UTC zone (Firehose
+            # CustomTimeZone or a custom local-time pipeline). Derive the path
+            # bounds in that zone, NOT UTC — otherwise a UTC-16 path is queried
+            # for a local-12 event and the data is silently pruned out. The
+            # `"timestamp" BETWEEN` filter (epoch, UTC) still enforces exactness;
+            # this only selects which directories Athena scans.
+            _pz = _partition_zone()
+            start_dt = datetime.fromtimestamp(start_epoch, tz=_pz)
+            end_dt = datetime.fromtimestamp(end_epoch, tz=_pz)
             sp = start_dt.strftime(strftime_fmt)
             ep = end_dt.strftime(strftime_fmt)
             partition_clause = f"AND {part_col} >= '{sp}' AND {part_col} <= '{ep}'"

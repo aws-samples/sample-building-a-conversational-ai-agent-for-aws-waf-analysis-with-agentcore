@@ -103,6 +103,19 @@ Behavior notes:
 
 **Important:** If your Firehose uses hourly partitions (default), the agent blocks log-detail queries because they time out on production traffic. When this happens the agent retrieves the fix from its knowledge base and explains the cause and the one-time Firehose change to you inline. See the [Firehose Optimization Guide](firehose-minute-partitioning.md) for the same steps.
 
+## Partition-Path Timezone
+
+The partition **directory names** encode a wall-clock time (e.g. `.../2026/07/27/12/16`), and the agent has to know which timezone that clock is in to prune the right directories. The record's own `timestamp` field is always UTC epoch and is filtered exactly regardless — this only affects *which directories Athena scans*.
+
+- **AWS vended logs (S3 direct delivery)** always partition in **UTC**. No action needed — this is the default assumption.
+- **Firehose** evaluates the `!{timestamp:...}` prefix in its **`CustomTimeZone`** setting (default UTC). The agent reads `CustomTimeZone` from `DescribeDeliveryStream` and prunes in that zone automatically.
+- **Custom / bring-your-own tables** whose directories are written in local time: declare it with `set_log_table(partition_timezone='America/New_York')` (IANA name, DST-aware, or a fixed offset like `-04:00`).
+- **Operator override:** set the `WAF_AGENT_PARTITION_TZ` environment variable on the runtime to force a zone for all queries.
+
+Resolution precedence: `WAF_AGENT_PARTITION_TZ` env → `set_log_table(partition_timezone=...)` → detected Firehose `CustomTimeZone` → UTC.
+
+**Symptom of a wrong partition timezone:** log queries return **0 rows while CloudWatch metrics show traffic**. If your paths are in local time but the agent assumes UTC, the query looks in the wrong hour's directory. Re-run `set_log_table` with the correct `partition_timezone`.
+
 ## Tables Created by the Agent
 
 - Database: `waf_analysis_tmp` (auto-created if not exists)
