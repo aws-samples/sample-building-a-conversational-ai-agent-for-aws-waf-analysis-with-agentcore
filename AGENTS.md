@@ -93,9 +93,18 @@ First classify the failure — the fix lives in different places:
 - **Runtime / data** (Athena timeouts, "hourly partition" query blocks, "no logging", empty report
   sections) → **not a deployment problem.** These are expected agent behaviors covered in
   [`docs/user-guide.md`](docs/user-guide.md), [`docs/athena-table-detection.md`](docs/athena-table-detection.md),
-  and [`docs/firehose-minute-partitioning.md`](docs/firehose-minute-partitioning.md).
+  [`docs/firehose-minute-partitioning.md`](docs/firehose-minute-partitioning.md), and
+  [`docs/hourly-vs-minute-partitioning.md`](docs/hourly-vs-minute-partitioning.md) (why hourly log
+  queries are handled the way they are, and the cost/speed trade behind it).
 - **"What can the agent touch in my account?"** → [`docs/iam-permissions.md`](docs/iam-permissions.md)
   (read-only on production; the only writes are its own Athena temp tables, logs, sessions, memory).
+
+**Behavior vs. roadmap.** The docs above describe how the *deployed* build behaves. What is
+*planned but not yet shipped* lives in [`docs/roadmap.md`](docs/roadmap.md). Check the version you
+deployed (the `what version are you running?` step) against the CHANGELOG before assuming a
+roadmap item is live — e.g. the roadmap lists accepting hourly-partitioned logs, but until that
+ships the deployed agent still declines hourly log-detail queries as described above. Don't tell a
+user a roadmap item is present when their build predates it.
 
 ## Updating & cleanup
 

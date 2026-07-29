@@ -13,10 +13,13 @@ them, and that order can change.
 
 | | |
 |---|---|
+| Run log-detail analysis on hourly-partitioned logs (with an up-front note that scans cost more), instead of declining them | |
 | Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | |
 | Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | |
 | Work with an existing Athena table whose partition column is not named `log_time` | |
 | Read a Parquet WAF log table you converted yourself | |
+
+See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the trade-off and the measurements behind accepting hourly.
 
 ## Long-running queries
 
@@ -24,6 +27,8 @@ them, and that order can change.
 |---|---|
 | Keep the connection alive and show scan progress while a large query runs | |
 | Say plainly when a question needs a wider scan than one turn allows, and what to ask instead | |
+| Enforce the query time-window limit in code, not only as guidance | |
+| Offer the deepest bypass-scan drill-down as candidates you pick from, instead of running the whole chain automatically | |
 | A stop button that actually cancels the Athena query, not just the browser request | |
 | Say when a report section was skipped, instead of leaving it blank | |
 
