@@ -18,6 +18,7 @@
 - **漏杀检测** — 发现绕过 WAF 的爬虫、Bot 和 DDoS 流量
 - **报告** — 安全巡检、周报摘要、深度规则审查（均为可下载 HTML）
 - **最佳实践指导** — 基于 AWS 文档的 WAF 配置建议
+- **隐私保护** — 展示被检查的请求内容时，对密钥类字段（cookie、认证/会话 token、API key）打码；不会显示或判定这些密钥内部的攻击内容。见[数据隐私](docs/data-privacy_zh.md)。
 
 详见 [docs/capabilities.md](docs/capabilities.md)（英文）和 [docs/capabilities_zh.md](docs/capabilities_zh.md)。
 
@@ -119,7 +120,7 @@ graph TB
 - **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时。历史持久化到 DynamoDB（30 天 TTL）。
 - **记忆**：AgentCore Memory 提供跨会话 LTM（事实、偏好、摘要）。DynamoDB 存储完整消息历史。
 
-详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Analyst？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md) | [路线图](docs/roadmap_zh.md)
+详见 [部署指南](docs/deployment_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Analyst？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md) | [小时级 vs 分钟级分区](docs/hourly-vs-minute-partitioning_zh.md) | [路线图](docs/roadmap_zh.md)
 
 ## 支持的区域
 
@@ -158,7 +159,7 @@ VITE_BRAND_NAME=我的公司 WAF Analyst
 │   ├── waf_config.py     # WebACL 发现 + 能力检测
 │   ├── waf_metrics.py    # CloudWatch Metrics（免费、快速）
 │   ├── waf_overview.py   # 快速概览（Top 规则、Bot、攻击类型）
-│   ├── waf_logs.py       # 日志查询（20 个模板 + analyze_ip，CWL + Athena）
+│   ├── waf_logs.py       # 日志查询（37 个模板 + analyze_ip，CWL + Athena）
 │   ├── waf_query.py      # 统一查询层（自动路由 CWL 或 Athena）
 │   ├── waf_count_eval.py # COUNT 转 Block 评估工作流
 │   ├── waf_block_fp.py   # 误杀排查 + 主动扫描
