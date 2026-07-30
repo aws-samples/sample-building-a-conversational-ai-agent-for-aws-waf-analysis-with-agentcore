@@ -49,6 +49,12 @@
 | 报告渲染时对所有字段做转义 | |
 | 针对提示注入的自动化测试，同时验证攻击载荷仍能以文本形式正常显示 | |
 
+## 部署
+
+| | |
+|---|---|
+| 一键部署：通过 CodePipeline 直接从 GitHub 仓库提交、构建、部署（[#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)）| |
+
 ## 文档
 
 | | |
