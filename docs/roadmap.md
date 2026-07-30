@@ -52,6 +52,12 @@ See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the tr
 | Escape all report fields on render | |
 | Automated tests for prompt-injection resistance, and for attack payloads still displaying as text | |
 
+## Deployment
+
+| | |
+|---|---|
+| One-click deploy: commit, build, and deploy straight from the GitHub repo via a CodePipeline pipeline ([#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)) | |
+
 ## Documentation
 
 | | |
