@@ -17,6 +17,8 @@ them, and that order can change.
 | Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | |
 | Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | |
 | Work with an existing Athena table whose partition column is not named `log_time` | |
+| Detect a non-UTC timezone on Firehose S3 log paths automatically, so queries don't silently miss rows | |
+| Show query result times consistently in your session timezone across all data sources | |
 | Read a Parquet WAF log table you converted yourself | |
 
 See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the trade-off and the measurements behind accepting hourly.
