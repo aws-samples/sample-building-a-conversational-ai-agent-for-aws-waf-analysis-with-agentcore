@@ -2,55 +2,105 @@
 
 ## Unreleased
 
-### Fixed
+Thanks to @vishallakhotia (#12), whose refactor made the partition column and its
+projection format first-class instead of hardcoded. Three of the fixes below could
+not have been written without it: the widening in particular has to be expressed in
+projection-interval units, and that concept did not exist before.
 
-- **Partition pruning now honors the partition-path timezone.** The `log_time` /
-  `dt` partition bounds were always derived in UTC, so a table whose S3 directories
-  are written in local time (a Firehose `CustomTimeZone`, or a custom local-time
-  ETL) had its data silently pruned out — e.g. a 12:16 local event lives under
-  `.../12/16` but the query looked under `.../16/16` (UTC), returning 0 rows while
-  metrics showed traffic. Pruning now derives the directory bounds in the actual
-  partition timezone, resolved with precedence: env `WAF_AGENT_PARTITION_TZ` >
-  `set_log_table(partition_timezone=...)` > auto-detected Firehose `CustomTimeZone`
-  > UTC (the vended-log default). Applies to both `waf_query.query_logs` and
-  `waf_patrol`. The `"timestamp" BETWEEN` epoch filter still enforces exact
-  correctness — this only changes which directories Athena scans. IANA names
-  (DST-aware) and fixed offsets are both accepted; added the `tzdata` dependency so
-  IANA zones resolve inside the slim container.
-- **Log-query timestamps now respect the session timezone.** Metrics
-  (`get_waf_overview`) already returned times in the user's session timezone, but
-  `run_logs_query` / `analyze_ip` returned log timestamps in UTC — Athena's
-  `from_unixtime()` renders in UTC, and CloudWatch Logs Insights `bin()`/`@timestamp`
-  are UTC. The mismatch made the agent misreport the hour of an event (e.g. a 14:00
-  EDT incident shown as 18:00) and "assume UTC" for logs while everything else was
-  local. The time-based Athena templates now offset the epoch by the session tz
-  inside `from_unixtime(... + {TZ_OFFSET_SECONDS})` (injected centrally in
-  `waf_query.query_logs`), and CWL results are shifted in Python via
-  `_shift_time_fields`. Grouping-only rate subqueries (peak/avg rpm) are unchanged
-  since their per-minute bucket is never displayed. The system prompt now states that
-  log-query timestamps are already session-local, so the agent must not re-label them
-  as UTC.
+### Fixed: log queries were silently returning fewer rows than they should
 
-### Bring your own log table
+Three separate bugs, all in partition pruning, all with the same shape. No error,
+no warning, a plausible answer built on a fraction of the data.
 
-- New `set_log_table` tool: the user can tell the agent in chat to query a specific
-  Athena/Glue table (e.g. *"use my table `my_db.my_waf_logs`"*) instead of relying on
-  auto-detection. The tool validates the table exists and has the required `action` /
-  `httprequest` columns and a supported time partition, then pins all log-detail queries for
-  the current WebACL to it. Say *"go back to auto-detection"* to clear it. The override is
-  cleared automatically on WebACL switch. See
-  [`docs/athena-table-detection.md` → Bring Your Own Table](docs/athena-table-detection.md#bring-your-own-table).
-- The "bring your own table" path accepts **any single `date`-projected partition column**,
-  not just `log_time` (e.g. `datehour`, `dt`). The query builders (`waf_query.query_logs`,
-  `waf_patrol`) now read the partition column name and its Java `SimpleDateFormat` from the
-  table's projection metadata and prune on it; the coarse-partition guard triggers on
-  granularity (no minute component) rather than an exact `yyyy/MM/dd/HH` match. Integer/enum
-  projections, non-projected Hive partitions, and multi-key partitioning are rejected with a
-  clear message. Auto-detection still requires the column to be named `log_time`.
-- A user-provided table **bypasses the coarse-partition guard**, so hourly (`yyyy/MM/dd/HH`)
-  and daily partitioned tables can run log-detail queries. This is an informed opt-in via
-  `set_log_table`; the confirmation warns about scan cost / timeout risk. Auto-detected and
-  Firehose hourly tables remain blocked.
+- **Partition bounds are now widened by one projection interval on each side.**
+  Pruning used the same bounds as the `"timestamp" BETWEEN` filter, which assumes a
+  record timestamped inside minute *M* lives in directory *M*. It does not. Firehose
+  names an object after the arrival time of the record that opened the buffer, and one
+  object holds a whole buffer window, so the minute in the path bounds the timestamps
+  inside it in neither direction. Measured on a minute-level bucket, one directory
+  spanned 76 seconds and reached 28 seconds before its own label; the partition clause
+  dropped 5.70% and 8.12% of rows on two 5-minute windows and 0.23% on an hour. Worst
+  on the narrow windows the timeout guidance recommends. `"timestamp" BETWEEN` is
+  unchanged and still exact, so this only stops excluding rows inside the window.
+- **A bucket that switched from hourly to minute-level Firehose prefixes is now
+  detected as minute-level.** Detection walked into the *earliest* directory at every
+  level below the year, which on such a bucket is pre-cutover hourly data. The table
+  was pinned to `yyyy/MM/dd/HH` permanently, because no amount of new
+  minute-partitioned data changes a walk that never looks at it. Anyone who followed
+  [the minute-partitioning guide](docs/firehose-minute-partitioning.md) still has
+  those old paths, so this affected all of them.
+- **Minute-level tables always declare projection interval 1.** The interval used to
+  be inferred by subtracting two minute directory names. Firehose's
+  `!{timestamp:mm}` emits whatever minute the buffer flushed at, so those names are
+  arbitrary values like `03`, `07`, `41`, and the difference was meaningless. A guess
+  of 5 makes partition projection generate paths only at `00, 05, 10, ...` and never
+  read the objects under any other minute.
+
+**Known limitation this introduces.** A mixed-layout bucket now resolves as
+minute-level, and a minute-format table cannot read the pre-cutover hourly-era
+objects, because the projected minute paths do not exist under them. Those queries
+return zero rows with no error. To read that history, keep a separate
+hourly-format table over the old range. The intended behaviour is to detect the
+mixed layout and let you choose, which is still ahead: see
+[the roadmap](docs/roadmap.md). Minute-level is the right default in the meantime,
+since before this release the same bucket was misdetected as hourly and every
+log-detail query was refused outright.
+
+### Added: the agent can reuse a WAF log table you already maintain
+
+- **The partition column no longer has to be called `log_time`.** Discovery accepts
+  any single time column using partition projection of type `date`, with a
+  `projection.<col>.format` of `yyyy/MM/dd`, `yyyy/MM/dd/HH` or `yyyy/MM/dd/HH/mm`
+  and any separator, so `datehour` or `dt` work. Pruning uses the table's own
+  declared format, which is the only correct thing to compare partition values
+  against.
+- **Every log query names the table it ran against, and names any table it passed
+  over with the reason.** Rejections are specific: integer or enum projections,
+  non-projected Hive partitions, more than one partition key, an unusable format, an
+  interval unit with no fixed length, and a projection range that has already
+  stopped. "The agent built its own table" is not something you can act on by itself.
+- **A table you maintain is preferred over the agent's own scratch table**, then the
+  most specific location. Preferring specificity alone could not work: the scratch
+  table sits at exactly the resolved path, so it always won.
+- **Glue discovery is paginated.** A database past its first page of tables used to be
+  invisible, and the agent would build its own table next to a perfectly good one.
+- **Location matching respects path boundaries**, so a table at `s3://b/waf-logs` no
+  longer claims `s3://b/waf-logs-prod`.
+- **A query window outside the table's projected range is reported** instead of
+  returning zero rows that read as an absence of traffic.
+- WebACL scoping is now decided from the resolved table's own location rather than
+  the requested S3 path. The two differ when a table sits on an ancestor prefix, and
+  the old comparison could only err one way: claiming single-WebACL scoping for a
+  shared table and then omitting the `webaclid` filter.
+
+### Fixed: timezones
+
+- **Partition pruning honors the partition-path timezone.** Partition bounds were
+  always derived in UTC, so a table whose S3 directories are written in local time
+  had its data silently pruned away: a 12:16 local event lives under `.../12/16`
+  while the query looked under `.../16/16`, returning zero rows while metrics showed
+  traffic. Bounds are now derived in the actual partition timezone, resolved as env
+  `WAF_AGENT_PARTITION_TZ` > auto-detected Firehose `CustomTimeZone` > UTC (the
+  vended-log default). A custom local-time ETL is not detectable, so the env var is
+  the way to declare one. IANA names (DST-aware) and fixed offsets are both accepted;
+  added the `tzdata` dependency so IANA zones resolve inside the slim container.
+- **Log-query timestamps respect the session timezone.** `get_waf_overview` already
+  returned session-local times but `run_logs_query` and `analyze_ip` returned UTC,
+  because Athena's `from_unixtime()` renders in UTC and CloudWatch Logs Insights
+  `bin()` / `@timestamp` are UTC. The mismatch made the agent misreport the hour of an
+  event, showing a 14:00 EDT incident as 18:00. Time-based Athena templates now offset
+  the epoch by the session timezone inside `from_unixtime()`, and CWL results are
+  shifted in Python. Grouping-only rate subqueries (peak and average rpm) are
+  unchanged, since their per-minute bucket is never displayed. The system prompt
+  states that these timestamps are already session-local so the agent does not
+  re-label them as UTC.
+
+### Development
+
+- First tests in the repo, 60 of them, covering table resolution and partition
+  detection against a fake Glue catalog and a fake S3 tree. Run with
+  `uv run --extra dev python -m pytest tests/ -q`. Glue, S3 and Athena are all faked,
+  so these cover resolution logic and not AWS behaviour.
 
 ## 0.12.1 (2026-07-20)
 
