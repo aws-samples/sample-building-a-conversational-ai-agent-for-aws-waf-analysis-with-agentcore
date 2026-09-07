@@ -52,6 +52,18 @@
   `set_log_table`; the confirmation warns about scan cost / timeout risk. Auto-detected and
   Firehose hourly tables remain blocked.
 
+## 0.12.1 (2026-07-20)
+
+### Security
+
+- **Frontend: sanitize agent markdown before render (DOM XSS fix).** The chat window rendered
+  `marked` output straight into `dangerouslySetInnerHTML`, and `marked` v18 does not sanitize.
+  Agent answers routinely quote attacker-controlled log content (User-Agents, URIs, payloads),
+  so a crafted `<script>` / `<img onerror>` in a WAF log field could execute in the main origin,
+  where Cognito tokens live. Added `dompurify` and wrapped both `marked.parse` sinks
+  (`App.jsx` chat render + the multi-message HTML export) in `DOMPurify.sanitize`. Zero analysis
+  impact — malicious payloads still display verbatim as text/code, they just no longer execute.
+
 ## 0.12.0 (2026-06-24)
 
 New detection/diagnostic signals, knowledge-base monitoring guidance, a friendlier

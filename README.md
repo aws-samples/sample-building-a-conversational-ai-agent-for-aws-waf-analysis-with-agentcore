@@ -124,7 +124,7 @@ graph TB
 - **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime. History persisted to DynamoDB (30-day TTL).
 - **Memory**: AgentCore Memory for cross-session LTM (facts, preferences, summaries). DynamoDB for full message history.
 
-See [Deployment Guide](docs/deployment.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md) | [Data Privacy](docs/data-privacy.md) | [Why WAF Analyst?](docs/why-waf-agent.md) | [Firehose Optimization](docs/firehose-minute-partitioning.md) | [Athena Table Detection](docs/athena-table-detection.md)
+See [Deployment Guide](docs/deployment.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md) | [Data Privacy](docs/data-privacy.md) | [Why WAF Analyst?](docs/why-waf-agent.md) | [Firehose Optimization](docs/firehose-minute-partitioning.md) | [Athena Table Detection](docs/athena-table-detection.md) | [Hourly vs Minute Partitioning](docs/hourly-vs-minute-partitioning.md) | [Roadmap](docs/roadmap.md)
 
 ## Supported Regions
 
@@ -163,7 +163,7 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 │   ├── waf_config.py     # WebACL discovery + capabilities detection
 │   ├── waf_metrics.py    # CloudWatch Metrics (free, fast)
 │   ├── waf_overview.py   # Quick overview (top rules, bots, attacks)
-│   ├── waf_logs.py       # Log queries (36 templates + analyze_ip, CWL + Athena)
+│   ├── waf_logs.py       # Log queries (37 templates + analyze_ip, CWL + Athena)
 │   ├── waf_query.py      # Unified query layer (auto-routes CWL or Athena)
 │   ├── waf_count_eval.py # COUNT-to-Block evaluation workflow
 │   ├── waf_block_fp.py   # False positive investigation + proactive scan
