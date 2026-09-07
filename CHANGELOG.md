@@ -3,9 +3,10 @@
 ## Unreleased
 
 Thanks to @vishallakhotia (#12), whose refactor made the partition column and its
-projection format first-class instead of hardcoded. Three of the fixes below could
-not have been written without it: the widening in particular has to be expressed in
-projection-interval units, and that concept did not exist before.
+projection format first-class instead of hardcoded. Everything under "reuse a WAF
+log table you already maintain" below rests on that, and so does the partition-bound
+widening, which has to be expressed in projection-interval units and could not have
+been written before those units existed anywhere.
 
 ### Fixed: log queries were silently returning fewer rows than they should
 
@@ -49,11 +50,14 @@ log-detail query was refused outright.
 ### Added: the agent can reuse a WAF log table you already maintain
 
 - **The partition column no longer has to be called `log_time`.** Discovery accepts
-  any single time column using partition projection of type `date`, with a
-  `projection.<col>.format` of `yyyy/MM/dd`, `yyyy/MM/dd/HH` or `yyyy/MM/dd/HH/mm`
-  and any separator, so `datehour` or `dt` work. Pruning uses the table's own
-  declared format, which is the only correct thing to compare partition values
-  against.
+  any single time column using partition projection of type `date`, so `datehour` or
+  `dt` work, and pruning uses the table's own declared `projection.<col>.format`,
+  which is the only correct thing to compare partition values against.
+- **Log-detail queries still need a minute-level table**, meaning a format equivalent
+  to `yyyy/MM/dd/HH/mm` with any separator you like. Hourly and daily formats are now
+  understood and pruned correctly rather than misread, but the coarse-partition guard
+  still refuses to run log queries against them, so being understood is not the same
+  as being queryable. Accepting hourly is a separate change still ahead of this one.
 - **Every log query names the table it ran against, and names any table it passed
   over with the reason.** Rejections are specific: integer or enum projections,
   non-projected Hive partitions, more than one partition key, an unusable format, an
