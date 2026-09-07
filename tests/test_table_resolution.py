@@ -299,13 +299,14 @@ def _resolve(catalog, tbl):
 
 def test_predicate_renders_with_the_declared_format(catalog):
     """The predicate compares partition-column values, and those come from the
-    projection, so the DECLARED format is the only correct thing to render with."""
+    projection, so the DECLARED format is the only correct thing to render with.
+    Bounds are one hour out on each side because this table's interval is 1 hour."""
     _resolve(catalog, table("dh", SCOPED_PATH, col="datehour", fmt="yyyy-MM-dd-HH",
                             unit="hours", rng="2026-01-01-00,NOW"))
     clause, problem = A.partition_predicate(
         dt.datetime(2026, 9, 7, 3, tzinfo=dt.timezone.utc),
         dt.datetime(2026, 9, 7, 5, tzinfo=dt.timezone.utc))
-    assert clause == "AND datehour >= '2026-09-07-03' AND datehour <= '2026-09-07-05'"
+    assert clause == "AND datehour >= '2026-09-07-02' AND datehour <= '2026-09-07-06'"
     assert problem is None
 
 
@@ -315,18 +316,79 @@ def test_predicate_uses_the_partition_path_timezone_not_utc(catalog):
     _resolve(catalog, table("t", SCOPED_PATH))
     window = (dt.datetime(2026, 9, 7, 3, 5, tzinfo=dt.timezone.utc),
               dt.datetime(2026, 9, 7, 3, 40, tzinfo=dt.timezone.utc))
-    assert "2026/09/07/03/05" in A.partition_predicate(*window)[0]
+    assert "2026/09/07/03/04" in A.partition_predicate(*window)[0]
     A._athena_state["partition_tz"] = "America/New_York"
-    assert "2026/09/06/23/05" in A.partition_predicate(*window)[0]
+    assert "2026/09/06/23/04" in A.partition_predicate(*window)[0]
 
 
 def test_env_var_overrides_the_detected_partition_timezone(catalog, monkeypatch):
     _resolve(catalog, table("t", SCOPED_PATH))
     A._athena_state["partition_tz"] = "America/New_York"
     monkeypatch.setenv("WAF_AGENT_PARTITION_TZ", "Asia/Tokyo")
-    assert "2026/09/07/12/05" in A.partition_predicate(
+    assert "2026/09/07/12/04" in A.partition_predicate(
         dt.datetime(2026, 9, 7, 3, 5, tzinfo=dt.timezone.utc),
         dt.datetime(2026, 9, 7, 3, 40, tzinfo=dt.timezone.utc))[0]
+
+
+# --- widening the bounds by one interval ------------------------------------
+
+
+def test_bounds_are_widened_by_one_interval_on_each_side(catalog):
+    """A partition directory's name is the arrival time of the record that opened
+    the Firehose buffer, and one object holds a whole buffer window, so the minute
+    in the path bounds the timestamps inside it in neither direction. Using the
+    window's own bounds lost 5.70% and 8.12% of rows on two measured 5-minute
+    windows. `"timestamp" BETWEEN` stays exact, so this cannot pull in rows from
+    outside the window; it only stops excluding rows inside it."""
+    _resolve(catalog, table("t", SCOPED_PATH))
+    clause, _ = A.partition_predicate(
+        dt.datetime(2026, 9, 7, 14, 10, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 9, 7, 14, 15, tzinfo=dt.timezone.utc))
+    assert clause == ("AND log_time >= '2026/09/07/14/09' "
+                      "AND log_time <= '2026/09/07/14/16'")
+
+
+def test_widening_uses_the_declared_interval_not_a_fixed_minute(catalog):
+    """Expressed in the projection's own units, because a user's table may declare
+    any interval. Five minutes each side here, not one."""
+    _resolve(catalog, table("t", SCOPED_PATH, interval="5"))
+    clause, _ = A.partition_predicate(
+        dt.datetime(2026, 9, 7, 14, 10, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 9, 7, 14, 15, tzinfo=dt.timezone.utc))
+    assert clause == ("AND log_time >= '2026/09/07/14/05' "
+                      "AND log_time <= '2026/09/07/14/20'")
+
+
+def test_widening_crosses_hour_and_day_boundaries(catalog):
+    """The arithmetic is on a datetime, not on the rendered string, so midnight is
+    not a special case."""
+    _resolve(catalog, table("t", SCOPED_PATH))
+    clause, _ = A.partition_predicate(
+        dt.datetime(2026, 9, 7, 0, 0, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 9, 7, 23, 59, tzinfo=dt.timezone.utc))
+    assert clause == ("AND log_time >= '2026/09/06/23/59' "
+                      "AND log_time <= '2026/09/08/00/00'")
+
+
+def test_widening_is_clamped_to_the_projected_range(catalog):
+    """Widening past the projection's first partition would render a bound that
+    matches nothing, and there is no data out there to reach anyway."""
+    _resolve(catalog, table("t", SCOPED_PATH, rng="2026/09/07/00/00,NOW"))
+    clause, problem = A.partition_predicate(
+        dt.datetime(2026, 9, 7, 0, 0, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 9, 7, 1, 0, tzinfo=dt.timezone.utc))
+    assert clause.startswith("AND log_time >= '2026/09/07/00/00'")
+    assert problem is None
+
+
+def test_range_check_uses_the_unwidened_window(catalog):
+    """A query starting exactly at the projection's first partition is legitimate.
+    Checking the widened bound instead would report it as out of range."""
+    _resolve(catalog, table("t", SCOPED_PATH, rng="2026/09/07/00/00,NOW"))
+    _, problem = A.partition_predicate(
+        dt.datetime(2026, 9, 7, 0, 0, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 9, 7, 1, 0, tzinfo=dt.timezone.utc))
+    assert problem is None
 
 
 def test_window_before_the_projected_range_is_reported(catalog):
@@ -337,6 +399,15 @@ def test_window_before_the_projected_range_is_reported(catalog):
         dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
         dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc))
     assert problem is not None and "before" in problem
+
+
+def test_unsupported_interval_unit_is_rejected(catalog):
+    """Athena also allows weeks, months and years. Widening needs a unit with a
+    fixed wall-clock length, and nothing that partitions WAF logs by month is
+    usable here regardless."""
+    catalog({"userdb": [table("m", SHARED_PATH, fmt="yyyy/MM/dd", unit="months")]})
+    assert A._find_existing_table(SCOPED_PATH, "us-east-1") is None
+    assert "interval unit 'months'" in " ".join(A._athena_state["discovery_notes"])
 
 
 def test_no_resolved_table_yields_no_predicate(catalog):

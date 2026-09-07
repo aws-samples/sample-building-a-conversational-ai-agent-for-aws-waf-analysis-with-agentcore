@@ -9,7 +9,7 @@ import json
 import tempfile
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name
 
@@ -106,6 +106,15 @@ _GRANULARITY_BY_TOKENS = {
 }
 
 _JAVA_TOKEN_RE = re.compile(r"y+|M+|d+|H+|m+|s+|[^yMdHms]+")
+
+# Coarsest last. Used to compare a table's declared partitioning against the
+# layout actually in S3, and to turn a projection interval into a wall-clock
+# offset. The keys double as the set of `interval.unit` values that are accepted:
+# Athena also allows weeks, months and years, and a unit with no fixed length
+# cannot be widened by, so those are refused at discovery. The names match
+# `timedelta`'s keyword arguments on purpose.
+_GRANULARITY_ORDER = {"minutes": 0, "hours": 1, "days": 2}
+_MINUTES_PER_UNIT = {"minutes": 1, "hours": 60, "days": 1440}
 
 
 def _partition_granularity(java_fmt: str | None) -> str | None:
@@ -488,6 +497,13 @@ def _table_metadata(db_name: str, tbl: dict) -> dict | str:
         return (f"{name}: projection interval "
                 f"'{params.get(f'projection.{col}.interval')}' is not a number.")
     unit = params.get(f"projection.{col}.interval.unit", "").strip().lower() or granularity
+    if unit not in _MINUTES_PER_UNIT:
+        # Athena also allows weeks, months and years. Refusing them is not
+        # laziness: pruning widens the window by one interval on each side, and a
+        # unit with no fixed length cannot be turned into a wall-clock offset.
+        # Nothing that partitions WAF logs by month is usable here anyway.
+        return (f"{name}: projection interval unit '{unit}' is not supported. Use "
+                f"minutes, hours or days.")
 
     return {
         "table": name,
@@ -641,12 +657,6 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     }
 
 
-# Coarsest last. Used to compare a table's DECLARED partitioning against the
-# layout actually present in S3.
-_GRANULARITY_ORDER = {"minutes": 0, "hours": 1, "days": 2}
-_MINUTES_PER_UNIT = {"minutes": 1, "hours": 60, "days": 1440}
-
-
 def _cross_check_declared(meta: dict, s3_path: str, strict: bool) -> str | None:
     """Compare a table's declared projection against the real S3 layout.
 
@@ -774,6 +784,19 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
     the agent built itself the two always agree, which is why using the wrong one
     stays invisible until somebody reuses an external table.
 
+    The bounds are widened by one projection interval on each side, and that is a
+    correctness fix rather than a safety margin. A partition directory's name is
+    the arrival time of the record that opened the Firehose buffer, and one object
+    holds a whole buffer window, so the minute in the path bounds the timestamps
+    inside it in neither direction: it lags event time by the delivery delay and
+    leads the records that arrived later in the same buffer. Measured on a
+    minute-level bucket, one directory spanned 76 seconds and reached 28 seconds
+    before its own label, and using the window's own bounds lost 5.70% and 8.12%
+    of rows on two 5-minute windows. The loss is a couple of partitions at each
+    edge, so it is worst on exactly the narrow windows the timeout guidance steers
+    people toward. `"timestamp" BETWEEN` stays exact, so widening cannot pull in
+    rows from outside the window; it only stops excluding rows inside it.
+
     `problem` is set when the window falls outside the table's projected range.
     Athena reports that as zero rows, so saying so is the difference between "your
     table only covers from X" and the user concluding they had no traffic."""
@@ -785,15 +808,33 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
     zone = _partition_zone()
     start_local = start_dt.astimezone(zone)
     end_local = end_dt.astimezone(zone)
-    strftime_fmt = _java_date_format_to_strftime(part_fmt)
-    clause = (f"AND {part_col} >= '{start_local.strftime(strftime_fmt)}' "
-              f"AND {part_col} <= '{end_local.strftime(strftime_fmt)}'")
 
     problem = None
     naive_start, naive_end = start_local.replace(tzinfo=None), end_local.replace(tzinfo=None)
     range_start = _athena_state.get("partition_range_start")
     range_end = _athena_state.get("partition_range_end")
     table = _athena_state.get("table") or "the log table"
+
+    # Widen by one interval, expressed in the projection's own unit rather than in
+    # hardcoded minutes, because a user's table may declare any interval. Then
+    # clamp back inside the projected range: a bound outside it matches no
+    # projected partition, and there is nothing out there to find anyway. Range
+    # checking below uses the UNWIDENED window, so a query starting exactly at the
+    # projection's first partition is not reported as out of range.
+    widened_start, widened_end = naive_start, naive_end
+    step = timedelta(**{_athena_state.get("partition_interval_unit") or "minutes":
+                        _athena_state.get("partition_interval") or 1})
+    widened_start -= step
+    widened_end += step
+    if range_start is not None:
+        widened_start = max(widened_start, range_start)
+    if range_end is not None:
+        widened_end = min(widened_end, range_end)
+
+    strftime_fmt = _java_date_format_to_strftime(part_fmt)
+    clause = (f"AND {part_col} >= '{widened_start.strftime(strftime_fmt)}' "
+              f"AND {part_col} <= '{widened_end.strftime(strftime_fmt)}'")
+
     if range_start is not None and naive_start < range_start:
         problem = (f"The requested window starts {naive_start:%Y-%m-%d %H:%M}, before "
                    f"`{table}`'s partition projection begins "
