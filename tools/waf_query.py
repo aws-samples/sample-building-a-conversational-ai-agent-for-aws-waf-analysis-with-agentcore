@@ -364,10 +364,10 @@ def check_hourly_partition_block() -> str | None:
     from tools.waf_athena import _athena_state, _partition_has_minutes
     part_fmt = _athena_state.get("partition_format")
     # Block coarse (hourly or coarser) partitions — Athena scans too much per query.
-    # A user-provided table (set_log_table) opts out of this guard.
-    if part_fmt and not _partition_has_minutes(part_fmt) and not _athena_state.get("allow_coarse"):
+    if part_fmt and not _partition_has_minutes(part_fmt):
         return _HOURLY_PARTITION_ERROR
     return None
+
 
 # Result columns that carry a wall-clock timestamp (produced by the time-based
 # query templates). Used to convert CWL Insights' UTC output to session-local.
@@ -435,8 +435,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         # Block queries on coarse (hourly or coarser) partitions — they make
         # Athena scan too much data per query and time out on production traffic.
         from tools.waf_athena import _athena_state, _partition_has_minutes, _java_date_format_to_strftime
-        if (_athena_state.get("partition_format") and not _partition_has_minutes(_athena_state["partition_format"])
-                and not _athena_state.get("allow_coarse")):
+        if _athena_state.get("partition_format") and not _partition_has_minutes(_athena_state["partition_format"]):
             raise RuntimeError(_HOURLY_PARTITION_ERROR)
         sql = query_athena.replace("{TABLE}", table)
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
@@ -472,9 +471,15 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
             partition_clause = f"AND {part_col} >= '{sp}' AND {part_col} <= '{ep}'"
         else:
             partition_clause = ""
-        # Automatic single-WebACL scoping is intentionally disabled: queries span
-        # every webaclid present in the table (no webaclid filter is added even
-        # when the table location is shared by multiple WebACLs).
+        # If the table is not WebACL-specific (e.g. a Firehose bucket-root table
+        # shared by multiple WebACLs), filter by webaclid so we never count
+        # another WebACL's traffic. webaclid in the logs is the full ARN, which
+        # contains the WebACL name as a path segment. WebACL names are limited to
+        # [A-Za-z0-9-_] by AWS, so no SQL-escaping is needed.
+        if not _athena_state.get("webacl_scoped", True):
+            wn = get_webacl_name()
+            if wn and re.fullmatch(r"[A-Za-z0-9_-]+", wn):
+                partition_clause += f" AND webaclid LIKE '%/{wn}/%'"
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
         return _run_athena(sql)
     raise RuntimeError(f"Unsupported log destination format: {dest}")
@@ -539,22 +544,14 @@ def _ensure_athena_table(dest: str) -> str | None:
             from tools.waf_athena import (
                 _resolve_s3_path, _try_standard_path, _get_account_id,
                 _find_existing_table, _validate_waf_log, _detect_partitions,
-                _create_named_table, _athena_state, _apply_custom_table,
+                _create_named_table, _athena_state,
             )
-
-            region = get_logs_region()
-
-            # A user-provided table (set_log_table) takes precedence over
-            # auto-detection and does not require a resolvable S3 log path.
-            custom = _apply_custom_table(region)
-            if custom:
-                _athena_table = custom
-                return custom
 
             s3_base = _resolve_s3_path(dest)
             bucket = s3_base.replace("s3://", "").split("/")[0]
             scope = get_scope()
             webacl_name = get_webacl_name() or "unknown"
+            region = get_logs_region()
 
             # Try standard path for S3 direct delivery
             s3_path = None

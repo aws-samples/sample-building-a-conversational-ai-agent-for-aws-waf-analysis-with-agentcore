@@ -31,9 +31,6 @@ _athena_state = {
                              # Independent of the user's display timezone.
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
-    "allow_coarse": False,   # True when the user explicitly opted into a coarse
-                             # (hourly/daily) partitioned table via set_log_table,
-                             # bypassing the coarse-partition query guard.
 }
 
 
@@ -49,7 +46,6 @@ def reset_table_cache():
     _athena_state["partition_tz"] = None
     _athena_state["temp_created"] = False
     _athena_state["webacl_scoped"] = True
-    _athena_state["allow_coarse"] = False
 
 
 # Java SimpleDateFormat tokens (used by Athena partition projection 'date' type)
@@ -117,21 +113,15 @@ def _partition_zone():
     partition-pruning bounds. Precedence:
 
       1. env WAF_AGENT_PARTITION_TZ (operator override)
-      2. session-declared timezone (set_log_table partition_timezone=...)
-      3. auto-detected Firehose CustomTimeZone (_athena_state['partition_tz'])
-      4. UTC (AWS vended logs and the default assumption)
+      2. auto-detected Firehose CustomTimeZone (_athena_state['partition_tz'])
+      3. UTC (AWS vended logs and the default assumption)
 
     Returns a tzinfo, never None. WAF vended logs partition in UTC, so the
     common case stays UTC; only Firehose CustomTimeZone / custom local-time
-    pipelines need a non-UTC value."""
+    pipelines need a non-UTC value. A custom pipeline that Firehose detection
+    cannot see is reachable only through the env var, which is why step 1 exists."""
     from datetime import timezone
     z = _zone_from_str(os.environ.get("WAF_AGENT_PARTITION_TZ"))
-    if z is None:
-        try:
-            from tools.session_state import get_partition_timezone
-            z = _zone_from_str(get_partition_timezone())
-        except Exception:
-            z = None
     if z is None:
         z = _zone_from_str(_athena_state.get("partition_tz"))
     return z if z is not None else timezone.utc
@@ -362,109 +352,6 @@ TBLPROPERTIES (
 """.strip()
 
 
-def _apply_custom_table(region: str) -> str | None:
-    """Apply a user-provided log table (set via the set_log_table tool).
-
-    Returns the fully-qualified "database.table" and populates _athena_state
-    when a valid override is set, or None when the user hasn't set one (so the
-    caller falls through to auto-detection).
-
-    The table must expose the WAF log columns the SQL builders reference
-    (`action`, `httprequest`) and must have exactly one time-based partition
-    column using Athena partition projection of type `date`. The column name
-    can be anything (`log_time`, `datehour`, `dt`, ...) — it is recorded in
-    _athena_state["partition_col"] and its projection `format` drives pruning,
-    so the query builders adapt to it. Integer/enum projections, non-projected
-    Hive partitions, and multi-key partitioning are rejected. Raises
-    RuntimeError with an actionable message when the override is set but
-    unusable — the failure is surfaced to the user rather than silently
-    ignored."""
-    from tools.session_state import get_custom_table, get_webacl_name
-
-    custom = get_custom_table()
-    if not custom:
-        return None
-
-    db = custom["database"]
-    tbl = custom["table"]
-    glue = get_client("glue", region_name=region)
-    try:
-        resp = glue.get_table(DatabaseName=db, Name=tbl)
-    except Exception as e:
-        raise RuntimeError(
-            f"Custom log table `{db}.{tbl}` not found in region {region} "
-            f"({type(e).__name__}). Verify the database and table names, or clear "
-            f"the override with set_log_table(database='', table='') to resume auto-detection."
-        ) from e
-
-    t = resp["Table"]
-    cols = [c["Name"].lower() for c in t["StorageDescriptor"].get("Columns", [])]
-    missing = [c for c in ("action", "httprequest") if c not in cols]
-    if missing:
-        raise RuntimeError(
-            f"Custom log table `{db}.{tbl}` is missing required WAF log column(s): "
-            f"{', '.join(missing)}. The agent's queries reference `action` and "
-            f"`httprequest`; the table must expose them with those exact names."
-        )
-
-    part_keys = [p["Name"] for p in t.get("PartitionKeys", [])]
-    if len(part_keys) == 0:
-        raise RuntimeError(
-            f"Custom log table `{db}.{tbl}` is not partitioned. The agent prunes "
-            f"every log query on a single time-based partition column (partition "
-            f"projection). Recreate the table with a partition column such as "
-            f"`PARTITIONED BY (log_time string)` and Athena partition projection."
-        )
-    if len(part_keys) > 1:
-        raise RuntimeError(
-            f"Custom log table `{db}.{tbl}` has multiple partition keys "
-            f"({', '.join(part_keys)}). The agent supports exactly one time-based "
-            f"partition column. Use a single projected partition column (e.g. "
-            f"`log_time` formatted `yyyy/MM/dd/HH/mm`)."
-        )
-
-    part_col = part_keys[0]
-    params = t.get("Parameters", {})
-
-    # The SQL builders prune with a lexicographic string comparison against a
-    # rendered date. That is only valid for a 'date'-type partition projection
-    # (year-first, zero-padded). Integer/enum/injected projections, or plain
-    # Hive partitions with no projection, need different handling — reject them
-    # with an explanation rather than silently producing wrong results.
-    proj_type = params.get(f"projection.{part_col}.type", "").lower()
-    proj_format = params.get(f"projection.{part_col}.format", "")
-    if params.get("projection.enabled", "").lower() != "true" or proj_type != "date" or not proj_format:
-        raise RuntimeError(
-            f"Custom log table `{db}.{tbl}` partition column `{part_col}` must use "
-            f"Athena partition projection of type `date` with a `format` "
-            f"(found type='{proj_type or 'none'}', "
-            f"projection.enabled='{params.get('projection.enabled', 'none')}'). "
-            f"Integer/enum partitions and non-projected Hive partitions are not "
-            f"supported. Recreate the column as a projected `date` partition, e.g. "
-            f"projection.{part_col}.type=date, "
-            f"projection.{part_col}.format=yyyy/MM/dd/HH/mm."
-        )
-
-    part_fmt = proj_format
-    location = t["StorageDescriptor"].get("Location", "").rstrip("/")
-
-    full = f"{db}.{tbl}"
-    _athena_state["table"] = full
-    _athena_state["partition_format"] = part_fmt
-    _athena_state["partition_col"] = part_col
-    # The user explicitly chose this table, so honor coarse (hourly/daily)
-    # partitioning instead of blocking log-detail queries. Queries may be slower
-    # and can still hit the Athena timeout, but that's an informed opt-in.
-    _athena_state["allow_coarse"] = True
-    # A user table may hold logs from multiple WebACLs. Only treat it as
-    # WebACL-scoped when the WebACL name appears in its location; otherwise
-    # default to unscoped so query_logs adds a webaclid filter and avoids
-    # cross-WebACL contamination.
-    wn = get_webacl_name() or ""
-    _athena_state["webacl_scoped"] = bool(wn) and wn.lower() in location.lower()
-    return full
-
-
 def _find_existing_table(s3_path: str, region: str) -> str | None:
     """Search Glue catalog for a table matching this S3 location."""
     glue = get_client("glue", region_name=region)
@@ -685,12 +572,6 @@ def _ensure_table(region: str) -> str:
     """
     if _athena_state["table"]:
         return _athena_state["table"]
-
-    # A user-provided table (set_log_table) takes precedence over auto-detection
-    # and does not depend on a resolvable log destination.
-    custom = _apply_custom_table(region)
-    if custom:
-        return custom
 
     log_dest = get_log_destination()
     if not log_dest:

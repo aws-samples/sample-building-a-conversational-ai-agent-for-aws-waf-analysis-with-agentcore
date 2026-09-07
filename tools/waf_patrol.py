@@ -528,40 +528,31 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
     try:
         from tools.waf_athena import _resolve_s3_path, _try_standard_path, _get_account_id, \
             _find_existing_table, _validate_waf_log, _detect_partitions, _create_named_table, \
-            _run_athena_select, _ensure_database, _apply_custom_table, _athena_state
+            _run_athena_select, _ensure_database
         import re as _re
 
-        # Partition column defaults to log_time (agent-created / vended-log tables).
-        # A user-provided table (set_log_table) can use a differently-named column.
+        # Still a constant, not yet read from the table's own projection: this
+        # path never calls Glue, so it has no declared partition column to read.
+        # It becomes _find_existing_table's job to hand one over. Correct for now
+        # because discovery only accepts log_time-partitioned tables, and a wrong
+        # column would fail loudly here (Athena: unknown column) rather than
+        # quietly returning the wrong rows.
         part_col = "log_time"
 
-        # A user-provided table takes precedence over auto-detection and does not
-        # require a resolvable S3 log path.
-        custom = _apply_custom_table(region)
-        if custom:
-            full_table = custom
-            part_fmt = _athena_state.get("partition_format")
-            part_col = _athena_state.get("partition_col", "log_time")
-            # s3_path is only used below for webacl-scoping detection; the custom
-            # path already set _athena_state["webacl_scoped"], so use that instead.
-            s3_path = full_table  # sentinel; scoping decided via _athena_state below
-            _skip_detect = True
-        else:
-            _skip_detect = False
-            # Resolve S3 path
-            s3_base = _resolve_s3_path(log_dest)
-            bucket = s3_base.replace("s3://", "").split("/")[0]
-            s3_path = None
-            if ":s3:::" in log_dest:
-                account_id = _get_account_id()
-                s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
-            if not s3_path:
-                s3_path = s3_base
+        # Resolve S3 path
+        s3_base = _resolve_s3_path(log_dest)
+        bucket = s3_base.replace("s3://", "").split("/")[0]
+        s3_path = None
+        if ":s3:::" in log_dest:
+            account_id = _get_account_id()
+            s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
+        if not s3_path:
+            s3_path = s3_base
 
-            # Find or create table
-            full_table = _find_existing_table(s3_path, region)
-            part_fmt = None
-        if not _skip_detect and not full_table:
+        # Find or create table
+        full_table = _find_existing_table(s3_path, region)
+        part_fmt = None
+        if not full_table:
             if not _validate_waf_log(s3_path):
                 return {}, None
             storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
@@ -569,16 +560,14 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             safe_name = _re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
             full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, part_interval, region, "primary", f"waf_logs_{safe_name}")
             table_msg = f"Created permanent Athena table: {full_table} (reusable for future queries)"
-        elif not _skip_detect:
-            # Detect partition format from existing (auto-detected) table's S3 path.
-            # The custom-table path already set part_fmt from the table's projection.
+        else:
+            # Detect partition format from the existing table's S3 path.
             _, part_fmt, _, _ = _detect_partitions(s3_path)
 
         from tools.waf_athena import _partition_has_minutes, _java_date_format_to_strftime, _partition_zone
 
-        # Block queries on coarse (hourly or coarser) partitions, unless the user
-        # explicitly opted into this table via set_log_table.
-        if part_fmt and not _partition_has_minutes(part_fmt) and not _athena_state.get("allow_coarse"):
+        # Block queries on coarse (hourly or coarser) partitions.
+        if part_fmt and not _partition_has_minutes(part_fmt):
             return {}, ("⚠️ Coarse (hourly or coarser) partitioning detected — per-rule log details were "
                         "skipped (coarse partitions make Athena scan too much data per query, "
                         "timeout risk). This is a scan-time/UX stop, NOT a data error; the metrics "
@@ -601,9 +590,13 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             sp = _s.astimezone(_pz).strftime(strftime_fmt)
             ep = _e.astimezone(_pz).strftime(strftime_fmt)
             time_cond += f" AND {part_col} >= '{sp}' AND {part_col} <= '{ep}'"
-        # Automatic single-WebACL scoping is intentionally disabled: patrol scans
-        # span every webaclid present in the table (no webaclid filter is added
-        # even when the table location is shared by multiple WebACLs).
+        # If the table location is shared by multiple WebACLs (e.g. a Firehose
+        # bucket-root prefix), scope to this WebACL by webaclid so per-rule top
+        # IPs/URIs don't include another WebACL's hits on the same managed rule.
+        # webaclid is the full ARN containing the WebACL name as a path segment.
+        webacl_scoped = webacl_name.lower() in s3_path.lower()
+        if not webacl_scoped and _re.fullmatch(r"[A-Za-z0-9_-]+", webacl_name):
+            time_cond += f" AND webaclid LIKE '%/{webacl_name}/%'"
 
         # Query top IPs and URIs per rule (parallel)
         from tools.waf_query import inspection_location, athena_content_expr

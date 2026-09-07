@@ -19,15 +19,6 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["log_filter_default"] = log_filter_default
     _state["findings"] = []
 
-    # A user-provided log table (set via set_log_table) was chosen for the
-    # previous WebACL's investigation. Clear it on every WebACL switch so we
-    # never silently query one WebACL's custom table for a different WebACL.
-    # The user can re-set it if their table spans multiple WebACLs.
-    _state.pop("custom_table", None)
-    # The partition-path timezone is a property of the previous WebACL's log
-    # layout — clear it so a new WebACL re-detects (Firehose) or defaults to UTC.
-    _state.pop("partition_tz", None)
-
     # The Athena table caches (waf_query._athena_table, waf_athena._athena_state)
     # are keyed to the previous WebACL's resolved S3 path. Reset them on every
     # WebACL switch so we never reuse a stale, wrong-location table. Local import
@@ -37,29 +28,6 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
         reset_table_cache()
     except Exception:
         pass
-
-
-def set_custom_table(database: str, table: str) -> None:
-    """Set (or clear) a user-provided Athena/Glue table for WAF log queries.
-
-    Passing empty database/table clears the override and restores
-    auto-detection. Resets the resolved-table cache so the next log query
-    re-resolves against the new setting."""
-    if not database or not table:
-        _state.pop("custom_table", None)
-    else:
-        _state["custom_table"] = {"database": database, "table": table}
-    # Force re-resolution on the next query (both waf_query and waf_athena caches).
-    try:
-        from tools.waf_query import reset_table_cache
-        reset_table_cache()
-    except Exception:
-        pass
-
-
-def get_custom_table() -> dict | None:
-    """Get the user-provided log table override, or None if auto-detecting."""
-    return _state.get("custom_table")
 
 
 def set_capabilities(capabilities: dict):
@@ -101,26 +69,6 @@ def set_user_timezone(offset: float):
 def get_user_timezone() -> float | None:
     """Get user's timezone offset. Returns None if not yet determined."""
     return _state.get("user_tz_offset")
-
-
-def set_partition_timezone(tz: str | None):
-    """Declare the timezone the S3 log PARTITION paths are written in.
-
-    This is independent of the user's display timezone: it describes how the
-    physical dt/log_time directories are named (e.g. a Firehose CustomTimeZone
-    or a custom ETL that partitions in local time). Used only to derive the
-    partition-pruning bounds. Pass an IANA name ("America/New_York") or a fixed
-    offset ("-04:00"). Empty/None clears it (falls back to Firehose detection or
-    UTC)."""
-    if tz:
-        _state["partition_tz"] = tz
-    else:
-        _state.pop("partition_tz", None)
-
-
-def get_partition_timezone() -> str | None:
-    """Get the user-declared partition-path timezone, or None."""
-    return _state.get("partition_tz")
 
 
 def get_webacl_name() -> str | None:
