@@ -266,27 +266,37 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
         year_dirs = [d for d in dirs if re.match(r"^20[2-3]\d$", d)]
         if year_dirs:
             year = sorted(year_dirs)[-1]
-            # Walk down to determine depth
+            # Descend into the NEWEST child at every level, not the earliest.
+            #
+            # Anyone who has switched a Firehose prefix from hourly to
+            # minute-level still has the old hourly paths in their bucket, under
+            # earlier months of the same year. Taking the earliest child walked
+            # straight into that pre-cutover data, counted four levels, and pinned
+            # the table to yyyy/MM/dd/HH — permanently, because no amount of new
+            # minute-partitioned data changes a walk that never looks at it.
+            #
+            # Levels below the year are always two zero-padded digits, so a
+            # lexicographic max is the numeric max. Filtering to that shape also
+            # keeps a stray non-numeric directory from being chosen; letters sort
+            # after digits, so "newest" would otherwise pick it.
             test_prefix = current_prefix + year + "/"
             levels = [year]
             for _ in range(5):
-                sub_dirs = _s3_list_dirs(bucket, test_prefix)
-                if sub_dirs:
-                    levels.append(sub_dirs[0])
-                    test_prefix = test_prefix + sub_dirs[0] + "/"
-                else:
+                sub_dirs = [d for d in _s3_list_dirs(bucket, test_prefix) if re.fullmatch(r"\d{2}", d)]
+                if not sub_dirs:
                     break
+                newest = max(sub_dirs)
+                levels.append(newest)
+                test_prefix = test_prefix + newest + "/"
             if len(levels) >= 5:
-                fmt, unit = "yyyy/MM/dd/HH/mm", "minutes"
-                # Detect interval from minute-level directories (e.g., 00,05,10 → interval=5)
-                minute_dirs = sorted(_s3_list_dirs(bucket, test_prefix.rsplit("/", 2)[0] + "/"))
-                if len(minute_dirs) >= 2:
-                    try:
-                        interval = int(minute_dirs[1]) - int(minute_dirs[0])
-                    except (ValueError, IndexError):
-                        interval = 5
-                else:
-                    interval = 5
+                # Minute-level means interval 1, and it is never inferred from the
+                # directory names. Firehose's !{timestamp:mm} emits whatever minute
+                # the buffer happened to flush at, so the minute directories are
+                # arbitrary values like 03, 07, 08, 41. The old code subtracted two
+                # of them and fed the difference to partition projection, which then
+                # generated paths only at that stride and never read the objects in
+                # between: a fraction of the rows, with no error to show for it.
+                fmt, unit, interval = "yyyy/MM/dd/HH/mm", "minutes", 1
             else:
                 fmt, unit = "yyyy/MM/dd/HH", "hours"
                 interval = 1
