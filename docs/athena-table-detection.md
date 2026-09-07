@@ -7,9 +7,11 @@ English | [中文](athena-table-detection_zh.md)
 When the agent needs to query WAF logs stored in S3, it follows this sequence:
 
 1. **Resolve S3 path** from the WAF logging configuration ARN
-2. **Search Glue Data Catalog** for an existing table that matches the S3 path, has WAF log columns (`action`, `httprequest`), **and is partitioned by `log_time`** (required for the agent's partition pruning)
-3. **If found** — validate that the table's partition format and interval match the actual S3 directory structure, then reuse it
+2. **Search Glue Data Catalog** for an existing table whose `LOCATION` covers that path, which has the WAF log columns (`action`, `httprequest`), and which is partitioned on **one** time column using partition projection of type `date`. The column can be called anything: `log_time`, `datehour`, `dt`
+3. **If found** — cross-check the table's declared partitioning against the actual S3 directory structure, then reuse it
 4. **If not found** — auto-create a table in the `waf_analysis_tmp` database
+
+Every log query reports which table it used, and if a table was passed over, why. So "the agent created its own table" always comes with the reason it did not use yours.
 
 ### Automatic Self-Healing
 
@@ -49,23 +51,32 @@ This means:
 
 ## Existing Table Detection
 
-The agent searches **all Glue databases** (not just `waf_analysis_tmp`) for a table whose `LOCATION` is a prefix of the resolved S3 log path. To qualify, the table must have both `action` and `httprequest` columns.
+The agent searches **all Glue databases**, paginated, for a table whose `LOCATION` covers the resolved S3 log path.
 
 ### When Detection Succeeds
 
-- The S3 path resolved from WAF logging config **starts with** your table's `LOCATION` (i.e., your table's LOCATION is equal to or a parent prefix of the resolved path)
-- Your table has both `action` and `httprequest` columns
-- Your table is partitioned by `log_time` (partition projection)
-- The partition interval matches the actual S3 directory structure
+- The S3 path resolved from WAF logging config is your table's `LOCATION` or sits underneath it. The comparison is on a path boundary, so a table at `s3://b/waf-logs` does not claim `s3://b/waf-logs-prod`
+- Your table has both `action` and `httprequest` columns, by those exact names
+- Your table has **exactly one** partition column, using partition projection of type `date`. Its name is free
+- Its `projection.<col>.format` is `yyyy/MM/dd`, `yyyy/MM/dd/HH` or `yyyy/MM/dd/HH/mm`, with any separator you like
+- Its `projection.<col>.range` upper bound is `NOW` or a future date
+
+### Which Table Wins
+
+More than one table can qualify. The agent prefers **any table you maintain over its own scratch table**, then the most specific location within that group. Specificity alone would not work: the agent's own table sits at exactly the resolved path, making it the most specific match every time, so yours would never be chosen.
+
+Ties between two equally specific tables in different databases resolve alphabetically, and the chosen table is always named in the query output so an ambiguity is visible rather than silent.
 
 ### When Detection May Fail
 
 | Scenario | Why it fails | Workaround |
 |----------|-------------|------------|
 | Firehose prefix is entirely dynamic expressions | Resolved path is just the bucket root, doesn't match a more-specific user table LOCATION | The agent's own scratch table self-heals (drops + recreates at the resolved path); a *user-provided* table at a deeper path still won't match |
-| Database has >100 tables | Pagination not yet implemented | Place WAF table in a smaller database, or in `waf_analysis_tmp` |
 | Custom column names | `httprequest` named differently (e.g., `http_request`) | Rename column to `httprequest` (the agent's SQL references it by that exact name) |
-| Different partition column name | Your table uses `datehour` instead of `log_time` | The agent skips it and creates its own `log_time`-partitioned table alongside yours (both point to the same S3 data) |
+| Integer or enum partition projection | Pruning compares the partition value against a rendered timestamp, which only works for a `date` projection | Recreate the column as `projection.<col>.type=date` |
+| Non-projected Hive partitions | The agent never runs `ALTER TABLE ADD PARTITION`, so it cannot see them | Switch the table to partition projection |
+| More than one partition key | Queries prune on a single time column | Use one projected time column |
+| Declared partitions finer than the S3 layout | A table declaring `yyyy/MM/dd/HH/mm` over hourly directories projects paths that do not exist, and Athena reports that as zero rows | Fix the declared format to match the data. Declaring *coarser* than the data is fine: Athena scans recursively below the directory |
 
 ## S3 Path Resolution by Delivery Method
 
@@ -105,14 +116,12 @@ Resolution precedence: `WAF_AGENT_PARTITION_TZ` env → detected Firehose `Custo
 - They are read-only external tables pointing to your existing S3 log data (no data copying)
 - Safe to delete: `DROP TABLE waf_analysis_tmp.waf_logs_xxx` or `DROP DATABASE waf_analysis_tmp CASCADE`
 
-> **Note:** If you already have your own partition projection table but it uses a different partition column name, the agent will create its own table alongside yours. Both tables point to the same S3 data — no duplication, no conflict. You can keep both or drop the agent's table after investigation.
+> **Note:** The agent builds its own table only when no table of yours qualifies. When that happens the query output says which check yours failed. Both tables point to the same S3 data, so there is no duplication and no conflict; keep both or drop the agent's after the investigation.
 
 ## Known Limitations
 
-1. **Partition column name is hardcoded to `log_time`.** If you have an existing table with a different partition column (e.g., `datehour`, `dt`), the agent cannot reuse it — it will create its own table alongside yours.
+1. **No way to name a table in chat.** You cannot tell the agent "use my table X in database Y." It resolves the table from your logging configuration, so the way to steer it is to make your table qualify.
 
-2. **No "bring your own table" config yet.** You cannot currently tell the agent "use my table X in database Y." It always auto-detects or creates.
+2. **Hourly and coarser tables are still refused for log-detail queries.** Detection accepts them, then the query is blocked on scan cost. Only minute-level tables can run log details today.
 
-3. **Glue pagination not implemented.** If a database has >100 tables, some tables may not be found during detection.
-
-4. **Custom S3 prefix on Vended Logs is invisible.** If you configured a custom key prefix via the API (not console), the agent may not resolve the correct path because `GetLoggingConfiguration` doesn't return the prefix.
+3. **Custom S3 prefix on Vended Logs is invisible.** If you configured a custom key prefix via the API (not console), the agent may not resolve the correct path because `GetLoggingConfiguration` doesn't return the prefix.

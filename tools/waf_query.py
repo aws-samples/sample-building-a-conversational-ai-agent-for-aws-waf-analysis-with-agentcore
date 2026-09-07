@@ -358,12 +358,20 @@ _HOURLY_PARTITION_ERROR = (
 
 
 def check_hourly_partition_block() -> str | None:
-    """Return error message if Athena backend has hourly partitions, else None."""
+    """Return the coarse-partition error if the Athena table is coarser than
+    minute-level, else None.
+
+    Best-effort pre-flight only, and deliberately so. It reads
+    `_athena_state["partition_format"]`, which is written by table resolution, so
+    on a cold session where nothing has resolved a table yet it returns None and
+    the caller proceeds. That is fine because the real block is enforced inside
+    `query_logs` after resolution; this only exists to fail early with written
+    guidance instead of a bare exception. Do not add a resolve call here: callers
+    use it as a cheap guard and resolution walks S3 and the Glue catalog."""
     if get_log_type() != "s3":
         return None
     from tools.waf_athena import _athena_state, _partition_has_minutes
     part_fmt = _athena_state.get("partition_format")
-    # Block coarse (hourly or coarser) partitions — Athena scans too much per query.
     if part_fmt and not _partition_has_minutes(part_fmt):
         return _HOURLY_PARTITION_ERROR
     return None
@@ -434,7 +442,9 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         table = _ensure_athena_table(dest)
         # Block queries on coarse (hourly or coarser) partitions — they make
         # Athena scan too much data per query and time out on production traffic.
-        from tools.waf_athena import _athena_state, _partition_has_minutes, _java_date_format_to_strftime
+        # Safe as a bare granularity test because discovery rejects any declared
+        # format it could not classify, so nothing unclassifiable reaches here.
+        from tools.waf_athena import _athena_state, _partition_has_minutes
         if _athena_state.get("partition_format") and not _partition_has_minutes(_athena_state["partition_format"]):
             raise RuntimeError(_HOURLY_PARTITION_ERROR)
         sql = query_athena.replace("{TABLE}", table)
@@ -450,27 +460,19 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         _tz_off = get_user_timezone()
         _tz_seconds = int(round((_tz_off or 0) * 3600))
         sql = sql.replace("{TZ_OFFSET_SECONDS}", str(_tz_seconds))
-        # Inject partition pruning
-        from tools.waf_athena import _athena_state, _partition_zone
-        from datetime import datetime
-        part_fmt = _athena_state.get("partition_format")
-        part_col = _athena_state.get("partition_col", "log_time")
-        if part_fmt:
-            strftime_fmt = _java_date_format_to_strftime(part_fmt)
-            # The S3 partition PATHS may be written in a non-UTC zone (Firehose
-            # CustomTimeZone or a custom local-time pipeline). Derive the path
-            # bounds in that zone, NOT UTC — otherwise a UTC-16 path is queried
-            # for a local-12 event and the data is silently pruned out. The
-            # `"timestamp" BETWEEN` filter (epoch, UTC) still enforces exactness;
-            # this only selects which directories Athena scans.
-            _pz = _partition_zone()
-            start_dt = datetime.fromtimestamp(start_epoch, tz=_pz)
-            end_dt = datetime.fromtimestamp(end_epoch, tz=_pz)
-            sp = start_dt.strftime(strftime_fmt)
-            ep = end_dt.strftime(strftime_fmt)
-            partition_clause = f"AND {part_col} >= '{sp}' AND {part_col} <= '{ep}'"
-        else:
-            partition_clause = ""
+        # Inject partition pruning. Rendering the bounds, choosing the timezone
+        # and checking the projected range all live in partition_predicate so
+        # patrol's Athena path cannot drift from this one.
+        from tools.waf_athena import partition_predicate
+        from datetime import datetime, timezone as _tz
+        partition_clause, range_problem = partition_predicate(
+            datetime.fromtimestamp(start_epoch, tz=_tz.utc),
+            datetime.fromtimestamp(end_epoch, tz=_tz.utc),
+        )
+        if range_problem:
+            # Fatal here: the query would come back empty and the agent would
+            # report "no traffic", which is a wrong answer rather than a slow one.
+            raise RuntimeError(range_problem)
         # If the table is not WebACL-specific (e.g. a Firehose bucket-root table
         # shared by multiple WebACLs), filter by webaclid so we never count
         # another WebACL's traffic. webaclid in the logs is the full ARN, which
@@ -542,9 +544,7 @@ def _ensure_athena_table(dest: str) -> str | None:
 
         try:
             from tools.waf_athena import (
-                _resolve_s3_path, _try_standard_path, _get_account_id,
-                _find_existing_table, _validate_waf_log, _detect_partitions,
-                _create_named_table, _athena_state,
+                _resolve_s3_path, _try_standard_path, _get_account_id, resolve_log_table,
             )
 
             s3_base = _resolve_s3_path(dest)
@@ -561,67 +561,7 @@ def _ensure_athena_table(dest: str) -> str | None:
             if not s3_path:
                 s3_path = s3_base
 
-            # A table whose location does NOT include the WebACL name (e.g. a
-            # Firehose bucket-root prefix) may hold logs from multiple WebACLs.
-            # Record this so query_logs can add a webaclid filter to avoid
-            # cross-WebACL contamination.
-            webacl_scoped = webacl_name.lower() in s3_path.lower()
-            _athena_state["webacl_scoped"] = webacl_scoped
-
-            # Check for existing table
-            existing = _find_existing_table(s3_path, region)
-            if existing:
-                # Validate partition config and path match S3 structure
-                try:
-                    from tools.aws_session import get_client as _gc
-                    glue = _gc("glue", region_name=region)
-                    db, tbl_name = existing.split(".", 1)
-                    tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
-                    tbl_params = tbl_resp["Table"].get("Parameters", {})
-                    existing_interval = tbl_params.get("projection.log_time.interval", "1")
-                    table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
-                    resolved = s3_path.rstrip("/")
-                    _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
-                    interval_mismatch = str(actual_interval) != str(existing_interval)
-                    # Path mismatch: resolved must be equal to or more specific than table location.
-                    # If resolved is just bucket root but table points to a sub-path, it's a mismatch
-                    # (log delivery method changed — e.g., Vended Logs → Firehose).
-                    path_mismatch = not resolved.startswith(table_location)
-                    if interval_mismatch or path_mismatch:
-                        if db == "waf_analysis_tmp":
-                            glue.delete_table(DatabaseName=db, Name=tbl_name)
-                            # Fall through to create new table
-                        else:
-                            pass  # External table — create our own below
-                    else:
-                        _athena_table = existing
-                        _athena_state["table"] = existing
-                        _athena_state["partition_format"] = part_fmt
-                        return existing
-                except Exception:
-                    _athena_table = existing
-                    _athena_state["table"] = existing
-                    # Best-effort partition_format so query_logs can prune and
-                    # apply the hourly-partition guard.
-                    try:
-                        _, pf, _, _ = _detect_partitions(s3_path)
-                        _athena_state["partition_format"] = pf
-                    except Exception:
-                        pass
-                    return existing
-
-            # Create permanent table
-            if not _validate_waf_log(s3_path):
-                raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log destination is correct.")
-            storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
-            safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-            full_table = _create_named_table(
-                s3_path, storage_template, part_fmt, part_unit, part_interval,
-                region, "primary", f"waf_logs_{safe_name}"
-            )
-            _athena_table = full_table
-            _athena_state["table"] = full_table
-            _athena_state["partition_format"] = part_fmt
-            return full_table
+            _athena_table = resolve_log_table(s3_path, region, webacl_name)
+            return _athena_table
         except Exception as e:
             raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e

@@ -509,6 +509,16 @@ def run_logs_query(
     if _masked:
         lines.append(f"\nHINT: {PRIVACY_MASK_HINT}")
 
+    # Name the table this ran against, and why any candidate was passed over. On
+    # the Athena backend the agent picks the table itself, so without this the user
+    # has no way to tell a query of their own table from a query of one the agent
+    # built next to it.
+    if get_log_type() == "s3":
+        from tools.waf_athena import describe_table_resolution
+        resolution = describe_table_resolution()
+        if resolution:
+            lines.append("\nTABLE: " + resolution.replace("\n", "\n       "))
+
     # Append deterministic interpretation for specific query types
     interpretation = _interpret_results(query_type, results[:MAX_RESULTS])
     if interpretation:
