@@ -73,9 +73,15 @@ log-detail query was refused outright.
 - **A query window outside the table's projected range is reported** instead of
   returning zero rows that read as an absence of traffic.
 - WebACL scoping is now decided from the resolved table's own location rather than
-  the requested S3 path. The two differ when a table sits on an ancestor prefix, and
-  the old comparison could only err one way: claiming single-WebACL scoping for a
-  shared table and then omitting the `webaclid` filter.
+  the requested S3 path. The two genuinely differ when a table sits on an ancestor
+  prefix, and the resolved location is the only one that describes the data a query
+  will actually read. Stated narrowly on purpose: no delivery method AWS offers
+  produces a layout where the old comparison caused real cross-WebACL contamination,
+  because vended logs put the WebACL name above the date so an ancestor table cannot
+  span two of them, and a Firehose bucket root carries no WebACL name at all so the
+  old comparison already reached the right answer. A custom pipeline that puts
+  several WebACLs under one date-shaped tree could reach it, which is reason enough
+  to score the correct input.
 
 ### Fixed: timezones
 
