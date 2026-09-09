@@ -480,6 +480,11 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     logs_client = get_client("logs", region_name=region) if log_group else None
     log_end = int(end.timestamp()) if log_group else 0
     log_start = int(start_this_week.timestamp()) if log_group else 0
+    # Why a report section is missing, keyed by section. Same channel as patrol's `skips`: a
+    # handler that swallows a failure has to say so, or the report attributes every empty section
+    # to an idle WebACL.
+    section_skips: dict[str, str] = {}
+
     if caps.get("anti_ddos_amr") and log_group:
         try:
 
@@ -554,8 +559,15 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     ddos_duration_min = max(1, int((t2 - t1).total_seconds() / 60))
                 except Exception:
                     ddos_duration_min = 0
-        except Exception:
-            pass
+        except QueryIncomplete as exc:
+            # The handler that can still name the cause. Left as a bare `pass`, an incomplete
+            # query became the report's "no matching traffic recently", which is the defect this
+            # change exists to remove.
+            section_skips["anti_ddos_events"] = str(exc)
+        except Exception as exc:
+            section_skips["anti_ddos_events"] = (
+                f"the anti-DDoS event query could not be run ({type(exc).__name__}), so this "
+                f"section is missing for a call failure rather than because the WebACL was idle")
 
     # Bot Control section — Free Bot Visibility metrics + label metrics
     bot_section = ""
@@ -900,22 +912,62 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         truncation_note = f"\n⚠️ Note: requested {days} days but only {actual_days:.1f} days of data available (end capped at current time). WoW comparison uses full {days}-day previous period."
 
     # Detect missing sections
-    missing = []
+    # One reason per section. The single `REASON:` line this replaces named CloudWatch's
+    # auto-discovery limit for *every* empty section, which is right for the three that come from
+    # SEARCH-based metric discovery and wrong for anything fed by a log query: a query that timed
+    # out or failed was reported as an idle WebACL, and the advice was to go generate traffic.
+    #
+    # So the discovery explanation survives as a per-section *default* rather than as the answer.
+    # Dropping it entirely would have lost real information about the sections it does explain,
+    # which is the opposite mistake.
+    SEARCH_DISCOVERY = ("CloudWatch metric auto-discovery only finds metrics with activity in the "
+                        "last 14 days, so if this WebACL has been idle for this metric type the "
+                        "historical dimensions cannot be discovered. Generating a little matching "
+                        "traffic and re-running reactivates the index.")
+    UNRECORDED = ("this section came back empty and the code did not record why, which is a gap in "
+                  "the reporting rather than a statement about your traffic")
+    defaults = {"country_map": SEARCH_DISCOVERY, "attack_types": SEARCH_DISCOVERY,
+                "bot_control": SEARCH_DISCOVERY}
+
+    empty = []
     if not countries:
-        missing.append("country_map")
+        empty.append("country_map")
     if not attack_ts.get("series"):
-        missing.append("attack_types")
+        empty.append("attack_types")
     if not bot_requests:
-        missing.append("bot_control")
+        empty.append("bot_control")
+    # Sections that failed rather than came back empty. They have no "is it empty" test here
+    # because the failure is the only evidence they were attempted at all.
+    empty += [k for k in section_skips if k not in empty]
+
+    missing = {name: section_skips.get(name) or defaults.get(name, UNRECORDED) for name in empty}
 
     partial_note = ""
     if missing:
-        partial_note = (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
-                        "REASON: CloudWatch metric auto-discovery requires recent activity (last 14 days). These sections had no matching traffic recently, so their historical metric dimensions are unknown.\n"
-                        "ACTION: Inform user that some sections are empty. This is a CloudWatch limitation — if the WebACL has been idle for this metric type, the data cannot be auto-discovered. Continuous traffic ensures all report sections populate correctly.")
+        lines = "\n".join(f"- {name}: {why}" for name, why in missing.items())
+        partial_note = (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {sorted(missing)}\n"
+                        f"WHY_EACH_ONE_IS_EMPTY:\n{lines}\n"
+                        "ACTION: tell the user which sections are empty and give the reason above "
+                        "for each. Do not offer one shared explanation, and do not suggest "
+                        "generating traffic unless the reason says so.")
 
     return "\n".join(data_lines) + truncation_note + partial_note
 
+
+
+class QueryIncomplete(RuntimeError):
+    """The poll budget ran out with the Logs Insights query still going.
+
+    Raised rather than returned, and that is the whole point. Insights hands back the rows it
+    has produced so far for a query still `Running`, so this function used to return a partial
+    count that the caller could not distinguish from a finished one: a wrong number presented as
+    a right one, which for a count is worse than no number. Raising makes "incomplete" impossible
+    to mistake for "complete", whatever the return shape, and this function has three of those.
+
+    Safe to raise because every caller already sits inside `except Exception`, so nothing crashes
+    that did not already tolerate a failure here. What changes is that the handler can now say
+    which section is missing and why, instead of the report attributing it to an idle WebACL.
+    """
 
 
 def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False):
@@ -926,13 +978,13 @@ def _poll_log_query(logs_client, log_group, start, end, query, return_full=False
     this was wired up too. No caller ever passed `max_wait`, so the parameter is gone rather
     than defaulted.
 
-    **A known defect this does not fix, recorded where someone would look for it.** Insights
-    returns partial rows for a query still `Running`, so exhausting the budget here yields
-    whatever arrived so far and the caller cannot tell that from a complete answer. Every
-    caller is inside one `try` whose handler is `except Exception: pass`, and the report's
-    partial-data note then attributes any missing section to an idle WebACL. Fixing that
-    means giving the report a way to say "this section timed out", which is its own roadmap
-    item, not a change to make quietly here.
+    **Fixed, as of 2.3's user-facing half; this paragraph used to say it was not.** Insights
+    returns partial rows for a query still `Running`, so exhausting the budget here yielded
+    whatever arrived so far and the caller could not tell that from a complete answer: a wrong
+    count presented as a right one. It now raises `QueryIncomplete`, which is safe precisely
+    because every caller already sat inside `except Exception: pass` — the same fact that made the
+    defect invisible is what makes the fix non-breaking. Those handlers now record the reason and
+    the report prints one per section instead of blaming an idle WebACL.
     """
     import time
     resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=1000)
@@ -948,6 +1000,14 @@ def _poll_log_query(logs_client, log_group, start, end, query, return_full=False
         # "the budget ran out with the query still going". Stop it rather than leave it
         # scanning and billing for a report section that has already moved on.
         stop_query(logs_client, query_id)
+        raise QueryIncomplete(
+            f"the Logs Insights query for this section did not finish within {MAX_POLL}s and was "
+            f"cancelled, so the section is missing for a scan-size limit rather than because the "
+            f"WebACL was idle")
+    if result["status"] in ("Failed", "Cancelled"):
+        raise QueryIncomplete(
+            f"the Logs Insights query for this section came back {result['status']}, so it is "
+            f"missing for a query-execution failure rather than because the WebACL was idle")
     results = result.get("results", [])
     if not results:
         if return_full:

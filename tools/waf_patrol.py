@@ -520,10 +520,22 @@ def _analyze_detection_tools(webacl_data: dict, logging_type: str, log_dest: str
     return tools
 
 
-def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region: str, start, end, attention_rules: list[str]) -> tuple[dict, str | None]:
+def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region: str, start, end, attention_rules: list[str]) -> dict:
     """Query top IPs/URIs via Athena for S3-stored logs. Auto-creates permanent table.
 
-    Returns: (details_dict, table_created_msg or None)
+    Returns a dict with `details`, `table_msg` and `unavailable`, rather than the
+    `(details, table_msg)` tuple it used to.
+
+    **`table_msg` was carrying two unrelated meanings and the caller rendered both the same
+    way.** One was an informational aside, "Created permanent Athena table: ...". The other was
+    the coarse-partition refusal, an explanation of why every detail cell is empty. The caller
+    printed whichever arrived as `📋 {table_msg}`, so a refusal came out looking like a note
+    about a table it had just built. Splitting them is the same fix as splitting the report's one
+    hardcoded `REASON:` line, one field per meaning.
+
+    **And the outer handler used to `return {}, None`**, discarding the details already collected
+    *and* any explanation, which is the shape this whole item is about: a caller cannot tell that
+    from an S3 bucket with no matching requests. It now fills `unavailable`.
     """
     table_msg = None
     try:
@@ -549,12 +561,13 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
 
         # Block queries on coarse (hourly or coarser) partitions.
         if part_fmt and not _partition_has_minutes(part_fmt):
-            return {}, ("⚠️ Coarse (hourly or coarser) partitioning detected — per-rule log details were "
+            return {"details": {}, "table_msg": table_msg, "unavailable": (
+                        "⚠️ Coarse (hourly or coarser) partitioning detected — per-rule log details were "
                         "skipped (coarse partitions make Athena scan too much data per query, "
                         "timeout risk). This is a scan-time/UX stop, NOT a data error; the metrics "
                         "in this report are unaffected and accurate. To enable log-level details, "
                         "call search_waf_knowledge(query='Firehose minute-level partitioning for "
-                        "Athena WAF log queries') and walk the user through the one-time fix.")
+                        "Athena WAF log queries') and walk the user through the one-time fix.")}
 
         # Build time filter WITH partition pruning (critical for performance)
         start_ms = int(start.timestamp()) * 1000
@@ -625,22 +638,25 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                         for _row in result:
                             _red, _ = _redact(_kind, _row.get("content", ""))
                             _row["content"] = _red
-                    if rule_name not in details:
-                        details[rule_name] = {}
-                    details[rule_name][qtype] = result
-                except Exception:
-                    pass
+                    details.setdefault(rule_name, {})[qtype] = result
+                except Exception as exc:
+                    details.setdefault(rule_name, {})[qtype] = [
+                        {"_error": _skip_reason("detail_query_error", type(exc).__name__)}]
         except concurrent.futures.TimeoutError:
             # Caught here rather than by the outer handler, which returns `{}, None` and so
             # discards both the details collected before the timeout and the table message.
             # A throttling failure arrives through future.result() and is caught in the body;
             # a merely slow query trips the iterator and never reached that except.
-            pass
+            for future, (rule_name, qtype) in futures.items():
+                if not future.done():
+                    details.setdefault(rule_name, {})[qtype] = [
+                        {"_error": _skip_reason("detail_never_returned")}]
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
-        return details, table_msg
-    except Exception:
-        return {}, None
+        return {"details": details, "table_msg": table_msg, "unavailable": None}
+    except Exception as exc:
+        return {"details": {}, "table_msg": table_msg,
+                "unavailable": _skip_reason("details_unavailable", type(exc).__name__)}
 
 
 def _classify_rules(webacl_data: dict) -> list[dict]:
@@ -692,9 +708,11 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
     budget no longer moves it. No reason for 60 was ever recorded, and these are small
     `limit 5` and `limit 10` aggregates that rarely approach either number.
 
-    The silent `[]` on a non-`Complete` status, and the `except Exception` around everything,
-    are the same defect `_run_cwl` had and are deliberately left: changing what patrol
-    returns means changing what its report says, which is a roadmap item rather than a
+    **The silent `[]` this used to return is gone, as of 2.3's user-facing half.** It was the
+    same defect `_run_cwl` had, and it was deferred here on the grounds that changing what patrol
+    returns means changing what its report says. It now returns an `[{"_error": reason}]` row on
+    every give-up path, the idiom `_run_cwl` already established, and the one consumer of a detail
+    cell surfaces it. Left for reference: the deferral read as a roadmap item rather than a
     drive-by."""
     try:
         resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=10)
@@ -705,12 +723,15 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
             result = logs_client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break
+        if result["status"] in ("Failed", "Cancelled"):
+            # Already terminal, so there is nothing to stop.
+            return [{"_error": _skip_reason("detail_engine_failed", result["status"])}]
         if result["status"] != "Complete":
             stop_query(logs_client, query_id)
-            return []
+            return [{"_error": _skip_reason("detail_budget_exhausted")}]
         return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
-    except Exception:
-        return []
+    except Exception as exc:
+        return [{"_error": _skip_reason("detail_query_error", type(exc).__name__)}]
 
 
 def _query_top_ips_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str) -> list[dict]:
@@ -788,16 +809,18 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
             rule_name, query_type = futures[future]
             try:
                 result = future.result()
-                if rule_name not in details:
-                    details[rule_name] = {}
-                details[rule_name][query_type] = result
-            except Exception:
-                pass
+                details.setdefault(rule_name, {})[query_type] = result
+            except Exception as exc:
+                details.setdefault(rule_name, {})[query_type] = [
+                    {"_error": _skip_reason("detail_query_error", type(exc).__name__)}]
     except concurrent.futures.TimeoutError:
-        # Whatever finished is still worth reporting. What is missing is per-rule detail,
-        # which the report renders as absent; it is not mistaken for "no traffic matched this
-        # rule" because the rules themselves come from metrics.
-        pass
+        # Whatever finished is still worth reporting, and what did not has to say so. Leaving
+        # these cells absent made a batch timeout indistinguishable from a rule with no matching
+        # requests, in a table whose whole purpose is to show what a rule matched.
+        for future, (rule_name, query_type) in futures.items():
+            if not future.done():
+                details.setdefault(rule_name, {})[query_type] = [
+                    {"_error": _skip_reason("detail_never_returned")}]
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
     return details
@@ -902,6 +925,14 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
     # 7. Top IPs/URIs for attention rules (CWL or Athena)
     # Only query logs for traffic anomalies (rules with actual metrics data), not config issues
+    # Why a section came back empty, keyed by the section it belongs to.
+    #
+    # This exists because four `except Exception: pass` handlers below, plus two "the numbers
+    # were all zero" branches, all produced the same None. The report then attributed every
+    # empty section to one hardcoded cause. An absence cannot say which of its causes applied,
+    # so the handler has to say it at the point it still knows.
+    skips: dict[str, str] = {}
+
     log_details = {}
     table_msg = None
     traffic_attention_rules = [a["rule"] for a in action_items
@@ -916,7 +947,11 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         log_end = int(end.timestamp())
         log_details = _get_log_details(logs_client, log_group, log_start, log_end, traffic_attention_rules)
     elif logging_type == "s3" and traffic_attention_rules:
-        log_details, table_msg = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, traffic_attention_rules)
+        _athena_details = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, traffic_attention_rules)
+        log_details = _athena_details["details"]
+        table_msg = _athena_details["table_msg"]
+        if _athena_details["unavailable"]:
+            skips["log_details"] = _athena_details["unavailable"]
 
     # 8. Build per-rule table + rate-limit info
     rules_table = []
@@ -974,14 +1009,6 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     _dims_rule = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
     if scope == "REGIONAL" and region:
         _dims_rule.append({"Name": "Region", "Value": region})
-    # Why a section came back empty, keyed by the section name `_missing_sections` reports.
-    #
-    # This exists because four `except Exception: pass` handlers below, plus two "the numbers
-    # were all zero" branches, all produced the same None. The report then attributed every
-    # empty section to one hardcoded cause. An absence cannot say which of its causes applied,
-    # so the handler has to say it at the point it still knows.
-    skips: dict[str, str] = {}
-
     chart_data = None
     try:
         chart_resp = cw.get_metric_data(
@@ -1228,8 +1255,18 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     from tools.waf_query import inspection_location
     for rule in rules_table:
         ld = rule.get("log_detail") or {}
-        ips, uris, content = ld.get("ips") or [], ld.get("uris") or [], ld.get("content") or []
-        if not (ips or uris or content):
+        # An `_error` cell is a failed query, not rows. Rendered as data it would print
+        # "Top IPs: ? (?)" from a dict with none of the expected fields, which is the same lie
+        # the pollers used to tell with an empty list, only louder. Pulled out first so the
+        # explanation reaches the reader and the rows below stay rows.
+        cell_errors = {qtype: rows[0]["_error"] for qtype, rows in ld.items()
+                       if rows and isinstance(rows[0], dict) and "_error" in rows[0]}
+        ips, uris, content = (
+            [] if "ips" in cell_errors else (ld.get("ips") or []),
+            [] if "uris" in cell_errors else (ld.get("uris") or []),
+            [] if "content" in cell_errors else (ld.get("content") or []),
+        )
+        if not (ips or uris or content or cell_errors):
             continue
         detail_lines.append(f"\n### {rule['name']} (blocked {rule['blocked']}, counted {rule['counted']})")
         if ips:
@@ -1238,6 +1275,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         if uris:
             top_uris = ", ".join(f"{r.get('httpRequest.uri', '?')} ({r.get('cnt', '?')})" for r in uris[:5])
             detail_lines.append(f"  Top URIs: {top_uris}")
+        for qtype, why in sorted(cell_errors.items()):
+            detail_lines.append(f"  {qtype}: UNAVAILABLE — {why}")
         if content:
             loc = inspection_location(rule["name"])
             label = loc[0] if loc else "content"
@@ -1249,6 +1288,13 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
     if table_msg:
         summary += f"\n📋 {table_msg}\n"
+    if skips.get("log_details"):
+        # Deliberately not the 📋 prefix `table_msg` gets. This says a section is unavailable,
+        # and rendering it as a note about a table was how the coarse-partition refusal read
+        # before the two were separated.
+        summary += (f"\nDETAILS_UNAVAILABLE: {skips['log_details']}\n"
+                    "ACTION: say the per-rule detail rows are missing and give that reason. The "
+                    "metrics in this report are unaffected.\n")
     summary += "\nFull HTML report is ready for download."
 
     missing = _missing_sections(wr, chart_data)
@@ -1303,6 +1349,25 @@ _SKIP_REASONS = {
     "unrecorded":
         "this section came back empty and the code did not record why, which is a gap in the "
         "reporting rather than a statement about your traffic",
+    # Per-cell reasons. These land in one cell of the per-rule detail table rather than in a
+    # section, so they are keyed by nothing here: the cell they sit in already says which rule
+    # and which query type. They share this table so the invariants tested over it cover them.
+    "detail_budget_exhausted":
+        f"the log query for this rule did not finish within {MAX_POLL}s and was cancelled, so "
+        f"these rows are missing for a scan-size limit rather than for lack of matching requests",
+    "detail_engine_failed":
+        "the log query for this rule came back {detail}, so these rows are missing for a "
+        "query-execution failure rather than for lack of matching requests",
+    "detail_query_error":
+        "the log query for this rule could not be run ({detail}), so these rows are missing for "
+        "a call failure rather than for lack of matching requests",
+    "detail_never_returned":
+        f"the batch of per-rule log queries ran past its {MAX_FANOUT_WAIT}s budget and this one "
+        f"had not answered, so these rows are missing for a batch timeout rather than for lack "
+        f"of matching requests",
+    "details_unavailable":
+        "per-rule log details could not be prepared ({detail}), so every rule's detail rows are "
+        "missing for a setup failure rather than for lack of matching requests",
 }
 
 
