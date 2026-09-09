@@ -14,16 +14,14 @@ _cwl_semaphore = threading.Semaphore(8)
 MAX_POLL = 120
 POLL_INTERVAL = 2
 
-# Athena state (reuse existing table if already created)
-_athena_table: str | None = None
-_table_setup_lock = threading.Lock()
-
 
 def reset_table_cache():
-    """Reset the cached Athena table name. Called on WebACL switch so a stale
-    table from the previous WebACL is not reused."""
-    global _athena_table
-    _athena_table = None
+    """Reset the resolved-table cache. Called on WebACL switch so a stale table from
+    the previous WebACL is not reused.
+
+    Kept as a thin delegate rather than removed: `session_state.set_webacl_context`
+    imports it from here, and pointing that at `waf_athena` instead would make
+    session_state depend on the module that imports session_state."""
     from tools.waf_athena import reset_table_cache as _reset_state
     _reset_state()
 
@@ -529,39 +527,32 @@ def _run_athena(sql: str) -> list[dict]:
 
 
 def _ensure_athena_table(dest: str) -> str | None:
-    """Ensure Athena table exists for the log destination. Returns table name or None."""
-    global _athena_table
-    if _athena_table:
-        return _athena_table
+    """Resolve the S3 log path for this destination and hand it to the shared resolver.
 
-    # Serialize table setup. The agent fires Athena queries in parallel; without
-    # this lock two threads could both run the DROP/CREATE in _create_named_table,
-    # and one could drop the table while the other queries it.
-    with _table_setup_lock:
-        # Double-checked: another thread may have built it while we waited.
-        if _athena_table:
-            return _athena_table
+    Holds no cache of its own. `resolve_log_table` owns the one cache, so patrol gets
+    the same short-circuit and the two paths cannot disagree about which table is
+    current. This function is now only the log-destination-to-S3-path translation that
+    patrol does separately, which is the remaining seam between them.
+    """
+    try:
+        from tools.waf_athena import (
+            _resolve_s3_path, _try_standard_path, _get_account_id, resolve_log_table,
+        )
 
-        try:
-            from tools.waf_athena import (
-                _resolve_s3_path, _try_standard_path, _get_account_id, resolve_log_table,
-            )
+        s3_base = _resolve_s3_path(dest)
+        bucket = s3_base.replace("s3://", "").split("/")[0]
+        scope = get_scope()
+        webacl_name = get_webacl_name() or "unknown"
+        region = get_logs_region()
 
-            s3_base = _resolve_s3_path(dest)
-            bucket = s3_base.replace("s3://", "").split("/")[0]
-            scope = get_scope()
-            webacl_name = get_webacl_name() or "unknown"
-            region = get_logs_region()
+        # Try standard path for S3 direct delivery
+        s3_path = None
+        if ":s3:::" in dest:
+            account_id = _get_account_id()
+            s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
+        if not s3_path:
+            s3_path = s3_base
 
-            # Try standard path for S3 direct delivery
-            s3_path = None
-            if ":s3:::" in dest:
-                account_id = _get_account_id()
-                s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
-            if not s3_path:
-                s3_path = s3_base
-
-            _athena_table = resolve_log_table(s3_path, region, webacl_name)
-            return _athena_table
-        except Exception as e:
-            raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e
+        return resolve_log_table(s3_path, region, webacl_name)
+    except Exception as e:
+        raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e

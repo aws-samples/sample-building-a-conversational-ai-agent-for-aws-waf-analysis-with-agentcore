@@ -446,3 +446,59 @@ def test_resolution_is_reported_for_tool_output(catalog):
     report = A.describe_table_resolution()
     assert "userdb.good" in report
     assert "userdb.bad" in report and "not partitioned" in report
+
+
+# --- one cache, one lock ---------------------------------------------------
+
+
+def test_query_layer_keeps_no_table_cache_of_its_own(catalog):
+    """`waf_query` used to hold `_athena_table`, a second copy of the same value.
+
+    Two caches meant the two query paths could disagree about which table was
+    current, and only one of them was reset by anything. The check is structural
+    because a behavioural one cannot see a duplicate that happens to agree.
+    """
+    from tools import waf_query
+
+    assert not hasattr(waf_query, "_athena_table")
+    assert not hasattr(waf_query, "_table_setup_lock")
+
+
+def test_reset_clears_the_cache_through_the_query_layer_delegate(catalog):
+    """`session_state.set_webacl_context` resets through `waf_query`, so that entry
+    point has to reach the one real cache in `waf_athena`."""
+    from tools import waf_query
+
+    catalog({"userdb": [table("t", SCOPED_PATH)]})
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert A._athena_state["table"] is not None
+
+    waf_query.reset_table_cache()
+    assert A._athena_state["table"] is None
+
+
+def test_concurrent_resolves_enumerate_glue_once(catalog):
+    """Both query paths now share the resolver's lock. `query_logs` used to hold an
+    equivalent lock of its own while `patrol_scan` held none, so patrol paid a full
+    Glue enumeration per concurrent scan. Ten threads must produce one enumeration.
+    """
+    import threading
+
+    glue = catalog({"userdb": [table("c", SCOPED_PATH)]})
+    results, errors = [], []
+
+    def resolve():
+        try:
+            results.append(A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl"))
+        except Exception as exc:  # pragma: no cover - a failure here is the finding
+            errors.append(exc)
+
+    threads = [threading.Thread(target=resolve) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert len(set(results)) == 1
+    assert glue.get_tables_calls == 1

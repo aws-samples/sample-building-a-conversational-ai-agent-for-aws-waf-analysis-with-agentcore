@@ -16,11 +16,20 @@ from tools.session_state import get_webacl_name
 MAX_POLL = 300
 TMP_DATABASE = "waf_analysis_tmp"
 
-# Serializes DROP+CREATE of a scratch table. _create_named_table is reachable
-# from two independent paths (query_logs via _ensure_athena_table, and
-# patrol_scan via _get_log_details_athena); without this lock a concurrent
-# call could drop a table another thread is creating/querying.
+# Serializes DROP+CREATE of a scratch table. Held inside _create_named_table.
+# Kept separate from _resolve_lock below because it guards a narrower critical
+# section, and because dropping it would leave the DROP/CREATE unprotected if
+# _create_named_table ever gains a caller outside resolve_log_table.
 _create_lock = threading.Lock()
+
+# Serializes table resolution. The agent fires Athena queries in parallel, and the
+# cache check at the top of resolve_log_table is not atomic, so without this two
+# threads both miss it and both pay a full Glue enumeration plus S3 walk. This lives
+# here rather than at a call site because BOTH callers need it: query_logs used to
+# hold an equivalent lock of its own and patrol_scan held none at all, which is the
+# asymmetry that made patrol the expensive path. Lock order is always resolve then
+# create, never the reverse, so the pair cannot deadlock.
+_resolve_lock = threading.Lock()
 
 # Module-level state (lazy init on first query).
 #
@@ -732,6 +741,15 @@ def resolve_log_table(s3_path: str, region: str, webacl_name: str) -> str:
     if _athena_state.get("table"):
         return _athena_state["table"]
 
+    with _resolve_lock:
+        # Double-checked: another thread may have resolved it while we waited.
+        if _athena_state.get("table"):
+            return _athena_state["table"]
+        return _resolve_log_table_locked(s3_path, region, webacl_name)
+
+
+def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> str:
+    """The body of resolve_log_table. Call only with _resolve_lock held."""
     meta = _find_existing_table(s3_path, region)
     if meta is not None:
         db, tbl = meta["table"].split(".", 1)
