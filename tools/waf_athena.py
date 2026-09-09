@@ -322,18 +322,45 @@ def _s3_list_dirs(bucket: str, prefix: str) -> list[str]:
     return dirs
 
 
-def _date_levels(bucket: str, root: str, parts: list[str], newest: bool) -> list[str]:
+def _memo_lister():
+    """A `_s3_list_dirs` that answers a repeated prefix from memory.
+
+    Scoped to one detection and passed down, rather than kept module-level. A bucket
+    gains directories while the agent runs, so a cache that outlived the walk would
+    hand back a stale newest-directory and pin the projection behind the data. Within a
+    single walk the tree is effectively frozen, and the walk revisits prefixes heavily:
+    measured against real S3 on a two-era tree, 34 listings covering 19 distinct
+    prefixes, so 15 were repeats. `_layout_from_years` descends the newest year to
+    decide the format, then descends it again looking for the cutover year, then again
+    per candidate month.
+    """
+    memo: dict[tuple[str, str], list[str]] = {}
+
+    def ls(bucket: str, prefix: str) -> list[str]:
+        key = (bucket, prefix)
+        if key not in memo:
+            memo[key] = _s3_list_dirs(bucket, prefix)
+        return memo[key]
+
+    return ls
+
+
+def _date_levels(bucket: str, root: str, parts: list[str], newest: bool, ls=None) -> list[str]:
     """Descend one date subtree, taking the newest or the earliest child each level.
 
     Returns the level names, starting from `parts`. Length is what identifies the
     layout: 4 levels is `yyyy/MM/dd/HH`, 5 is `yyyy/MM/dd/HH/mm`. Levels below the
     year are always two zero-padded digits, so a lexicographic min/max is the numeric
     one, and filtering to that shape keeps a stray non-numeric directory out.
+
+    `ls` is the listing function, so a caller running several descents over one tree can
+    pass a memoizing one. It defaults to listing S3 directly.
     """
+    ls = ls or _s3_list_dirs
     prefix = root + "/".join(parts) + "/"
     levels = list(parts)
     while len(levels) < 5:
-        kids = sorted(d for d in _s3_list_dirs(bucket, prefix) if re.fullmatch(r"\d{2}", d))
+        kids = sorted(d for d in ls(bucket, prefix) if re.fullmatch(r"\d{2}", d))
         if not kids:
             break
         pick = kids[-1] if newest else kids[0]
@@ -383,14 +410,15 @@ def _detect_partitions(s3_path: str) -> dict:
     if base_prefix and not base_prefix.endswith("/"):
         base_prefix += "/"
 
+    ls = _memo_lister()
     current_prefix = base_prefix
     for _ in range(10):
-        dirs = _s3_list_dirs(bucket, current_prefix)
+        dirs = ls(bucket, current_prefix)
         if not dirs:
             break
         years = sorted(d for d in dirs if re.match(r"^20[2-3]\d$", d))
         if years:
-            return _layout_from_years(bucket, current_prefix, years)
+            return _layout_from_years(bucket, current_prefix, years, ls)
 
         # Pick best subdir to descend
         chosen = None
@@ -398,7 +426,7 @@ def _detect_partitions(s3_path: str) -> dict:
             chosen = "AWSLogs"
         else:
             for d in dirs:
-                sub = _s3_list_dirs(bucket, current_prefix + d + "/")
+                sub = ls(bucket, current_prefix + d + "/")
                 if any(re.match(r"^20[2-3]\d$", x) for x in sub):
                     chosen = d
                     break
@@ -409,10 +437,15 @@ def _detect_partitions(s3_path: str) -> dict:
     raise RuntimeError(f"Cannot detect partition structure under {s3_path}")
 
 
-def _layout_from_years(bucket: str, root: str, years: list[str]) -> dict:
-    """Decide the layout and its start date, given the years present under `root`."""
-    newest = _date_levels(bucket, root, [years[-1]], newest=True)
-    oldest = _date_levels(bucket, root, [years[0]], newest=False)
+def _layout_from_years(bucket: str, root: str, years: list[str], ls=None) -> dict:
+    """Decide the layout and its start date, given the years present under `root`.
+
+    `ls` should be the memoizing lister from `_memo_lister`: this function descends the
+    same subtrees several times over, so listing S3 directly costs about 40% more calls
+    than it needs to."""
+    ls = ls or _s3_list_dirs
+    newest = _date_levels(bucket, root, [years[-1]], newest=True, ls=ls)
+    oldest = _date_levels(bucket, root, [years[0]], newest=False, ls=ls)
     era_new, era_old = _era_of(newest), _era_of(oldest)
 
     # The layout to declare is whatever the newest data uses: that is what the user
@@ -452,14 +485,15 @@ def _layout_from_years(bucket: str, root: str, years: list[str]) -> dict:
         # Exact at year and month granularity: a year or month whose newest child is
         # minute-level is the one the change falls in, and scanning them linearly
         # cannot be fooled by a layout that alternates.
-        cy = next((y for y in years if _era_of(_date_levels(bucket, root, [y], True)) == "minutes"),
+        cy = next((y for y in years
+                   if _era_of(_date_levels(bucket, root, [y], True, ls)) == "minutes"),
                   years[-1])
-        months = sorted(d for d in _s3_list_dirs(bucket, root + cy + "/") if re.fullmatch(r"\d{2}", d))
+        months = sorted(d for d in ls(bucket, root + cy + "/") if re.fullmatch(r"\d{2}", d))
         cm = next((m for m in months
-                   if _era_of(_date_levels(bucket, root, [cy, m], True)) == "minutes"),
+                   if _era_of(_date_levels(bucket, root, [cy, m], True, ls)) == "minutes"),
                   months[-1] if months else "01")
         range_start_parts = [cy, cm, "01"]
-        cutover = _first_minute_day(bucket, root, cy, cm)
+        cutover = _first_minute_day(bucket, root, cy, cm, ls)
     else:
         # Not mixed, or newest is hourly and an hourly table reads the whole timeline
         # anyway, so the earliest data is the safe start in both cases.
@@ -479,25 +513,29 @@ def _layout_from_years(bucket: str, root: str, years: list[str]) -> dict:
     }
 
 
-def _first_minute_day(bucket: str, root: str, year: str, month: str) -> str | None:
+def _first_minute_day(bucket: str, root: str, year: str, month: str, ls=None) -> str | None:
     """Best-effort cutover day, by binary search inside one month.
 
     Reporting only. `range_start` is floored to the first of this month by the caller,
     so a wrong answer here costs a wrong date in a message rather than unreadable data.
     Binary search assumes the layout changed once inside the month; a bucket that
     alternates gets a late date and nothing worse.
+
+    Binary search rather than a linear day scan because this issues a listing per probe,
+    and each probe is itself a descent. Measured on a real 3-day month: 7 listings.
     """
-    days = sorted(d for d in _s3_list_dirs(bucket, f"{root}{year}/{month}/") if re.fullmatch(r"\d{2}", d))
+    ls = ls or _s3_list_dirs
+    days = sorted(d for d in ls(bucket, f"{root}{year}/{month}/") if re.fullmatch(r"\d{2}", d))
     if not days:
         return None
     lo, hi = 0, len(days) - 1
     while lo < hi:
         mid = (lo + hi) // 2
-        if _era_of(_date_levels(bucket, root, [year, month, days[mid]], True)) == "minutes":
+        if _era_of(_date_levels(bucket, root, [year, month, days[mid]], True, ls)) == "minutes":
             hi = mid
         else:
             lo = mid + 1
-    if _era_of(_date_levels(bucket, root, [year, month, days[lo]], True)) != "minutes":
+    if _era_of(_date_levels(bucket, root, [year, month, days[lo]], True, ls)) != "minutes":
         return None
     return f"{year}/{month}/{days[lo]}"
 

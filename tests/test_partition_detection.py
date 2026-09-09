@@ -264,6 +264,38 @@ def test_an_unreadable_newest_year_is_not_reported_as_mixed(s3_tree):
     assert layout["cutover"] is None
 
 
+def test_one_detection_never_lists_the_same_prefix_twice(s3_tree, monkeypatch):
+    """Measured against real S3 before this held: 34 listings over 19 distinct prefixes.
+
+    The walk descends the newest year to pick the format, descends it again hunting the
+    cutover year, and descends candidate months on top of that, so repeats are the norm
+    rather than an edge case. At 801 ms per listing from a laptop that was 26 s; the
+    number that matters is the call count, since in-region latency is what changes.
+
+    Asserted as an invariant rather than a count: a fixture change should not have to
+    update a magic number, and the property wanted is "no prefix twice".
+
+    Note the counter goes in *after* `s3_tree`, and `assert seen` guards it. Installed
+    before, the fixture's own `monkeypatch.setattr` on the same attribute silently
+    replaced it, `seen` stayed empty, and `assert not repeats` was vacuously true: the
+    test passed with the memo deleted.
+    """
+    s3_tree("2022/03/07/14", "2026/01/05/03", "2026/02/10/08",
+            "2026/03/02/11", "2026/03/12/09/41", "2026/03/28/07/15")
+    tree = A._s3_list_dirs
+    seen = []
+    monkeypatch.setattr(A, "_s3_list_dirs",
+                        lambda b, p: (seen.append(p), tree(b, p))[1])
+    layout = A._detect_partitions("s3://bkt")
+    assert seen, "counter not reached, so nothing was measured"
+    # The precondition: a mixed layout, which is what triggers the repeated descents.
+    # A single-era tree has almost none, so it would pass without the memo.
+    assert layout["mixed"] is True
+    assert layout["cutover"] == "2026/03/12"
+    repeats = {p for p in seen if seen.count(p) > 1}
+    assert not repeats, f"listed {len(seen)} times, {len(set(seen))} distinct: {repeats}"
+
+
 def test_range_start_is_never_later_than_the_earliest_minute_data(s3_tree):
     """The invariant behind all of the above, stated on its own.
 

@@ -33,10 +33,22 @@
   minute-level data. The cutover *day* comes from a search inside that month and
   assumes the layout changed once, so it is reported as best-effort.
 
+### Fixed: the first log query of a session listed the same S3 prefixes repeatedly
+
+- **Resolving a table walked the bucket once but listed 15 prefixes twice**, because
+  finding where the layout begins descends the newest year, then descends it again
+  looking for the cutover, then descends candidate months. Measured against real S3
+  on a two-era tree: 34 `ListObjectsV2` calls covering 19 distinct prefixes, now 19
+  calls with identical results. The cache is scoped to one walk on purpose. A bucket
+  gains directories while the agent is running, and a cache that outlived the walk
+  would hand back a stale newest directory and pin the projected range behind the
+  data.
+
 ### Development
 
-- 87 tests, up from 60. The new ones cover where the partition layout begins, a
-  bucket that alternates between the two layouts, and the zero-result message.
+- 88 tests, up from 60. The new ones cover where the partition layout begins, a
+  bucket that alternates between the two layouts, the zero-result message, and the
+  no-prefix-listed-twice invariant.
 
 ## 0.13.0 (2026-09-09)
 
