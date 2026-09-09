@@ -88,6 +88,27 @@ def test_the_timeout_message_does_not_promise_that_narrowing_works():
         assert "NOT a data error" in msg
 
 
+def test_the_timeout_message_does_not_claim_to_know_why():
+    """It used to say "the window was too large to scan interactively". On the bucket the
+    public roadmap cell was verified against, that was wrong: the window was fine and the
+    object count was the problem, which Athena itself reports as HIVE_S3_THROTTLING eleven
+    seconds later. Narrowing is still the right action, being the only lever available, but
+    it must not arrive dressed as a diagnosis."""
+    msg = Q.poll_timeout_message("Athena")
+    assert "window was too large" not in msg
+    assert "retry ONCE" in msg, "the action survives the removal of the assertion"
+    assert "cannot tell which" in msg, "and it says the cause is unknown"
+
+
+def test_a_failure_reason_is_punctuated_before_the_next_sentence():
+    """Only visible in real output: Athena's StateChangeReason ends without punctuation, so
+    concatenating gave "...requested resources This is a query-execution failure"."""
+    msg = Q.query_failed_message("Athena", "FAILED", "COLUMN_NOT_FOUND: Column 'x' missing")
+    assert "missing. This is" in msg
+    # An engine that does punctuate must not get two terminators.
+    assert ".. This is" not in Q.query_failed_message("Athena", "FAILED", "Ends already.")
+
+
 # --- a stopped query must not read as an absence of traffic -----------------
 
 

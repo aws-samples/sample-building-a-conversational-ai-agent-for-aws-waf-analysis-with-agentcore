@@ -93,11 +93,19 @@ def poll_timeout_message(engine: str) -> str:
     from tools.session_state import note_query_timeout
     attempt = note_query_timeout()
     if attempt == 1:
+        # Says what happened and declines to say why, matching `_stop_header` two functions
+        # up. The text here used to assert "the window was too large to scan
+        # interactively", and on the one bucket this was verified against that was wrong:
+        # the window was fine and the object count was the problem. Narrowing is still the
+        # right *action*, because it is the only lever available from here, but it must not
+        # arrive dressed as a diagnosis.
         return (f"{_stop_header(engine)}\n"
-                f"ACTION: tell the user the window was too large to scan interactively, "
-                f"then retry ONCE with roughly a quarter of the window you just asked for. "
-                f"If you do not already know which minutes spiked, call get_waf_overview "
-                f"first and query only those minutes. Do not retry more than once.")
+                f"ACTION: retry ONCE with roughly a quarter of the window you just asked "
+                f"for. If you do not already know which minutes spiked, call "
+                f"get_waf_overview first and query only those minutes. Do not retry more "
+                f"than once. Tell the user the scan did not finish in time, that this can "
+                f"be either too wide a window or data denser than the window suggests, and "
+                f"that you cannot tell which from here.")
     return (f"{_stop_header(engine)}\n"
             f"ACTION: do NOT retry. That is {attempt} timeouts in a row, so narrowing is "
             f"not working and the cost is in the scan rather than in the window. Tell the "
@@ -115,6 +123,11 @@ def query_failed_message(engine: str, status: str, reason: str = "") -> str:
     routed to `poll_timeout_message` instead, being the same situation as running out of
     poll budget.
     """
+    # Athena's StateChangeReason does not end in punctuation, so concatenating produced
+    # "...requested resources This is a query-execution failure". Seen in real output.
+    reason = reason.strip()
+    if reason and reason[-1] not in ".!?":
+        reason += "."
     detail = f" Reason: {reason}" if reason else ""
     return (f"STOPPED: {engine} reported the query as {status}, so no rows were returned."
             f"{detail} This is a query-execution failure, NOT an absence of traffic.\n"

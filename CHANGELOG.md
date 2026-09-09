@@ -20,6 +20,10 @@
   unchanged" guidance added. Found by running a wide query for real: it came back
   `HIVE_S3_THROTTLING`, which is exactly the failure where retrying immediately makes things
   worse, and nothing said not to.
+- **A timeout no longer tells you the window was too large.** It could not know that: on the
+  bucket this was tested against the window was fine and the object count was the problem.
+  Narrowing is still what it suggests, because that is the only lever available, but it now
+  names both possible causes and says it cannot tell which.
 
 ### Fixed: one slow query could cost a whole patrol report, on both backends
 
