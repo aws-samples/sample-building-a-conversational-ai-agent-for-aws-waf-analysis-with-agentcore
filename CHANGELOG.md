@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed: repeated log queries paid AWS control-plane calls they did not need
+
+- **A warm session no longer re-resolves the log destination on every query.** Each
+  Athena query re-ran the destination-to-S3-path translation first, which on a Firehose
+  destination is a `DescribeDeliveryStream` per query. That call is capped at 5 requests
+  per second per account per Region and the quota is not adjustable, so a busy
+  investigation could hit `ThrottlingException` and surface as a hard failure rather than
+  as slowness. The path translation and the Athena output location are both memoized now,
+  each behind its own lock.
+- **Patrol scans share the resolved-table cache** instead of paying a full Glue
+  enumeration and S3 walk on every scan. There was one cache for the query path and none
+  for patrol, plus a second copy of the same table value in the query layer that nothing
+  reset. One resolver, one cache, one lock.
+
 ### Fixed: a slow CloudWatch query was reported as "no traffic"
 
 - **A query that ran past its poll budget returned zero rows**, and zero rows was
