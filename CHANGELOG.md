@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 (2026-09-09)
 
 ### Fixed: repeated log queries paid AWS control-plane calls they did not need
 
@@ -87,9 +87,13 @@
 
 ### Development
 
-- 88 tests, up from 60. The new ones cover where the partition layout begins, a
-  bucket that alternates between the two layouts, the zero-result message, and the
-  no-prefix-listed-twice invariant.
+- 102 tests, up from 60. The new ones cover where the partition layout begins, a
+  bucket that alternates between the two layouts, the zero-result message, the
+  no-prefix-listed-twice invariant, the retry bound, and a stopped query not reading as
+  zero rows. Run them with `uv run --extra dev python -m pytest tests/ -q`.
+- Each fix in this release was checked by removing it and requiring its test to fail.
+  Several tests passed on first writing while the defect they targeted was present, so
+  the perturbation is the check that matters rather than the green run.
 
 ## 0.13.0 (2026-09-09)
 
