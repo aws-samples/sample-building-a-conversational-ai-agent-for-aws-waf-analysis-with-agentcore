@@ -22,6 +22,7 @@ import pytest
 from tools import query_limits as Q
 from tools import session_state as S
 from tools import waf_athena as A
+from tools import waf_logs as WL
 from tools import waf_query as WQ
 
 
@@ -295,13 +296,48 @@ def test_the_verb_says_cancelled_only_when_it_was():
 
 
 def test_a_cwl_poll_timeout_cancels_the_query_and_says_so(monkeypatch, no_sleep):
-    """The two halves together at the one site that has both a stop and a message."""
+    """The two halves together, at the first of the two sites that both stop and speak."""
     fake = FakeCwl("Running")
     fake.stop_query = lambda queryId: {"success": True}
     monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
     monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
     rows = WQ._run_cwl("lg", "fields @message", 0, 60, 10)
     assert "was cancelled" in rows[0]["_error"]
+
+
+def test_the_forced_log_group_path_also_cancels_and_says_so(monkeypatch, no_sleep):
+    """The second site that both stops and speaks, which the structural test cannot cover.
+
+    `run_logs_query`'s explicit-`log_group` branch has its own poll loop and passes the stop
+    result inline as the `cancelled` argument. Drop that argument and the message states
+    confidently that the query was given up on and is still scanning, about a query it had
+    just cancelled; the structural test would not notice, because it proves only that the
+    module calls `stop_query` somewhere, not that the call is on the give-up path with its
+    result reaching the sentence.
+
+    Both outcomes are asserted because either one alone passes for a hardcoded argument: a
+    dropped argument defaults to False and satisfies the second, `cancelled=True` satisfies
+    the first. The two sites that speak are a different risk class from the two that only
+    stop, where the worst case is a query left running rather than a sentence that lies.
+    """
+    def run(outcome):
+        fake, stopped = FakeCwl("Running"), []
+        fake.stop_query = lambda queryId: stopped.append(queryId) or {"success": outcome}
+        monkeypatch.setattr(WL, "get_client", lambda *a, **k: fake)
+        monkeypatch.setattr(WL, "get_logs_region", lambda: "us-east-1")
+        S._state.clear()  # each run is attempt one, so only the fate clause varies
+        out = WL.run_logs_query._tool_func(
+            query_type="top_blocked_ips", start_time="2026-09-07T14:00",
+            duration_minutes=60, log_group="lg")
+        # The preconditions: this really is the give-up path of a loop that spent its whole
+        # budget, and the stop really was attempted on the query that was abandoned.
+        assert fake.polls == Q.MAX_POLL // Q.POLL_INTERVAL, out
+        assert stopped == ["q-1"], out
+        assert "STOPPED" in out
+        return out
+
+    assert "was cancelled, so it has stopped scanning" in run(True)
+    assert "still running and still scanning" in run(False)
 
 
 def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(monkeypatch, no_sleep):
