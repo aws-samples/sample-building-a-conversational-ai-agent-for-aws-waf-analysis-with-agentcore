@@ -920,6 +920,34 @@ def _cross_check_declared(meta: dict, layout: dict | None, strict: bool) -> str 
                 f"{meta['partition_interval_unit']} but the S3 layout is {actual_fmt} / "
                 f"interval {actual_interval} {actual_unit}")
 
+    # The projected range start, strict only, and this is what carries the range fix to
+    # an installation that already has a scratch table. Every table the agent built
+    # before that change declares 2020/01/01, about 3.46 million projected minutes, and
+    # nothing else here would ever notice: the format, interval and unit all still match
+    # the bucket, so the table passes, gets reused, and keeps paying seconds of planning
+    # per query forever. There is no other trigger to rebuild it.
+    #
+    # Strict only, on purpose. On a table the user maintains, a range wider than the
+    # data is their choice and costs them planning time they can measure; rewriting it
+    # is not this code's business, and `partition_predicate` already reports a window
+    # that falls outside it. On the agent's own table the whole meaning of strict is
+    # that any disagreement makes it stale.
+    if strict and meta["partition_range_start"] is not None:
+        try:
+            wanted = datetime.strptime(
+                layout["range_start"], _java_date_format_to_strftime(actual_fmt))
+        except (ValueError, KeyError):
+            wanted = None
+        if wanted is not None and wanted != meta["partition_range_start"]:
+            # Both directions are stale, and they are stale for opposite reasons, so
+            # say which. Too early is wasted planning; too late means real data the
+            # table cannot address, reported by Athena as zero rows.
+            why = ("wasting planning time on partitions that cannot exist"
+                   if meta["partition_range_start"] < wanted
+                   else "so data before that point cannot be returned at all")
+            return (f"projects from {meta['partition_range_start']:%Y-%m-%d %H:%M} but the "
+                    f"data starts {wanted:%Y-%m-%d %H:%M}, {why}")
+
     actual_granularity = _partition_granularity(actual_fmt)
     if actual_granularity is None:
         return None

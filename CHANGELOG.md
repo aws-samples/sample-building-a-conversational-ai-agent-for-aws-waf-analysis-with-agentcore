@@ -13,6 +13,13 @@
   back, scanning identical bytes. It also brings the table under Athena's limit of
   1,000,000 partitions per scan, which the old range exceeded on its own and which
   only a `log_time` predicate on every query was keeping survivable.
+- **A table the agent built earlier is rebuilt to pick this up.** Without that, the
+  change would have reached new installations only: a scratch table declaring the old
+  `2020/01/01` range still matches its bucket on format, interval and unit, so it
+  passed every check, was reused, and kept paying the planning cost with nothing left
+  to trigger a rebuild. A table *you* maintain is not touched. A range wider than your
+  data is your choice there, it costs only planning time, and a window falling outside
+  it is already reported.
 
 ### Added: a bucket that changed partition layout says so, and says from when
 

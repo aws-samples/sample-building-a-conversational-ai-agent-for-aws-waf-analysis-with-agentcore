@@ -273,6 +273,53 @@ def test_interval_compares_value_and_unit_together():
     assert A._cross_check_declared(meta, MINUTE_LAYOUT, strict=True) is not None
 
 
+def test_a_scratch_table_with_the_old_wide_range_is_rebuilt():
+    """How the narrowed projection range reaches an install that already has a table.
+
+    Every scratch table the agent built before that change declares
+    `2020/01/01/00/00,NOW`. Format, interval and unit all still match the bucket, so
+    without this the table passes the cross-check, gets reused, and keeps paying seconds
+    of planning per query forever. Nothing else would ever rebuild it.
+    """
+    meta = A._table_metadata(A.TMP_DATABASE,
+                            table("waf_logs_x", SCOPED_PATH, rng="2020/01/01/00/00,NOW"))
+    layout = _layout("yyyy/MM/dd/HH/mm", "minutes", range_start="2026/03/01/00/00")
+    problem = A._cross_check_declared(meta, layout, strict=True)
+    assert problem is not None
+    assert "2020-01-01" in problem and "2026-03-01" in problem
+    assert "planning" in problem, "too-early is a cost, and the message should say so"
+
+
+def test_a_scratch_table_projecting_later_than_the_data_says_so_differently():
+    """The other direction is not a cost, it is unreachable data, so it reads
+    differently even though both rebuild."""
+    meta = A._table_metadata(A.TMP_DATABASE,
+                             table("waf_logs_x", SCOPED_PATH, rng="2026/06/01/00/00,NOW"))
+    problem = A._cross_check_declared(
+        meta, _layout("yyyy/MM/dd/HH/mm", "minutes", range_start="2026/03/01/00/00"),
+        strict=True)
+    assert problem is not None and "cannot be returned at all" in problem
+
+
+def test_a_user_table_with_a_wide_range_is_left_alone():
+    """The asymmetry that keeps the check above safe. A range wider than the data is the
+    user's choice on their own table, it costs only planning time, and rewriting someone
+    else's table is not this code's business. `partition_predicate` already reports a
+    window that falls outside a range."""
+    meta = A._table_metadata("userdb", table("waf", SCOPED_PATH, rng="2020/01/01/00/00,NOW"))
+    layout = _layout("yyyy/MM/dd/HH/mm", "minutes", range_start="2026/03/01/00/00")
+    assert A._cross_check_declared(meta, layout, strict=False) is None
+
+
+def test_a_matching_range_does_not_rebuild_on_every_resolve():
+    """The value round-trips exactly, so a rebuilt table agrees with the next walk and
+    the check settles. Without that this would drop and recreate the table forever."""
+    meta = A._table_metadata(A.TMP_DATABASE,
+                             table("waf_logs_x", SCOPED_PATH, rng="2026/03/01/00/00,NOW"))
+    layout = _layout("yyyy/MM/dd/HH/mm", "minutes", range_start="2026/03/01/00/00")
+    assert A._cross_check_declared(meta, layout, strict=True) is None
+
+
 def test_unreadable_s3_layout_trusts_the_declaration():
     """No layout means an empty bucket or a prefix with no data yet, which is not
     evidence of a problem. The declaration is all there is, so it is trusted."""
