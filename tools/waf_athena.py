@@ -92,6 +92,10 @@ _ATHENA_STATE_DEFAULTS = {
     "webacl_scoped": True,   # True if table location is specific to one WebACL
     "layout_mixed": False,   # bucket holds both hourly and minute-level eras
     "layout_cutover": None,  # 'yyyy/MM/dd' the minute era begins, best-effort
+    "layout_data_start": None,  # 'yyyy/MM/dd' of the OLDEST data in the bucket,
+                             # whichever era it is in. Only interesting when the
+                             # layout is mixed, where it is the far edge of the
+                             # history the resolved table cannot reach.
     "table_choice": None,    # one line naming the resolved table, for tool output
     "discovery_notes": (),   # why candidate tables were rejected, for tool output
     # Memo of the log-destination ARN -> S3 path translation. Not a second table
@@ -426,8 +430,22 @@ def _layout_from_years(bucket: str, root: str, years: list[str]) -> dict:
     # no error to show for it.
     interval = 1
 
-    data_start = "/".join((oldest + ["01", "00", "00"])[:3])
-    mixed = era_new != era_old and era_old is not None
+    # One expression for "the oldest date in the bucket", used twice: reported to the
+    # user as the far edge of the history a mixed bucket's table cannot reach, and used
+    # as range_start whenever the table can address the whole timeline. It used to be
+    # two expressions and they padded differently. The reporting copy appended
+    # ["01", "00", "00"], so a year whose only children are non-date directories
+    # produced day 00, and 2022/01/00 is not a date. Deriving both from one list makes
+    # that divergence unrepresentable rather than merely fixed.
+    data_start_parts = (oldest + ["01", "01"])[:3]
+    data_start = "/".join(data_start_parts)
+
+    # `era_new is not None` is load-bearing. Without it, a newest year whose subtree is
+    # too shallow to read reports mixed=True with no cutover date, which tells the user
+    # the bucket holds both eras when what actually happened is that the newest year is
+    # unreadable and the format quietly fell back to hourly. Saying nothing is the
+    # honest answer to an unreadable tree.
+    mixed = era_new is not None and era_old is not None and era_new != era_old
     cutover = None
 
     if mixed and era_new == "minutes":
@@ -445,7 +463,7 @@ def _layout_from_years(bucket: str, root: str, years: list[str]) -> dict:
     else:
         # Not mixed, or newest is hourly and an hourly table reads the whole timeline
         # anyway, so the earliest data is the safe start in both cases.
-        range_start_parts = (oldest + ["01", "01"])[:3]
+        range_start_parts = data_start_parts
 
     range_start = "/".join(range_start_parts) + ("/00/00" if unit == "minutes" else "/00")
 
@@ -823,11 +841,16 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     }
 
 
-def _cross_check_declared(meta: dict, s3_path: str, strict: bool) -> str | None:
+def _cross_check_declared(meta: dict, layout: dict | None, strict: bool) -> str | None:
     """Compare a table's declared projection against the real S3 layout.
 
     Returns None when the table can address the data, else one line naming the
-    problem. Free to run: the S3 walk happens on this path anyway.
+    problem. Takes the layout rather than walking S3 for it: the caller has already
+    walked, and it needs the same dict for two other things.
+
+    `layout` is None when nothing readable sits under the path: an empty bucket, or a
+    prefix that has received no data. There is nothing to compare against, so the
+    declaration is trusted.
 
     Asymmetric on purpose, because the two directions of disagreement are not
     equally bad. A table declaring COARSER partitions than the data has is fine:
@@ -846,15 +869,11 @@ def _cross_check_declared(meta: dict, s3_path: str, strict: bool) -> str | None:
     Note the interval comparison converts to minutes first. Comparing the bare
     numbers makes "1 minute" equal "1 hour", which is precisely the pair of
     layouts this check exists to tell apart."""
-    try:
-        layout = _detect_partitions(s3_path)
-        actual_fmt = layout["format"]
-        actual_unit = layout["unit"]
-        actual_interval = layout["interval"]
-    except Exception:
-        # Nothing readable under the path yet: an empty bucket, or a prefix that
-        # has received no data. Trust the declaration; there is nothing to compare.
+    if layout is None:
         return None
+    actual_fmt = layout["format"]
+    actual_unit = layout["unit"]
+    actual_interval = layout["interval"]
 
     declared_fmt = meta["partition_format"]
     if strict and (declared_fmt, meta["partition_interval"], meta["partition_interval_unit"]) \
@@ -960,11 +979,32 @@ def resolve_log_table(s3_path: str, region: str, webacl_name: str) -> str:
 
 
 def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> str:
-    """The body of resolve_log_table. Call only with _resolve_lock held."""
+    """The body of resolve_log_table. Call only with _resolve_lock held.
+
+    One walk of S3, at the top, shared by every path out of here. Three things need
+    the same dict: the cross-check of a table we found, the CREATE of one we did not,
+    and the mixed-layout state the user-facing warning reads. Deriving it per consumer
+    walked the same tree twice on the self-heal path, and worse, published the layout
+    only inside the create branch, so a returning session and anyone querying their
+    own table saw `layout_mixed` False no matter what the bucket held, which is
+    precisely the population the mixed-bucket warning exists for."""
+    layout, layout_error = None, None
+    try:
+        layout = _detect_partitions(s3_path)
+    except Exception as exc:
+        # Nothing readable under the path. Not fatal yet: an existing table is still
+        # trusted as declared, and the create path re-raises this below rather than
+        # writing a second copy of the same message.
+        layout_error = exc
+    if layout is not None:
+        _athena_state["layout_mixed"] = layout["mixed"]
+        _athena_state["layout_cutover"] = layout["cutover"]
+        _athena_state["layout_data_start"] = layout["data_start"]
+
     meta = _find_existing_table(s3_path, region)
     if meta is not None:
         db, tbl = meta["table"].split(".", 1)
-        problem = _cross_check_declared(meta, s3_path, strict=(db == TMP_DATABASE))
+        problem = _cross_check_declared(meta, layout, strict=(db == TMP_DATABASE))
         if problem is None:
             return _record_table(meta)
         if db == TMP_DATABASE:
@@ -985,9 +1025,8 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
         raise RuntimeError(
             f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
             f"destination is correct.")
-    layout = _detect_partitions(s3_path)
-    _athena_state["layout_mixed"] = layout["mixed"]
-    _athena_state["layout_cutover"] = layout["cutover"]
+    if layout is None:
+        raise layout_error
     safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
     created = _create_named_table(
         s3_path, layout["storage_template"], layout["format"], layout["unit"],
@@ -1073,14 +1112,44 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
                    f"`{table}`'s partition projection begins "
                    f"({range_start:%Y-%m-%d %H:%M}). Athena projects no partition that "
                    f"far back, so rows before that point cannot be returned no matter "
-                   f"what the data contains. Widen the table's "
-                   f"projection.{part_col}.range or query a later window.")
+                   f"what the data contains. ")
+        mixed = _mixed_layout_sentence()
+        if mixed:
+            # "Widen the range" is the obvious advice and on a mixed bucket it is
+            # actively wrong: the pre-cutover directories are hourly, so a wider
+            # minute-level projection generates paths that do not exist and returns
+            # nothing, which looks like the advice was followed and the data is gone.
+            problem += (f"{mixed} Widening the range would not help, because the paths a "
+                        f"minute-level projection generates are not there before the "
+                        f"cutover. Query a window after it, or read the older era with "
+                        f"an hourly table, which this agent does not build yet.")
+        else:
+            problem += (f"Widen the table's projection.{part_col}.range or query a "
+                        f"later window.")
     elif range_end is not None and naive_end > range_end:
         problem = (f"The requested window ends {naive_end:%Y-%m-%d %H:%M}, after "
                    f"`{table}`'s partition projection stops "
                    f"({range_end:%Y-%m-%d %H:%M}). Rows after that point are outside "
                    f"the projected partitions and cannot be returned.")
     return clause, problem
+
+
+def _mixed_layout_sentence() -> str | None:
+    """One sentence naming the layout switch, or None if the bucket has a single layout.
+
+    Two messages need this fact and neither owns it: the table-resolution block, which
+    explains what the table can reach, and `partition_predicate`'s out-of-range
+    problem, which explains why widening the range would not help. One function so the
+    cutover date cannot be described two ways.
+
+    Returns None when the newest era is hourly, which is `layout_cutover is None`. That
+    table reads the whole timeline, so there is no unreachable history to warn about,
+    and every query against it is already refused by the coarse-partition gate with its
+    own explanation."""
+    if not (_athena_state.get("layout_mixed") and _athena_state.get("layout_cutover")):
+        return None
+    return (f"This bucket holds two partition layouts: hourly directories up to about "
+            f"{_athena_state['layout_cutover']}, minute-level ones after.")
 
 
 def describe_table_resolution() -> str:
@@ -1092,6 +1161,20 @@ def describe_table_resolution() -> str:
     lines = []
     if _athena_state.get("table_choice"):
         lines.append(_athena_state["table_choice"])
+    mixed = _mixed_layout_sentence()
+    if mixed:
+        # `projection.<col>.format` holds one value, so one table cannot describe two
+        # granularities, and the pre-cutover era is unreachable rather than merely
+        # coarse. Say so here rather than only when a query happens to ask for it: a
+        # user who switched prefixes months ago has no reason to suspect the older
+        # objects are invisible, and Athena's answer for them is zero rows.
+        lines.append(
+            f"{mixed} This table covers the minute-level era only. Logs from "
+            f"{_athena_state.get('layout_data_start')} up to the cutover are in the "
+            f"bucket, but no minute-level table can address them, and Athena reports "
+            f"that as zero rows rather than as an error. Reading them needs an hourly "
+            f"table, which this agent does not build yet. The cutover date is "
+            f"best-effort.")
     for note in _athena_state.get("discovery_notes") or []:
         lines.append(f"Skipped {note}")
     return "\n".join(lines)

@@ -12,6 +12,8 @@ through, because every user who follows the minute-partitioning guide has one:
 old hourly paths under earlier months, minute paths under recent ones.
 """
 
+import datetime as dt
+
 import pytest
 
 from tools import waf_athena as A
@@ -131,7 +133,8 @@ def test_detection_now_agrees_with_a_correctly_declared_minute_table(s3_tree):
         "partition_interval": 1, "partition_interval_unit": "minutes",
         "partition_range_start": None, "partition_range_end": None,
     }
-    assert A._cross_check_declared(declared, "s3://bkt", strict=False) is None
+    layout = A._detect_partitions("s3://bkt")
+    assert A._cross_check_declared(declared, layout, strict=False) is None
 
 
 # --- where the current layout begins ----------------------------------------
@@ -227,6 +230,38 @@ def test_non_monotone_layout_keeps_range_start_safe(s3_tree):
     assert layout["range_start"] == "2026/02/01/00/00", (
         "must floor to the earliest minute-level month; a binary month scan answers 07")
     assert layout["cutover"] == "2026/02/11"
+
+
+def test_a_year_with_no_date_children_still_yields_a_real_date(s3_tree):
+    """`2022/backup/` makes the year appear with nothing two-digit under it, so the
+    descent stops at one level and the rest has to be padded.
+
+    `data_start` padded that case with `["01", "00", "00"]` and produced day 00, which
+    is not a date, while the `range_start` beside it padded the identical situation with
+    `["01", "01"]`. Both now come off one list, so they cannot disagree again.
+    """
+    s3_tree("2022/backup/old", "2026/09/07/14/03")
+    layout = A._detect_partitions("s3://bkt")
+    # The precondition: the year is present but unreadable, which is what forces padding.
+    assert A._era_of(A._date_levels("bkt", "", ["2022"], newest=False)) is None
+    dt.datetime.strptime(layout["data_start"], "%Y/%m/%d")  # raises if not a date
+    assert layout["range_start"].startswith(layout["data_start"])
+
+
+def test_an_unreadable_newest_year_is_not_reported_as_mixed(s3_tree):
+    """Saying nothing beats saying something wrong.
+
+    Without the `era_new is not None` guard, a newest year too shallow to read compares
+    unequal to a readable older era and reports mixed=True with no cutover date. The
+    user is then told the bucket holds both layouts, when what actually happened is that
+    the newest year could not be read and the format fell back to hourly.
+    """
+    s3_tree("2024/05/25/08", "2026/backup/x")
+    # The precondition: the newest year is the unreadable one.
+    assert A._era_of(A._date_levels("bkt", "", ["2026"], newest=True)) is None
+    layout = A._detect_partitions("s3://bkt")
+    assert layout["mixed"] is False
+    assert layout["cutover"] is None
 
 
 def test_range_start_is_never_later_than_the_earliest_minute_data(s3_tree):

@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: every Athena query paid a few seconds of planning it did not need
+
+- **The projected partition range now starts where your data starts**, floored to the
+  first of that month, instead of a fixed `2020/01/01`. Athena expands the whole
+  declared range before it applies the `WHERE` clause, so planning time followed the
+  table properties rather than the window you asked about. On a small test bucket,
+  five tables differing in nothing but this value, the same 5-minute query spent 4.4
+  to 5.0 s planning with the old start and 0.19 to 0.25 s with a start two months
+  back, scanning identical bytes. It also brings the table under Athena's limit of
+  1,000,000 partitions per scan, which the old range exceeded on its own and which
+  only a `log_time` predicate on every query was keeping survivable.
+
+### Added: a bucket that changed partition layout says so, and says from when
+
+- **The `TABLE:` block now names the day minute-level querying begins and the date of
+  the oldest data in the bucket**, on any bucket holding both an hourly era and a
+  minute-level one. `projection.<col>.format` holds one value, so no single table
+  describes both, and everything between those two dates sits in hourly directories
+  that no minute-level table can address. Athena answers those paths with zero rows
+  and no error, which is the reason to say it up front.
+- **The out-of-range message no longer tells you to widen the projection range** when
+  the bucket is one of those. Widening cannot work there: the older directories are
+  hourly, so a wider minute-level projection generates paths that do not exist, and
+  following the advice looks like confirmation that the data is gone.
+- **Zero-result output names the table it queried.** It returned before the `TABLE:`
+  block, so the three suggested reasons stood alone, and on a window that straddles a
+  layout change all three are wrong.
+- The projection start is exact at month granularity and never later than your
+  minute-level data. The cutover *day* comes from a search inside that month and
+  assumes the layout changed once, so it is reported as best-effort.
+
+### Development
+
+- 87 tests, up from 60. The new ones cover where the partition layout begins, a
+  bucket that alternates between the two layouts, and the zero-result message.
+
 ## 0.13.0 (2026-09-09)
 
 Thanks to @vishallakhotia (#12), whose refactor made the partition column and its

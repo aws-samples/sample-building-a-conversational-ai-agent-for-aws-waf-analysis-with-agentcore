@@ -40,6 +40,7 @@ Tables created by the agent have these TBLPROPERTIES:
 'projection.log_time.format'        = 'yyyy/MM/dd/HH/mm'   (or yyyy/MM/dd/HH)
 'projection.log_time.interval'      = '1'
 'projection.log_time.interval.unit' = 'minutes'             (or hours)
+'projection.log_time.range'         = '2026/01/01/00/00,NOW' (start follows your data)
 'storage.location.template'         = 's3://bucket/path/${log_time}'
 ```
 
@@ -47,6 +48,33 @@ The interval is always `1`. Firehose names an object after whatever minute its b
 the minute directories are arbitrary values and nothing useful can be inferred from the gaps between
 them. Earlier versions inferred an interval and could land on a value that projected only every Nth
 minute, leaving the objects in between unread.
+
+**The range starts where your data starts**, found by walking the bucket and floored to the first of
+that month. It used to be a fixed `2020/01/01`, about 3.46 million projected minutes. Athena expands
+the whole declared range before it applies your `WHERE` clause, so planning time follows the range in
+the table properties, whatever window you asked about. On a small test bucket, five tables differing in
+nothing but this value, the same 5-minute query spent 4.4 to 5.0 s planning with a 2020 start and 0.19
+to 0.25 s with a start two months back. Both scanned identical bytes. Athena also
+[cannot read more than 1,000,000 partitions in a single scan](https://docs.aws.amazon.com/athena/latest/ug/partition-projection.html),
+which a 2020 start exceeds on its own.
+
+### Buckets That Hold Both Layouts
+
+Move a Firehose stream from an hourly prefix to a minute-level one and the bucket keeps hourly
+directories before the switch, minute-level ones after. `projection.<col>.format` holds a single value,
+so no one table describes both.
+
+The agent declares the newest layout, the minute-level one, and reports the rest in the `TABLE:` block
+under query output: the day the minute era begins, and the date of the oldest data in the bucket.
+Everything between those two dates sits in hourly directories that no minute-level table can address.
+Athena answers those paths with zero rows and no error, so the agent says so up front instead of
+letting an empty result stand for it.
+
+The projection start is floored to the first of the month the switch falls in, which keeps it from ever
+landing later than your minute-level data. The cutover *day* is best-effort: it comes from a search
+inside that month and assumes the layout changed once, so a bucket that alternates can report a day
+that is slightly late. To read the older era, see
+[Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md).
 
 This means:
 - No partition management needed — new time slots are automatically included
@@ -129,4 +157,6 @@ Resolution precedence: `WAF_AGENT_PARTITION_TZ` env → detected Firehose `Custo
 
 2. **Hourly and coarser tables are still refused for log-detail queries.** Detection accepts them, then the query is blocked on scan cost. Only minute-level tables can run log details today.
 
-3. **Custom S3 prefix on Vended Logs is invisible.** If you configured a custom key prefix via the API (not console), the agent may not resolve the correct path because `GetLoggingConfiguration` doesn't return the prefix.
+3. **On a bucket that changed layout, the pre-cutover logs are out of reach.** The agent reads the minute era and tells you where it starts. Reaching the hourly era needs a table you build yourself, because the agent will not build an hourly one while log-detail queries on hourly are refused.
+
+4. **Custom S3 prefix on Vended Logs is invisible.** If you configured a custom key prefix via the API (not console), the agent may not resolve the correct path because `GetLoggingConfiguration` doesn't return the prefix.

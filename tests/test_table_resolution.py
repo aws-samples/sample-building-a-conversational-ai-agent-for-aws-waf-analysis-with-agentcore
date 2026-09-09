@@ -39,6 +39,11 @@ def _layout(fmt, unit, interval=1, **extra):
 
 MINUTE_LAYOUT = _layout("yyyy/MM/dd/HH/mm", "minutes")
 HOURLY_LAYOUT = _layout("yyyy/MM/dd/HH", "hours")
+# Hourly before a cutover, minute-level after. What every bucket looks like once its
+# owner has followed the minute-partitioning guide.
+MIXED_LAYOUT = _layout("yyyy/MM/dd/HH/mm", "minutes", mixed=True,
+                       cutover="2026/01/05", data_start="2022/03/07",
+                       range_start="2026/01/01/00/00")
 
 
 def table(name, location, col="log_time", fmt="yyyy/MM/dd/HH/mm", interval="1",
@@ -226,58 +231,136 @@ def test_granularity_classification(fmt, granularity):
 
 
 # --- declared config versus what is actually in S3 -------------------------
+#
+# These take the layout as an argument rather than through the fixture, because the
+# function does. It used to walk S3 itself; the walk moved up to the one caller, which
+# needs the same dict for two other things.
 
 
-def test_declaring_coarser_than_the_data_is_accepted(catalog):
+def test_declaring_coarser_than_the_data_is_accepted():
     """An hourly table over minute-nested S3 works: the location template
     resolves to the hour directory and Athena scans recursively beneath it."""
-    catalog({}, layout=MINUTE_LAYOUT)
     meta = A._table_metadata("d", table("h", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours"))
-    assert A._cross_check_declared(meta, SCOPED_PATH, strict=False) is None
+    assert A._cross_check_declared(meta, MINUTE_LAYOUT, strict=False) is None
 
 
-def test_declaring_finer_than_the_data_is_rejected(catalog):
+def test_declaring_finer_than_the_data_is_rejected():
     """A minute-level table over hourly directories projects `.../12/16` under a
     bucket that only has `.../12`. Athena reports the miss as zero rows."""
-    catalog({}, layout=HOURLY_LAYOUT)
     meta = A._table_metadata("d", table("m", SCOPED_PATH))
-    assert "finer than" in A._cross_check_declared(meta, SCOPED_PATH, strict=False)
+    assert "finer than" in A._cross_check_declared(meta, HOURLY_LAYOUT, strict=False)
 
 
-def test_interval_coarser_than_the_data_is_rejected(catalog):
+def test_interval_coarser_than_the_data_is_rejected():
     """Interval 5 over every-minute directories skips four minutes in five, and
     the skipped rows are simply absent from results."""
-    catalog({}, layout=MINUTE_LAYOUT)
     meta = A._table_metadata("d", table("i", SCOPED_PATH, interval="5"))
-    assert "skips directories" in A._cross_check_declared(meta, SCOPED_PATH, strict=False)
+    assert "skips directories" in A._cross_check_declared(meta, MINUTE_LAYOUT, strict=False)
 
 
-def test_interval_finer_than_the_data_is_accepted(catalog):
+def test_interval_finer_than_the_data_is_accepted():
     """The opposite direction only costs planning time, so it is not refused."""
-    catalog({}, layout=_layout("yyyy/MM/dd/HH/mm", "minutes", 5))
     meta = A._table_metadata("d", table("i", SCOPED_PATH, interval="1"))
-    assert A._cross_check_declared(meta, SCOPED_PATH, strict=False) is None
+    assert A._cross_check_declared(
+        meta, _layout("yyyy/MM/dd/HH/mm", "minutes", 5), strict=False) is None
 
 
-def test_interval_compares_value_and_unit_together(catalog):
+def test_interval_compares_value_and_unit_together():
     """Comparing the bare numbers makes 1 minute equal 1 hour, which is exactly
     the pair of layouts this check exists to tell apart."""
-    catalog({}, layout=MINUTE_LAYOUT)
     meta = A._table_metadata("d", table("h", SCOPED_PATH, fmt="yyyy/MM/dd/HH",
                                        interval="1", unit="hours"))
-    assert A._cross_check_declared(meta, SCOPED_PATH, strict=True) is not None
+    assert A._cross_check_declared(meta, MINUTE_LAYOUT, strict=True) is not None
 
 
-def test_unreadable_s3_layout_trusts_the_declaration(catalog):
-    """An empty bucket or a prefix with no data yet is not evidence of a problem."""
-    catalog({}, layout=MINUTE_LAYOUT)
+def test_unreadable_s3_layout_trusts_the_declaration():
+    """No layout means an empty bucket or a prefix with no data yet, which is not
+    evidence of a problem. The declaration is all there is, so it is trusted."""
     meta = A._table_metadata("d", table("m", SCOPED_PATH))
+    assert A._cross_check_declared(meta, None, strict=False) is None
+
+
+def test_mixed_layout_is_published_when_a_table_already_exists(catalog):
+    """The state the user-facing warning reads has to be set on BOTH resolution paths.
+
+    It was written only inside the table-creation branch, and every resolve that finds a
+    table returns before reaching it. So `layout_mixed` stayed False for a returning
+    session and for anyone querying a table they maintain themselves, which is exactly
+    the population a mixed-bucket warning is for.
+    """
+    glue = catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MIXED_LAYOUT)
+    # The precondition: this must take the found-a-table path, not the create path,
+    # or the assertions below pass for the wrong reason.
+    assert A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl") == "userdb.waf"
+    assert glue.deleted == []
+    assert A._athena_state["layout_mixed"] is True
+    assert A._athena_state["layout_cutover"] == "2026/01/05"
+    assert A._athena_state["layout_data_start"] == "2022/03/07"
+
+
+def test_the_resolution_block_names_the_history_a_mixed_bucket_hides(catalog):
+    """`projection.<col>.format` holds one value, so the pre-cutover era is unreachable
+    rather than merely coarse, and nothing else tells the user that.
+
+    The single-layout control runs first: the line has to appear because the bucket is
+    mixed, not because the block always says it.
+    """
+    catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MINUTE_LAYOUT)
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert "minute-level era only" not in A.describe_table_resolution()
+
+    catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MIXED_LAYOUT)
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    block = A.describe_table_resolution()
+    assert "minute-level era only" in block
+    assert "2026/01/05" in block, "the cutover, so the user knows where the table starts"
+    assert "2022/03/07" in block, "the oldest data, so they know how much is out of reach"
+
+
+def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
+    """The scratch table is stale, so it is dropped and rebuilt. That used to walk the
+    whole S3 tree twice: once for the cross-check that condemned it, once to build its
+    replacement. One walk at the top of resolution serves both."""
+    glue = catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
+                                           fmt="yyyy/MM/dd/HH", unit="hours")]},
+                   layout=MIXED_LAYOUT)
+    walks = []
+
+    def counted(path):
+        walks.append(path)
+        return dict(MIXED_LAYOUT)
+
+    monkeypatch.setattr(A, "_detect_partitions", counted)
+    monkeypatch.setattr(A, "_create_named_table", lambda *a, **k: A._table_metadata(
+        A.TMP_DATABASE, table("waf_logs_myacl", SCOPED_PATH)))
+
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    # The precondition: the stale table really was dropped, so this is the two-walk
+    # path and not the ordinary create path.
+    assert glue.deleted == [f"{A.TMP_DATABASE}.waf_logs_myacl"]
+    assert len(walks) == 1
+
+
+def test_an_unreadable_bucket_still_resolves_an_existing_table(catalog):
+    """The other half of the None contract, and the one that used to live inside
+    `_cross_check_declared`'s try block.
+
+    The walk now happens once at the top of resolution, so a bucket it cannot read
+    has to fail soft there rather than abort the resolve. A user with a declared
+    table over a prefix that has not received data yet must still get their table.
+    """
+    glue = catalog({"userdb": [table("waf", SCOPED_PATH)]})
 
     def boom(_):
         raise RuntimeError("Cannot detect partition structure")
 
+    monkeypatch_target = A._detect_partitions
     A._detect_partitions = boom
-    assert A._cross_check_declared(meta, SCOPED_PATH, strict=False) is None
+    try:
+        assert A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl") == "userdb.waf"
+    finally:
+        A._detect_partitions = monkeypatch_target
+    assert glue.deleted == []
 
 
 # --- WebACL scoping ---------------------------------------------------------
@@ -402,12 +485,35 @@ def test_range_check_uses_the_unwidened_window(catalog):
 
 def test_window_before_the_projected_range_is_reported(catalog):
     """Athena returns zero rows for a window outside the projection, which
-    otherwise reads as "no traffic" rather than as a table limitation."""
+    otherwise reads as "no traffic" rather than as a table limitation.
+
+    On a single-layout bucket widening the range is the correct advice, which is what
+    makes it the control for the mixed-bucket case below."""
     _resolve(catalog, table("t", SCOPED_PATH, rng="2026/01/01/00/00,NOW"))
     _, problem = A.partition_predicate(
         dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
         dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc))
     assert problem is not None and "before" in problem
+    assert "Widen the table's projection" in problem
+
+
+def test_mixed_bucket_is_not_told_to_widen_the_range(catalog):
+    """Widening is the obvious advice and on a mixed bucket it cannot work.
+
+    The pre-cutover directories are hourly, so a minute-level projection stretched back
+    over them generates paths that do not exist and still returns nothing. Following
+    the advice therefore looks like confirmation that the data is gone.
+    """
+    _resolve(catalog, table("t", SCOPED_PATH, rng="2026/01/01/00/00,NOW"))
+    A._athena_state.update({"layout_mixed": True, "layout_cutover": "2026/01/05",
+                            "layout_data_start": "2022/03/07"})
+    _, problem = A.partition_predicate(
+        dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc))
+    # The precondition: this window IS out of range, so the branch under test ran.
+    assert problem is not None
+    assert "2026/01/05" in problem
+    assert "Widen the table's projection" not in problem
 
 
 def test_unsupported_interval_unit_is_rejected(catalog):

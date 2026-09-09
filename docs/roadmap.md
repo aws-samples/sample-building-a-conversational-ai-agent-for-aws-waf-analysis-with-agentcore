@@ -15,7 +15,7 @@ roughly in the order we intend to work on them, and that order can change.
 |---|---|
 | Run log-detail analysis on hourly-partitioned logs (with an up-front note that scans cost more), instead of declining them | |
 | Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | 2026-09-09 |
-| Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | |
+| Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | 2026-09-09 |
 | Work with an existing Athena table whose partition column is not named `log_time`, as long as it is minute-level. An hourly table is found and understood, but log-detail queries on it are still declined | 2026-09-09 |
 | Stop dropping rows at the edges of a query window, where a log record's timestamp and the partition directory it landed in disagree | 2026-09-09 |
 | Detect a non-UTC timezone on Firehose S3 log paths automatically, so queries don't silently miss rows | |
