@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name
 
-from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message
+from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
+                                 query_failed_message)
 TMP_DATABASE = "waf_analysis_tmp"
 
 # Serializes DROP+CREATE of a scratch table. Held inside _create_named_table.
@@ -1418,16 +1419,19 @@ def _wait_query(athena, qid: str):
     bound in `poll_timeout_message` scoped to a run of failures rather than to the session.
     """
     from tools.session_state import note_query_success
-    elapsed = 0
-    while elapsed < MAX_POLL:
+    deadline = time.monotonic() + MAX_POLL
+    while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
-        elapsed += POLL_INTERVAL
         resp = athena.get_query_execution(QueryExecutionId=qid)
         state = resp["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
             note_query_success()
             return
         if state in ("FAILED", "CANCELLED"):
+            # Carries the engine's own reason, and the same "not an absence of traffic"
+            # framing the CloudWatch path got. Observed on a real bucket: a wide query
+            # returned HIVE_S3_THROTTLING, which is exactly the failure where an
+            # unprompted retry makes things worse.
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
-            raise RuntimeError(f"Athena query {state}: {reason}")
+            raise RuntimeError(query_failed_message("Athena", state, reason))
     raise RuntimeError(poll_timeout_message("Athena"))

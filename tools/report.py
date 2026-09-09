@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
+from tools.query_limits import MAX_POLL, POLL_INTERVAL
 
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
@@ -917,15 +918,28 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
 
 
-def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False, max_wait=120):
-    """Run a CWL query with polling. Returns count (int), full row (dict), or all rows (list)."""
+def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False):
+    """Run a CWL query with polling. Returns count (int), full row (dict), or all rows (list).
+
+    The fifth polling site in the product and the one 2.1's collapse missed: it carried its
+    own `max_wait=120` default and its own literal 2, so "one definition" was not true until
+    this was wired up too. No caller ever passed `max_wait`, so the parameter is gone rather
+    than defaulted.
+
+    **A known defect this does not fix, recorded where someone would look for it.** Insights
+    returns partial rows for a query still `Running`, so exhausting the budget here yields
+    whatever arrived so far and the caller cannot tell that from a complete answer. Every
+    caller is inside one `try` whose handler is `except Exception: pass`, and the report's
+    partial-data note then attributes any missing section to an idle WebACL. Fixing that
+    means giving the report a way to say "this section timed out", which is its own roadmap
+    item, not a change to make quietly here.
+    """
     import time
     resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=1000)
     query_id = resp["queryId"]
-    elapsed = 0
-    while elapsed < max_wait:
-        time.sleep(2)  # nosemgrep: arbitrary-sleep — polling for CWL query
-        elapsed += 2
+    deadline = time.monotonic() + MAX_POLL
+    while time.monotonic() < deadline:
+        time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for CWL query
         result = logs_client.get_query_results(queryId=query_id)
         if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
             break

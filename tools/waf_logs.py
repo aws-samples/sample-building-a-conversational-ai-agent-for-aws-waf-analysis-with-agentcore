@@ -467,10 +467,9 @@ def run_logs_query(
                 queryString=query, limit=params["limit"],
             )
             query_id = resp["queryId"]
-            elapsed = 0
-            while elapsed < MAX_POLL:
+            deadline = time.monotonic() + MAX_POLL
+            while time.monotonic() < deadline:
                 time.sleep(POLL_INTERVAL)
-                elapsed += POLL_INTERVAL
                 result = client.get_query_results(queryId=query_id)
                 if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                     break
@@ -765,10 +764,9 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
             queryString=query, limit=limit,
         )
         query_id = resp["queryId"]
-        elapsed = 0
-        while elapsed < MAX_POLL:
+        deadline = time.monotonic() + MAX_POLL
+        while time.monotonic() < deadline:
             time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for CWL query
-            elapsed += POLL_INTERVAL
             result = client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break

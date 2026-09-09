@@ -8,6 +8,7 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
+from tools.query_limits import MAX_POLL, POLL_INTERVAL
 
 _latest_patrol_html: str | None = None
 
@@ -657,13 +658,30 @@ def _classify_rules(webacl_data: dict) -> list[dict]:
     return rules
 
 
-def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: str, max_wait: int = 60) -> list[dict]:
-    """Run a Logs Insights query and wait for results."""
+def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: str) -> list[dict]:
+    """Run a Logs Insights query and wait for results.
+
+    The sixth polling site, and the one that shows why the collapse in 2.1 was not finished:
+    it spelled its budget `max_wait: int = 60` and counted iterations with
+    `range(max_wait // 2)`, so nothing looking for `MAX_POLL` could find it, including the
+    test written to guard against exactly this. No caller passed it, so the parameter is
+    gone. **Patrol's per-query budget therefore goes from 60 s to 120 s.** No recorded reason
+    for 60 exists, and patrol's queries are small `limit 5` and `limit 10` aggregates that
+    rarely approach either number, so in practice this only changes the pathological case,
+    where the extra time buys a real answer instead of the silent `[]` below. Worth knowing
+    that patrol runs these back to back with no chain-level budget anywhere, so the worst
+    case for a whole scan doubles.
+
+    The silent `[]` on a non-`Complete` status, and the `except Exception` around everything,
+    are the same defect `_run_cwl` had and are deliberately left: changing what patrol
+    returns means changing what its report says, which is a roadmap item rather than a
+    drive-by."""
     try:
         resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=10)
         query_id = resp["queryId"]
-        for _ in range(max_wait // 2):
-            time.sleep(2)
+        deadline = time.monotonic() + MAX_POLL
+        while time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL)
             result = logs_client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break

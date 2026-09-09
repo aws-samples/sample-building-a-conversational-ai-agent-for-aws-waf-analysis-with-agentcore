@@ -31,6 +31,12 @@ query takes, which nobody has gathered.
 
 # One deliberate value, the tightest of the five it replaces. Raising this is almost
 # always the wrong response to a timeout: see the module docstring.
+#
+# Seconds of wall clock, and the polling loops measure it with a monotonic deadline
+# rather than by adding up their sleeps. Counting sleeps undercounts: each iteration also
+# pays a GetQueryExecution round trip, so a 120 that meant "60 sleeps of 2" actually ran
+# 131 s when measured, and the message promising 120 seconds was wrong by the polling
+# overhead. It also means the budget stretched on a slow link and shrank on a fast one.
 MAX_POLL = 120
 POLL_INTERVAL = 2
 
@@ -80,7 +86,7 @@ def poll_timeout_message(engine: str) -> str:
             f"pre-aggregated CloudWatch metrics and does not scan logs at all.")
 
 
-def query_failed_message(engine: str, status: str) -> str:
+def query_failed_message(engine: str, status: str, reason: str = "") -> str:
     """What to say when the engine itself reports a terminal non-success state.
 
     Separate from a poll timeout and deliberately not counted against the retry bound:
@@ -89,7 +95,9 @@ def query_failed_message(engine: str, status: str) -> str:
     routed to `poll_timeout_message` instead, being the same situation as running out of
     poll budget.
     """
-    return (f"STOPPED: {engine} reported the query as {status}, so no rows were returned. "
-            f"This is a query-execution failure, NOT an absence of traffic.\n"
-            f"ACTION: say so plainly rather than reporting zero results, and do not "
-            f"re-run the same query unchanged.")
+    detail = f" Reason: {reason}" if reason else ""
+    return (f"STOPPED: {engine} reported the query as {status}, so no rows were returned."
+            f"{detail} This is a query-execution failure, NOT an absence of traffic.\n"
+            f"ACTION: say so plainly rather than reporting zero results, and do not re-run the "
+            f"same query unchanged. If the reason mentions throttling, re-running it "
+            f"immediately makes the throttling worse rather than better.")
