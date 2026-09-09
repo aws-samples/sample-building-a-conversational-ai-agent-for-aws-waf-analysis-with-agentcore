@@ -8,7 +8,7 @@ import time
 import threading
 from collections import Counter
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope
+from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone
 
 _cwl_semaphore = threading.Semaphore(8)
 MAX_POLL = 120
@@ -358,13 +358,59 @@ _HOURLY_PARTITION_ERROR = (
 
 
 def check_hourly_partition_block() -> str | None:
-    """Return error message if Athena backend has hourly partitions, else None."""
+    """Return the coarse-partition error if the Athena table is coarser than
+    minute-level, else None.
+
+    Best-effort pre-flight only, and deliberately so. It reads
+    `_athena_state["partition_format"]`, which is written by table resolution, so
+    on a cold session where nothing has resolved a table yet it returns None and
+    the caller proceeds. That is fine because the real block is enforced inside
+    `query_logs` after resolution; this only exists to fail early with written
+    guidance instead of a bare exception. Do not add a resolve call here: callers
+    use it as a cheap guard and resolution walks S3 and the Glue catalog."""
     if get_log_type() != "s3":
         return None
-    from tools.waf_athena import _athena_state
-    if _athena_state.get("partition_format") == "yyyy/MM/dd/HH":
+    from tools.waf_athena import _athena_state, _partition_has_minutes
+    part_fmt = _athena_state.get("partition_format")
+    if part_fmt and not _partition_has_minutes(part_fmt):
         return _HOURLY_PARTITION_ERROR
     return None
+
+
+# Result columns that carry a wall-clock timestamp (produced by the time-based
+# query templates). Used to convert CWL Insights' UTC output to session-local.
+_TIME_FIELD_NAMES = {"first_seen", "last_seen", "minute", "time_bucket"}
+_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?$")
+
+
+def _shift_time_fields(rows: list[dict] | None, tz_seconds: int) -> list[dict] | None:
+    """Shift UTC wall-clock strings in known time columns to the session tz.
+
+    CWL Insights renders bin()/@timestamp in UTC. We add the session offset so
+    these match Athena output (offset in-SQL) and get_waf_overview (local). A
+    field qualifies only if its NAME is a known time column (or a `bin(...)`
+    alias) AND its VALUE parses as a plain datetime — so non-time fields are
+    never touched. No-op when tz_seconds == 0."""
+    if not rows or not tz_seconds:
+        return rows
+    from datetime import datetime, timedelta
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, val in list(row.items()):
+            if not isinstance(val, str) or not val:
+                continue
+            if key not in _TIME_FIELD_NAMES and not key.startswith("bin("):
+                continue
+            if not _TS_RE.match(val.strip()):
+                continue
+            try:
+                dt = datetime.fromisoformat(val.strip()) + timedelta(seconds=tz_seconds)
+                row[key] = dt.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                continue
+    return rows
+
 
 def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict] | None:
     """Execute a log query, routing to CWL or Athena based on log destination.
@@ -386,33 +432,47 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
 
     if ":log-group:" in dest:
         log_group = dest.split(":log-group:")[-1].rstrip(":*")
-        return _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
+        rows = _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
+        # CWL Insights returns bin()/@timestamp fields in UTC. Shift the known
+        # time-valued columns to the session timezone so CWL output matches the
+        # Athena output (which is offset in-SQL) and the metrics overview.
+        _tz_off = get_user_timezone()
+        return _shift_time_fields(rows, int(round((_tz_off or 0) * 3600)))
     elif ":s3:::" in dest or ":firehose:" in dest:
         table = _ensure_athena_table(dest)
-        # Block queries on hourly partitions (Firehose without minute-level prefix)
-        from tools.waf_athena import _athena_state
-        if _athena_state.get("partition_format") == "yyyy/MM/dd/HH":
+        # Block queries on coarse (hourly or coarser) partitions — they make
+        # Athena scan too much data per query and time out on production traffic.
+        # Safe as a bare granularity test because discovery rejects any declared
+        # format it could not classify, so nothing unclassifiable reaches here.
+        from tools.waf_athena import _athena_state, _partition_has_minutes
+        if _athena_state.get("partition_format") and not _partition_has_minutes(_athena_state["partition_format"]):
             raise RuntimeError(_HOURLY_PARTITION_ERROR)
         sql = query_athena.replace("{TABLE}", table)
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))
         sql = sql.replace("{LIMIT}", str(limit))
-        # Inject partition pruning
-        from tools.waf_athena import _athena_state
-        from datetime import datetime, timezone as tz
-        part_fmt = _athena_state.get("partition_format")
-        if part_fmt:
-            start_dt = datetime.fromtimestamp(start_epoch, tz=tz.utc)
-            end_dt = datetime.fromtimestamp(end_epoch, tz=tz.utc)
-            if "mm" in part_fmt:
-                sp = start_dt.strftime("%Y/%m/%d/%H/%M")
-                ep = end_dt.strftime("%Y/%m/%d/%H/%M")
-            else:
-                sp = start_dt.strftime("%Y/%m/%d/%H")
-                ep = end_dt.strftime("%Y/%m/%d/%H")
-            partition_clause = f"AND log_time >= '{sp}' AND log_time <= '{ep}'"
-        else:
-            partition_clause = ""
+        # Timezone: WAF log `timestamp` is epoch millis (UTC). Templates that
+        # DISPLAY a wall-clock time add {TZ_OFFSET_SECONDS} inside from_unixtime()
+        # so the returned string is in the user's session timezone — consistent
+        # with get_waf_overview (metrics), which already returns local times.
+        # Without this the agent gets UTC strings while everything else is local
+        # and misreports the hour of an event.
+        _tz_off = get_user_timezone()
+        _tz_seconds = int(round((_tz_off or 0) * 3600))
+        sql = sql.replace("{TZ_OFFSET_SECONDS}", str(_tz_seconds))
+        # Inject partition pruning. Rendering the bounds, choosing the timezone
+        # and checking the projected range all live in partition_predicate so
+        # patrol's Athena path cannot drift from this one.
+        from tools.waf_athena import partition_predicate
+        from datetime import datetime, timezone as _tz
+        partition_clause, range_problem = partition_predicate(
+            datetime.fromtimestamp(start_epoch, tz=_tz.utc),
+            datetime.fromtimestamp(end_epoch, tz=_tz.utc),
+        )
+        if range_problem:
+            # Fatal here: the query would come back empty and the agent would
+            # report "no traffic", which is a wrong answer rather than a slow one.
+            raise RuntimeError(range_problem)
         # If the table is not WebACL-specific (e.g. a Firehose bucket-root table
         # shared by multiple WebACLs), filter by webaclid so we never count
         # another WebACL's traffic. webaclid in the logs is the full ARN, which
@@ -484,9 +544,7 @@ def _ensure_athena_table(dest: str) -> str | None:
 
         try:
             from tools.waf_athena import (
-                _resolve_s3_path, _try_standard_path, _get_account_id,
-                _find_existing_table, _validate_waf_log, _detect_partitions,
-                _create_named_table, _athena_state,
+                _resolve_s3_path, _try_standard_path, _get_account_id, resolve_log_table,
             )
 
             s3_base = _resolve_s3_path(dest)
@@ -503,67 +561,7 @@ def _ensure_athena_table(dest: str) -> str | None:
             if not s3_path:
                 s3_path = s3_base
 
-            # A table whose location does NOT include the WebACL name (e.g. a
-            # Firehose bucket-root prefix) may hold logs from multiple WebACLs.
-            # Record this so query_logs can add a webaclid filter to avoid
-            # cross-WebACL contamination.
-            webacl_scoped = webacl_name.lower() in s3_path.lower()
-            _athena_state["webacl_scoped"] = webacl_scoped
-
-            # Check for existing table
-            existing = _find_existing_table(s3_path, region)
-            if existing:
-                # Validate partition config and path match S3 structure
-                try:
-                    from tools.aws_session import get_client as _gc
-                    glue = _gc("glue", region_name=region)
-                    db, tbl_name = existing.split(".", 1)
-                    tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
-                    tbl_params = tbl_resp["Table"].get("Parameters", {})
-                    existing_interval = tbl_params.get("projection.log_time.interval", "1")
-                    table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
-                    resolved = s3_path.rstrip("/")
-                    _, part_fmt, _, actual_interval = _detect_partitions(s3_path)
-                    interval_mismatch = str(actual_interval) != str(existing_interval)
-                    # Path mismatch: resolved must be equal to or more specific than table location.
-                    # If resolved is just bucket root but table points to a sub-path, it's a mismatch
-                    # (log delivery method changed — e.g., Vended Logs → Firehose).
-                    path_mismatch = not resolved.startswith(table_location)
-                    if interval_mismatch or path_mismatch:
-                        if db == "waf_analysis_tmp":
-                            glue.delete_table(DatabaseName=db, Name=tbl_name)
-                            # Fall through to create new table
-                        else:
-                            pass  # External table — create our own below
-                    else:
-                        _athena_table = existing
-                        _athena_state["table"] = existing
-                        _athena_state["partition_format"] = part_fmt
-                        return existing
-                except Exception:
-                    _athena_table = existing
-                    _athena_state["table"] = existing
-                    # Best-effort partition_format so query_logs can prune and
-                    # apply the hourly-partition guard.
-                    try:
-                        _, pf, _, _ = _detect_partitions(s3_path)
-                        _athena_state["partition_format"] = pf
-                    except Exception:
-                        pass
-                    return existing
-
-            # Create permanent table
-            if not _validate_waf_log(s3_path):
-                raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log destination is correct.")
-            storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
-            safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-            full_table = _create_named_table(
-                s3_path, storage_template, part_fmt, part_unit, part_interval,
-                region, "primary", f"waf_logs_{safe_name}"
-            )
-            _athena_table = full_table
-            _athena_state["table"] = full_table
-            _athena_state["partition_format"] = part_fmt
-            return full_table
+            _athena_table = resolve_log_table(s3_path, region, webacl_name)
+            return _athena_table
         except Exception as e:
             raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e

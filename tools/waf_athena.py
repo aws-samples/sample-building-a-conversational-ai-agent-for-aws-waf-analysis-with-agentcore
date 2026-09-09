@@ -9,8 +9,9 @@ import json
 import tempfile
 import os
 import threading
+from datetime import datetime, timedelta
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_webacl_name, get_scope
+from tools.session_state import get_webacl_name
 
 MAX_POLL = 300
 TMP_DATABASE = "waf_analysis_tmp"
@@ -21,13 +22,33 @@ TMP_DATABASE = "waf_analysis_tmp"
 # call could drop a table another thread is creating/querying.
 _create_lock = threading.Lock()
 
-# Module-level state (lazy init on first query)
-_athena_state = {
+# Module-level state (lazy init on first query).
+#
+# Every value here describes the ONE table resolved for the current WebACL, and
+# it is the table's own DECLARED projection config, not what a walk of S3
+# suggested. The pruning predicate compares partition-column string values, and
+# those values come from the projection, so rendering bounds with anything else
+# silently matches no partition and returns zero rows. The S3 walk survives only
+# as a cross-check.
+_ATHENA_STATE_DEFAULTS = {
     "table": None,           # "database.table_name"
-    "partition_format": None, # "yyyy/MM/dd/HH" or "yyyy/MM/dd/HH/mm"
+    "table_location": None,  # resolved table's own LOCATION, no trailing slash
+    "partition_format": None, # declared Java date format, e.g. "yyyy/MM/dd/HH/mm"
+    "partition_col": "log_time",  # partition column the SQL builders prune on
+    "partition_interval": 1,      # declared projection interval
+    "partition_interval_unit": "minutes",  # its unit: minutes / hours / days
+    "partition_range_start": None,  # naive datetime, in partition-path local time
+    "partition_range_end": None,    # naive datetime, or None for an open (NOW) range
+    "partition_tz": None,    # IANA name / fixed offset the PARTITION PATHS are
+                             # written in (e.g. Firehose CustomTimeZone). None → UTC.
+                             # Independent of the user's display timezone.
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
+    "table_choice": None,    # one line naming the resolved table, for tool output
+    "discovery_notes": [],   # why candidate tables were rejected, for tool output
 }
+
+_athena_state = dict(_ATHENA_STATE_DEFAULTS)
 
 
 def reset_table_cache():
@@ -35,11 +56,130 @@ def reset_table_cache():
 
     Must be called whenever the active WebACL changes — the cached table is
     keyed to the previous WebACL's resolved S3 path, and reusing it would
-    query the wrong logs (stale-table bug)."""
-    _athena_state["table"] = None
-    _athena_state["partition_format"] = None
-    _athena_state["temp_created"] = False
-    _athena_state["webacl_scoped"] = True
+    query the wrong logs (stale-table bug). Restores every key from one
+    defaults dict so a newly added key cannot be forgotten here and survive a
+    WebACL switch."""
+    _athena_state.clear()
+    _athena_state.update(_ATHENA_STATE_DEFAULTS)
+    _athena_state["discovery_notes"] = []
+
+
+# Java SimpleDateFormat tokens (used by Athena partition projection 'date' type)
+# mapped to Python strftime directives. Order matters: longer/unambiguous tokens
+# first. Case-sensitive — Java uses `MM` for month and `mm` for minute.
+_JAVA_TO_STRFTIME = (
+    ("yyyy", "%Y"), ("MM", "%m"), ("dd", "%d"),
+    ("HH", "%H"), ("mm", "%M"), ("ss", "%S"),
+)
+
+
+def _java_date_format_to_strftime(java_fmt: str) -> str:
+    """Translate an Athena partition-projection date format (Java SimpleDateFormat,
+    e.g. 'yyyy/MM/dd/HH') to a Python strftime pattern ('%Y/%m/%d/%H'), preserving
+    separators. Substituted directives never contain the raw tokens, so repeated
+    passes don't collide."""
+    out = java_fmt
+    for token, directive in _JAVA_TO_STRFTIME:
+        out = out.replace(token, directive)
+    return out
+
+
+def _partition_has_minutes(java_fmt: str | None) -> bool:
+    """True if the partition format resolves to minute-level granularity.
+
+    Case-sensitive `mm` (minute) check — `MM` (month) must not count. Anything
+    coarser than minute-level (hourly, daily) returns False and is subject to
+    the coarse-partition query guard. Only call this on a format that
+    _partition_granularity has already accepted; on an unclassifiable format the
+    bare `mm` test can be wrong in either direction."""
+    return bool(java_fmt) and "mm" in java_fmt
+
+
+# The only partition layouts the pruning predicate is valid for. Pruning is a
+# lexicographic string comparison against a rendered date, which requires the
+# fields to appear most-significant-first and zero-padded, so `dd/MM/yyyy` is
+# not merely unusual, it silently compares wrong. Separators are free.
+_GRANULARITY_BY_TOKENS = {
+    ("yyyy", "MM", "dd", "HH", "mm"): "minutes",
+    ("yyyy", "MM", "dd", "HH"): "hours",
+    ("yyyy", "MM", "dd"): "days",
+}
+
+_JAVA_TOKEN_RE = re.compile(r"y+|M+|d+|H+|m+|s+|[^yMdHms]+")
+
+# Coarsest last. Used to compare a table's declared partitioning against the
+# layout actually in S3, and to turn a projection interval into a wall-clock
+# offset. The keys double as the set of `interval.unit` values that are accepted:
+# Athena also allows weeks, months and years, and a unit with no fixed length
+# cannot be widened by, so those are refused at discovery. The names match
+# `timedelta`'s keyword arguments on purpose.
+_GRANULARITY_ORDER = {"minutes": 0, "hours": 1, "days": 2}
+_MINUTES_PER_UNIT = {"minutes": 1, "hours": 60, "days": 1440}
+
+
+def _partition_granularity(java_fmt: str | None) -> str | None:
+    """Classify a declared projection format as 'minutes', 'hours' or 'days'.
+
+    None means the format is one this agent cannot serve, and callers must treat
+    that as a rejection rather than falling back to a default. Two reasons. The
+    pruning comparison is only valid for the layouts above. And the
+    coarse-partition guard is a granularity test, so a format nobody classified
+    would run at unknown scan cost while the product believes it refuses coarse
+    tables."""
+    if not java_fmt:
+        return None
+    tokens = tuple(t for t in _JAVA_TOKEN_RE.findall(java_fmt) if t[0] in "yMdHms")
+    return _GRANULARITY_BY_TOKENS.get(tokens)
+
+
+def _zone_from_str(name: str | None):
+    """Resolve a timezone string to a tzinfo. Accepts an IANA name
+    ('America/New_York') or a fixed offset ('-04:00', '+05:30', '-4', 'UTC').
+    Returns None if the string is empty or unparseable (caller falls back)."""
+    from datetime import timezone, timedelta
+    if not name:
+        return None
+    name = name.strip()
+    if name.upper() in ("UTC", "Z", "GMT"):
+        return timezone.utc
+    # Fixed offset forms: ±HH:MM, ±HHMM, ±HH, or a bare number of hours.
+    import re as _re
+    m = _re.fullmatch(r"(?:UTC|GMT)?\s*([+-])(\d{1,2})(?::?(\d{2}))?", name)
+    if m:
+        sign = -1 if m.group(1) == "-" else 1
+        hours = int(m.group(2))
+        mins = int(m.group(3) or 0)
+        return timezone(sign * timedelta(hours=hours, minutes=mins))
+    try:
+        num = float(name)
+        return timezone(timedelta(hours=num))
+    except ValueError:
+        pass
+    # IANA name (needs the `tzdata` package in the slim container).
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+
+def _partition_zone():
+    """The timezone the S3 partition PATHS are written in, used to derive the
+    partition-pruning bounds. Precedence:
+
+      1. env WAF_AGENT_PARTITION_TZ (operator override)
+      2. auto-detected Firehose CustomTimeZone (_athena_state['partition_tz'])
+      3. UTC (AWS vended logs and the default assumption)
+
+    Returns a tzinfo, never None. WAF vended logs partition in UTC, so the
+    common case stays UTC; only Firehose CustomTimeZone / custom local-time
+    pipelines need a non-UTC value. A custom pipeline that Firehose detection
+    cannot see is reachable only through the env var, which is why step 1 exists."""
+    from datetime import timezone
+    z = _zone_from_str(os.environ.get("WAF_AGENT_PARTITION_TZ"))
+    if z is None:
+        z = _zone_from_str(_athena_state.get("partition_tz"))
+    return z if z is not None else timezone.utc
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +202,12 @@ def _resolve_s3_path(log_dest_arn: str) -> str:
         dest = resp["DeliveryStreamDescription"]["Destinations"][0]
         # Try ExtendedS3 first, fallback to S3
         s3_dest = dest.get("ExtendedS3DestinationDescription") or dest.get("S3DestinationDescription", {})
+        # Firehose evaluates the !{timestamp:...} prefix in its CustomTimeZone
+        # (default UTC). If set to a non-UTC zone, the partition PATHS are in
+        # local time and pruning must derive bounds in that zone — record it.
+        _ctz = s3_dest.get("CustomTimeZone")
+        if _ctz and _ctz.upper() != "UTC":
+            _athena_state["partition_tz"] = _ctz
         bucket_arn = s3_dest.get("BucketARN", "")
         prefix = s3_dest.get("Prefix", "").rstrip("/")
         bucket = bucket_arn.split(":::")[1] if ":::" in bucket_arn else ""
@@ -129,27 +275,37 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
         year_dirs = [d for d in dirs if re.match(r"^20[2-3]\d$", d)]
         if year_dirs:
             year = sorted(year_dirs)[-1]
-            # Walk down to determine depth
+            # Descend into the NEWEST child at every level, not the earliest.
+            #
+            # Anyone who has switched a Firehose prefix from hourly to
+            # minute-level still has the old hourly paths in their bucket, under
+            # earlier months of the same year. Taking the earliest child walked
+            # straight into that pre-cutover data, counted four levels, and pinned
+            # the table to yyyy/MM/dd/HH — permanently, because no amount of new
+            # minute-partitioned data changes a walk that never looks at it.
+            #
+            # Levels below the year are always two zero-padded digits, so a
+            # lexicographic max is the numeric max. Filtering to that shape also
+            # keeps a stray non-numeric directory from being chosen; letters sort
+            # after digits, so "newest" would otherwise pick it.
             test_prefix = current_prefix + year + "/"
             levels = [year]
             for _ in range(5):
-                sub_dirs = _s3_list_dirs(bucket, test_prefix)
-                if sub_dirs:
-                    levels.append(sub_dirs[0])
-                    test_prefix = test_prefix + sub_dirs[0] + "/"
-                else:
+                sub_dirs = [d for d in _s3_list_dirs(bucket, test_prefix) if re.fullmatch(r"\d{2}", d)]
+                if not sub_dirs:
                     break
+                newest = max(sub_dirs)
+                levels.append(newest)
+                test_prefix = test_prefix + newest + "/"
             if len(levels) >= 5:
-                fmt, unit = "yyyy/MM/dd/HH/mm", "minutes"
-                # Detect interval from minute-level directories (e.g., 00,05,10 → interval=5)
-                minute_dirs = sorted(_s3_list_dirs(bucket, test_prefix.rsplit("/", 2)[0] + "/"))
-                if len(minute_dirs) >= 2:
-                    try:
-                        interval = int(minute_dirs[1]) - int(minute_dirs[0])
-                    except (ValueError, IndexError):
-                        interval = 5
-                else:
-                    interval = 5
+                # Minute-level means interval 1, and it is never inferred from the
+                # directory names. Firehose's !{timestamp:mm} emits whatever minute
+                # the buffer happened to flush at, so the minute directories are
+                # arbitrary values like 03, 07, 08, 41. The old code subtracted two
+                # of them and fed the difference to partition projection, which then
+                # generated paths only at that stride and never read the objects in
+                # between: a fraction of the rows, with no error to show for it.
+                fmt, unit, interval = "yyyy/MM/dd/HH/mm", "minutes", 1
             else:
                 fmt, unit = "yyyy/MM/dd/HH", "hours"
                 interval = 1
@@ -261,39 +417,176 @@ TBLPROPERTIES (
 """.strip()
 
 
-def _find_existing_table(s3_path: str, region: str) -> str | None:
-    """Search Glue catalog for a table matching this S3 location."""
-    glue = get_client("glue", region_name=region)
-    s3_normalized = s3_path.rstrip("/")
+def _path_covers(location: str, resolved: str) -> bool:
+    """True when `location` is `resolved` itself or one of its ancestor prefixes.
 
-    # Search all databases
+    The trailing slash is the whole point: a bare `startswith` lets a table at
+    s3://b/waf-logs claim to cover s3://b/waf-logs-prod."""
+    return bool(location) and (resolved == location or resolved.startswith(location + "/"))
+
+
+def _table_metadata(db_name: str, tbl: dict) -> dict | str:
+    """Validate one Glue table as a WAF log source for the pruning path.
+
+    Returns its metadata on success, or a one-line string saying why it was
+    rejected. The string is shown to the user: "the agent built its own table"
+    is a confusing outcome unless it also says what was wrong with theirs."""
+    name = f"{db_name}.{tbl['Name']}"
+    sd = tbl.get("StorageDescriptor", {})
+    cols = [c["Name"].lower() for c in sd.get("Columns", [])]
+    missing = [c for c in ("action", "httprequest") if c not in cols]
+    if missing:
+        return (f"{name}: missing WAF log column(s) {', '.join(missing)}. Queries "
+                f"reference `action` and `httprequest` by those exact names.")
+
+    part_keys = [p["Name"] for p in tbl.get("PartitionKeys", [])]
+    if not part_keys:
+        return (f"{name}: not partitioned. Every log query is pruned on one "
+                f"projected time column, so an unpartitioned table would scan whole.")
+    if len(part_keys) > 1:
+        return (f"{name}: partitioned on {len(part_keys)} keys "
+                f"({', '.join(part_keys)}); exactly one time column is supported.")
+
+    col = part_keys[0]
+    params = tbl.get("Parameters", {})
+    if params.get("projection.enabled", "").lower() != "true":
+        return (f"{name}: partition projection is not enabled. Hive-style partitions "
+                f"registered with ALTER TABLE ADD PARTITION are not supported.")
+    proj_type = params.get(f"projection.{col}.type", "").lower()
+    if proj_type != "date":
+        return (f"{name}: partition column `{col}` has projection type "
+                f"'{proj_type or 'none'}'; only 'date' is supported. Integer and enum "
+                f"projections cannot be compared against a rendered timestamp.")
+
+    fmt = params.get(f"projection.{col}.format", "")
+    granularity = _partition_granularity(fmt)
+    if granularity is None:
+        return (f"{name}: partition format '{fmt or 'none'}' is not supported. Use "
+                f"yyyy/MM/dd, yyyy/MM/dd/HH or yyyy/MM/dd/HH/mm, any separator, "
+                f"most significant field first.")
+
+    proj_range = params.get(f"projection.{col}.range", "").strip()
+    if not proj_range:
+        return (f"{name}: partition column `{col}` declares no projection range, "
+                f"which Athena requires for a date projection.")
+    bounds = [b.strip() for b in proj_range.split(",")]
+    if len(bounds) != 2:
+        return f"{name}: projection range '{proj_range}' is not a start,end pair."
+    strftime_fmt = _java_date_format_to_strftime(fmt)
     try:
-        dbs = glue.get_databases().get("DatabaseList", [])
-        db_names = [d["Name"] for d in dbs]
-    except Exception:
+        range_start = datetime.strptime(bounds[0], strftime_fmt)
+    except ValueError:
+        return (f"{name}: projection range start '{bounds[0]}' does not parse as "
+                f"'{fmt}'.")
+    range_end = None
+    if bounds[1].upper() not in ("NOW", "NOW()"):
+        try:
+            range_end = datetime.strptime(bounds[1], strftime_fmt)
+        except ValueError:
+            return (f"{name}: projection range end '{bounds[1]}' is neither NOW nor a "
+                    f"date in format '{fmt}'.")
+        # A fixed bound in the past projects no partition for recent data, and
+        # Athena reports that as zero rows rather than as an error.
+        if range_end < datetime.now(_partition_zone()).replace(tzinfo=None):
+            return (f"{name}: projection range ends at {bounds[1]}, already in the past, "
+                    f"so recent log data is outside the projected partitions.")
+
+    try:
+        interval = int(params.get(f"projection.{col}.interval", "1"))
+    except ValueError:
+        return (f"{name}: projection interval "
+                f"'{params.get(f'projection.{col}.interval')}' is not a number.")
+    unit = params.get(f"projection.{col}.interval.unit", "").strip().lower() or granularity
+    if unit not in _MINUTES_PER_UNIT:
+        # Athena also allows weeks, months and years. Refusing them is not
+        # laziness: pruning widens the window by one interval on each side, and a
+        # unit with no fixed length cannot be turned into a wall-clock offset.
+        # Nothing that partitions WAF logs by month is usable here anyway.
+        return (f"{name}: projection interval unit '{unit}' is not supported. Use "
+                f"minutes, hours or days.")
+
+    return {
+        "table": name,
+        "location": sd.get("Location", "").rstrip("/"),
+        "partition_col": col,
+        "partition_format": fmt,
+        "partition_granularity": granularity,
+        "partition_interval": interval,
+        "partition_interval_unit": unit,
+        "partition_range_start": range_start,
+        "partition_range_end": range_end,
+    }
+
+
+def _find_existing_table(s3_path: str, region: str) -> dict | None:
+    """Find a usable WAF log table in the Glue catalog covering this S3 path.
+
+    Returns the matched table's declared metadata (see _table_metadata) rather
+    than a "db.table" string: every caller needs the projection config to build a
+    correct pruning predicate, and GetTables already returns full Table objects,
+    so reading it here costs no extra API call.
+
+    Preference order, and it is not "most specific wins". _create_named_table
+    puts the agent's own scratch table at exactly the resolved path, making it
+    always the longest possible match, so specificity alone would pick the
+    scratch table every time and a user's own table would never be used. So:
+    every database except waf_analysis_tmp first, longest location within that
+    group, and the scratch table only if nothing else qualifies.
+
+    Rejections are recorded in _athena_state["discovery_notes"] so the agent can
+    say why it built its own table instead of leaving the user to guess."""
+    glue = get_client("glue", region_name=region)
+    resolved = s3_path.rstrip("/")
+    notes: list[str] = []
+
+    # Never pass AttributesToGet to either paginator. It reads as an obvious
+    # optimisation and it is a trap: GetTables accepts ['NAME', 'TABLE_TYPE'] and
+    # GetDatabases accepts ['NAME', 'TARGET_DATABASE'], and either one strips
+    # StorageDescriptor and Parameters, so every projection.* read above comes
+    # back empty. The result is wrong pruning with no error.
+    try:
+        db_names = [d["Name"] for page in glue.get_paginator("get_databases").paginate()
+                    for d in page.get("DatabaseList", [])]
+    except Exception as e:
+        notes.append(f"Could not list Glue databases ({type(e).__name__}); searched only "
+                     f"{TMP_DATABASE} and default.")
         db_names = [TMP_DATABASE, "default"]
 
-    for db_name in db_names:
-        try:
-            resp = glue.get_tables(DatabaseName=db_name, MaxResults=100)
-            for tbl in resp.get("TableList", []):
+    for group in (sorted(d for d in db_names if d != TMP_DATABASE),
+                  [d for d in db_names if d == TMP_DATABASE]):
+        best = None
+        for db_name in group:
+            try:
+                tables = [t for page in glue.get_paginator("get_tables").paginate(DatabaseName=db_name)
+                          for t in page.get("TableList", [])]
+            except Exception:
+                continue
+            for tbl in sorted(tables, key=lambda t: t["Name"]):
                 location = tbl.get("StorageDescriptor", {}).get("Location", "").rstrip("/")
-                # Match: our s3_path is within the table's location scope (table covers our path)
-                if s3_normalized == location or s3_normalized.startswith(location):
-                    # Verify it has AWS WAF log columns
-                    cols = [c["Name"] for c in tbl["StorageDescriptor"].get("Columns", [])]
-                    if "action" not in cols or "httprequest" not in cols:
-                        continue
-                    # Verify partitioning is compatible with our queries: we prune
-                    # on a `log_time` partition column. A table partitioned some
-                    # other way (or unpartitioned) would make our WHERE log_time
-                    # clause invalid or scan nothing — skip it and build our own.
-                    part_keys = [p["Name"] for p in tbl.get("PartitionKeys", [])]
-                    if "log_time" not in part_keys:
-                        continue
-                    return f"{db_name}.{tbl['Name']}"
-        except Exception:
-            continue
+                if not _path_covers(location, resolved):
+                    continue
+                meta = _table_metadata(db_name, tbl)
+                if isinstance(meta, str):
+                    notes.append(meta)
+                    continue
+                # An exact-location match inside this group cannot be beaten:
+                # matches are ancestor-or-equal, so equality is the most specific
+                # possible. Databases and tables are walked in sorted order, so
+                # this is also the lexicographically first such table, which makes
+                # returning here deterministic rather than dependent on whatever
+                # order Glue enumerated. Without this the ranking rule would force
+                # a full walk of every table in every database on every cold
+                # resolve, which on a real warehouse is hundreds of Glue calls.
+                if meta["location"] == resolved:
+                    _athena_state["discovery_notes"] = notes
+                    return meta
+                if best is None or len(meta["location"]) > len(best["location"]):
+                    best = meta
+        if best is not None:
+            _athena_state["discovery_notes"] = notes
+            return best
+
+    _athena_state["discovery_notes"] = notes
     return None
 
 
@@ -304,8 +597,8 @@ def _ensure_database(region: str, workgroup: str):
 
 
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
-                        partition_unit: str, partition_interval: int, region: str, workgroup: str, table_name: str) -> str:
-    """Create a permanent Athena table with the given name."""
+                        partition_unit: str, partition_interval: int, region: str, workgroup: str, table_name: str) -> dict:
+    """Create a permanent Athena table with the given name. Returns its metadata."""
     _ensure_database(region, workgroup)
     range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
     target_location = s3_path.rstrip("/")
@@ -347,7 +640,261 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
             storage_template=storage_template, range_start=range_start,
         )
         _run_athena_ddl(ddl, region, workgroup)
-    return f"{TMP_DATABASE}.{table_name}"
+    # Same metadata shape _find_existing_table returns, so both resolution paths
+    # feed _record_table identically. For a table this function wrote, the
+    # declared values ARE the ones passed in, so there is nothing to read back.
+    return {
+        "table": f"{TMP_DATABASE}.{table_name}",
+        "location": target_location,
+        "partition_col": "log_time",
+        "partition_format": partition_format,
+        "partition_granularity": _partition_granularity(partition_format),
+        "partition_interval": partition_interval,
+        "partition_interval_unit": partition_unit,
+        "partition_range_start": datetime.strptime(
+            range_start, _java_date_format_to_strftime(partition_format)),
+        "partition_range_end": None,
+    }
+
+
+def _cross_check_declared(meta: dict, s3_path: str, strict: bool) -> str | None:
+    """Compare a table's declared projection against the real S3 layout.
+
+    Returns None when the table can address the data, else one line naming the
+    problem. Free to run: the S3 walk happens on this path anyway.
+
+    Asymmetric on purpose, because the two directions of disagreement are not
+    equally bad. A table declaring COARSER partitions than the data has is fine:
+    its storage.location.template resolves to the hour directory and Athena scans
+    recursively beneath it, so minute-nested objects are still found, just pruned
+    less tightly. A table declaring FINER partitions is broken: it projects
+    `.../12/16` under a bucket that only has `.../12`, that path does not exist,
+    and Athena reports the miss as zero rows rather than as an error. Same shape
+    for the interval. A declared step finer than reality only costs planning time,
+    while a declared step coarser than reality skips directories that exist and
+    silently drops their rows.
+
+    `strict` is for the agent's own scratch table, where any difference at all
+    means the table is stale and should be rebuilt rather than tolerated.
+
+    Note the interval comparison converts to minutes first. Comparing the bare
+    numbers makes "1 minute" equal "1 hour", which is precisely the pair of
+    layouts this check exists to tell apart."""
+    try:
+        _, actual_fmt, actual_unit, actual_interval = _detect_partitions(s3_path)
+    except Exception:
+        # Nothing readable under the path yet: an empty bucket, or a prefix that
+        # has received no data. Trust the declaration; there is nothing to compare.
+        return None
+
+    declared_fmt = meta["partition_format"]
+    if strict and (declared_fmt, meta["partition_interval"], meta["partition_interval_unit"]) \
+            != (actual_fmt, actual_interval, actual_unit):
+        return (f"declares {declared_fmt} / interval {meta['partition_interval']} "
+                f"{meta['partition_interval_unit']} but the S3 layout is {actual_fmt} / "
+                f"interval {actual_interval} {actual_unit}")
+
+    actual_granularity = _partition_granularity(actual_fmt)
+    if actual_granularity is None:
+        return None
+    if _GRANULARITY_ORDER[meta["partition_granularity"]] < _GRANULARITY_ORDER[actual_granularity]:
+        return (f"declares partition format {declared_fmt}, finer than the {actual_fmt} "
+                f"directories that actually exist in S3, so the partitions it projects "
+                f"point at paths that are not there")
+
+    declared_step = meta["partition_interval"] * _MINUTES_PER_UNIT.get(
+        meta["partition_interval_unit"], 1)
+    actual_step = actual_interval * _MINUTES_PER_UNIT.get(actual_unit, 1)
+    if meta["partition_granularity"] == actual_granularity and declared_step > actual_step:
+        return (f"declares interval {meta['partition_interval']} "
+                f"{meta['partition_interval_unit']} but the S3 directories step by "
+                f"{actual_interval} {actual_unit}, so it skips directories that exist")
+    return None
+
+
+def resolve_log_table(s3_path: str, region: str, webacl_name: str) -> str:
+    """Resolve the Athena table for this WebACL's S3 logs, creating one if needed.
+
+    Returns the "db.table" name, and publishes the resolved table's declared
+    metadata to `_athena_state` through `_record_table`. That state is where the
+    SQL builders read the partition column, format, interval and projected range,
+    so nothing downstream has to re-derive any of it from the S3 path.
+
+    Shared by `query_logs`' setup path and `patrol_scan`'s because every step in
+    here is identical between them. What genuinely differs stays at the call
+    sites: `query_logs` holds a setup lock and keeps its own name cache, patrol
+    reports table creation in its own output.
+
+    The cache lives here so patrol gets it too. Patrol previously held none, so it
+    paid a full Glue enumeration and S3 walk on every scan, and it is the tool most
+    likely to be run repeatedly against the same WebACL. `reset_table_cache()`
+    already fires on every WebACL switch, so there is no stale-table window."""
+    if _athena_state.get("table"):
+        return _athena_state["table"]
+
+    meta = _find_existing_table(s3_path, region)
+    if meta is not None:
+        db, tbl = meta["table"].split(".", 1)
+        problem = _cross_check_declared(meta, s3_path, strict=(db == TMP_DATABASE))
+        if problem is None:
+            return _record_table(meta)
+        if db == TMP_DATABASE:
+            # The agent's own scratch table, now inconsistent with the data under
+            # it. Drop and rebuild; dropping an EXTERNAL table never touches S3.
+            _athena_state["discovery_notes"].append(
+                f"{meta['table']} {problem}. Recreating it.")
+            try:
+                get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=tbl)
+            except Exception:
+                pass
+        else:
+            _athena_state["discovery_notes"].append(
+                f"{meta['table']} {problem}. Building a separate table in "
+                f"{TMP_DATABASE} instead and leaving yours untouched.")
+
+    if not _validate_waf_log(s3_path):
+        raise RuntimeError(
+            f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
+            f"destination is correct.")
+    storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
+    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
+    created = _create_named_table(s3_path, storage_template, part_fmt, part_unit,
+                                 part_interval, region, "primary", f"waf_logs_{safe_name}")
+    return _record_table(created, created=True)
+
+
+def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
+    """Render the partition-pruning predicate for a time window.
+
+    Returns (sql_fragment, problem). Both datetimes must be timezone-aware.
+
+    Two things this centralises, and both were previously duplicated per caller
+    and got them subtly different.
+
+    The bounds are converted into the PARTITION-PATH timezone, not UTC. Directory
+    names encode a wall clock in whatever zone wrote them, so for a Firehose
+    stream with a CustomTimeZone, UTC bounds look in the wrong hour's directory
+    and the rows are pruned away with no error. The `"timestamp" BETWEEN` epoch
+    filter still enforces exactness; this only decides what Athena scans.
+
+    And they are rendered with the table's DECLARED projection format, not with
+    whatever a walk of S3 suggested. The predicate compares partition-column
+    values, and those values come from the projection config, so rendering with
+    anything else can produce a string matching no partition at all. For a table
+    the agent built itself the two always agree, which is why using the wrong one
+    stays invisible until somebody reuses an external table.
+
+    The bounds are widened by one projection interval on each side, and that is a
+    correctness fix rather than a safety margin. A partition directory's name is
+    the arrival time of the record that opened the Firehose buffer, and one object
+    holds a whole buffer window, so the minute in the path bounds the timestamps
+    inside it in neither direction: it lags event time by the delivery delay and
+    leads the records that arrived later in the same buffer. Measured on a
+    minute-level bucket, one directory spanned 76 seconds and reached 28 seconds
+    before its own label, and using the window's own bounds lost 5.70% and 8.12%
+    of rows on two 5-minute windows. The loss is a couple of partitions at each
+    edge, so it is worst on exactly the narrow windows the timeout guidance steers
+    people toward. `"timestamp" BETWEEN` stays exact, so widening cannot pull in
+    rows from outside the window; it only stops excluding rows inside it.
+
+    `problem` is set when the window falls outside the table's projected range.
+    Athena reports that as zero rows, so saying so is the difference between "your
+    table only covers from X" and the user concluding they had no traffic."""
+    part_fmt = _athena_state.get("partition_format")
+    part_col = _athena_state.get("partition_col") or "log_time"
+    if not part_fmt:
+        return "", None
+
+    zone = _partition_zone()
+    start_local = start_dt.astimezone(zone)
+    end_local = end_dt.astimezone(zone)
+
+    problem = None
+    naive_start, naive_end = start_local.replace(tzinfo=None), end_local.replace(tzinfo=None)
+    range_start = _athena_state.get("partition_range_start")
+    range_end = _athena_state.get("partition_range_end")
+    table = _athena_state.get("table") or "the log table"
+
+    # Widen by one interval, expressed in the projection's own unit rather than in
+    # hardcoded minutes, because a user's table may declare any interval. Then
+    # clamp back inside the projected range: a bound outside it matches no
+    # projected partition, and there is nothing out there to find anyway. Range
+    # checking below uses the UNWIDENED window, so a query starting exactly at the
+    # projection's first partition is not reported as out of range.
+    widened_start, widened_end = naive_start, naive_end
+    step = timedelta(**{_athena_state.get("partition_interval_unit") or "minutes":
+                        _athena_state.get("partition_interval") or 1})
+    widened_start -= step
+    widened_end += step
+    if range_start is not None:
+        widened_start = max(widened_start, range_start)
+    if range_end is not None:
+        widened_end = min(widened_end, range_end)
+
+    strftime_fmt = _java_date_format_to_strftime(part_fmt)
+    clause = (f"AND {part_col} >= '{widened_start.strftime(strftime_fmt)}' "
+              f"AND {part_col} <= '{widened_end.strftime(strftime_fmt)}'")
+
+    if range_start is not None and naive_start < range_start:
+        problem = (f"The requested window starts {naive_start:%Y-%m-%d %H:%M}, before "
+                   f"`{table}`'s partition projection begins "
+                   f"({range_start:%Y-%m-%d %H:%M}). Athena projects no partition that "
+                   f"far back, so rows before that point cannot be returned no matter "
+                   f"what the data contains. Widen the table's "
+                   f"projection.{part_col}.range or query a later window.")
+    elif range_end is not None and naive_end > range_end:
+        problem = (f"The requested window ends {naive_end:%Y-%m-%d %H:%M}, after "
+                   f"`{table}`'s partition projection stops "
+                   f"({range_end:%Y-%m-%d %H:%M}). Rows after that point are outside "
+                   f"the projected partitions and cannot be returned.")
+    return clause, problem
+
+
+def describe_table_resolution() -> str:
+    """One block naming the resolved table and why any candidate was rejected.
+
+    Surfaced in tool output so the choice is auditable. "The agent built its own
+    table" is a confusing outcome on its own; with the rejection reasons attached
+    the user can fix their table instead of guessing."""
+    lines = []
+    if _athena_state.get("table_choice"):
+        lines.append(_athena_state["table_choice"])
+    for note in _athena_state.get("discovery_notes") or []:
+        lines.append(f"Skipped {note}")
+    return "\n".join(lines)
+
+
+def _record_table(meta: dict, created: bool = False) -> str:
+    """Publish a resolved table's metadata to the shared state and return its name.
+
+    One writer for both resolution paths. Every consumer of _athena_state reads
+    what this puts there, so a key that is set on one path and not the other is
+    how the copies drifted in the first place."""
+    _athena_state["table"] = meta["table"]
+    _athena_state["table_location"] = meta["location"]
+    _athena_state["partition_col"] = meta["partition_col"]
+    _athena_state["partition_format"] = meta["partition_format"]
+    _athena_state["partition_interval"] = meta["partition_interval"]
+    _athena_state["partition_interval_unit"] = meta["partition_interval_unit"]
+    _athena_state["partition_range_start"] = meta["partition_range_start"]
+    _athena_state["partition_range_end"] = meta["partition_range_end"]
+    _athena_state["temp_created"] = created
+    # A table whose location does not contain the WebACL name may hold several
+    # WebACLs' logs. Score the RESOLVED table's own location, never the requested
+    # s3_path: matches are ancestor-or-equal, so the requested path can contain
+    # the WebACL name while the table sitting above it does not, and that error
+    # runs one way only, claiming single-WebACL scoping a table does not have.
+    wn = get_webacl_name() or ""
+    _athena_state["webacl_scoped"] = bool(wn) and wn.lower() in meta["location"].lower()
+    _athena_state["table_choice"] = (
+        f"{'Created' if created else 'Using'} Athena table `{meta['table']}` at "
+        f"{meta['location']}, partitioned on `{meta['partition_col']}` "
+        f"({meta['partition_format']}, interval {meta['partition_interval']} "
+        f"{meta['partition_interval_unit']})"
+        + ("" if _athena_state["webacl_scoped"] else
+           "; its location is shared, so queries are filtered by webaclid")
+    )
+    return meta["table"]
 
 
 # ---------------------------------------------------------------------------
@@ -466,84 +1013,3 @@ def _wait_query(athena, qid: str):
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
             raise RuntimeError(f"Athena query {state}: {reason}")
     raise RuntimeError("Athena query timed out (>5min). Narrow the time window — try duration_minutes=30 or duration_minutes=15. Use get_waf_overview to identify the exact spike period first.")
-
-
-# ---------------------------------------------------------------------------
-# Lazy initialization
-# ---------------------------------------------------------------------------
-
-
-
-def _ensure_table(region: str) -> str:
-    """Ensure Athena table is ready. Returns full table name.
-
-    Auto-creates a permanent table if none exists.
-    """
-    if _athena_state["table"]:
-        return _athena_state["table"]
-
-    log_dest = get_log_destination()
-    if not log_dest:
-        raise RuntimeError("No log destination configured. Run get_waf_config first.")
-
-    webacl_name = get_webacl_name()
-    scope = get_scope()
-
-    # Resolve S3 path
-    s3_base = _resolve_s3_path(log_dest)
-    bucket = s3_base.replace("s3://", "").split("/")[0]
-
-    # For S3 direct delivery, try standard path first
-    s3_path = None
-    if ":s3:::" in log_dest:
-        account_id = _get_account_id()
-        s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
-    if not s3_path:
-        s3_path = s3_base
-
-    # Check for existing table
-    existing = _find_existing_table(s3_path, region)
-    if existing:
-        # Validate partition format matches actual S3 structure
-        try:
-            db, tbl_name = existing.split(".", 1)
-            glue = get_client("glue", region_name=region)
-            tbl_resp = glue.get_table(DatabaseName=db, Name=tbl_name)
-            tbl_params = tbl_resp["Table"].get("Parameters", {})
-            existing_fmt = tbl_params.get("projection.log_time.format", "")
-            existing_interval = tbl_params.get("projection.log_time.interval", "1")
-            table_location = tbl_resp["Table"]["StorageDescriptor"]["Location"].rstrip("/")
-            resolved = s3_path.rstrip("/")
-            _, actual_fmt, _, actual_interval = _detect_partitions(s3_path)
-            fmt_mismatch = existing_fmt and actual_fmt and existing_fmt != actual_fmt
-            interval_mismatch = str(actual_interval) != str(existing_interval)
-            path_mismatch = not resolved.startswith(table_location)
-            if fmt_mismatch or interval_mismatch or path_mismatch:
-                if db == TMP_DATABASE:
-                    reason = "path" if path_mismatch else ("interval" if interval_mismatch else "format")
-                    print(f"[waf_athena] Table {reason} mismatch. Recreating.", file=__import__('sys').stderr, flush=True)
-                    glue.delete_table(DatabaseName=db, Name=tbl_name)
-                else:
-                    print(f"[waf_athena] Table mismatch in external table {existing}. Creating correct table in {TMP_DATABASE}.", file=__import__('sys').stderr, flush=True)
-            else:
-                _athena_state["table"] = existing
-                _athena_state["partition_format"] = existing_fmt or None
-                return existing
-        except Exception:
-            _athena_state["table"] = existing
-            return existing
-
-    # Detect partitions and create permanent table
-    if not _validate_waf_log(s3_path):
-        raise RuntimeError(f"S3 path does not contain valid AWS WAF logs: {s3_path}")
-
-    storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
-    _athena_state["partition_format"] = part_fmt
-
-    workgroup = "primary"
-    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name).lower()
-    full_table = _create_named_table(s3_path, storage_template, part_fmt, part_unit, part_interval, region, workgroup, f"waf_logs_{safe_name}")
-    _athena_state["table"] = full_table
-    _athena_state["temp_created"] = False
-    return full_table
-
