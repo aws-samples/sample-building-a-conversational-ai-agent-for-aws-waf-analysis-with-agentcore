@@ -1149,7 +1149,16 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         "name": webacl_name, "scope": scope, "region": region,
         "detection_tools": detection_tools, "action_items": action_items,
         "rules_table": rules_table, "totals": totals, "logging": logging_type,
-        "rate_limits": rate_limit_info, "chart_data": chart_data, "bot_data": bot_data,
+        "rate_limits": rate_limit_info, "chart_data": chart_data,
+        # `bot_data` is OMITTED when empty rather than set to None, and that is the root-cause
+        # half of the crash fixed alongside this. Including the key unconditionally while it
+        # can be None makes `.get("bot_data", default)` a trap for every reader, because the
+        # default only applies to an ABSENT key. There are already four readers and
+        # `_missing_sections` was the fifth to hit it; readers accumulate, and each one is a
+        # fresh chance to repeat the mistake. Absent is falsy too, so the three
+        # `if wr.get("bot_data"):` guards are unaffected, and nothing outside this module
+        # reads the key.
+        **({"bot_data": bot_data} if bot_data else {}),
     }
     all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
     _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours, lang)
@@ -1209,20 +1218,39 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         summary += f"\n📋 {table_msg}\n"
     summary += "\nFull HTML report is ready for download."
 
-    # Detect missing sections
-    missing = []
-    if not chart_data:
-        missing.append("attack_chart")
-    if not wr.get("bot_data", {}).get("bot_names"):
-        missing.append("bot_names")
-    if not wr.get("bot_data", {}).get("targeted_signals"):
-        missing.append("targeted_signals")
+    missing = _missing_sections(wr, chart_data)
     if missing:
         summary += (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
                     "REASON: CloudWatch metric auto-discovery requires recent activity (last 14 days). These sections had no matching traffic recently.\n"
                     "ACTION: Inform user that some sections are empty due to a CloudWatch limitation. Continuous traffic ensures all sections populate correctly.")
 
     return summary
+
+
+def _missing_sections(wr: dict, chart_data) -> list[str]:
+    """Which report sections came back empty, for the PARTIAL_DATA note.
+
+    A function rather than a block inside `patrol_scan` so it can be tested against a
+    `bot_data` of None, which is what it used to crash on and which no test could reach while
+    it lived inside a 400-line tool.
+
+    **`or {}` and not `.get(key, {})`.** The default in `.get` applies only when the key is
+    ABSENT, and this key is always present: `bot_data` is initialised to None and stays None
+    for any WebACL whose five Bot Control label metrics sum to zero, which is every WebACL
+    without Bot Control enabled. So `.get("bot_data", {})` handed back that None and this
+    raised `AttributeError: 'NoneType' object has no attribute 'get'` — in the block whose
+    whole job is to report what is missing, on the ordinary configuration rather than an edge
+    case. Found by running a patrol scan against the deployed agent, not by reading the code.
+    """
+    missing = []
+    if not chart_data:
+        missing.append("attack_chart")
+    bot = wr.get("bot_data") or {}
+    if not bot.get("bot_names"):
+        missing.append("bot_names")
+    if not bot.get("targeted_signals"):
+        missing.append("targeted_signals")
+    return missing
 
 
 def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int, lang: str = "en") -> str:
