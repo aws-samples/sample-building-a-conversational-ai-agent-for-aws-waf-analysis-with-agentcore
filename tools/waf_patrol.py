@@ -526,20 +526,15 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
     """
     table_msg = None
     try:
-        from tools.waf_athena import _resolve_s3_path, _try_standard_path, _get_account_id, \
-            _run_athena_select, _athena_state, resolve_log_table, partition_predicate, \
+        from tools.waf_athena import _run_athena_select, _athena_state, \
+            resolve_s3_log_path, resolve_log_table, partition_predicate, \
             _partition_has_minutes
         import re as _re
 
-        # Resolve S3 path
-        s3_base = _resolve_s3_path(log_dest)
-        bucket = s3_base.replace("s3://", "").split("/")[0]
-        s3_path = None
-        if ":s3:::" in log_dest:
-            account_id = _get_account_id()
-            s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
-        if not s3_path:
-            s3_path = s3_base
+        # Same memoized translation query_logs uses. This path used to do it inline,
+        # which on a Firehose destination meant one DescribeDeliveryStream per scan
+        # against a non-adjustable 5-per-second ceiling.
+        s3_path = resolve_s3_log_path(log_dest, scope, webacl_name, region)
 
         # Find or create the table through the shared resolver, which publishes the
         # resolved table's declared projection config to _athena_state. This path

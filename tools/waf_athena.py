@@ -27,9 +27,46 @@ _create_lock = threading.Lock()
 # threads both miss it and both pay a full Glue enumeration plus S3 walk. This lives
 # here rather than at a call site because BOTH callers need it: query_logs used to
 # hold an equivalent lock of its own and patrol_scan held none at all, which is the
-# asymmetry that made patrol the expensive path. Lock order is always resolve then
-# create, never the reverse, so the pair cannot deadlock.
+# asymmetry that made patrol the expensive path.
 _resolve_lock = threading.Lock()
+
+# Serializes the destination-to-S3-path translation. Its memo is a read-modify-write
+# and is not atomic, so without this every thread on a cold cache passes the memo
+# check before any of them writes. Measured with a 100 ms stand-in for the AWS call:
+# ten threads produced ten DescribeDeliveryStream calls unlocked and one locked. That
+# is the case the 5-per-second non-adjustable ceiling is about, so this lock is
+# correctness rather than efficiency.
+_translate_lock = threading.Lock()
+
+# Serializes the Athena output-location lookup. Same non-atomic read-modify-write as
+# the translate memo, and the hotter of the two: both Athena executors call it once per
+# STATEMENT rather than once per query, and on a workgroup with no output location its
+# fallback reaches the same DescribeDeliveryStream under the same ceiling. Measured with
+# a 100 ms stand-in, ten threads: ten lookups unlocked, one locked.
+#
+# Deliberately its own lock and not _translate_lock. `_run_athena_ddl` calls
+# `_get_output_location` from inside `with _create_lock`, so this runs while a lock two
+# levels out is held. Reusing _translate_lock would not deadlock today, since the
+# translate path takes nothing else, but it would falsify the invariant below, and that
+# invariant is the sentence a future edit will rely on.
+_output_location_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Lock order, outermost to innermost: translate, resolve, create, output. Never
+# the reverse, and no function takes an outer lock while holding an inner one, so
+# they cannot deadlock against each other.
+#
+# They are plain non-reentrant Locks, so the sharper hazard is one deadlocking
+# against ITSELF, and that is a property of the current shape rather than of the
+# locks. `_resolve_log_table_locked` handles a stale scratch table by dropping it
+# and rebuilding INLINE. If that were ever rewritten as a recursive call back into
+# `resolve_log_table`, which would read as a tidy-up, the second acquisition of
+# `_resolve_lock` would block forever and the session would hang with no error and
+# no log line. Keep the self-heal inline.
+#
+# The same applies to `_output_location_lock`: it is taken inside `_create_lock` via
+# `_run_athena_ddl`, so it must stay innermost and must never reach back outward.
+# ---------------------------------------------------------------------------
 
 # Module-level state (lazy init on first query).
 #
@@ -54,9 +91,22 @@ _ATHENA_STATE_DEFAULTS = {
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
     "table_choice": None,    # one line naming the resolved table, for tool output
-    "discovery_notes": [],   # why candidate tables were rejected, for tool output
+    "discovery_notes": (),   # why candidate tables were rejected, for tool output
+    # Memo of the log-destination ARN -> S3 path translation. Not a second table
+    # cache: it caches the AWS calls that happen BEFORE resolution, which are the
+    # ones with a hard rate ceiling. firehose:DescribeDeliveryStream is capped at
+    # 5 requests per second per account per Region and is NOT adjustable, so the
+    # only lever is not making the call. Stable for the life of a WebACL
+    # selection, and cleared by reset_table_cache with everything else.
+    "s3_path_memo": (),      # (((dest_arn, scope, webacl_name, region), s3_path), ...)
+    "output_location_memo": (),  # (((region, workgroup), location), ...)
 }
 
+# Every default is immutable, so this shallow copy shares nothing with the live
+# dict. That is what makes reset_table_cache's promise true: restoring from one
+# defaults dict cannot forget a key, and cannot alias a mutable value either.
+# A future key holding a list or dict would break that, so keep them tuples here
+# and convert at the use site.
 _athena_state = dict(_ATHENA_STATE_DEFAULTS)
 
 
@@ -70,7 +120,6 @@ def reset_table_cache():
     WebACL switch."""
     _athena_state.clear()
     _athena_state.update(_ATHENA_STATE_DEFAULTS)
-    _athena_state["discovery_notes"] = []
 
 
 # Java SimpleDateFormat tokens (used by Athena partition projection 'date' type)
@@ -546,7 +595,7 @@ def _find_existing_table(s3_path: str, region: str) -> dict | None:
     say why it built its own table instead of leaving the user to guess."""
     glue = get_client("glue", region_name=region)
     resolved = s3_path.rstrip("/")
-    notes: list[str] = []
+    notes: list[str] = []  # built as a list, published as a tuple
 
     # Never pass AttributesToGet to either paginator. It reads as an obvious
     # optimisation and it is a trap: GetTables accepts ['NAME', 'TABLE_TYPE'] and
@@ -587,15 +636,15 @@ def _find_existing_table(s3_path: str, region: str) -> dict | None:
                 # a full walk of every table in every database on every cold
                 # resolve, which on a real warehouse is hundreds of Glue calls.
                 if meta["location"] == resolved:
-                    _athena_state["discovery_notes"] = notes
+                    _athena_state["discovery_notes"] = tuple(notes)
                     return meta
                 if best is None or len(meta["location"]) > len(best["location"]):
                     best = meta
         if best is not None:
-            _athena_state["discovery_notes"] = notes
+            _athena_state["discovery_notes"] = tuple(notes)
             return best
 
-    _athena_state["discovery_notes"] = notes
+    _athena_state["discovery_notes"] = tuple(notes)
     return None
 
 
@@ -721,6 +770,57 @@ def _cross_check_declared(meta: dict, s3_path: str, strict: bool) -> str | None:
     return None
 
 
+def resolve_s3_log_path(log_dest: str, scope: str, webacl_name: str, region: str) -> str:
+    """Translate a WAF log destination into the S3 path to resolve a table against.
+
+    Memoized on all four inputs (see below), because the calls behind it are the ones with a
+    rate ceiling rather than the ones with a cost. `firehose:DescribeDeliveryStream`
+    is capped at **5 requests per second, per account per Region, and is not
+    adjustable**, so the only lever is not making the call; on throttle it returns
+    ThrottlingException with HTTP 400, botocore retries with backoff, and the visible
+    result is added latency then a hard failure once the retry budget runs out. The
+    S3-direct branch has no ceiling but still pays `sts:GetCallerIdentity` and an
+    `s3:ListObjectsV2` probe, which is latency worth not repeating.
+
+    The memo is not a second table cache: it caches the step *before* resolution.
+
+    **Keyed on all four inputs, not on the destination alone.** On the S3-direct branch
+    the answer depends on the WebACL, because `_try_standard_path` builds
+    `AWSLogs/{account}/WAFLogs/{scope}/{webacl_name}/`, and several WebACLs sharing one
+    bucket is an ordinary setup. Keying on the destination alone would be safe only
+    because `set_webacl_context` resets this state on every switch, which makes
+    correctness depend on a caller doing something rather than on the key. With the
+    full key the reset is redundancy instead of a requirement, and moving the memo to
+    module scope, an obvious-looking tidy-up, could no longer start returning the
+    previous WebACL's path.
+
+    Shared by both query paths on purpose. Each used to do this translation itself,
+    which is the seam that made the two copies drift, and on a Firehose destination it
+    meant one describe per query on one side and one per scan on the other.
+    """
+    key = (log_dest, scope, webacl_name, region)
+    memo = dict(_athena_state.get("s3_path_memo") or ())
+    if key in memo:
+        return memo[key]
+
+    with _translate_lock:
+        # Double-checked: another thread may have translated it while we waited.
+        memo = dict(_athena_state.get("s3_path_memo") or ())
+        if key in memo:
+            return memo[key]
+
+        s3_base = _resolve_s3_path(log_dest)
+        s3_path = None
+        if ":s3:::" in log_dest:
+            bucket = s3_base.replace("s3://", "").split("/")[0]
+            s3_path = _try_standard_path(bucket, _get_account_id(), scope, webacl_name, region)
+        s3_path = s3_path or s3_base
+
+        memo[key] = s3_path
+        _athena_state["s3_path_memo"] = tuple(memo.items())
+        return s3_path
+
+
 def resolve_log_table(s3_path: str, region: str, webacl_name: str) -> str:
     """Resolve the Athena table for this WebACL's S3 logs, creating one if needed.
 
@@ -759,16 +859,16 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
         if db == TMP_DATABASE:
             # The agent's own scratch table, now inconsistent with the data under
             # it. Drop and rebuild; dropping an EXTERNAL table never touches S3.
-            _athena_state["discovery_notes"].append(
-                f"{meta['table']} {problem}. Recreating it.")
+            _athena_state["discovery_notes"] += (
+                f"{meta['table']} {problem}. Recreating it.",)
             try:
                 get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=tbl)
             except Exception:
                 pass
         else:
-            _athena_state["discovery_notes"].append(
+            _athena_state["discovery_notes"] += (
                 f"{meta['table']} {problem}. Building a separate table in "
-                f"{TMP_DATABASE} instead and leaving yours untouched.")
+                f"{TMP_DATABASE} instead and leaving yours untouched.",)
 
     if not _validate_waf_log(s3_path):
         raise RuntimeError(
@@ -921,7 +1021,37 @@ def _record_table(meta: dict, created: bool = False) -> str:
 
 
 def _get_output_location(region: str, workgroup: str = "primary") -> str:
-    """Get Athena output location from workgroup config or fallback."""
+    """Get Athena output location from workgroup config or fallback.
+
+    Memoized on (region, workgroup), which is stable for a session. Both Athena
+    executors call this once per statement, and on a workgroup with no output location
+    configured the fallback path below reaches for
+    `firehose:DescribeDeliveryStream`, whose 5-per-second per-account ceiling is not
+    adjustable. Unmemoized that is one describe per statement, and a patrol scan runs
+    several. Configuring an output location on the workgroup removes the call
+    entirely, which is the real fix; this keeps an unconfigured account off the
+    ceiling in the meantime.
+    """
+    key = (region, workgroup)
+    memo = dict(_athena_state.get("output_location_memo") or ())
+    if key in memo:
+        return memo[key]
+
+    with _output_location_lock:
+        # Re-read the state rather than reusing the dict captured above; reusing it is
+        # how this pattern is usually written wrong.
+        memo = dict(_athena_state.get("output_location_memo") or ())
+        if key in memo:
+            return memo[key]
+
+        loc = _resolve_output_location(region, workgroup)
+        memo[key] = loc
+        _athena_state["output_location_memo"] = tuple(memo.items())
+        return loc
+
+
+def _resolve_output_location(region: str, workgroup: str) -> str:
+    """The uncached body of _get_output_location."""
     athena = get_client("athena", region_name=region)
     try:
         resp = athena.get_work_group(WorkGroup=workgroup)

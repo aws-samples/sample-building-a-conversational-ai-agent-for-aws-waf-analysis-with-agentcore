@@ -502,3 +502,201 @@ def test_concurrent_resolves_enumerate_glue_once(catalog):
     assert not errors
     assert len(set(results)) == 1
     assert glue.get_tables_calls == 1
+
+
+# --- control-plane calls before resolution ---------------------------------
+#
+# firehose:DescribeDeliveryStream is capped at 5 requests per second, per account
+# per Region, and is not adjustable. So the number of times these paths call it is
+# a correctness property, not a performance nicety, and it needs a test that counts.
+
+
+class CallCounter:
+    """Counts the pre-resolution AWS calls, so a lost cache read is visible."""
+
+    def __init__(self, monkeypatch, dest="arn:aws:firehose:us-east-1:1:deliverystream/aws-waf-logs-x",
+                 call_delay=0.0, s3_direct_path=None):
+        self.dest = dest
+        self.describe = 0
+        self.sts = 0
+        self.list_objects = 0
+        self.s3_direct_path = s3_direct_path
+
+        def resolve(log_dest):
+            if ":firehose:" in log_dest:
+                self.describe += 1
+            if call_delay:
+                import time
+                time.sleep(call_delay)
+            return "s3://bkt"
+
+        def account():
+            self.sts += 1
+            return "1"
+
+        def standard(bucket, account, scope, webacl_name, region):
+            self.list_objects += 1
+            if self.s3_direct_path:
+                # Mirror the real shape: the answer embeds the WebACL name, which is
+                # why the memo cannot be keyed on the destination alone.
+                return f"s3://{bucket}/AWSLogs/{account}/WAFLogs/cloudfront/{webacl_name}/"
+            return None
+
+        monkeypatch.setattr(A, "_resolve_s3_path", resolve)
+        monkeypatch.setattr(A, "_get_account_id", account)
+        monkeypatch.setattr(A, "_try_standard_path", standard)
+
+    @property
+    def total(self):
+        return self.describe + self.sts + self.list_objects
+
+
+def test_warm_session_makes_no_call_before_resolution(catalog, monkeypatch):
+    """A resolved session must not touch the control plane again.
+
+    This regressed once: the early cache read was dropped from the query path, so
+    every query re-ran the destination translation and paid a describe before the
+    resolver's own cache check was reached.
+    """
+    from tools import waf_query
+
+    catalog({"userdb": [table("t", "s3://bkt")]})
+    counter = CallCounter(monkeypatch)
+    waf_query._ensure_athena_table(counter.dest)
+    assert counter.total >= 1, "cold resolve should have called something"
+
+    # Count entries into the translation, not AWS calls. The translation is itself
+    # memoized, so counting calls would pass even with the early return removed and
+    # the test would prove nothing. What this asserts is that a warm query does not
+    # reach the translation at all.
+    entries = []
+    real = A.resolve_s3_log_path
+    monkeypatch.setattr(A, "resolve_s3_log_path",
+                        lambda *a, **k: entries.append(a[0]) or real(*a, **k))
+    for _ in range(5):
+        waf_query._ensure_athena_table(counter.dest)
+    assert entries == [], "a warm session must return from the cache before translating"
+    assert counter.total >= 1
+
+
+def test_translation_is_memoized_across_both_query_paths(catalog, monkeypatch):
+    """query_logs and patrol_scan share one translation, so the second caller pays
+    nothing. Each used to do it inline, which on Firehose was a describe per scan."""
+    catalog({})
+    counter = CallCounter(monkeypatch)
+    first = A.resolve_s3_log_path(counter.dest, "CLOUDFRONT", "myacl", "us-east-1")
+    assert counter.describe == 1
+    second = A.resolve_s3_log_path(counter.dest, "CLOUDFRONT", "myacl", "us-east-1")
+    assert second == first
+    assert counter.describe == 1
+
+
+def test_same_destination_two_webacls_get_different_paths(catalog, monkeypatch):
+    """The hazard is a switch that keeps the destination and changes the answer.
+
+    On the S3-direct branch the resolved path embeds the WebACL name, and several
+    WebACLs sharing one log bucket is ordinary. A memo keyed on the destination alone
+    would hand the second WebACL the first one's path. An earlier version of this test
+    asserted the *safe* case instead, that a different destination re-translates, which
+    is true by construction because a different destination is a different key.
+    """
+    catalog({})
+    dest = "arn:aws:s3:::aws-waf-logs-shared"
+    counter = CallCounter(monkeypatch, dest=dest, s3_direct_path=True)
+
+    first = A.resolve_s3_log_path(dest, "CLOUDFRONT", "acl-one", "us-east-1")
+    second = A.resolve_s3_log_path(dest, "CLOUDFRONT", "acl-two", "us-east-1")
+
+    assert first.endswith("/acl-one/")
+    assert second.endswith("/acl-two/")
+    assert first != second
+
+
+def test_translation_memo_is_cleared_on_reset(catalog, monkeypatch):
+    """Reset is redundancy rather than a requirement once the key is complete, but it
+    still has to drop the memo, because it is the only thing that clears stale AWS
+    answers if a destination is reconfigured under the same name."""
+    catalog({})
+    counter = CallCounter(monkeypatch)
+    A.resolve_s3_log_path(counter.dest, "CLOUDFRONT", "myacl", "us-east-1")
+    A.reset_table_cache()
+    A.resolve_s3_log_path(counter.dest, "CLOUDFRONT", "myacl", "us-east-1")
+    assert counter.describe == 2
+
+
+def test_concurrent_cold_start_translates_once(catalog, monkeypatch):
+    """Ten threads on a cold cache must produce exactly one describe.
+
+    **The stand-in has to be slow.** An instant fake closes the race window on its
+    own, so an unsynchronised memo passes and the test proves nothing; a first version
+    of this test did exactly that, and paired it with a `<= 2` tolerance that made a
+    timing-dependent pass look deliberate. Measured against the real function with a
+    100 ms stand-in: ten describes without the lock, one with it. A control-plane call
+    is slower than 100 ms in practice, so this is the conservative direction.
+    """
+    import threading
+    import time
+
+    catalog({"userdb": [table("t", "s3://bkt")]})
+    counter = CallCounter(monkeypatch, call_delay=0.1)
+    errors = []
+
+    def go():
+        try:
+            A.resolve_s3_log_path(counter.dest, "CLOUDFRONT", "myacl", "us-east-1")
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert counter.describe == 1, f"expected one describe, got {counter.describe}"
+
+
+def test_output_location_is_resolved_once_per_session(catalog, monkeypatch):
+    """Both Athena executors call this per statement, and on a workgroup with no
+    output location the fallback reaches DescribeDeliveryStream."""
+    catalog({})
+    calls = []
+    monkeypatch.setattr(A, "_resolve_output_location",
+                        lambda region, workgroup: calls.append((region, workgroup)) or "s3://out/")
+    for _ in range(6):
+        assert A._get_output_location("us-east-1") == "s3://out/"
+    assert len(calls) == 1
+    A.reset_table_cache()
+    A._get_output_location("us-east-1")
+    assert len(calls) == 2
+
+
+def test_concurrent_output_location_resolves_once(catalog, monkeypatch):
+    """The hotter of the two memos, and it had the same unsynchronised race.
+
+    Both Athena executors call this once per *statement*, not once per query, and on a
+    workgroup with no output location the fallback reaches the same
+    DescribeDeliveryStream under the same 5-per-second non-adjustable ceiling. A patrol
+    scan runs several statements, so an unlocked memo multiplies. The single-threaded
+    test above cannot see this; only a slow stand-in can.
+    """
+    import threading
+    import time
+
+    catalog({})
+    calls = []
+
+    def slow(region, workgroup):
+        calls.append((region, workgroup))
+        time.sleep(0.1)
+        return "s3://out/"
+
+    monkeypatch.setattr(A, "_resolve_output_location", slow)
+    threads = [threading.Thread(target=lambda: A._get_output_location("us-east-1")) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(calls) == 1, f"expected one lookup, got {len(calls)}"
