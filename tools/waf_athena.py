@@ -1517,9 +1517,14 @@ def _wait_query(athena, qid: str):
         # clear that ignored ownership would blank the progress line every time any one of
         # the fifteen finished, so the display would flicker off and back through the whole
         # scan, and patrol is the longest tool call in the product and the reason the
-        # heartbeat exists. With the guard, only whichever query owns the current snapshot
-        # clears it, so the line survives until the last one is done. If that final clear
-        # loses a race, `query_progress`'s age check retires the snapshot anyway.
+        # heartbeat exists.
+        #
+        # **The guard bounds that flicker, it does not remove it, and a test proved the
+        # stronger claim false.** Publishing takes ownership, so ownership churns to whoever
+        # polled most recently. The line therefore survives any *non-owning* query finishing,
+        # and still goes blank for up to one POLL_INTERVAL when the owner finishes while
+        # others run, until the next worker republishes. `query_progress`'s age check is the
+        # backstop for a clear that loses a race or a thread killed at shutdown.
         snap = _query_progress
         if snap is not None and snap.get("qid") == qid:
             _query_progress = None
