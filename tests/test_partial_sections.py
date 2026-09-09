@@ -48,6 +48,36 @@ def test_each_section_is_reported_independently():
         {"bot_data": {"bot_names": {"cat": 3}}}, chart_data=chart) == ["targeted_signals"]
 
 
+def test_the_producer_never_puts_a_falsy_bot_data_under_the_key():
+    """The root-cause half. The reader fix above makes `_missing_sections` safe; this keeps the
+    trap from being re-set for the next reader.
+
+    A key that is always present and sometimes None makes `.get(key, default)` wrong for
+    everyone, since the default applies only when the key is ABSENT. Omitting it when empty
+    makes the idiom correct everywhere, including in code nobody has written yet. Asserted over
+    the syntax tree rather than by running `patrol_scan`, which needs live CloudWatch: the
+    property is about how the dict is built, so the dict literal is the honest place to check
+    it. A string search would pass on the comment that explains the rule.
+    """
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(P.patrol_scan._tool_func))
+    literals = [n for n in ast.walk(tree) if isinstance(n, ast.Dict)
+                and any(isinstance(k, ast.Constant) and k.value == "bot_data" for k in n.keys)]
+    assert literals, "no dict literal mentions bot_data; did the builder move?"
+    for lit in literals:
+        for key, value in zip(lit.keys, lit.values):
+            if isinstance(key, ast.Constant) and key.value == "bot_data":
+                # Inside a `**({...} if bot_data else {})` spread the mapping is fine, because
+                # the whole dict is conditional. What must not exist is the key sitting
+                # directly in `wr` beside "name" and "scope".
+                siblings = {k.value for k in lit.keys
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                assert "name" not in siblings, (
+                    "bot_data is mapped unconditionally in the result dict; a present-but-None "
+                    "key is what made .get(key, {}) crash")
+
+
 def test_an_empty_bot_names_counts_as_missing_not_as_present():
     """`{}` is what an empty CloudWatch result looks like, and reporting it as present would
     put an empty section in the report with nothing saying why."""

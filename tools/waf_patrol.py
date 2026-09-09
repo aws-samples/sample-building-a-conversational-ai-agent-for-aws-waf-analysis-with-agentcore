@@ -1149,7 +1149,16 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         "name": webacl_name, "scope": scope, "region": region,
         "detection_tools": detection_tools, "action_items": action_items,
         "rules_table": rules_table, "totals": totals, "logging": logging_type,
-        "rate_limits": rate_limit_info, "chart_data": chart_data, "bot_data": bot_data,
+        "rate_limits": rate_limit_info, "chart_data": chart_data,
+        # `bot_data` is OMITTED when empty rather than set to None, and that is the root-cause
+        # half of the crash fixed alongside this. Including the key unconditionally while it
+        # can be None makes `.get("bot_data", default)` a trap for every reader, because the
+        # default only applies to an ABSENT key. There are already four readers and
+        # `_missing_sections` was the fifth to hit it; readers accumulate, and each one is a
+        # fresh chance to repeat the mistake. Absent is falsy too, so the three
+        # `if wr.get("bot_data"):` guards are unaffected, and nothing outside this module
+        # reads the key.
+        **({"bot_data": bot_data} if bot_data else {}),
     }
     all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
     _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours, lang)
