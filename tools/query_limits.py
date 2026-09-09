@@ -11,12 +11,22 @@ definitions was not even a count of behaviours.
 poll loop. There is no chain-level or per-turn budget anywhere in the product, so a
 methodology of N queries runs N of these back to back. The value therefore answers "how
 long may one query run before we call it stuck", not "how long may an investigation
-take". A query needing more than a couple of minutes has almost certainly failed to
-prune; a long chain is a query-count problem instead.
+take". A long chain is a query-count problem instead.
 
-**Not to be confused with the query window cap.** That is a different number: how many
-minutes of logs a query may ask for, `MAX_MINUTES` in `waf_logs.py` for CloudWatch Logs.
-Athena's window cap currently exists only in prose. Enforcing that one is ROADMAP 3.1.
+**The two engines reach that number for different reasons, and only one of them is about
+pruning.** On Athena, a query needing more than a couple of minutes has almost certainly
+failed to prune, so the budget doubles as a partition-pruning smoke test. CloudWatch Logs
+Insights has no partitions at all, so none of that transfers: there it is a flat bet that
+the log group is small enough to scan in the window asked for, and when the bet loses the
+only remedy is a narrower window, which is what the message says.
+
+**Not to be confused with the query window cap**, which is how many minutes of logs a
+query may ask for. Athena's is prose-only and enforcing it is ROADMAP 3.1. CloudWatch's is
+real: `MAX_MINUTES = 360` in `waf_logs.py`. **That pair is inconsistent and 2.1 records it
+as an open decision** rather than pretending this file settled it: the product will accept
+a six-hour CloudWatch request and give it two minutes. Either the window comes down or
+this comes up, and picking one needs evidence about how long a real six-hour Insights
+query takes, which nobody has gathered.
 """
 
 # One deliberate value, the tightest of the five it replaces. Raising this is almost
@@ -26,6 +36,10 @@ POLL_INTERVAL = 2
 
 
 def _stop_header(engine: str) -> str:
+    # "given up on" rather than "cancelled", because nothing cancels it. There is no
+    # StopQueryExecution or StopQuery call anywhere in the product, so the query keeps
+    # running after this message is written. ROADMAP 2.4 owns cancellation, and 2.1's
+    # status records why the retry bound here wants it.
     return (f"STOPPED: the {engine} query was still running after {MAX_POLL} seconds and "
             f"was given up on. This is a scan-size limit, NOT a data error and NOT a tool "
             f"failure, and it says nothing about whether traffic existed.")
