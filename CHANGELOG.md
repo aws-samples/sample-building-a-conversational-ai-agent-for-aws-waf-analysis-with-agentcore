@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Changed: a report says which log queries failed instead of calling the WebACL idle
+
+- **A per-rule detail cell that failed came back as no rows**, indistinguishable from a rule
+  that matched nothing, in a table whose only purpose is to show what a rule matched. A
+  cancelled query, an engine failure and a call error each now say so in the cell they belong
+  to, so one failed query no longer speaks for the other four rules.
+- **The weekly report used to return a partial count as if it were final.** CloudWatch Logs
+  Insights hands back the rows produced so far for a query still running, so a section could
+  report a number that was simply wrong rather than reporting nothing. It now says the query
+  did not finish.
+- **Athena setup failures are explained rather than silently dropped.** A missing Firehose
+  stream or an unreachable bucket used to leave every detail row empty with no note; the report
+  now names the error and says the metrics are unaffected.
+- The weekly report's one shared explanation is now one per section, keeping CloudWatch's
+  auto-discovery limit as the answer only for the sections it actually explains.
+
 ### Changed: an empty patrol report section now says why it is empty
 
 - **One explanation per section, from the code that knew.** The report used to attribute every
