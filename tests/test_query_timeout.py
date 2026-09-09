@@ -256,9 +256,23 @@ class FakeStoppable:
         return {"success": self.outcome}
 
 
+class FakeAthenaStoppable:
+    """Athena's stop returns an empty body, which is the whole reason for the third value."""
+
+    def __init__(self, exc=None):
+        self.exc = exc
+        self.calls = []
+
+    def stop_query_execution(self, QueryExecutionId):
+        self.calls.append(QueryExecutionId)
+        if self.exc:
+            raise self.exc
+        return {}
+
+
 def test_stopping_a_running_query_reports_that_it_was_cancelled():
     c = FakeStoppable(True)
-    assert Q.stop_query(c, "q-1") is True
+    assert Q.stop_query(c, "q-1") == Q.STOP_CONFIRMED
     assert c.calls == ["q-1"]
 
 
@@ -271,28 +285,111 @@ def test_stopping_an_already_finished_query_is_not_an_error():
         pass
 
     c = FakeStoppable(InvalidParameterException("Query is not running"))
-    assert Q.stop_query(c, "q-1") is False
+    assert Q.stop_query(c, "q-1") == Q.STOP_NOT_DONE
 
 
 def test_a_false_success_flag_is_not_an_error_either():
     """`success: false` arrives in a normal 200 and means this call is not what stopped it."""
-    assert Q.stop_query(FakeStoppable(False), "q-1") is False
+    assert Q.stop_query(FakeStoppable(False), "q-1") == Q.STOP_NOT_DONE
 
 
-def test_the_verb_says_cancelled_only_when_it_was():
-    """Once CloudWatch cancels and Athena does not, one shared sentence would tell a user the
-    query was abandoned while the code had stopped it, or the reverse."""
+def test_athena_reports_requested_and_never_confirmed():
+    """The asymmetry the third value exists for. `StopQueryExecution` returns an empty body,
+    so "the call did not raise" is the only truth available, and a stop against an
+    already-`SUCCEEDED` execution returns normally too. Measured, and undocumented. So an
+    Athena success cannot be told apart from "it had already finished and the stop did
+    nothing", which is exactly the window CloudWatch reports as an exception."""
+    c = FakeAthenaStoppable()
+    assert Q.stop_athena_query(c, "q-1") == Q.STOP_REQUESTED
+    assert Q.stop_athena_query(c, "q-1") != Q.STOP_CONFIRMED
+    assert c.calls == ["q-1", "q-1"]
+
+
+def test_the_un_redeployed_window_degrades_into_the_previous_behaviour(no_sleep):
+    """Between this shipping and `athena:StopQueryExecution` reaching the deployed role, the
+    call is denied. Confirmed deliberately rather than discovered: the helper must return
+    `STOP_NOT_DONE` without raising, so the message says the cancel did not go through, which
+    is true, and the redeploy is therefore not time-pressured."""
+    class AccessDeniedException(Exception):
+        pass
+
+    denied = FakeAthenaStoppable(AccessDeniedException("not authorized to perform"))
+    assert Q.stop_athena_query(denied, "q-1") == Q.STOP_NOT_DONE
+
     S._state.clear()
-    stopped = Q.poll_timeout_message("CloudWatch Logs Insights", cancelled=True)
-    S._state.clear()
-    abandoned = Q.poll_timeout_message("Athena", cancelled=False)
-    # Assert the *fate* clause, not a bare substring: both messages open with "was still
+    msg = Q.poll_timeout_message("Athena", Q.stop_athena_query(denied, "q-1"))
+    assert "cancel did not go through" in msg
+    assert "was cancelled" not in msg, "a denied cancel must not read as a successful one"
+
+
+def test_the_verb_says_cancelled_only_when_the_engine_confirmed_it():
+    """One shared sentence would tell a user the query was abandoned while the code had
+    stopped it, or the reverse. Three branches because two engines know different amounts."""
+    def msg(engine, stop):
+        S._state.clear()
+        return Q.poll_timeout_message(engine, stop)
+
+    confirmed = msg("CloudWatch Logs Insights", Q.STOP_CONFIRMED)
+    requested = msg("Athena", Q.STOP_REQUESTED)
+    not_done = msg("Athena", Q.STOP_NOT_DONE)
+
+    # Assert the *fate* clause, not a bare substring: every message opens with "was still
     # running after 120 seconds", which describes the state before the give-up rather than
-    # after it, so `"still running" not in stopped` was a wrong assertion about right code.
-    assert "was cancelled, so it has stopped scanning" in stopped
-    assert "still running and still scanning" not in stopped
-    assert "still running and still scanning" in abandoned
-    assert "was cancelled" not in abandoned
+    # after it, so `"still running" not in confirmed` was a wrong assertion about right code.
+    assert "was cancelled, so it has stopped scanning" in confirmed
+
+    # The middle branch is the point. It must claim the request and not the effect.
+    assert "a cancel was requested" in requested
+    assert "so it has stopped scanning" not in requested, "Athena cannot promise this"
+    assert "finished on its own" in requested, "and it must not rule out the race either"
+
+    assert "cancel did not go through" in not_done
+    assert "was cancelled" not in not_done
+
+
+def test_an_unrecognised_stop_value_still_produces_a_message():
+    """A give-up message must never be the thing that crashes. Its whole purpose is to deliver
+    an explanation, so a `KeyError` out of the builder would replace the explanation with the
+    failure it exists to prevent. Unreachable from the current call sites, which all pass a
+    helper's return or the default; this is about the sixth site. The fallback is the most
+    conservative of the three, so an unknown value understates only our own cancel."""
+    S._state.clear()
+    msg = Q.poll_timeout_message("Athena", "some value nobody defined")
+    assert "STOPPED:" in msg
+    assert "cancel did not go through" in msg
+    assert "was cancelled" not in msg
+
+
+def test_the_boolean_flag_is_gone_rather_than_coexisting():
+    """Leaving a bool beside the enum is the truthiness trap: `STOP_NOT_DONE` is a non-empty
+    string, so `if cancelled:` would read every enum member as confirmation, including the two
+    that are not. Retiring the bool removes that by construction rather than by discipline, so
+    this asserts the old spelling is absent rather than trusting a grep someone remembers."""
+    import ast
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent / "tools"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            # A parameter or a local still called `cancelled`, which is the bool's name.
+            if isinstance(node, ast.arg) and node.arg == "cancelled":
+                offenders.append(f"{path.name}: parameter")
+            if isinstance(node, ast.Name) and node.id == "cancelled":
+                offenders.append(f"{path.name}: {node.id}")
+    assert offenders == [], offenders
+    # And the three values must stay mutually distinct, or two branches collapse silently.
+    assert len({Q.STOP_CONFIRMED, Q.STOP_REQUESTED, Q.STOP_NOT_DONE}) == 3
+
+
+def test_no_branch_claims_the_query_is_definitely_still_scanning():
+    """The same discipline as removing "the window was too large" from the retry advice, one
+    layer down. A refused cancel and a query that had already ended are indistinguishable from
+    here, so the old flat "It is still running and still scanning" was an assertion in that
+    same class. Every branch now either knows, or says so conditionally."""
+    for stop in (Q.STOP_CONFIRMED, Q.STOP_REQUESTED, Q.STOP_NOT_DONE):
+        S._state.clear()
+        assert "It is still running and still scanning" not in Q.poll_timeout_message("Athena", stop)
 
 
 def test_a_cwl_poll_timeout_cancels_the_query_and_says_so(monkeypatch, no_sleep):
@@ -309,16 +406,16 @@ def test_the_forced_log_group_path_also_cancels_and_says_so(monkeypatch, no_slee
     """The second site that both stops and speaks, which the structural test cannot cover.
 
     `run_logs_query`'s explicit-`log_group` branch has its own poll loop and passes the stop
-    result inline as the `cancelled` argument. Drop that argument and the message states
-    confidently that the query was given up on and is still scanning, about a query it had
-    just cancelled; the structural test would not notice, because it proves only that the
-    module calls `stop_query` somewhere, not that the call is on the give-up path with its
-    result reaching the sentence.
+    result inline as the `stop` argument. Drop that argument and the message says the cancel
+    did not go through, about a query it had just cancelled; the structural test would not
+    notice, because it proves only that the module calls `stop_query` somewhere, not that the
+    call is on the give-up path with its result reaching the sentence.
 
     Both outcomes are asserted because either one alone passes for a hardcoded argument: a
-    dropped argument defaults to False and satisfies the second, `cancelled=True` satisfies
-    the first. The two sites that speak are a different risk class from the two that only
-    stop, where the worst case is a query left running rather than a sentence that lies.
+    dropped argument defaults to `STOP_NOT_DONE` and satisfies the second, a hardcoded
+    `STOP_CONFIRMED` satisfies the first. The two sites that speak are a different risk class
+    from the two that only stop, where the worst case is a query left running rather than a
+    sentence that lies.
     """
     def run(outcome):
         fake, stopped = FakeCwl("Running"), []
@@ -337,7 +434,7 @@ def test_the_forced_log_group_path_also_cancels_and_says_so(monkeypatch, no_slee
         return out
 
     assert "was cancelled, so it has stopped scanning" in run(True)
-    assert "still running and still scanning" in run(False)
+    assert "cancel did not go through" in run(False)
 
 
 def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(monkeypatch, no_sleep):
@@ -350,21 +447,88 @@ def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(monke
     assert stops == [], "a Failed query has already ended"
 
 
+def test_an_athena_poll_timeout_stops_the_query_and_says_only_what_it_knows(no_sleep):
+    """The third speaking site, and the one whose engine cannot confirm anything.
+
+    Asserts the wiring the way the two CloudWatch speakers are asserted: the stop lands on the
+    query that was abandoned, and its result reaches the sentence.
+    """
+    stops = []
+
+    class Hangs(FakeAthena):
+        def get_query_execution(self, QueryExecutionId):
+            return {"QueryExecution": {"Status": {"State": "RUNNING"}}}
+
+        def stop_query_execution(self, QueryExecutionId):
+            stops.append(QueryExecutionId)
+            return {}
+
+    with pytest.raises(RuntimeError) as e:
+        A._wait_query(Hangs(), "q-1")
+    assert stops == ["q-1"], "the give-up path must stop the query it gave up on"
+    msg = str(e.value)
+    assert "a cancel was requested" in msg
+    assert "so it has stopped scanning" not in msg, "Athena has no basis for that claim"
+
+
+def test_an_athena_terminal_state_is_not_stopped_because_the_loop_already_returned(no_sleep):
+    """Why no terminal-state guard is needed at the Athena stop site, asserted rather than
+    argued. The stop sits after the loop, and every in-loop exit is terminal: `SUCCEEDED`
+    returns, `FAILED` and `CANCELLED` raise. So a guard would be dead code, and this is what
+    says so if someone adds one anyway."""
+    for state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+        stops = []
+
+        class Terminal(FakeAthena):
+            def get_query_execution(self, QueryExecutionId):
+                return {"QueryExecution": {"Status": {"State": state}}}
+
+            def stop_query_execution(self, QueryExecutionId):
+                stops.append(QueryExecutionId)
+                return {}
+
+        S._state.clear()
+        try:
+            A._wait_query(Terminal(), "q-1")
+        except RuntimeError:
+            pass
+        assert stops == [], f"{state} exits inside the loop, so the stop is unreachable"
+
+
 def test_every_module_that_starts_a_query_also_stops_one():
     """Five `start_query` sites existed and the first draft of this change would have added a
     stop to one. That is the shape that has bitten repeatedly here: five `MAX_POLL`
     definitions, two fan-out copies with one fixed, two memos with one locked. Structural
     rather than behavioural on purpose, because a sixth site added later would otherwise be
-    invisible until someone noticed a query left running."""
+    invisible until someone noticed a query left running.
+
+    **Both engines, which this missed for one commit.** The check keyed on `start_query`, and
+    Athena's call is `start_query_execution`, so the whole Athena side was outside it: the file
+    that most needed the pairing was the one the test could not see. Written as a table of
+    start-to-stop pairs so adding a third engine means adding a row rather than remembering
+    this test exists.
+    """
     import ast
     import pathlib
+
+    # Each engine's starter, and the names that count as stopping it: the raw API call, or
+    # this project's one helper for that engine.
+    PAIRS = {"start_query": {"stop_query"},
+             "start_query_execution": {"stop_query_execution", "stop_athena_query"}}
     root = pathlib.Path(__file__).resolve().parent.parent / "tools"
+    checked = []
     for path in sorted(root.glob("*.py")):
-        tree = ast.parse(path.read_text())
         names = {getattr(n.func, "attr", getattr(n.func, "id", ""))
-                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
-        if "start_query" in names:
-            assert "stop_query" in names, f"{path.name} starts queries and never stops one"
+                 for n in ast.walk(ast.parse(path.read_text())) if isinstance(n, ast.Call)}
+        for starter, stoppers in PAIRS.items():
+            if starter not in names:
+                continue
+            checked.append((path.name, starter))
+            assert names & stoppers, \
+                f"{path.name} calls {starter} and never any of {sorted(stoppers)}"
+    # The precondition: this found real starters rather than passing on an empty sweep, and it
+    # reaches both engines rather than only the one the original check happened to name.
+    assert {s for _, s in checked} == set(PAIRS), checked
 
 
 # --- the fan-out budget, which is what actually bounds patrol ---------------

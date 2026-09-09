@@ -47,6 +47,7 @@
 | `athena:StartQueryExecution` | 在 S3 AWS WAF 日志上运行 SQL 查询 | **见下方说明** |
 | `athena:GetQueryExecution` | 检查查询状态 | 无（只读） |
 | `athena:GetQueryResults` | 获取查询结果 | 无（只读） |
+| `athena:StopQueryExecution` | 查询超时不再等它了，取消掉，让它停止扫描、停止计费 | 无（停止一个读操作） |
 
 **Athena 写入影响：** Athena 查询本身是只读的（SELECT）。Agent 还会创建永久表（CREATE TABLE）用于分区投影——见下方 Glue 部分。
 

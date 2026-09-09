@@ -61,54 +61,130 @@ POLL_INTERVAL = 2
 MAX_FANOUT_WAIT = 120
 
 
-def stop_query(logs_client, query_id: str) -> bool:
+# What a stop call can honestly report. Three values and not a bool, because the two engines
+# do not know the same amount and a bool forced them to claim they did.
+#
+# CloudWatch's StopQuery returns a `success` flag, so a True there is the engine saying it
+# stopped a running query. Athena's StopQueryExecution returns an **empty body**: the only
+# available truth is "the call did not raise", and a stop against an already-SUCCEEDED
+# execution also returns normally with the state unchanged (measured, and undocumented). So an
+# Athena acceptance cannot be told apart from "it had already finished and the stop did
+# nothing", over exactly the window CloudWatch reports as InvalidParameterException and Athena
+# stays silent about. Collapsing that into `cancelled=True` would put "so it has stopped
+# scanning" on a query that finished on its own.
+STOP_CONFIRMED = "confirmed"   # the engine said it stopped a query that was running
+STOP_REQUESTED = "requested"   # the call was accepted, and that is all the engine reports
+STOP_NOT_DONE = "not done"     # the call did not go through
+
+
+def stop_query(logs_client, query_id: str) -> str:
     """Best-effort cancel of a CloudWatch Logs Insights query we stopped waiting for.
 
-    Returns True only if the query was actually stopped, so callers can tell the user which
-    of the two things happened. **Never raises**, and that is the whole contract: this runs
-    on a give-up path that already has a message to deliver, so a failure here must neither
-    replace that message nor swallow it.
+    Returns one of the three constants above. **Never raises**, and that is the whole
+    contract: this runs on a give-up path that already has a message to deliver, so a failure
+    here must neither replace that message nor swallow it.
 
     **The interesting failure is not an error.** Measured against real CloudWatch: stopping a
     running query returns `success: True`, stopping one that has already finished raises
     `InvalidParameterException`, and an unknown id raises `ResourceNotFoundException`. The
     first of those is the race this path is made of, since the query can complete between the
-    last poll and this call, so it is expected rather than exceptional and the answer is
-    simply False. (Stopping an already-*stopped* query returns True, which is harmless.)
+    last poll and this call, so it is expected rather than exceptional. (Stopping an
+    already-*stopped* query returns True, which is harmless.)
+
+    **Why the failure case does not distinguish "already finished" from "cancel failed".**
+    Measurement says `InvalidParameterException` means the former, but the API reference names
+    its exceptions without saying which case produces which, so branching on the exception
+    would build a user-facing sentence on undocumented behaviour. The header below therefore
+    words `STOP_NOT_DONE` conditionally instead of asserting the query is still running.
 
     Lives beside the messages rather than with the AWS clients because the two have to agree:
-    the header below says "cancelled" or "still running" depending on what this returned, and
-    splitting them is how a string ends up describing behaviour the code no longer has.
+    the header says what happened based on what this returned, and splitting them is how a
+    string ends up describing behaviour the code no longer has.
     """
     try:
-        return bool(logs_client.stop_query(queryId=query_id).get("success"))
+        ok = bool(logs_client.stop_query(queryId=query_id).get("success"))
     except Exception:
-        return False
+        return STOP_NOT_DONE
+    return STOP_CONFIRMED if ok else STOP_NOT_DONE
 
 
-def _stop_header(engine: str, cancelled: bool = False) -> str:
+def stop_athena_query(athena_client, qid: str) -> str:
+    """Best-effort cancel of an Athena query we stopped waiting for. Never raises.
+
+    Returns `STOP_REQUESTED` rather than `STOP_CONFIRMED` on success, and the difference is
+    the point: see the constants above. Athena reports nothing back, so this function cannot
+    honestly claim more than that the request was accepted.
+
+    **No terminal-state guard here, and the reason is the control flow rather than Athena
+    being forgiving.** CloudWatch's caller checks the status first to avoid paying for an
+    exception on an already-finished query. Athena needs no such check, not because a terminal
+    target is a harmless no-op there (it is, measured), but because the only call site sits
+    *after* the poll loop, which is reachable only when the last poll saw a non-terminal
+    state: `SUCCEEDED` returns and `FAILED`/`CANCELLED` raise, both from inside the loop. The
+    forgiveness covers the race, not the ordinary case. So nobody should add a guard the
+    control flow already provides.
+
+    **The un-redeployed window is self-describing, which is deliberate.** Between this
+    shipping and `athena:StopQueryExecution` reaching the deployed role, the call gets
+    `AccessDeniedException`, this returns `STOP_NOT_DONE`, and the message says the query was
+    given up on and the cancel did not go through. Which is true. So the code degrades into
+    the previous behaviour rather than into a wrong statement, and the redeploy is not
+    time-pressured.
+    """
+    try:
+        athena_client.stop_query_execution(QueryExecutionId=qid)
+    except Exception:
+        return STOP_NOT_DONE
+    return STOP_REQUESTED
+
+
+def _stop_header(engine: str, stop: str = STOP_NOT_DONE) -> str:
     """The first line of a give-up message, and it has to say which give-up happened.
 
-    `cancelled` is not decoration. Once CloudWatch cancels and Athena does not, one shared
-    sentence would tell a user the query was abandoned while the code had in fact stopped it,
-    or the reverse. That is the permission-table defect inverted, a string understating what
-    the code does rather than a document overstating it, so the verb takes what actually
-    happened as an argument. ROADMAP 2.4's Athena half is what collapses this back to one
-    branch, and until then the divergence is real and has to be visible.
+    `stop` is not decoration. One shared sentence would tell a user the query was abandoned
+    while the code had in fact stopped it, or the reverse. That is the permission-table defect
+    inverted, a string understating what the code does rather than a document overstating it,
+    so the verb takes what actually happened as an argument.
+
+    Three branches rather than two, and the middle one is the honest reading of an engine that
+    accepts a cancel and reports nothing. Same discipline as the retry advice below, which
+    gives the action without asserting the cause: here the action was taken, and the sentence
+    declines to promise an effect the engine never confirmed.
+
+    `STOP_NOT_DONE` is worded conditionally on purpose. It covers a cancel that was refused
+    and a query that had already ended, and nothing available here separates those, so
+    "it is still running and still scanning" would be an assertion in the same class as the
+    one already removed from the timeout advice.
     """
-    fate = ("and was cancelled, so it has stopped scanning" if cancelled else
-            "and was given up on. It is still running and still scanning, because nothing "
-            "cancels it yet")
+    fates = {
+        STOP_CONFIRMED: "and was cancelled, so it has stopped scanning",
+        STOP_REQUESTED: ("and a cancel was requested for it. This engine reports nothing back, "
+                         "so that is not a promise the scan ended, and it does not rule out "
+                         "the query having finished on its own a moment earlier"),
+        STOP_NOT_DONE: ("and was given up on. The cancel did not go through, so if it is still "
+                        "running it is still scanning"),
+    }
+    # `.get` and not `[]`. This builds a message on the give-up path, whose entire purpose is
+    # to deliver an explanation instead of a crash, so a `KeyError` escaping here would replace
+    # the explanation with the failure it exists to prevent. Unreachable today, since every
+    # call site passes a helper's return value or the default, so the question is only what a
+    # sixth site gets. The fallback costs nothing in honesty: it is both the parameter default
+    # and the most conservative of the three, claiming no cancel happened. The case for `[]`
+    # is that a bad value is a developer error and should fail loudly, and that is a fair
+    # reading, but the tests on the sites that speak already deliver most of that, while the
+    # crash mode lands on a user.
+    fate = fates.get(stop, fates[STOP_NOT_DONE])
     return (f"STOPPED: the {engine} query was still running after {MAX_POLL} seconds "
             f"{fate}. This is a scan-size limit, NOT a data error and NOT a tool failure, "
             f"and it says nothing about whether traffic existed.")
 
 
-def poll_timeout_message(engine: str, cancelled: bool = False) -> str:
+def poll_timeout_message(engine: str, stop: str = STOP_NOT_DONE) -> str:
     """What to say when a query outlives `MAX_POLL`, and the retry bound.
 
-    `cancelled` says whether the query was actually stopped, which changes the first
-    sentence. It defaults to False because that is Athena's situation today.
+    `stop` is one of the three constants above and changes the first sentence. It defaults to
+    `STOP_NOT_DONE`, which is the safe default: the only thing it overstates is our own
+    failure to cancel.
 
     Written for the user rather than as an instruction to the model, which is the whole
     point of the change. The text this replaced read "Narrow the time window, try
@@ -135,14 +211,14 @@ def poll_timeout_message(engine: str, cancelled: bool = False) -> str:
         # the window was fine and the object count was the problem. Narrowing is still the
         # right *action*, because it is the only lever available from here, but it must not
         # arrive dressed as a diagnosis.
-        return (f"{_stop_header(engine, cancelled)}\n"
+        return (f"{_stop_header(engine, stop)}\n"
                 f"ACTION: retry ONCE with roughly a quarter of the window you just asked "
                 f"for. If you do not already know which minutes spiked, call "
                 f"get_waf_overview first and query only those minutes. Do not retry more "
                 f"than once. Tell the user the scan did not finish in time, that this can "
                 f"be either too wide a window or data denser than the window suggests, and "
                 f"that you cannot tell which from here.")
-    return (f"{_stop_header(engine, cancelled)}\n"
+    return (f"{_stop_header(engine, stop)}\n"
             f"ACTION: do NOT retry. That is {attempt} timeouts in a row, so narrowing is "
             f"not working and the cost is in the scan rather than in the window. Tell the "
             f"user what you were trying to measure and that it needs either a much smaller "
