@@ -382,6 +382,31 @@ def test_the_boolean_flag_is_gone_rather_than_coexisting():
     assert len({Q.STOP_CONFIRMED, Q.STOP_REQUESTED, Q.STOP_NOT_DONE}) == 3
 
 
+def test_every_stop_constant_has_a_branch_rather_than_falling_back():
+    """Coverage of the fate table, enumerated rather than trusted.
+
+    `_stop_header` dispatches on `stop` and `.get` gives an unknown value the safe default, so a
+    fourth constant added without a branch would not crash: it would silently produce the
+    `STOP_NOT_DONE` wording, telling a user no cancel happened when one may have. That is a
+    quieter failure than the `KeyError` the `.get` was added to prevent, and the pair is only
+    sound together. The same shape as the reason-table coverage test in
+    `test_partial_sections.py`: enumerate what the module can ask for, assert each one is
+    answered, and the permissive lookup becomes provably safe instead of defensibly risky.
+    """
+    consts = {v for k, v in vars(Q).items() if k.startswith("STOP_")}
+    # The precondition. Rename the constants and the sweep would otherwise pass on an empty set.
+    assert {Q.STOP_CONFIRMED, Q.STOP_REQUESTED, Q.STOP_NOT_DONE} <= consts, consts
+
+    fallback = Q._stop_header("Athena", "a value no helper returns")
+    sentences = {c: Q._stop_header("Athena", c) for c in consts}
+    assert len(set(sentences.values())) == len(consts), \
+        f"two stop constants share a sentence: {sentences}"
+    for const, text in sentences.items():
+        if const != Q.STOP_NOT_DONE:
+            assert text != fallback, \
+                f"{const!r} has no branch and silently reads as a failed cancel"
+
+
 def test_no_branch_claims_the_query_is_definitely_still_scanning():
     """The same discipline as removing "the window was too large" from the retry advice, one
     layer down. A refused cancel and a query that had already ended are indistinguishable from

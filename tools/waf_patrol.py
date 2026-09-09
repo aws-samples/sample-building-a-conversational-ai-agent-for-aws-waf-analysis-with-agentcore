@@ -1314,16 +1314,33 @@ def _skip_reason(kind: str, detail: str = "") -> str:
 def _has_bot_control(webacl_data: dict) -> bool:
     """Is an AWS Managed Bot Control rule group attached to this WebACL?
 
-    Read off the rule list rather than off the label metrics, because the metric sum cannot
-    tell "never configured" from "configured and quiet" and both matter to the reader. Checked
+    Read off the rule list rather than off the label metrics, because the metric sum cannot tell
+    "never configured" from "configured and quiet" and both matter to the reader. Checked
     against the raw statement rather than `_analyze_detection_tools`' output, whose `layer` and
-    `mode` strings are localised, so matching them would break in whichever language nobody
-    tested. Handles both the boto3 and the lowercase-key shapes, as `_classify_rules` does.
+    `mode` strings are localised, so matching those would break in whichever language nobody
+    tested.
+
+    **PascalCase only, matching the one live sibling.** `webacl_data` comes from
+    `acl_resp.get("WebACL", {})` straight out of `get_web_acl`, which returns PascalCase, and
+    `_analyze_detection_tools` reads `webacl_data.get("Rules", [])` with no fallback at all. An
+    earlier version of this function also accepted lowercase keys, copying `_classify_rules`,
+    which turns out to have no callers anywhere in the repo. So the fallback defended a shape no
+    producer creates and cited dead code as its precedent, which is a reference that rots the
+    moment the dead function goes. If a lowercase shape ever does arrive, the live sibling is
+    already wrong about it, so the fix belongs there and not in a second copy here.
+
+    **The substring match is safe because of where it looks.**
+    `ManagedRuleGroupStatement.Name` only ever holds an AWS-published or vendor-published rule
+    group name, so `BotControl` cannot collide with customer naming: a customer group called
+    something like "MyBotControlRules" appears under `RuleGroupReferenceStatement`, a different
+    key this function never reads. The substring rather than an equality check is deliberate,
+    because ATP and ACFP are Bot Control family names too. Not demonstrable in the verification
+    account, which has no customer rule groups at all: six statement kinds appear across its
+    five WebACLs and `RuleGroupReferenceStatement` is not among them.
     """
-    for rule in webacl_data.get("Rules", webacl_data.get("rules", [])):
-        stmt = rule.get("Statement", rule.get("statement", {}))
-        mrg = stmt.get("ManagedRuleGroupStatement", stmt.get("managed_rule_group_statement", {}))
-        if "BotControl" in mrg.get("Name", mrg.get("name", "")):
+    for rule in webacl_data.get("Rules", []):
+        mrg = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
+        if "BotControl" in mrg.get("Name", ""):
             return True
     return False
 

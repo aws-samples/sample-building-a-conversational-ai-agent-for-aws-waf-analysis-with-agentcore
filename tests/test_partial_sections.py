@@ -114,14 +114,6 @@ def test_bot_control_is_detected_from_the_rule_list_not_the_metrics():
     assert P._has_bot_control({}) is False
 
 
-def test_bot_control_detection_handles_both_key_shapes():
-    """`get_web_acl` returns capitalised keys and some fixtures use lowercase, which is why
-    `_classify_rules` handles both. A checker that handled one would silently answer False for
-    the other and send every such user the wrong explanation."""
-    lower = {"rules": [{"name": "bc", "statement": {"managed_rule_group_statement": {
-        "name": "AWSManagedRulesBotControlRuleSet"}}}]}
-    assert P._has_bot_control(lower) is True
-
 
 def test_targeted_only_bot_control_still_counts_as_present():
     """Matched on the substring rather than the exact name, because ATP and ACFP are also Bot
