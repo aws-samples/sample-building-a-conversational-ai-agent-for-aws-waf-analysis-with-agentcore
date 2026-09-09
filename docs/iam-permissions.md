@@ -47,6 +47,7 @@ This document lists every IAM permission WAF Analyst requires, what it's used fo
 | `athena:StartQueryExecution` | Run SQL queries on S3-based AWS WAF logs | **See note below** |
 | `athena:GetQueryExecution` | Check query status | None (read) |
 | `athena:GetQueryResults` | Retrieve query results | None (read) |
+| `athena:StopQueryExecution` | Cancel a query the agent has stopped waiting for, so it stops scanning and stops billing | None (stops a read operation) |
 
 **Athena write impact:** Athena queries themselves are read-only (SELECT). The agent also creates temporary tables (CREATE TABLE) for partition projection — see Glue section below.
 

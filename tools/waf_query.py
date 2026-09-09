@@ -521,8 +521,8 @@ def _run_cwl(log_group: str, query: str, start_epoch: int, end_epoch: int, limit
         # Already terminal, so there is nothing to stop.
         return [{"_error": query_failed_message("CloudWatch Logs Insights", result["status"])}]
     if result["status"] != "Complete":
-        cancelled = stop_query(client, query_id)
-        return [{"_error": poll_timeout_message("CloudWatch Logs Insights", cancelled)}]
+        stopped = stop_query(client, query_id)
+        return [{"_error": poll_timeout_message("CloudWatch Logs Insights", stopped)}]
     note_query_success()
     return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
 

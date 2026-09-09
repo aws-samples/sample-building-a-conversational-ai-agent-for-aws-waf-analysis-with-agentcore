@@ -14,7 +14,7 @@ from tools.aws_session import get_client
 from tools.session_state import get_webacl_name
 
 from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
-                                 query_failed_message)
+                                 query_failed_message, stop_athena_query)
 TMP_DATABASE = "waf_analysis_tmp"
 
 
@@ -1534,7 +1534,14 @@ def _wait_query(athena, qid: str):
                 # unprompted retry makes things worse.
                 reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
                 raise RuntimeError(query_failed_message("Athena", state, reason))
-        raise RuntimeError(poll_timeout_message("Athena"))
+        # The only stop site for Athena, and it is here rather than inside the loop because
+        # every in-loop exit is already terminal: SUCCEEDED returns, FAILED and CANCELLED
+        # raise. So reaching this line means the last poll saw a non-terminal state, which is
+        # what makes a terminal-state guard unnecessary. Nothing may re-read the execution
+        # between the stop and the raise: our own cancel lands as CANCELLED with reason
+        # "Query cancelled by user", and the branch above would report that to the user as an
+        # engine failure while also not spending the retry allowance a timeout does.
+        raise RuntimeError(poll_timeout_message("Athena", stop_athena_query(athena, qid)))
     finally:
         # `finally` rather than a clear on each exit, because the three enumerated exits are
         # not all of them: `get_query_execution` can raise on throttling, expired credentials

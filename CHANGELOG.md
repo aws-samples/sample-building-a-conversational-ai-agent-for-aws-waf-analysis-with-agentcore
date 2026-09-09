@@ -2,15 +2,30 @@
 
 ## Unreleased
 
+### Added: Athena queries are cancelled too, and the message stops overclaiming
+
+- **Both engines now cancel a query the agent has given up on.** Athena bills for data scanned
+  up to the cancellation, so an abandoned query was billed for its whole scan. Measured on a
+  real query: cancelling at the poll budget costs about 0.8 seconds of continued scanning
+  against up to 28 minutes avoided, because Athena's own DML timeout is 30 minutes.
+- **Needs one new permission, `athena:StopQueryExecution`.** Redeploy to pick it up. Until you
+  do, the cancel is denied and the message says the cancel did not go through, which is true,
+  so nothing breaks and the redeploy can wait for a convenient moment.
+- **The timeout message now says only what the engine confirmed.** CloudWatch reports whether
+  it stopped a running query, so that case still reads "was cancelled, so it has stopped
+  scanning". Athena's cancel returns an empty response and succeeds just as quietly against a
+  query that had already finished, so it reads "a cancel was requested" and does not promise
+  the scan ended. The old wording for a failed cancel claimed the query was definitely still
+  scanning, which it could not know either.
+
 ### Fixed: a CloudWatch query the agent stops waiting for is now cancelled
 
 - **It used to keep running and keep billing.** Logs Insights charges for data scanned up to
   the moment of cancellation, so an abandoned query was billed for its whole scan. All five
   give-up paths now cancel, through one helper rather than five copies.
-- **The message says which of the two happened.** A CloudWatch query that timed out now reads
-  "was cancelled, so it has stopped scanning"; an Athena one still reads "given up on, it is
-  still running and still scanning", because Athena cancellation is not built yet and a
-  shared sentence would have understated one and overstated the other.
+- **The message says which of the two happened**, rather than one shared sentence that would
+  have understated one engine and overstated the other. The wording it ended up with is
+  described in the Athena entry above.
 - No permission change was needed: `logs:StopQuery` was already granted, for a call that did
   not exist until now.
 
