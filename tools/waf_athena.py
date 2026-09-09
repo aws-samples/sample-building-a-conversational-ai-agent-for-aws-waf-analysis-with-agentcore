@@ -1425,19 +1425,55 @@ def _run_athena_select(sql: str, region: str, workgroup: str = "primary", limit:
     return rows
 
 
+# What a running query has done so far, for the SSE heartbeat to report. Written by the
+# agent's worker thread and read by the event loop, so the contract is: replace the whole
+# dict in one assignment, never mutate it in place. A reader then sees either the previous
+# snapshot or the next one, never half of one, without needing a lock for what is a
+# best-effort progress line.
+#
+# Deliberately not in `_athena_state`: that dict is reset per WebACL and describes a
+# resolved table, while this describes one in-flight query and is cleared when it ends.
+_query_progress: dict | None = None
+
+
+def query_progress() -> dict | None:
+    """The in-flight query's progress, or None when nothing is running.
+
+    Read by `agent.py`'s SSE heartbeat so a long query shows movement instead of a bare
+    keepalive. Returns the snapshot as-is; the caller decides whether it is fresh enough
+    to show.
+    """
+    return _query_progress
+
+
 def _wait_query(athena, qid: str):
     """Poll until query completes.
 
     On success this clears the consecutive-timeout count, which is what keeps the retry
     bound in `poll_timeout_message` scoped to a run of failures rather than to the session.
+
+    Publishes progress on every poll. `get_query_execution` already returns
+    `Statistics.DataScannedInBytes` *while the query is still running*, so the bytes are
+    free: this loop was making the call anyway and throwing that field away.
     """
+    global _query_progress
     from tools.session_state import note_query_success
-    deadline = time.monotonic() + MAX_POLL
+    started = time.monotonic()
+    deadline = started + MAX_POLL
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
         resp = athena.get_query_execution(QueryExecutionId=qid)
         state = resp["QueryExecution"]["Status"]["State"]
+        _query_progress = {
+            "engine": "Athena",
+            "state": state,
+            "scanned_bytes": resp["QueryExecution"].get("Statistics", {}).get(
+                "DataScannedInBytes", 0),
+            "elapsed": time.monotonic() - started,
+            "budget": MAX_POLL,
+        }
         if state == "SUCCEEDED":
+            _query_progress = None
             note_query_success()
             return
         if state in ("FAILED", "CANCELLED"):
@@ -1446,5 +1482,7 @@ def _wait_query(athena, qid: str):
             # returned HIVE_S3_THROTTLING, which is exactly the failure where an
             # unprompted retry makes things worse.
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
+            _query_progress = None
             raise RuntimeError(query_failed_message("Athena", state, reason))
+    _query_progress = None
     raise RuntimeError(poll_timeout_message("Athena"))

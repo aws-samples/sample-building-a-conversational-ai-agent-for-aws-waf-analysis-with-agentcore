@@ -28,6 +28,10 @@ from tools.ask_user import ask_user
 
 MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "jp.anthropic.claude-sonnet-4-6")
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "ap-northeast-1")
+# How long the SSE stream may go silent before it sends something. Ten seconds is well
+# inside any proxy or load-balancer idle timeout worth worrying about, and far enough
+# below AgentCore's 15-minute idle-byte limit that the limit stops being reachable.
+SSE_HEARTBEAT_SECONDS = 10
 
 SYSTEM_PROMPT = """\
 You are an AWS WAF Analysis Agent. You help security engineers investigate AWS WAF issues, generate weekly summaries, and produce comprehensive rule review reports.
@@ -430,6 +434,61 @@ def _get_user_id_from_jwt(request) -> str:
         return ""
 
 
+_BEAT = object()
+"""Sentinel yielded by `_queue_with_heartbeat` when the queue has gone quiet."""
+
+
+async def _queue_with_heartbeat(q, timeout: float = SSE_HEARTBEAT_SECONDS):
+    """Yield queue items, and `_BEAT` each time the queue stays quiet for `timeout`.
+
+    Module level, and separate from the streaming endpoint, for one reason: the behaviour
+    worth testing here is what happens when *nothing* happens, and a test has to be able to
+    drive that. Inside the `create_app` closure it was unreachable, which would have meant
+    shipping the fix for "four minutes of zero bytes looks like a crash" without a test that
+    could see a quiet queue.
+
+    A distinct sentinel rather than `None`, because `None` is already the end-of-stream
+    marker the agent thread puts on the queue. Reusing it would make a heartbeat end the
+    response, which is the opposite of the point.
+    """
+    import asyncio
+    while True:
+        try:
+            yield await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            yield _BEAT
+
+def _make_sse(event: dict) -> str:
+    return f"data: {_json_mod.dumps(event)}\n\n"
+
+def _heartbeat() -> str:
+    """What to send when the queue has been quiet for SSE_HEARTBEAT_SECONDS.
+
+    A bare `:\n\n` SSE comment when nothing is known: clients ignore comment lines
+    while the connection stays open, which is all that is needed to tell a slow query
+    apart from a dropped one.
+
+    When an Athena query is in flight, send its progress instead. The poll loop already
+    calls `get_query_execution`, which reports `DataScannedInBytes` while the query is
+    still running, so the numbers cost nothing extra. Wrapped because a heartbeat must
+    never be the thing that breaks the stream: any failure here degrades to the comment.
+    """
+    try:
+        from tools.waf_athena import query_progress
+        p = query_progress()
+        if p:
+            gb = p["scanned_bytes"] / 1e9
+            scanned = f"{gb:.2f} GB" if gb >= 1 else f"{p['scanned_bytes'] / 1e6:.0f} MB"
+            return _make_sse({"type": "CUSTOM", "name": "query_progress", "value": {
+                "engine": p["engine"], "state": p["state"], "scanned": scanned,
+                "elapsed": round(p["elapsed"]), "budget": p["budget"],
+                "text": f"{p['engine']} query running, scanned {scanned}, "
+                        f"{round(p['elapsed'])}s of {p['budget']}s",
+            }})
+    except Exception:
+        pass
+    return ":\n\n"
+
 def create_app():
     """Create FastAPI app with real-time AG-UI streaming endpoint."""
     import asyncio
@@ -440,8 +499,6 @@ def create_app():
 
     app = FastAPI(title="waf-agent")
 
-    def _make_sse(event: dict) -> str:
-        return f"data: {_json.dumps(event)}\n\n"
 
     async def _stream_agent(agent, input_arg, thread_id: str, user_id: str = "", session_id: str = "", msg_seq: int = 0):
         """Run agent with real-time streaming via callback_handler + asyncio.Queue.
@@ -510,12 +567,22 @@ def create_app():
         # Emit RUN_STARTED
         yield _make_sse({"type": "RUN_STARTED", "threadId": thread_id, "runId": run_id})
 
-        # Consume events from queue
+        # Consume events from queue.
+        #
+        # Not a bare `await q.get()`. The callback emits on text tokens, TOOL_START and
+        # TOOL_END only, so a four-minute Athena query was four minutes of zero bytes on the
+        # wire with the input box disabled and no stop control: indistinguishable from a
+        # crash. Waiting with a timeout and emitting on expiry keeps the connection alive
+        # and, when a query is running, says what it has scanned so far.
         result = None
         _collected_text = []
         _collected_tools = []
+        anext_beat = _queue_with_heartbeat(q).__aiter__()
         while True:
-            item = await q.get()
+            item = await anext_beat.__anext__()
+            if item is _BEAT:
+                yield _heartbeat()
+                continue
             if item is None:
                 break
             event_type, payload = item

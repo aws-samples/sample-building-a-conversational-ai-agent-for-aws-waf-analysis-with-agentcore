@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added: a long query shows progress instead of going silent
+
+- **The connection no longer goes quiet while a query runs.** The stream emitted only on
+  text and tool events, so a four-minute Athena query was four minutes of zero bytes with
+  the input box disabled and no stop control, which is indistinguishable from a crash. The
+  stream now sends something at least every 10 seconds.
+- **While an Athena query is running, that something says what it has scanned**, for example
+  `Athena query running, scanned 2.10 GB, 45s of 120s`. Those numbers were already being
+  fetched on every poll and discarded: `GetQueryExecution` reports bytes scanned while the
+  query is still in flight.
+- This fixes visibility, not duration. A visible slow query is still a slow query.
+
+
 ### Fixed: the poll budget was two of six, and shorter than it claimed
 
 - **Two more per-query wait budgets existed under a different name.**
