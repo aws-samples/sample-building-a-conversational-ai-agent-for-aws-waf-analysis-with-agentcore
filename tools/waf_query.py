@@ -527,32 +527,24 @@ def _run_athena(sql: str) -> list[dict]:
 
 
 def _ensure_athena_table(dest: str) -> str | None:
-    """Resolve the S3 log path for this destination and hand it to the shared resolver.
+    """Return the Athena table for this log destination, resolving one if needed.
 
-    Holds no cache of its own. `resolve_log_table` owns the one cache, so patrol gets
-    the same short-circuit and the two paths cannot disagree about which table is
-    current. This function is now only the log-destination-to-S3-path translation that
-    patrol does separately, which is the remaining seam between them.
+    Holds no cache of its own; it reads the single cache in `_athena_state` and
+    otherwise delegates. Both the destination-to-S3-path translation and the table
+    resolution now live in `waf_athena` and are shared with patrol, so the two query
+    paths have no remaining opportunity to disagree.
     """
+    from tools.waf_athena import _athena_state, resolve_s3_log_path, resolve_log_table
+
+    # Read the one cache before any AWS call. This is not a second cache: it is the
+    # same key resolve_log_table checks, read early so a warm session makes no
+    # control-plane call at all. Losing this line cost one or two describes per query.
+    if _athena_state.get("table"):
+        return _athena_state["table"]
+
     try:
-        from tools.waf_athena import (
-            _resolve_s3_path, _try_standard_path, _get_account_id, resolve_log_table,
-        )
-
-        s3_base = _resolve_s3_path(dest)
-        bucket = s3_base.replace("s3://", "").split("/")[0]
-        scope = get_scope()
-        webacl_name = get_webacl_name() or "unknown"
         region = get_logs_region()
-
-        # Try standard path for S3 direct delivery
-        s3_path = None
-        if ":s3:::" in dest:
-            account_id = _get_account_id()
-            s3_path = _try_standard_path(bucket, account_id, scope, webacl_name, region)
-        if not s3_path:
-            s3_path = s3_base
-
-        return resolve_log_table(s3_path, region, webacl_name)
+        s3_path = resolve_s3_log_path(dest, get_scope(), get_webacl_name() or "unknown", region)
+        return resolve_log_table(s3_path, region, get_webacl_name() or "unknown")
     except Exception as e:
         raise RuntimeError(f"Athena table setup failed: {type(e).__name__}: {e}") from e
