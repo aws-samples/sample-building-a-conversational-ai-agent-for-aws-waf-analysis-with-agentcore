@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 (2026-09-09)
 
 ### Added: Athena queries are cancelled too, and the message stops overclaiming
 
