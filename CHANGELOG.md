@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: a CloudWatch query the agent stops waiting for is now cancelled
+
+- **It used to keep running and keep billing.** Logs Insights charges for data scanned up to
+  the moment of cancellation, so an abandoned query was billed for its whole scan. All five
+  give-up paths now cancel, through one helper rather than five copies.
+- **The message says which of the two happened.** A CloudWatch query that timed out now reads
+  "was cancelled, so it has stopped scanning"; an Athena one still reads "given up on, it is
+  still running and still scanning", because Athena cancellation is not built yet and a
+  shared sentence would have understated one and overstated the other.
+- No permission change was needed: `logs:StopQuery` was already granted, for a call that did
+  not exist until now.
+
 ## 0.15.0 (2026-09-09)
 
 ### Added: a long query shows progress instead of going silent

@@ -12,7 +12,8 @@ from tools.aws_session import get_client
 from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active, note_query_success
 
 MAX_RESULTS = 25
-from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message, query_failed_message
+from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
+                                query_failed_message, stop_query)
 MAX_MINUTES = 360  # Hard cap for CWL queries (6 hours)
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
@@ -478,7 +479,8 @@ def run_logs_query(
         if result["status"] != "Complete":
             if result["status"] in ("Failed", "Cancelled"):
                 return query_failed_message("CloudWatch Logs Insights", result["status"])
-            return poll_timeout_message("CloudWatch Logs Insights")
+            return poll_timeout_message("CloudWatch Logs Insights",
+                                        stop_query(client, query_id))
         note_query_success()
         try:
             results = [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
@@ -771,6 +773,10 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break
         if result["status"] != "Complete":
+            # Wired even though this function has no callers, because leaving one give-up
+            # path uncancelled while the others cancel is the inconsistency this change
+            # exists to remove. 6.4 tracks the deletion.
+            stop_query(client, query_id)
             return []
         return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
 

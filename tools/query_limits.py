@@ -61,18 +61,54 @@ POLL_INTERVAL = 2
 MAX_FANOUT_WAIT = 120
 
 
-def _stop_header(engine: str) -> str:
-    # "given up on" rather than "cancelled", because nothing cancels it. There is no
-    # StopQueryExecution or StopQuery call anywhere in the product, so the query keeps
-    # running after this message is written. ROADMAP 2.4 owns cancellation, and 2.1's
-    # status records why the retry bound here wants it.
-    return (f"STOPPED: the {engine} query was still running after {MAX_POLL} seconds and "
-            f"was given up on. This is a scan-size limit, NOT a data error and NOT a tool "
-            f"failure, and it says nothing about whether traffic existed.")
+def stop_query(logs_client, query_id: str) -> bool:
+    """Best-effort cancel of a CloudWatch Logs Insights query we stopped waiting for.
+
+    Returns True only if the query was actually stopped, so callers can tell the user which
+    of the two things happened. **Never raises**, and that is the whole contract: this runs
+    on a give-up path that already has a message to deliver, so a failure here must neither
+    replace that message nor swallow it.
+
+    **The interesting failure is not an error.** Measured against real CloudWatch: stopping a
+    running query returns `success: True`, stopping one that has already finished raises
+    `InvalidParameterException`, and an unknown id raises `ResourceNotFoundException`. The
+    first of those is the race this path is made of, since the query can complete between the
+    last poll and this call, so it is expected rather than exceptional and the answer is
+    simply False. (Stopping an already-*stopped* query returns True, which is harmless.)
+
+    Lives beside the messages rather than with the AWS clients because the two have to agree:
+    the header below says "cancelled" or "still running" depending on what this returned, and
+    splitting them is how a string ends up describing behaviour the code no longer has.
+    """
+    try:
+        return bool(logs_client.stop_query(queryId=query_id).get("success"))
+    except Exception:
+        return False
 
 
-def poll_timeout_message(engine: str) -> str:
+def _stop_header(engine: str, cancelled: bool = False) -> str:
+    """The first line of a give-up message, and it has to say which give-up happened.
+
+    `cancelled` is not decoration. Once CloudWatch cancels and Athena does not, one shared
+    sentence would tell a user the query was abandoned while the code had in fact stopped it,
+    or the reverse. That is the permission-table defect inverted, a string understating what
+    the code does rather than a document overstating it, so the verb takes what actually
+    happened as an argument. ROADMAP 2.4's Athena half is what collapses this back to one
+    branch, and until then the divergence is real and has to be visible.
+    """
+    fate = ("and was cancelled, so it has stopped scanning" if cancelled else
+            "and was given up on. It is still running and still scanning, because nothing "
+            "cancels it yet")
+    return (f"STOPPED: the {engine} query was still running after {MAX_POLL} seconds "
+            f"{fate}. This is a scan-size limit, NOT a data error and NOT a tool failure, "
+            f"and it says nothing about whether traffic existed.")
+
+
+def poll_timeout_message(engine: str, cancelled: bool = False) -> str:
     """What to say when a query outlives `MAX_POLL`, and the retry bound.
+
+    `cancelled` says whether the query was actually stopped, which changes the first
+    sentence. It defaults to False because that is Athena's situation today.
 
     Written for the user rather than as an instruction to the model, which is the whole
     point of the change. The text this replaced read "Narrow the time window, try
@@ -99,14 +135,14 @@ def poll_timeout_message(engine: str) -> str:
         # the window was fine and the object count was the problem. Narrowing is still the
         # right *action*, because it is the only lever available from here, but it must not
         # arrive dressed as a diagnosis.
-        return (f"{_stop_header(engine)}\n"
+        return (f"{_stop_header(engine, cancelled)}\n"
                 f"ACTION: retry ONCE with roughly a quarter of the window you just asked "
                 f"for. If you do not already know which minutes spiked, call "
                 f"get_waf_overview first and query only those minutes. Do not retry more "
                 f"than once. Tell the user the scan did not finish in time, that this can "
                 f"be either too wide a window or data denser than the window suggests, and "
                 f"that you cannot tell which from here.")
-    return (f"{_stop_header(engine)}\n"
+    return (f"{_stop_header(engine, cancelled)}\n"
             f"ACTION: do NOT retry. That is {attempt} timeouts in a row, so narrowing is "
             f"not working and the cost is in the scan rather than in the window. Tell the "
             f"user what you were trying to measure and that it needs either a much smaller "

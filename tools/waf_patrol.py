@@ -8,7 +8,7 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.query_limits import MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL
+from tools.query_limits import MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL, stop_query
 
 _latest_patrol_html: str | None = None
 
@@ -706,6 +706,7 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break
         if result["status"] != "Complete":
+            stop_query(logs_client, query_id)
             return []
         return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
     except Exception:

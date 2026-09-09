@@ -240,6 +240,97 @@ def test_the_budget_is_wall_clock_not_a_count_of_sleeps(no_sleep):
     assert fake.polls == Q.MAX_POLL // (Q.POLL_INTERVAL + 1) == 40, fake.polls
 
 
+# --- cancelling a query we stopped waiting for ------------------------------
+
+
+class FakeStoppable:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.calls = []
+
+    def stop_query(self, queryId):
+        self.calls.append(queryId)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return {"success": self.outcome}
+
+
+def test_stopping_a_running_query_reports_that_it_was_cancelled():
+    c = FakeStoppable(True)
+    assert Q.stop_query(c, "q-1") is True
+    assert c.calls == ["q-1"]
+
+
+def test_stopping_an_already_finished_query_is_not_an_error():
+    """The race this path is made of: the query can complete between the last poll and the
+    stop. Measured against real CloudWatch, that raises `InvalidParameterException`, and the
+    docs say so outright. It must not propagate, because this runs where a timeout message is
+    already waiting to be delivered and a failed cancel must neither replace nor swallow it."""
+    class InvalidParameterException(Exception):
+        pass
+
+    c = FakeStoppable(InvalidParameterException("Query is not running"))
+    assert Q.stop_query(c, "q-1") is False
+
+
+def test_a_false_success_flag_is_not_an_error_either():
+    """`success: false` arrives in a normal 200 and means this call is not what stopped it."""
+    assert Q.stop_query(FakeStoppable(False), "q-1") is False
+
+
+def test_the_verb_says_cancelled_only_when_it_was():
+    """Once CloudWatch cancels and Athena does not, one shared sentence would tell a user the
+    query was abandoned while the code had stopped it, or the reverse."""
+    S._state.clear()
+    stopped = Q.poll_timeout_message("CloudWatch Logs Insights", cancelled=True)
+    S._state.clear()
+    abandoned = Q.poll_timeout_message("Athena", cancelled=False)
+    # Assert the *fate* clause, not a bare substring: both messages open with "was still
+    # running after 120 seconds", which describes the state before the give-up rather than
+    # after it, so `"still running" not in stopped` was a wrong assertion about right code.
+    assert "was cancelled, so it has stopped scanning" in stopped
+    assert "still running and still scanning" not in stopped
+    assert "still running and still scanning" in abandoned
+    assert "was cancelled" not in abandoned
+
+
+def test_a_cwl_poll_timeout_cancels_the_query_and_says_so(monkeypatch, no_sleep):
+    """The two halves together at the one site that has both a stop and a message."""
+    fake = FakeCwl("Running")
+    fake.stop_query = lambda queryId: {"success": True}
+    monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
+    monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    rows = WQ._run_cwl("lg", "fields @message", 0, 60, 10)
+    assert "was cancelled" in rows[0]["_error"]
+
+
+def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(monkeypatch, no_sleep):
+    fake = FakeCwl("Failed")
+    stops = []
+    fake.stop_query = lambda queryId: stops.append(queryId) or {"success": True}
+    monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
+    monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    WQ._run_cwl("lg", "fields @message", 0, 60, 10)
+    assert stops == [], "a Failed query has already ended"
+
+
+def test_every_module_that_starts_a_query_also_stops_one():
+    """Five `start_query` sites existed and the first draft of this change would have added a
+    stop to one. That is the shape that has bitten repeatedly here: five `MAX_POLL`
+    definitions, two fan-out copies with one fixed, two memos with one locked. Structural
+    rather than behavioural on purpose, because a sixth site added later would otherwise be
+    invisible until someone noticed a query left running."""
+    import ast
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent / "tools"
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        names = {getattr(n.func, "attr", getattr(n.func, "id", ""))
+                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        if "start_query" in names:
+            assert "stop_query" in names, f"{path.name} starts queries and never stops one"
+
+
 # --- the fan-out budget, which is what actually bounds patrol ---------------
 
 
