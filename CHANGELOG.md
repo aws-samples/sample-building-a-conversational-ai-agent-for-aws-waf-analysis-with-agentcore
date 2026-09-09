@@ -13,6 +13,9 @@
   fetched on every poll and discarded: `GetQueryExecution` reports bytes scanned while the
   query is still in flight.
 - This fixes visibility, not duration. A visible slow query is still a slow query.
+- **Known limitation**: during a patrol scan, which runs several queries at once, the
+  progress line can blink off for a couple of seconds when one of them finishes before the
+  others. It is a best-effort line, not a loss of the connection.
 
 
 ### Fixed: the poll budget was two of six, and shorter than it claimed

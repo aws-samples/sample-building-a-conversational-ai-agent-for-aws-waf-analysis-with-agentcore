@@ -1436,14 +1436,33 @@ def _run_athena_select(sql: str, region: str, workgroup: str = "primary", limit:
 _query_progress: dict | None = None
 
 
+# A snapshot older than this is treated as no snapshot. A running query republishes every
+# POLL_INTERVAL, so its own reading is never this old; anything that is has been abandoned.
+_PROGRESS_STALE_AFTER = POLL_INTERVAL * 3
+
+
 def query_progress() -> dict | None:
     """The in-flight query's progress, or None when nothing is running.
 
     Read by `agent.py`'s SSE heartbeat so a long query shows movement instead of a bare
-    keepalive. Returns the snapshot as-is; the caller decides whether it is fresh enough
-    to show.
+    keepalive.
+
+    **Takes one reference and answers from it**, so a caller cannot observe two different
+    snapshots inside one heartbeat. That, plus writers replacing the whole dict rather than
+    mutating it, is the entire lock-free contract.
+
+    **Age is checked here rather than trusted from the writer**, and it is the backstop for
+    every way a snapshot can outlive its query: a thread killed at shutdown, or a `qid`-guarded
+    clear that loses a race. Without it a stale reading means the heartbeat announces "Athena
+    query running, scanned 2.10 GB" for a query that is gone, which is worse than saying
+    nothing, because silence is honest and a stale claim is not.
     """
-    return _query_progress
+    snap = _query_progress
+    if snap is None:
+        return None
+    if time.monotonic() - snap.get("at", 0) > _PROGRESS_STALE_AFTER:
+        return None
+    return snap
 
 
 def _wait_query(athena, qid: str):
@@ -1460,29 +1479,47 @@ def _wait_query(athena, qid: str):
     from tools.session_state import note_query_success
     started = time.monotonic()
     deadline = started + MAX_POLL
-    while time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
-        resp = athena.get_query_execution(QueryExecutionId=qid)
-        state = resp["QueryExecution"]["Status"]["State"]
-        _query_progress = {
-            "engine": "Athena",
-            "state": state,
-            "scanned_bytes": resp["QueryExecution"].get("Statistics", {}).get(
-                "DataScannedInBytes", 0),
-            "elapsed": time.monotonic() - started,
-            "budget": MAX_POLL,
-        }
-        if state == "SUCCEEDED":
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
+            resp = athena.get_query_execution(QueryExecutionId=qid)
+            state = resp["QueryExecution"]["Status"]["State"]
+            _query_progress = {
+                "engine": "Athena",
+                "state": state,
+                "scanned_bytes": resp["QueryExecution"].get("Statistics", {}).get(
+                    "DataScannedInBytes", 0),
+                "elapsed": time.monotonic() - started,
+                "budget": MAX_POLL,
+                "qid": qid,
+                "at": time.monotonic(),
+            }
+            if state == "SUCCEEDED":
+                note_query_success()
+                return
+            if state in ("FAILED", "CANCELLED"):
+                # Carries the engine's own reason, and the same "not an absence of traffic"
+                # framing the CloudWatch path got. Observed on a real bucket: a wide query
+                # returned HIVE_S3_THROTTLING, which is exactly the failure where an
+                # unprompted retry makes things worse.
+                reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
+                raise RuntimeError(query_failed_message("Athena", state, reason))
+        raise RuntimeError(poll_timeout_message("Athena"))
+    finally:
+        # `finally` rather than a clear on each exit, because the three enumerated exits are
+        # not all of them: `get_query_execution` can raise on throttling, expired credentials
+        # or a dropped socket, and callers wrap Athena work in broad excepts in several
+        # places, so that raise is survivable and the stale snapshot therefore persistent
+        # rather than fatal.
+        #
+        # **Only clear a snapshot that is still ours**, which is what `qid` is for. Patrol
+        # runs up to fifteen of these across five workers, all writing this one global. A
+        # clear that ignored ownership would blank the progress line every time any one of
+        # the fifteen finished, so the display would flicker off and back through the whole
+        # scan, and patrol is the longest tool call in the product and the reason the
+        # heartbeat exists. With the guard, only whichever query owns the current snapshot
+        # clears it, so the line survives until the last one is done. If that final clear
+        # loses a race, `query_progress`'s age check retires the snapshot anyway.
+        snap = _query_progress
+        if snap is not None and snap.get("qid") == qid:
             _query_progress = None
-            note_query_success()
-            return
-        if state in ("FAILED", "CANCELLED"):
-            # Carries the engine's own reason, and the same "not an absence of traffic"
-            # framing the CloudWatch path got. Observed on a real bucket: a wide query
-            # returned HIVE_S3_THROTTLING, which is exactly the failure where an
-            # unprompted retry makes things worse.
-            reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
-            _query_progress = None
-            raise RuntimeError(query_failed_message("Athena", state, reason))
-    _query_progress = None
-    raise RuntimeError(poll_timeout_message("Athena"))

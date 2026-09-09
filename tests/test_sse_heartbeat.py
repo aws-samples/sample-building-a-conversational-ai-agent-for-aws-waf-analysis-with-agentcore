@@ -12,6 +12,7 @@ come out of the `create_app` closure to be reachable at all.
 """
 
 import asyncio
+import time
 
 import pytest
 
@@ -82,7 +83,8 @@ def test_a_beat_during_a_query_reports_what_it_has_scanned():
     """`get_query_execution` returns DataScannedInBytes while the query is still running, so
     the poll loop was already fetching this and discarding it."""
     A._query_progress = {"engine": "Athena", "state": "RUNNING",
-                         "scanned_bytes": 2_100_000_000, "elapsed": 45.4, "budget": 120}
+                         "scanned_bytes": 2_100_000_000, "elapsed": 45.4, "budget": 120,
+                         "qid": "q-1", "at": time.monotonic()}
     beat = agent._heartbeat()
     assert beat.startswith("data: ")
     assert '"query_progress"' in beat
@@ -93,7 +95,8 @@ def test_a_beat_during_a_query_reports_what_it_has_scanned():
 def test_small_scans_are_reported_in_megabytes():
     """0.00 GB is not a progress report."""
     A._query_progress = {"engine": "Athena", "state": "RUNNING",
-                         "scanned_bytes": 4_300_000, "elapsed": 3.2, "budget": 120}
+                         "scanned_bytes": 4_300_000, "elapsed": 3.2, "budget": 120,
+                         "qid": "q-1", "at": time.monotonic()}
     assert "4 MB" in agent._heartbeat()
 
 
@@ -156,3 +159,80 @@ def test_progress_is_published_while_the_query_runs(monkeypatch):
     assert published[-1]["scanned_bytes"] == 7_000_000
     assert published[-1]["state"] == "RUNNING"
     assert published[-1]["budget"] == A.MAX_POLL
+
+def test_a_stale_snapshot_is_not_reported_as_a_running_query():
+    """The backstop for every way a snapshot can outlive its query: a thread killed at
+    shutdown, or an ownership-guarded clear that lost a race. Announcing a query that is gone
+    is worse than saying nothing, because silence is honest and a stale claim is not."""
+    A._query_progress = {"engine": "Athena", "state": "RUNNING", "scanned_bytes": 1,
+                         "elapsed": 1.0, "budget": 120, "qid": "q-old",
+                         "at": time.monotonic() - (A._PROGRESS_STALE_AFTER + 1)}
+    assert A.query_progress() is None
+    assert agent._heartbeat() == ":\n\n"
+
+
+def test_a_raise_from_the_poll_call_does_not_leak_a_snapshot(monkeypatch):
+    """The exit the three explicit clears did not cover. `get_query_execution` can raise on
+    throttling, expired credentials or a dropped socket, and callers wrap Athena work in broad
+    excepts, so the raise is survivable and the stale snapshot therefore persistent."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(A.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(A.time, "monotonic", lambda: clock["t"])
+
+    class Flaky:
+        def __init__(self):
+            self.n = 0
+
+        def get_query_execution(self, QueryExecutionId):
+            self.n += 1
+            if self.n == 1:
+                return {"QueryExecution": {"Status": {"State": "RUNNING"},
+                                           "Statistics": {"DataScannedInBytes": 11}}}
+            raise ConnectionError("socket dropped")
+
+    with pytest.raises(ConnectionError):
+        A._wait_query(Flaky(), "q-1")
+    # The precondition: a snapshot really was published before the raise, so this is not
+    # passing because nothing ever ran.
+    assert clock["t"] > 0
+    assert A._query_progress is None, "the raise left a RUNNING snapshot behind"
+
+
+def test_a_finishing_query_does_not_clear_a_snapshot_it_no_longer_owns(monkeypatch):
+    """What the ownership guard actually buys, stated precisely.
+
+    Patrol runs up to fifteen of these across five workers on one global. Publishing takes
+    ownership, so ownership churns to whoever polled most recently, and the guard does **not**
+    eliminate the flicker: when the current owner finishes it clears, and another running
+    query republishes within one `POLL_INTERVAL`. What the guard prevents is the worse case,
+    a query that finished or raised earlier wiping a snapshot published after it, which would
+    blank the line for as long as it took the next poll to come round from *any* worker rather
+    than from the one that overwrote it.
+
+    Simulated by having the last poll publish someone else's snapshot, which is exactly what a
+    concurrent worker does between our publish and our `finally`.
+    """
+    clock = {"t": 0.0}
+    monkeypatch.setattr(A.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(A.time, "monotonic", lambda: clock["t"])
+
+    other = {"engine": "Athena", "state": "RUNNING", "scanned_bytes": 99, "elapsed": 1.0,
+             "budget": 120, "qid": "q-other", "at": 0.0}
+
+    class Racy:
+        def get_query_execution(self, QueryExecutionId):
+            return {"QueryExecution": {"Status": {"State": "SUCCEEDED"},
+                                       "Statistics": {"DataScannedInBytes": 1}}}
+
+    # The window that matters is between our own publish and our `finally`, so the other
+    # worker's write has to land there. `note_query_success` is the one call in that window,
+    # which makes it the injection point; a real concurrent worker needs no invitation.
+    from tools import session_state as _S
+    monkeypatch.setattr(_S, "note_query_success",
+                        lambda: A.__setattr__("_query_progress", dict(other)))
+
+    A._wait_query(Racy(), "q-mine")
+    # The precondition: someone else owns the snapshot at the moment our finally runs.
+    snap = A._query_progress
+    assert snap is not None, "q-mine cleared a snapshot it did not own"
+    assert snap["qid"] == "q-other"
