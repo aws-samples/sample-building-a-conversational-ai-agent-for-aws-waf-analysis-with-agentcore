@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: a patrol scan no longer crashes when a report section is empty
+
+- **It failed on the ordinary case, not an edge case.** A patrol scan raised
+  `AttributeError: 'NoneType' object has no attribute 'get'` for any WebACL without AWS
+  Managed Bot Control enabled, which is most of them. No report was produced at all.
+- The crash was in the block that reports which sections came back empty, so the code meant
+  to explain a partial report was the code that prevented one.
+
 ## 0.16.0 (2026-09-09)
 
 ### Added: Athena queries are cancelled too, and the message stops overclaiming
