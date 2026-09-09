@@ -90,6 +90,8 @@ _ATHENA_STATE_DEFAULTS = {
                              # Independent of the user's display timezone.
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
+    "layout_mixed": False,   # bucket holds both hourly and minute-level eras
+    "layout_cutover": None,  # 'yyyy/MM/dd' the minute era begins, best-effort
     "table_choice": None,    # one line naming the resolved table, for tool output
     "discovery_notes": (),   # why candidate tables were rejected, for tool output
     # Memo of the log-destination ARN -> S3 path translation. Not a second table
@@ -316,9 +318,61 @@ def _s3_list_dirs(bucket: str, prefix: str) -> list[str]:
     return dirs
 
 
-def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
-    """Walk S3 to find partition structure.
-    Returns (storage_template, partition_format, partition_unit, partition_interval)."""
+def _date_levels(bucket: str, root: str, parts: list[str], newest: bool) -> list[str]:
+    """Descend one date subtree, taking the newest or the earliest child each level.
+
+    Returns the level names, starting from `parts`. Length is what identifies the
+    layout: 4 levels is `yyyy/MM/dd/HH`, 5 is `yyyy/MM/dd/HH/mm`. Levels below the
+    year are always two zero-padded digits, so a lexicographic min/max is the numeric
+    one, and filtering to that shape keeps a stray non-numeric directory out.
+    """
+    prefix = root + "/".join(parts) + "/"
+    levels = list(parts)
+    while len(levels) < 5:
+        kids = sorted(d for d in _s3_list_dirs(bucket, prefix) if re.fullmatch(r"\d{2}", d))
+        if not kids:
+            break
+        pick = kids[-1] if newest else kids[0]
+        levels.append(pick)
+        prefix += pick + "/"
+    return levels
+
+
+def _era_of(levels: list[str]) -> str | None:
+    """'minutes', 'hours', or None when the subtree is too shallow to be a date tree."""
+    if len(levels) >= 5:
+        return "minutes"
+    if len(levels) == 4:
+        return "hours"
+    return None
+
+
+def _detect_partitions(s3_path: str) -> dict:
+    """Walk S3 to find the partition layout, and where the current layout begins.
+
+    Returns a dict rather than a tuple. Three consumers now need different subsets of
+    it, and a positional tuple churns every call site each time the set grows, which
+    is the same lesson `_find_existing_table`'s return value taught.
+
+    Keys: `storage_template`, `format`, `unit`, `interval`, `range_start`, `mixed`,
+    `cutover`, `data_start`.
+
+    **Why `range_start` is computed here at all.** It used to be hardcoded to 2020,
+    giving about 3.46 million projected minutes, and Athena expands the whole declared
+    range before applying `WHERE`, so that cost 4 to 5 seconds of planning on every
+    query with scanned bytes unchanged. Deriving it needs to know where the data
+    starts, which is the same walk that finds a mixed layout, so the two are one piece
+    of work.
+
+    **The two halves have deliberately different guarantees.** `range_start` is
+    correctness-critical: too early only projects extra partitions, while too late
+    makes real data unqueryable with no error. So it is computed by a *linear* scan
+    over years and then months, which is exact, and floored to the first of the month.
+    `cutover` is user-facing reporting, found by binary search within that month, and
+    is best-effort: it assumes the layout changed once rather than alternating. A
+    non-monotone bucket can therefore report a slightly late cutover date while
+    `range_start` stays safe, which is the right way round.
+    """
     parts = s3_path.replace("s3://", "").split("/", 1)
     bucket = parts[0]
     base_prefix = parts[1] if len(parts) > 1 else ""
@@ -330,45 +384,9 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
         dirs = _s3_list_dirs(bucket, current_prefix)
         if not dirs:
             break
-        year_dirs = [d for d in dirs if re.match(r"^20[2-3]\d$", d)]
-        if year_dirs:
-            year = sorted(year_dirs)[-1]
-            # Descend into the NEWEST child at every level, not the earliest.
-            #
-            # Anyone who has switched a Firehose prefix from hourly to
-            # minute-level still has the old hourly paths in their bucket, under
-            # earlier months of the same year. Taking the earliest child walked
-            # straight into that pre-cutover data, counted four levels, and pinned
-            # the table to yyyy/MM/dd/HH — permanently, because no amount of new
-            # minute-partitioned data changes a walk that never looks at it.
-            #
-            # Levels below the year are always two zero-padded digits, so a
-            # lexicographic max is the numeric max. Filtering to that shape also
-            # keeps a stray non-numeric directory from being chosen; letters sort
-            # after digits, so "newest" would otherwise pick it.
-            test_prefix = current_prefix + year + "/"
-            levels = [year]
-            for _ in range(5):
-                sub_dirs = [d for d in _s3_list_dirs(bucket, test_prefix) if re.fullmatch(r"\d{2}", d)]
-                if not sub_dirs:
-                    break
-                newest = max(sub_dirs)
-                levels.append(newest)
-                test_prefix = test_prefix + newest + "/"
-            if len(levels) >= 5:
-                # Minute-level means interval 1, and it is never inferred from the
-                # directory names. Firehose's !{timestamp:mm} emits whatever minute
-                # the buffer happened to flush at, so the minute directories are
-                # arbitrary values like 03, 07, 08, 41. The old code subtracted two
-                # of them and fed the difference to partition projection, which then
-                # generated paths only at that stride and never read the objects in
-                # between: a fraction of the rows, with no error to show for it.
-                fmt, unit, interval = "yyyy/MM/dd/HH/mm", "minutes", 1
-            else:
-                fmt, unit = "yyyy/MM/dd/HH", "hours"
-                interval = 1
-            storage_template = f"s3://{bucket}/{current_prefix}${{log_time}}"
-            return storage_template, fmt, unit, interval
+        years = sorted(d for d in dirs if re.match(r"^20[2-3]\d$", d))
+        if years:
+            return _layout_from_years(bucket, current_prefix, years)
 
         # Pick best subdir to descend
         chosen = None
@@ -377,7 +395,7 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
         else:
             for d in dirs:
                 sub = _s3_list_dirs(bucket, current_prefix + d + "/")
-                if any(re.match(r"^20[2-3]\d$", s) for s in sub):
+                if any(re.match(r"^20[2-3]\d$", x) for x in sub):
                     chosen = d
                     break
         if not chosen:
@@ -385,6 +403,85 @@ def _detect_partitions(s3_path: str) -> tuple[str, str, str, int]:
         current_prefix = current_prefix + chosen + "/"
 
     raise RuntimeError(f"Cannot detect partition structure under {s3_path}")
+
+
+def _layout_from_years(bucket: str, root: str, years: list[str]) -> dict:
+    """Decide the layout and its start date, given the years present under `root`."""
+    newest = _date_levels(bucket, root, [years[-1]], newest=True)
+    oldest = _date_levels(bucket, root, [years[0]], newest=False)
+    era_new, era_old = _era_of(newest), _era_of(oldest)
+
+    # The layout to declare is whatever the newest data uses: that is what the user
+    # switched to, and it is what new objects will keep arriving as.
+    if era_new == "minutes":
+        fmt, unit = "yyyy/MM/dd/HH/mm", "minutes"
+    else:
+        fmt, unit = "yyyy/MM/dd/HH", "hours"
+
+    # Minute-level means interval 1, never inferred from the directory names.
+    # Firehose's !{timestamp:mm} emits whatever minute the buffer happened to flush
+    # at, so those names are arbitrary values like 03, 07, 41. Subtracting two of them
+    # and feeding the difference to partition projection generated paths at that
+    # stride only and never read the objects in between: a fraction of the rows, with
+    # no error to show for it.
+    interval = 1
+
+    data_start = "/".join((oldest + ["01", "00", "00"])[:3])
+    mixed = era_new != era_old and era_old is not None
+    cutover = None
+
+    if mixed and era_new == "minutes":
+        # Exact at year and month granularity: a year or month whose newest child is
+        # minute-level is the one the change falls in, and scanning them linearly
+        # cannot be fooled by a layout that alternates.
+        cy = next((y for y in years if _era_of(_date_levels(bucket, root, [y], True)) == "minutes"),
+                  years[-1])
+        months = sorted(d for d in _s3_list_dirs(bucket, root + cy + "/") if re.fullmatch(r"\d{2}", d))
+        cm = next((m for m in months
+                   if _era_of(_date_levels(bucket, root, [cy, m], True)) == "minutes"),
+                  months[-1] if months else "01")
+        range_start_parts = [cy, cm, "01"]
+        cutover = _first_minute_day(bucket, root, cy, cm)
+    else:
+        # Not mixed, or newest is hourly and an hourly table reads the whole timeline
+        # anyway, so the earliest data is the safe start in both cases.
+        range_start_parts = (oldest + ["01", "01"])[:3]
+
+    range_start = "/".join(range_start_parts) + ("/00/00" if unit == "minutes" else "/00")
+
+    return {
+        "storage_template": f"s3://{bucket}/{root}${{log_time}}",
+        "format": fmt,
+        "unit": unit,
+        "interval": interval,
+        "range_start": range_start,
+        "mixed": mixed,
+        "cutover": cutover,
+        "data_start": data_start,
+    }
+
+
+def _first_minute_day(bucket: str, root: str, year: str, month: str) -> str | None:
+    """Best-effort cutover day, by binary search inside one month.
+
+    Reporting only. `range_start` is floored to the first of this month by the caller,
+    so a wrong answer here costs a wrong date in a message rather than unreadable data.
+    Binary search assumes the layout changed once inside the month; a bucket that
+    alternates gets a late date and nothing worse.
+    """
+    days = sorted(d for d in _s3_list_dirs(bucket, f"{root}{year}/{month}/") if re.fullmatch(r"\d{2}", d))
+    if not days:
+        return None
+    lo, hi = 0, len(days) - 1
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _era_of(_date_levels(bucket, root, [year, month, days[mid]], True)) == "minutes":
+            hi = mid
+        else:
+            lo = mid + 1
+    if _era_of(_date_levels(bucket, root, [year, month, days[lo]], True)) != "minutes":
+        return None
+    return f"{year}/{month}/{days[lo]}"
 
 
 def _validate_waf_log(s3_path: str) -> bool:
@@ -655,10 +752,21 @@ def _ensure_database(region: str, workgroup: str):
 
 
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
-                        partition_unit: str, partition_interval: int, region: str, workgroup: str, table_name: str) -> dict:
-    """Create a permanent Athena table with the given name. Returns its metadata."""
+                        partition_unit: str, partition_interval: int, region: str, workgroup: str,
+                        table_name: str, range_start: str | None = None) -> dict:
+    """Create a permanent Athena table with the given name. Returns its metadata.
+
+    `range_start` comes from `_detect_partitions`, derived from where the data actually
+    begins. The old hardcoded 2020 meant about 3.46 million projected minutes, and
+    Athena expands the declared range before applying `WHERE`, so it cost 4 to 5
+    seconds of planning per query with scanned bytes unchanged. It also sat above
+    Athena's documented 1,000,000-partition ceiling for a single scan, survivable only
+    because every query carries a partition predicate. The fallback is kept for a
+    caller that has no layout in hand, but every live caller passes one.
+    """
     _ensure_database(region, workgroup)
-    range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
+    if range_start is None:
+        range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
     target_location = s3_path.rstrip("/")
 
     # A same-named table can linger with an outdated LOCATION after the WAF log
@@ -739,7 +847,10 @@ def _cross_check_declared(meta: dict, s3_path: str, strict: bool) -> str | None:
     numbers makes "1 minute" equal "1 hour", which is precisely the pair of
     layouts this check exists to tell apart."""
     try:
-        _, actual_fmt, actual_unit, actual_interval = _detect_partitions(s3_path)
+        layout = _detect_partitions(s3_path)
+        actual_fmt = layout["format"]
+        actual_unit = layout["unit"]
+        actual_interval = layout["interval"]
     except Exception:
         # Nothing readable under the path yet: an empty bucket, or a prefix that
         # has received no data. Trust the declaration; there is nothing to compare.
@@ -874,10 +985,14 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
         raise RuntimeError(
             f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
             f"destination is correct.")
-    storage_template, part_fmt, part_unit, part_interval = _detect_partitions(s3_path)
+    layout = _detect_partitions(s3_path)
+    _athena_state["layout_mixed"] = layout["mixed"]
+    _athena_state["layout_cutover"] = layout["cutover"]
     safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
-    created = _create_named_table(s3_path, storage_template, part_fmt, part_unit,
-                                 part_interval, region, "primary", f"waf_logs_{safe_name}")
+    created = _create_named_table(
+        s3_path, layout["storage_template"], layout["format"], layout["unit"],
+        layout["interval"], region, "primary", f"waf_logs_{safe_name}",
+        range_start=layout["range_start"])
     return _record_table(created, created=True)
 
 

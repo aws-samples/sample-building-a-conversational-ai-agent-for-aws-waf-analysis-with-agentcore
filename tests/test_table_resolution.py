@@ -28,8 +28,17 @@ WAF_COLS = [{"Name": "action"}, {"Name": "httprequest"},
 SCOPED_PATH = "s3://bkt/AWSLogs/1/WAFLogs/us-east-1/myacl"
 # Its ancestor, i.e. what a shared Firehose bucket-root table would sit on.
 SHARED_PATH = "s3://bkt/AWSLogs"
-MINUTE_LAYOUT = ("tmpl", "yyyy/MM/dd/HH/mm", "minutes", 1)
-HOURLY_LAYOUT = ("tmpl", "yyyy/MM/dd/HH", "hours", 1)
+def _layout(fmt, unit, interval=1, **extra):
+    """The shape `_detect_partitions` returns. A dict, not a tuple, because three
+    consumers need different subsets and a tuple churns them all when it grows."""
+    return {"storage_template": "tmpl", "format": fmt, "unit": unit,
+            "interval": interval, "range_start": "2020/01/01/00/00",
+            "mixed": False, "cutover": None, "data_start": "2020/01/01",
+            **extra}
+
+
+MINUTE_LAYOUT = _layout("yyyy/MM/dd/HH/mm", "minutes")
+HOURLY_LAYOUT = _layout("yyyy/MM/dd/HH", "hours")
 
 
 def table(name, location, col="log_time", fmt="yyyy/MM/dd/HH/mm", interval="1",
@@ -103,7 +112,7 @@ def catalog(monkeypatch):
     def install(entries, layout=MINUTE_LAYOUT):
         glue = FakeGlue(entries)
         monkeypatch.setattr(A, "get_client", lambda *a, **k: glue)
-        monkeypatch.setattr(A, "_detect_partitions", lambda path: layout)
+        monkeypatch.setattr(A, "_detect_partitions", lambda path: dict(layout))
         monkeypatch.setattr(A, "_validate_waf_log", lambda path: True)
         monkeypatch.setattr(A, "get_webacl_name", lambda: "myacl")
         A.reset_table_cache()
@@ -245,7 +254,7 @@ def test_interval_coarser_than_the_data_is_rejected(catalog):
 
 def test_interval_finer_than_the_data_is_accepted(catalog):
     """The opposite direction only costs planning time, so it is not refused."""
-    catalog({}, layout=("tmpl", "yyyy/MM/dd/HH/mm", "minutes", 5))
+    catalog({}, layout=_layout("yyyy/MM/dd/HH/mm", "minutes", 5))
     meta = A._table_metadata("d", table("i", SCOPED_PATH, interval="1"))
     assert A._cross_check_declared(meta, SCOPED_PATH, strict=False) is None
 
