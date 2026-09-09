@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 (2026-09-09)
 
 Thanks to @vishallakhotia (#12), whose refactor made the partition column and its
 projection format first-class instead of hardcoded. Everything under "reuse a WAF
@@ -104,6 +104,24 @@ log-detail query was refused outright.
   unchanged, since their per-minute bucket is never displayed. The system prompt
   states that these timestamps are already session-local so the agent does not
   re-label them as UTC.
+
+### Security / Dependencies
+
+- Dependency maintenance (Dependabot).
+  - Frontend: `dompurify` `3.4.12` → `3.4.13`, `postcss` `8.5.15` → `8.5.24`
+  - Backend: `cryptography` `48.0.1` → `50.0.0`, `bedrock-agentcore` `1.11.0` → `1.18.1`,
+    `mcp` `1.27.1` → `1.28.1`
+- **`bedrock-agentcore` moved seven minor versions**, and it is the runtime SDK the agent
+  is deployed onto rather than an ordinary library, so it is worth naming separately.
+- Neither security advisory in this batch is reachable in this code, stated so that a
+  reader does not go looking. The `dompurify` release fixes two `IN_PLACE` sanitization
+  issues and a hook bypass, while `frontend/src/App.jsx` calls
+  `DOMPurify.sanitize(marked.parse(...))` with no hooks and no `IN_PLACE`. The
+  `cryptography` release fixes a Bleichenbacher timing oracle in `pkcs7_decrypt_der`
+  (CVE-2026-69247); `cryptography` is a transitive dependency here, nothing in the
+  Python source imports it, and the agent decrypts no PKCS#7 messages. Both were taken
+  anyway: staying behind on a sanitizer or a crypto library needs a better reason than
+  "the current code does not reach it".
 
 ### Development
 

@@ -38,10 +38,15 @@ Tables created by the agent have these TBLPROPERTIES:
 'projection.enabled'                = 'true'
 'projection.log_time.type'          = 'date'
 'projection.log_time.format'        = 'yyyy/MM/dd/HH/mm'   (or yyyy/MM/dd/HH)
-'projection.log_time.interval'      = '5'                   (or 1)
+'projection.log_time.interval'      = '1'
 'projection.log_time.interval.unit' = 'minutes'             (or hours)
 'storage.location.template'         = 's3://bucket/path/${log_time}'
 ```
+
+The interval is always `1`. Firehose names an object after whatever minute its buffer flushed at, so
+the minute directories are arbitrary values and nothing useful can be inferred from the gaps between
+them. Earlier versions inferred an interval and could land on a value that projected only every Nth
+minute, leaving the objects in between unread.
 
 This means:
 - No partition management needed — new time slots are automatically included
