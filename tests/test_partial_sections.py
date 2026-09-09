@@ -3,13 +3,20 @@
 """The block that reports missing report sections used to crash when one was missing.
 
 `patrol_scan` builds a result dict whose `bot_data` key is initialised to None and stays None
-for any WebACL whose five Bot Control label metrics sum to zero. That is not an edge case: it
-is every WebACL without AWS Managed Bot Control enabled. The detection then did
+whenever the five Bot Control label metrics sum to zero. The detection then did
 `wr.get("bot_data", {}).get("bot_names")`, and `.get`'s default applies only when the key is
 *absent*, so it handed back the stored None and raised.
 
-Found by running a patrol scan against the deployed agent while measuring something else, not
-by reading the code, and reproduced on `main` before being fixed.
+**Not an edge case, and wider than first documented.** The WebACL that hit this in a real
+account *has* Bot Control enabled; the metric call succeeded and returned five empty series,
+because no bot labels were emitted in the window. So a quiet hour on a fully configured WebACL
+is enough, and "WebACL without Bot Control", which is what this file said first, was a subset
+described as the trigger.
+
+**What was actually missing was an input shape, not a test layer.** These tests need no AWS at
+all, and the crash reproduces from a two-key dict, so nothing about containers or endpoints was
+required to find it. What no run had done was point patrol at a WebACL whose bot metrics were
+empty. Two WebACLs are not a configuration matrix.
 """
 
 from tools import waf_patrol as P
