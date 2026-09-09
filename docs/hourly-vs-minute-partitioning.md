@@ -116,8 +116,11 @@ minute-level log queries. Your raw objects are never lost; only the detail-query
 
 **Since 2026-09-09 that asymmetry is something you can hit, not just something to plan around.**
 Detection used to misread a bucket holding both layouts as hourly, which refused every log-detail
-query outright. It now reads such a bucket as minute-level, so recent windows work and a window
-from before the cutover comes back with zero rows and no error. To read that history, build a second table
+query outright. It now reads such a bucket as minute-level, so recent windows work. A window from
+before the cutover comes back with an explanation instead of rows: the date the table's partition
+projection starts, the cutover date, and why widening that projection will not help (the directories
+back there are hourly, so a minute-level projection generates paths that do not exist in them).
+To read that history, build a second table
 over the old range with an hourly `projection.<col>.format`, because an hourly table can read
 minute-nested objects while a minute-level one cannot read hourly ones.
 
@@ -134,8 +137,10 @@ Two things about that table, and both matter more than they look:
   `projection range ends at ..., already in the past` as the reason it was passed over. That note is
   expected, not a misconfiguration.
 
-Telling you the cutover date, so you know where one table's coverage ends and the other's begins, is
-on the [roadmap](roadmap.md).
+The query output names the cutover date, so you can see where one table's coverage ends and the other's
+begins, and it names the oldest data in the bucket, which is how far back the history table has to
+reach. The cutover day is best-effort: it comes from a search inside the month of the switch and assumes
+the layout changed once. Give the history table a day of slack at that end.
 
 ## External factor
 

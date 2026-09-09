@@ -40,10 +40,21 @@ Agent 建的表带这些 TBLPROPERTIES：
 'projection.log_time.format'        = 'yyyy/MM/dd/HH/mm'   （或 yyyy/MM/dd/HH）
 'projection.log_time.interval'      = '1'
 'projection.log_time.interval.unit' = 'minutes'             （或 hours）
+'projection.log_time.range'         = '2026/01/01/00/00,NOW'（起点跟着数据走）
 'storage.location.template'         = 's3://bucket/path/${log_time}'
 ```
 
 interval 恒为 `1`。Firehose 用缓冲区刷盘那一刻的分钟数给对象命名，所以分钟目录是任意值，目录之间的间隔推不出任何有意义的东西。早先的版本会去推断 interval，可能推出一个只投影每 N 分钟的值，夹在中间的对象就永远读不到。
+
+**range 的起点跟着你的数据走**，走一遍桶找出来，再下取整到那个月的 1 号。以前是固定的 `2020/01/01`，大约 346 万个分钟分区。Athena 会先把声明的整个 range 展开，然后才套你的 `WHERE`，所以规划时间跟着表属性里的 range 走，跟你问的窗口没关系。在一个小测试桶上量过：五张表只差这一个值，同一个 5 分钟查询，起点写 2020 时规划要 4.4 到 5.0 秒，起点往前推两个月只要 0.19 到 0.25 秒，两边扫描的字节数完全一样。另外 Athena [单次扫描读不了超过 1,000,000 个分区](https://docs.aws.amazon.com/athena/latest/ug/partition-projection.html)，光是 2020 这个起点就超了。
+
+### 桶里两种格式并存
+
+Firehose 的前缀从小时级改成分钟级之后，桶里切换之前是小时目录，之后是分钟目录。`projection.<col>.format` 只能填一个值，没有哪张表能同时描述两种。
+
+Agent 声明最新那种，也就是分钟级，剩下的写在查询输出的 `TABLE:` 块里：分钟级从哪天开始，桶里最早的数据是哪天。这两个日期之间的数据都在小时目录里，任何分钟级的表都读不到。Athena 对这些路径返回零行而且不报错，所以 Agent 会提前说出来，不让一个空结果替它解释。
+
+投影起点下取整到切换那个月的 1 号，这样它永远不会晚于你的分钟级数据。切换的**那一天**是尽力而为：它在那个月里搜出来，前提是格式只换过一次，所以一个反复切换的桶可能报得偏晚一点。旧的那段怎么读，见[小时级与分钟级分区](hourly-vs-minute-partitioning_zh.md)。
 
 这意味着：
 
@@ -127,4 +138,6 @@ Agent 会搜索**所有 Glue 数据库**，带分页，找 `LOCATION` 覆盖解�
 
 1. **没法在对话里指定表。** 你不能跟 Agent 说"用我的 X 表、在 Y 库里"。它从你的日志配置解析表，所以想让它用哪张，办法是让那张表符合条件。
 2. **小时级及更粗的分区，日志明细查询仍然被拒。** 检测这一步接受它们，然后查询在扫描成本上被拦下。今天只有分钟级的表能跑明细查询。
-3. **Vended Logs 上的自定义 S3 前缀是看不见的。** 如果你是通过 API（不是控制台）配的自定义 key 前缀，Agent 可能解析不出正确路径，因为 `GetLoggingConfiguration` 不返回这个前缀。
+3. **换过格式的桶，切换之前的日志读不到。** Agent 读分钟级那段，并且告诉你它从哪天开始。要读小时级那段，得你自己建一张表，因为小时级的明细查询还被拒着，Agent 就不会去建小时级的表。
+
+4. **Vended Logs 上的自定义 S3 前缀是看不见的。** 如果你是通过 API（不是控制台）配的自定义 key 前缀，Agent 可能解析不出正确路径，因为 `GetLoggingConfiguration` 不返回这个前缀。

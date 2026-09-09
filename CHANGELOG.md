@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: every Athena query paid a few seconds of planning it did not need
+
+- **The projected partition range now starts where your data starts**, floored to the
+  first of that month, instead of a fixed `2020/01/01`. Athena expands the whole
+  declared range before it applies the `WHERE` clause, so planning time followed the
+  table properties rather than the window you asked about. On a small test bucket,
+  five tables differing in nothing but this value, the same 5-minute query spent 4.4
+  to 5.0 s planning with the old start and 0.19 to 0.25 s with a start two months
+  back, scanning identical bytes. It also brings the table under Athena's limit of
+  1,000,000 partitions per scan, which the old range exceeded on its own and which
+  only a `log_time` predicate on every query was keeping survivable.
+- **A table the agent built earlier is rebuilt to pick this up.** Without that, the
+  change would have reached new installations only: a scratch table declaring the old
+  `2020/01/01` range still matches its bucket on format, interval and unit, so it
+  passed every check, was reused, and kept paying the planning cost with nothing left
+  to trigger a rebuild. A table *you* maintain is not touched. A range wider than your
+  data is your choice there, it costs only planning time, and a window falling outside
+  it is already reported.
+
+### Added: a bucket that changed partition layout says so, and says from when
+
+- **The `TABLE:` block now names the day minute-level querying begins and the date of
+  the oldest data in the bucket**, on any bucket holding both an hourly era and a
+  minute-level one. `projection.<col>.format` holds one value, so no single table
+  describes both, and everything between those two dates sits in hourly directories
+  that no minute-level table can address. Athena answers those paths with zero rows
+  and no error, which is the reason to say it up front.
+- **The out-of-range message no longer tells you to widen the projection range** when
+  the bucket is one of those. Widening cannot work there: the older directories are
+  hourly, so a wider minute-level projection generates paths that do not exist, and
+  following the advice looks like confirmation that the data is gone.
+- **Zero-result output names the table it queried.** It returned before the `TABLE:`
+  block, so the three suggested reasons stood alone, and on a window that straddles a
+  layout change all three are wrong.
+- The projection start is exact at month granularity and never later than your
+  minute-level data. The cutover *day* comes from a search inside that month and
+  assumes the layout changed once, so it is reported as best-effort.
+
+### Fixed: the first log query of a session listed the same S3 prefixes repeatedly
+
+- **Resolving a table walked the bucket once but listed 15 prefixes twice**, because
+  finding where the layout begins descends the newest year, then descends it again
+  looking for the cutover, then descends candidate months. Measured against real S3
+  on a two-era tree: 34 `ListObjectsV2` calls covering 19 distinct prefixes, now 19
+  calls with identical results. The cache is scoped to one walk on purpose. A bucket
+  gains directories while the agent is running, and a cache that outlived the walk
+  would hand back a stale newest directory and pin the projected range behind the
+  data.
+
+### Development
+
+- 88 tests, up from 60. The new ones cover where the partition layout begins, a
+  bucket that alternates between the two layouts, the zero-result message, and the
+  no-prefix-listed-twice invariant.
+
 ## 0.13.0 (2026-09-09)
 
 Thanks to @vishallakhotia (#12), whose refactor made the partition column and its

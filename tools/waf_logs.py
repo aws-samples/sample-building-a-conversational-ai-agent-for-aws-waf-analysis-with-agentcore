@@ -307,6 +307,23 @@ def _parse_start_time(value: str) -> int | None:
     return None
 
 
+def _table_block() -> str:
+    """The `TABLE:` block for Athena results, or "" on the CWL backend.
+
+    Shared by the results path and the zero-results path, which is the whole point.
+    Zero results is where naming the table matters most, since a mixed bucket's
+    unreachable history and a projected range that starts after the requested window
+    both surface here as an empty answer with no other clue."""
+    from tools.waf_query import get_log_type
+    if get_log_type() != "s3":
+        return ""
+    from tools.waf_athena import describe_table_resolution
+    resolution = describe_table_resolution()
+    if not resolution:
+        return ""
+    return "\nTABLE: " + resolution.replace("\n", "\n       ")
+
+
 @tool
 def run_logs_query(
     query_type: str,
@@ -489,6 +506,10 @@ def run_logs_query(
             msg += "\n⚠️  A Log Filter is active on this WebACL — 0 results may be due to filtered-out log entries, not absence of traffic. Cross-check with get_waf_overview metrics."
         else:
             msg += "\nPossible reasons: (1) The action filter doesn't match — e.g. DDoS traffic uses CHALLENGE not BLOCK, try top_challenged_ips instead of top_blocked_ips. (2) Time window is wrong — verify start_time and timezone. (3) No traffic matching this filter exists in this period."
+        # All three reasons above are wrong when the table cannot address the window,
+        # and this is the path where the user has nothing else to go on. The resolution
+        # block names the table and, on a mixed bucket, the history it cannot reach.
+        msg += _table_block()
         return msg
 
     # Format as table (results is list[dict] from unified query layer)
@@ -513,11 +534,9 @@ def run_logs_query(
     # the Athena backend the agent picks the table itself, so without this the user
     # has no way to tell a query of their own table from a query of one the agent
     # built next to it.
-    if get_log_type() == "s3":
-        from tools.waf_athena import describe_table_resolution
-        resolution = describe_table_resolution()
-        if resolution:
-            lines.append("\nTABLE: " + resolution.replace("\n", "\n       "))
+    block = _table_block()
+    if block:
+        lines.append(block)
 
     # Append deterministic interpretation for specific query types
     interpretation = _interpret_results(query_type, results[:MAX_RESULTS])
