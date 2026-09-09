@@ -29,7 +29,7 @@ See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the tr
 | | |
 |---|---|
 | Keep the connection alive and show scan progress while a large query runs | |
-| Say plainly when a question needs a wider scan than one turn allows, and what to ask instead | |
+| Say plainly when a question needs a wider scan than one turn allows, and what to ask instead | 2026-09-09 |
 | Enforce the query time-window limit in code, not only as guidance | |
 | Offer the deepest bypass-scan drill-down as candidates you pick from, instead of running the whole chain automatically | |
 | A stop button that actually cancels the Athena query, not just the browser request | |
