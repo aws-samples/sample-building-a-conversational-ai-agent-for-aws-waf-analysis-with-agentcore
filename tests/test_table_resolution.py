@@ -399,11 +399,15 @@ def test_an_empty_bucket_still_resolves_an_existing_table(catalog, monkeypatch):
     Named for the empty case rather than "unreadable", which is what it said before and
     is now the *other* branch: an empty listing and a missing bucket are no longer the
     same outcome, and this is the one that stays soft.
+
+    The stub raises `PartitionsNotFound` and not a bare `RuntimeError`, which is the whole
+    point of the named type: the base class no longer buys the soft path, and this test
+    failed when the type was introduced until the stub was made specific.
     """
     glue = catalog({"userdb": [table("waf", SCOPED_PATH)]})
 
     def boom(_):
-        raise RuntimeError("Cannot detect partition structure")
+        raise A.PartitionsNotFound("Cannot detect partition structure")
 
     monkeypatch.setattr(A, "_detect_partitions", boom)
     assert A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl") == "userdb.waf"
@@ -447,35 +451,66 @@ def test_a_deleted_bucket_does_not_resolve_a_table_over_it(catalog, monkeypatch)
 def test_a_listing_failure_is_not_converted_into_an_empty_listing(monkeypatch):
     """What the fix rests on, asserted so it cannot quietly stop being true.
 
-    The resolver now discriminates on exception *type*: `_detect_partitions` raises its
-    own `RuntimeError` once it has walked and found nothing, and anything else means the
-    walk itself failed. Both halves measured on the real account, where a deleted bucket
-    raised `NoSuchBucket` from `list_objects_v2` and an existing-but-empty prefix returned
-    `[]`.
+    The resolver discriminates on `PartitionsNotFound`, raised only once the walk has
+    completed and found nothing. Anything else means the walk itself failed. Both halves
+    measured on the real account, where a deleted bucket raised `NoSuchBucket` from
+    `list_objects_v2` and an existing-but-empty prefix returned `[]`.
 
-    Two assertions, because the first one alone was claiming more than it proves. Stubbing
-    the lister shows `_detect_partitions` propagates rather than swallows, which is what
-    the resolver's discriminator needs. It says nothing about the real lister, and the way
-    this regresses is someone adding a `try` there that returns `[]` on error: the two
-    outcomes collapse back together, resolution resumes trusting a dead declaration, and a
-    test that stubbed the lister out would not notice.
+    Two assertions, because the first alone claimed more than it proved. Stubbing the lister
+    shows `_detect_partitions` propagates rather than swallows, which is what the resolver
+    needs. It says nothing about the real lister, and the way this regresses is someone
+    adding a `try` there that returns `[]` on error: the two outcomes collapse back
+    together, resolution resumes trusting a dead declaration, and a test that stubbed the
+    lister out would not notice.
+
+    **The source check reads the file, not the attribute.** `inspect.getsource` resolves
+    whatever is bound to `A._s3_list_dirs` at the time, so with a monkeypatch in scope it
+    read the stub, found no `try`, and passed while the real lister swallowed everything.
+    Ordering it before the patch fixed that instance and left the test order-dependent by
+    construction. Parsing the file cannot be fooled by a patch at all, which is how the
+    three structural tests in `test_query_timeout.py` are written, and this is the second
+    time this exact ordering error has shipped here.
     """
-    # This has to come FIRST. Read after the monkeypatch below it inspected the stub's
-    # source, found no `try` there, and passed with the real lister swallowing everything.
     import ast
-    import inspect
-    assert A._s3_list_dirs.__module__ == "tools.waf_athena", "reading the wrong function"
-    tree = ast.parse(inspect.getsource(A._s3_list_dirs).strip())
-    assert not [n for n in ast.walk(tree) if isinstance(n, (ast.Try, ast.ExceptHandler))], \
+    import pathlib
+    src = pathlib.Path(A.__file__).read_text()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "_s3_list_dirs")
+    assert not [n for n in ast.walk(fn) if isinstance(n, (ast.Try, ast.ExceptHandler))], \
         "_s3_list_dirs must let S3 errors out; catching one makes a dead bucket look empty"
 
     def raises(bucket, prefix):
         raise LookupError("NoSuchBucket")
 
     monkeypatch.setattr(A, "_s3_list_dirs", raises)
-    # Not RuntimeError: that is the value reserved for "walked it, found nothing".
+    # Not PartitionsNotFound: that is the value reserved for "walked it, found nothing".
     with pytest.raises(LookupError):
         A._detect_partitions("s3://bkt")
+
+
+def test_a_plain_runtimeerror_from_the_walk_is_not_read_as_an_empty_bucket(catalog, monkeypatch):
+    """Why the condition is a named type rather than `except RuntimeError`.
+
+    `except RuntimeError` was correct on the day it was written, because the only deliberate
+    raise in the walk was the not-found one. It inferred the signal from a generic type
+    instead of stating it, so the next `raise RuntimeError` added anywhere in that call
+    graph, for a depth limit or a malformed storage template, would be reclassified as
+    "walked it, found nothing" and quietly restore trust-the-declaration over a path that is
+    not empty. Same collision as a heartbeat sentinel sharing `None` with end-of-stream.
+
+    Without this test the named type is a rename that nothing depends on.
+    """
+    glue = catalog({"userdb": [table("waf", SCOPED_PATH)]})
+
+    def some_other_bug(_):
+        raise RuntimeError("walk exceeded its depth limit")
+
+    monkeypatch.setattr(A, "_detect_partitions", some_other_bug)
+    with pytest.raises(RuntimeError) as e:
+        A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert "Cannot read the S3 log path" in str(e.value), \
+        "a RuntimeError that is not PartitionsNotFound must not buy the soft path"
+    assert glue.deleted == []
 
 
 # --- WebACL scoping ---------------------------------------------------------

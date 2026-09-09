@@ -17,6 +17,21 @@ from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
                                  query_failed_message)
 TMP_DATABASE = "waf_analysis_tmp"
 
+
+class PartitionsNotFound(RuntimeError):
+    """The S3 walk completed and found no date-shaped directories under the path.
+
+    A named type because resolution branches on this condition and on nothing else:
+    finding nothing under an empty prefix is a reason to trust a table's declaration,
+    while *failing to read* the path is not. That distinction was carried by
+    `except RuntimeError` for one commit, which inferred the signal from a generic type
+    rather than stating it. Any `raise RuntimeError` later added anywhere in the walk, for
+    a depth limit or a malformed template, would have been silently reclassified as
+    "walked it, found nothing" and restored trust-the-declaration over a path that is not
+    empty. Subclasses `RuntimeError` so existing callers catching the base type, and the
+    tests asserting it, keep working.
+    """
+
 # Serializes DROP+CREATE of a scratch table. Held inside _create_named_table.
 # Kept separate from _resolve_lock below because it guards a narrower critical
 # section, and because dropping it would leave the DROP/CREATE unprotected if
@@ -448,7 +463,7 @@ def _detect_partitions(s3_path: str) -> dict:
             chosen = dirs[0]
         current_prefix = current_prefix + chosen + "/"
 
-    raise RuntimeError(f"Cannot detect partition structure under {s3_path}")
+    raise PartitionsNotFound(f"Cannot detect partition structure under {s3_path}")
 
 
 def _layout_from_years(bucket: str, root: str, years: list[str], ls=None) -> dict:
@@ -1071,7 +1086,7 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
     layout, layout_error = None, None
     try:
         layout = _detect_partitions(s3_path)
-    except RuntimeError as exc:
+    except PartitionsNotFound as exc:
         # Walked the path and found nothing recognisable under it: an empty bucket, or a
         # prefix that has not received data yet. Not fatal: an existing table is still
         # trusted as declared, and the create path re-raises this below rather than

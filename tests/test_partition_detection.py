@@ -115,9 +115,14 @@ def test_vended_log_prefix_is_walked_through(s3_tree):
 
 def test_no_dates_anywhere_raises(s3_tree):
     """Better loud than a made-up layout: a wrong format here silently prunes
-    every query down to nothing."""
+    every query down to nothing.
+
+    Asserts the named type, not the base one. Resolution treats this exact condition as its
+    reason to trust a declared table, so which exception comes out of here is part of the
+    contract rather than an implementation detail.
+    """
     s3_tree("notalogbucket/whatever")
-    with pytest.raises(RuntimeError, match="Cannot detect partition structure"):
+    with pytest.raises(A.PartitionsNotFound, match="Cannot detect partition structure"):
         A._detect_partitions("s3://bkt")
 
 
