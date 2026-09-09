@@ -5,8 +5,9 @@
 ### Fixed: a patrol scan no longer crashes when a report section is empty
 
 - **It failed on the ordinary case, not an edge case.** A patrol scan raised
-  `AttributeError: 'NoneType' object has no attribute 'get'` for any WebACL without AWS
-  Managed Bot Control enabled, which is most of them. No report was produced at all.
+  `AttributeError: 'NoneType' object has no attribute 'get'` whenever the Bot Control label
+  metrics for the scanned window came back empty, and no report was produced at all. A quiet
+  hour is enough for that, on a WebACL with Bot Control fully enabled.
 - The crash was in the block that reports which sections came back empty, so the code meant
   to explain a partial report was the code that prevented one.
 

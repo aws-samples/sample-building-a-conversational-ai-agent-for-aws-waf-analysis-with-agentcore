@@ -1236,11 +1236,18 @@ def _missing_sections(wr: dict, chart_data) -> list[str]:
 
     **`or {}` and not `.get(key, {})`.** The default in `.get` applies only when the key is
     ABSENT, and this key is always present: `bot_data` is initialised to None and stays None
-    for any WebACL whose five Bot Control label metrics sum to zero, which is every WebACL
-    without Bot Control enabled. So `.get("bot_data", {})` handed back that None and this
-    raised `AttributeError: 'NoneType' object has no attribute 'get'` — in the block whose
-    whole job is to report what is missing, on the ordinary configuration rather than an edge
-    case. Found by running a patrol scan against the deployed agent, not by reading the code.
+    whenever the five Bot Control label metrics sum to zero. So `.get("bot_data", {})` handed
+    back that None and this raised `AttributeError: 'NoneType' object has no attribute 'get'`,
+    in the block whose whole job is to report what is missing.
+
+    **That sum is zero for at least three different reasons, and naming only one of them was
+    the same mistake in the comment as in the code.** An earlier version of this said "every
+    WebACL without Bot Control enabled", which is a subset dressed as an equivalence. Measured
+    on a real account: the WebACL that hit this *has* Bot Control, the metric call succeeded,
+    and all five series came back empty because no bot labels were emitted in the window. A
+    quiet hour on a fully configured WebACL is enough. The third reason is that the fetch
+    raised and the broad handler above swallowed it. So the reach is wider than "not
+    configured", and which of the three it was is information this function cannot recover.
     """
     missing = []
     if not chart_data:
