@@ -37,7 +37,7 @@
 |---|---|---|
 | `logs:StartQuery` | 在 AWS WAF 日志上运行 Logs Insights 查询 | 无（只读）。查询是只读的，不能修改日志数据。 |
 | `logs:GetQueryResults` | 获取查询结果 | 无（只读） |
-| `logs:StopQuery` | 取消正在运行的查询（清理） | 无（停止一个读操作） |
+| `logs:StopQuery` | 查询超时不再等它了，取消掉，让它停止扫描、停止计费 | 无（停止一个读操作） |
 | `logs:DescribeLogGroups` | 查找 AWS WAF 日志组 | 无（只读） |
 
 ### Athena（有限写入）

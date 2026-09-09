@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.query_limits import MAX_POLL, POLL_INTERVAL
+from tools.query_limits import MAX_POLL, POLL_INTERVAL, stop_query
 
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
@@ -943,6 +943,11 @@ def _poll_log_query(logs_client, log_group, start, end, query, return_full=False
         result = logs_client.get_query_results(queryId=query_id)
         if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
             break
+    else:
+        # `while/else` runs only when the loop was never broken out of, which is exactly
+        # "the budget ran out with the query still going". Stop it rather than leave it
+        # scanning and billing for a report section that has already moved on.
+        stop_query(logs_client, query_id)
     results = result.get("results", [])
     if not results:
         if return_full:

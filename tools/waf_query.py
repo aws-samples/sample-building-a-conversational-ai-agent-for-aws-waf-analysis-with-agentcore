@@ -11,7 +11,8 @@ from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success
 
 _cwl_semaphore = threading.Semaphore(8)
-from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message, query_failed_message
+from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
+                                query_failed_message, stop_query)
 
 
 def reset_table_cache():
@@ -517,9 +518,11 @@ def _run_cwl(log_group: str, query: str, start_epoch: int, end_epoch: int, limit
     # finished". Returning the `_error` row the caller already knows how to surface keeps
     # a stopped query from reading as an absence of traffic.
     if result["status"] in ("Failed", "Cancelled"):
+        # Already terminal, so there is nothing to stop.
         return [{"_error": query_failed_message("CloudWatch Logs Insights", result["status"])}]
     if result["status"] != "Complete":
-        return [{"_error": poll_timeout_message("CloudWatch Logs Insights")}]
+        cancelled = stop_query(client, query_id)
+        return [{"_error": poll_timeout_message("CloudWatch Logs Insights", cancelled)}]
     note_query_success()
     return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
 

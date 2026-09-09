@@ -37,7 +37,7 @@ This document lists every IAM permission WAF Analyst requires, what it's used fo
 |---|---|---|
 | `logs:StartQuery` | Run Logs Insights queries on AWS WAF logs | None (read). Queries are read-only and cannot modify log data. |
 | `logs:GetQueryResults` | Retrieve query results | None (read) |
-| `logs:StopQuery` | Cancel a running query (cleanup) | None (stops a read operation) |
+| `logs:StopQuery` | Cancel a query the agent has stopped waiting for, so it stops scanning and stops billing | None (stops a read operation) |
 | `logs:DescribeLogGroups` | Find AWS WAF log groups | None (read) |
 
 ### Athena (Limited Write)

@@ -22,6 +22,7 @@ import pytest
 from tools import query_limits as Q
 from tools import session_state as S
 from tools import waf_athena as A
+from tools import waf_logs as WL
 from tools import waf_query as WQ
 
 
@@ -238,6 +239,132 @@ def test_the_budget_is_wall_clock_not_a_count_of_sleeps(no_sleep):
     with pytest.raises(RuntimeError):
         A._wait_query(fake, "q-1")
     assert fake.polls == Q.MAX_POLL // (Q.POLL_INTERVAL + 1) == 40, fake.polls
+
+
+# --- cancelling a query we stopped waiting for ------------------------------
+
+
+class FakeStoppable:
+    def __init__(self, outcome):
+        self.outcome = outcome
+        self.calls = []
+
+    def stop_query(self, queryId):
+        self.calls.append(queryId)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return {"success": self.outcome}
+
+
+def test_stopping_a_running_query_reports_that_it_was_cancelled():
+    c = FakeStoppable(True)
+    assert Q.stop_query(c, "q-1") is True
+    assert c.calls == ["q-1"]
+
+
+def test_stopping_an_already_finished_query_is_not_an_error():
+    """The race this path is made of: the query can complete between the last poll and the
+    stop. Measured against real CloudWatch, that raises `InvalidParameterException`, and the
+    docs say so outright. It must not propagate, because this runs where a timeout message is
+    already waiting to be delivered and a failed cancel must neither replace nor swallow it."""
+    class InvalidParameterException(Exception):
+        pass
+
+    c = FakeStoppable(InvalidParameterException("Query is not running"))
+    assert Q.stop_query(c, "q-1") is False
+
+
+def test_a_false_success_flag_is_not_an_error_either():
+    """`success: false` arrives in a normal 200 and means this call is not what stopped it."""
+    assert Q.stop_query(FakeStoppable(False), "q-1") is False
+
+
+def test_the_verb_says_cancelled_only_when_it_was():
+    """Once CloudWatch cancels and Athena does not, one shared sentence would tell a user the
+    query was abandoned while the code had stopped it, or the reverse."""
+    S._state.clear()
+    stopped = Q.poll_timeout_message("CloudWatch Logs Insights", cancelled=True)
+    S._state.clear()
+    abandoned = Q.poll_timeout_message("Athena", cancelled=False)
+    # Assert the *fate* clause, not a bare substring: both messages open with "was still
+    # running after 120 seconds", which describes the state before the give-up rather than
+    # after it, so `"still running" not in stopped` was a wrong assertion about right code.
+    assert "was cancelled, so it has stopped scanning" in stopped
+    assert "still running and still scanning" not in stopped
+    assert "still running and still scanning" in abandoned
+    assert "was cancelled" not in abandoned
+
+
+def test_a_cwl_poll_timeout_cancels_the_query_and_says_so(monkeypatch, no_sleep):
+    """The two halves together, at the first of the two sites that both stop and speak."""
+    fake = FakeCwl("Running")
+    fake.stop_query = lambda queryId: {"success": True}
+    monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
+    monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    rows = WQ._run_cwl("lg", "fields @message", 0, 60, 10)
+    assert "was cancelled" in rows[0]["_error"]
+
+
+def test_the_forced_log_group_path_also_cancels_and_says_so(monkeypatch, no_sleep):
+    """The second site that both stops and speaks, which the structural test cannot cover.
+
+    `run_logs_query`'s explicit-`log_group` branch has its own poll loop and passes the stop
+    result inline as the `cancelled` argument. Drop that argument and the message states
+    confidently that the query was given up on and is still scanning, about a query it had
+    just cancelled; the structural test would not notice, because it proves only that the
+    module calls `stop_query` somewhere, not that the call is on the give-up path with its
+    result reaching the sentence.
+
+    Both outcomes are asserted because either one alone passes for a hardcoded argument: a
+    dropped argument defaults to False and satisfies the second, `cancelled=True` satisfies
+    the first. The two sites that speak are a different risk class from the two that only
+    stop, where the worst case is a query left running rather than a sentence that lies.
+    """
+    def run(outcome):
+        fake, stopped = FakeCwl("Running"), []
+        fake.stop_query = lambda queryId: stopped.append(queryId) or {"success": outcome}
+        monkeypatch.setattr(WL, "get_client", lambda *a, **k: fake)
+        monkeypatch.setattr(WL, "get_logs_region", lambda: "us-east-1")
+        S._state.clear()  # each run is attempt one, so only the fate clause varies
+        out = WL.run_logs_query._tool_func(
+            query_type="top_blocked_ips", start_time="2026-09-07T14:00",
+            duration_minutes=60, log_group="lg")
+        # The preconditions: this really is the give-up path of a loop that spent its whole
+        # budget, and the stop really was attempted on the query that was abandoned.
+        assert fake.polls == Q.MAX_POLL // Q.POLL_INTERVAL, out
+        assert stopped == ["q-1"], out
+        assert "STOPPED" in out
+        return out
+
+    assert "was cancelled, so it has stopped scanning" in run(True)
+    assert "still running and still scanning" in run(False)
+
+
+def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(monkeypatch, no_sleep):
+    fake = FakeCwl("Failed")
+    stops = []
+    fake.stop_query = lambda queryId: stops.append(queryId) or {"success": True}
+    monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
+    monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    WQ._run_cwl("lg", "fields @message", 0, 60, 10)
+    assert stops == [], "a Failed query has already ended"
+
+
+def test_every_module_that_starts_a_query_also_stops_one():
+    """Five `start_query` sites existed and the first draft of this change would have added a
+    stop to one. That is the shape that has bitten repeatedly here: five `MAX_POLL`
+    definitions, two fan-out copies with one fixed, two memos with one locked. Structural
+    rather than behavioural on purpose, because a sixth site added later would otherwise be
+    invisible until someone noticed a query left running."""
+    import ast
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent / "tools"
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        names = {getattr(n.func, "attr", getattr(n.func, "id", ""))
+                 for n in ast.walk(tree) if isinstance(n, ast.Call)}
+        if "start_query" in names:
+            assert "stop_query" in names, f"{path.name} starts queries and never stops one"
 
 
 # --- the fan-out budget, which is what actually bounds patrol ---------------
