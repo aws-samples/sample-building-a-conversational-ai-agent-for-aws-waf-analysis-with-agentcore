@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 (2026-09-09)
 
 ### Changed: a report says which log queries failed instead of calling the WebACL idle
 
