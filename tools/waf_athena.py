@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name
 
-MAX_POLL = 300
+from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message
 TMP_DATABASE = "waf_analysis_tmp"
 
 # Serializes DROP+CREATE of a scratch table. Held inside _create_named_table.
@@ -1412,16 +1412,22 @@ def _run_athena_select(sql: str, region: str, workgroup: str = "primary", limit:
 
 
 def _wait_query(athena, qid: str):
-    """Poll until query completes."""
+    """Poll until query completes.
+
+    On success this clears the consecutive-timeout count, which is what keeps the retry
+    bound in `poll_timeout_message` scoped to a run of failures rather than to the session.
+    """
+    from tools.session_state import note_query_success
     elapsed = 0
     while elapsed < MAX_POLL:
-        time.sleep(2)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
-        elapsed += 2
+        time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
+        elapsed += POLL_INTERVAL
         resp = athena.get_query_execution(QueryExecutionId=qid)
         state = resp["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
+            note_query_success()
             return
         if state in ("FAILED", "CANCELLED"):
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
             raise RuntimeError(f"Athena query {state}: {reason}")
-    raise RuntimeError("Athena query timed out (>5min). Narrow the time window — try duration_minutes=30 or duration_minutes=15. Use get_waf_overview to identify the exact spike period first.")
+    raise RuntimeError(poll_timeout_message("Athena"))

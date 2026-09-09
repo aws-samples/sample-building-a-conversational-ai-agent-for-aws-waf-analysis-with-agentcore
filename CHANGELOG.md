@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed: a slow CloudWatch query was reported as "no traffic"
+
+- **A query that ran past its poll budget returned zero rows**, and zero rows was
+  reported as `Query returned 0 results` with three suggested reasons, none of which was
+  "the query never finished". A stopped query now says it was stopped. So does one
+  CloudWatch reports as `Failed` or `Cancelled`, which used to print `Query Running.
+  QueryId: ...`, and that is internal state rather than an answer.
+- **A timeout no longer starts an unbounded retry loop.** The old message told the model
+  to narrow the window and retry, the prompt separately promised it was "always able to
+  reduce until query succeeds", and nothing counted attempts. Three tries was fifteen
+  minutes with nothing on screen. The first timeout now invites exactly one narrower
+  retry and the second withdraws the invitation; any successful query resets that.
+- **The poll budget is 2 minutes everywhere.** It was five separate constants reading
+  120, 120, 120, 300 and 600 seconds for the same "wait for one query" job, two of them
+  in files that never used them. **This is a real change for slow queries**: on
+  high-volume logs, some that previously returned after several minutes will now be
+  stopped instead. That is deliberate, and it is only reasonable because a stopped query
+  now explains itself rather than failing silently. Raising the number is almost always
+  the wrong response to a timeout; the query that needs it has usually failed to prune.
+
 ### Fixed: every Athena query paid a few seconds of planning it did not need
 
 - **The projected partition range now starts where your data starts**, floored to the

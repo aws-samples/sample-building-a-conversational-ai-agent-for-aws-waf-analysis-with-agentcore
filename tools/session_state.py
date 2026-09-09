@@ -32,6 +32,22 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
         pass
 
 
+def note_query_timeout() -> int:
+    """Record a query poll timeout and return how many have happened in a row.
+
+    The retry bound in `query_limits.poll_timeout_message` reads this. Consecutive rather
+    than cumulative: one slow query early in a session should not change what the tenth
+    query is told, so any success clears it.
+    """
+    _state["query_timeouts"] = _state.get("query_timeouts", 0) + 1
+    return _state["query_timeouts"]
+
+
+def note_query_success():
+    """Clear the consecutive-timeout count. Called wherever a query completes."""
+    _state["query_timeouts"] = 0
+
+
 def set_capabilities(capabilities: dict):
     """Store detected AWS WAF capabilities."""
     _state["capabilities"] = capabilities

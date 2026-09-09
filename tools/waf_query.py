@@ -8,11 +8,10 @@ import time
 import threading
 from collections import Counter
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone
+from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success
 
 _cwl_semaphore = threading.Semaphore(8)
-MAX_POLL = 120
-POLL_INTERVAL = 2
+from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message, query_failed_message
 
 
 def reset_table_cache():
@@ -514,8 +513,15 @@ def _run_cwl(log_group: str, query: str, start_epoch: int, end_epoch: int, limit
             result = client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break
+    # A non-Complete status used to return [], which `run_logs_query` then reported as
+    # "0 results" with three suggested reasons, none of which is "the query never
+    # finished". Returning the `_error` row the caller already knows how to surface keeps
+    # a stopped query from reading as an absence of traffic.
+    if result["status"] in ("Failed", "Cancelled"):
+        return [{"_error": query_failed_message("CloudWatch Logs Insights", result["status"])}]
     if result["status"] != "Complete":
-        return []
+        return [{"_error": poll_timeout_message("CloudWatch Logs Insights")}]
+    note_query_success()
     return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
 
 

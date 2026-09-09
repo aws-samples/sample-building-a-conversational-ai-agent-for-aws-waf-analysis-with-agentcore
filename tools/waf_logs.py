@@ -9,11 +9,10 @@ import sys
 import threading
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active
+from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active, note_query_success
 
 MAX_RESULTS = 25
-POLL_INTERVAL = 2
-MAX_POLL = 600
+from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message, query_failed_message
 MAX_MINUTES = 360  # Hard cap for CWL queries (6 hours)
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
@@ -475,8 +474,13 @@ def run_logs_query(
                 result = client.get_query_results(queryId=query_id)
                 if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                     break
+        # "Query Running. QueryId: ..." was what a poll timeout printed here, which reads
+        # as internal state rather than as an answer.
         if result["status"] != "Complete":
-            return f"Query {result['status']}. QueryId: {query_id}"
+            if result["status"] in ("Failed", "Cancelled"):
+                return query_failed_message("CloudWatch Logs Insights", result["status"])
+            return poll_timeout_message("CloudWatch Logs Insights")
+        note_query_success()
         try:
             results = [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
         except (KeyError, TypeError):

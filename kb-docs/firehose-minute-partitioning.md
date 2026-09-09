@@ -12,7 +12,7 @@ When AWS WAF logs are delivered to S3 through Amazon Data Firehose with the **de
 
 For any real traffic volume (>10K requests/hour) this means:
 
-- Queries take 30–60 seconds or time out entirely (>5 minutes)
+- Queries take 30–60 seconds, or get stopped for running past the 2-minute poll budget
 - Drill-down investigation becomes too slow to be usable in a conversation
 - Athena scan costs go up (you pay per byte scanned)
 
