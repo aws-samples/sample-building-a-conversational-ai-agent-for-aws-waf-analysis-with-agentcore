@@ -5,20 +5,21 @@ English | [中文](roadmap_zh.md)
 What we plan to support or fix from here. Already-shipped work is in the
 [CHANGELOG](../CHANGELOG.md), not here.
 
-Nothing below carries a date, because nothing below is promised on one. When an item ships, its
-date goes on the right. Within a group, items are listed roughly in the order we intend to work on
-them, and that order can change.
+A date on the right means the item has shipped and been verified against a real environment. An empty
+cell means it has not, and carries no promise about when it will. Within a group, items are listed
+roughly in the order we intend to work on them, and that order can change.
 
 ## Log querying and partitioning
 
 | | |
 |---|---|
 | Run log-detail analysis on hourly-partitioned logs (with an up-front note that scans cost more), instead of declining them | |
-| Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | |
+| Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | 2026-09-09 |
 | Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | |
-| Work with an existing Athena table whose partition column is not named `log_time` | |
+| Work with an existing Athena table whose partition column is not named `log_time`, as long as it is minute-level. An hourly table is found and understood, but log-detail queries on it are still declined | 2026-09-09 |
+| Stop dropping rows at the edges of a query window, where a log record's timestamp and the partition directory it landed in disagree | 2026-09-09 |
 | Detect a non-UTC timezone on Firehose S3 log paths automatically, so queries don't silently miss rows | |
-| Show query result times consistently in your session timezone across all data sources | |
+| Show query result times consistently in your session timezone across all data sources | 2026-09-09 |
 | Read a Parquet WAF log table you converted yourself | |
 
 See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the trade-off and the measurements behind accepting hourly.

@@ -114,6 +114,14 @@ point on are queryable at minute granularity, but logs written *before* the swit
 their hourly directories and remain queryable only through CloudWatch metrics, not through
 minute-level log queries. Your raw objects are never lost; only the detail-query path changes.
 
+**Since 2026-09-09 that asymmetry is something you can hit, not just something to plan around.**
+Detection used to misread a bucket holding both layouts as hourly, which refused every log-detail
+query outright. It now reads such a bucket as minute-level, so recent windows work and a window
+from before the cutover comes back with zero rows and no error. To read that history, build a
+second table over the old range with an hourly `projection.<col>.format`: an hourly table can read
+minute-nested objects, so in that direction one table covers both eras. Detecting the mixed layout
+and offering you the choice up front is on the [roadmap](roadmap.md).
+
 ## External factor
 
 Some corporate proxies close idle connections early (for example a 60-second
