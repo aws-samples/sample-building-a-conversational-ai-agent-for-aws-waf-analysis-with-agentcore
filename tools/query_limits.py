@@ -156,14 +156,24 @@ def _stop_header(engine: str, stop: str = STOP_NOT_DONE) -> str:
     "it is still running and still scanning" would be an assertion in the same class as the
     one already removed from the timeout advice.
     """
-    fate = {
+    fates = {
         STOP_CONFIRMED: "and was cancelled, so it has stopped scanning",
         STOP_REQUESTED: ("and a cancel was requested for it. This engine reports nothing back, "
                          "so that is not a promise the scan ended, and it does not rule out "
                          "the query having finished on its own a moment earlier"),
         STOP_NOT_DONE: ("and was given up on. The cancel did not go through, so if it is still "
                         "running it is still scanning"),
-    }[stop]
+    }
+    # `.get` and not `[]`. This builds a message on the give-up path, whose entire purpose is
+    # to deliver an explanation instead of a crash, so a `KeyError` escaping here would replace
+    # the explanation with the failure it exists to prevent. Unreachable today, since every
+    # call site passes a helper's return value or the default, so the question is only what a
+    # sixth site gets. The fallback costs nothing in honesty: it is both the parameter default
+    # and the most conservative of the three, claiming no cancel happened. The case for `[]`
+    # is that a bad value is a developer error and should fail loudly, and that is a fair
+    # reading, but the tests on the sites that speak already deliver most of that, while the
+    # crash mode lands on a user.
+    fate = fates.get(stop, fates[STOP_NOT_DONE])
     return (f"STOPPED: the {engine} query was still running after {MAX_POLL} seconds "
             f"{fate}. This is a scan-size limit, NOT a data error and NOT a tool failure, "
             f"and it says nothing about whether traffic existed.")

@@ -347,6 +347,41 @@ def test_the_verb_says_cancelled_only_when_the_engine_confirmed_it():
     assert "was cancelled" not in not_done
 
 
+def test_an_unrecognised_stop_value_still_produces_a_message():
+    """A give-up message must never be the thing that crashes. Its whole purpose is to deliver
+    an explanation, so a `KeyError` out of the builder would replace the explanation with the
+    failure it exists to prevent. Unreachable from the current call sites, which all pass a
+    helper's return or the default; this is about the sixth site. The fallback is the most
+    conservative of the three, so an unknown value understates only our own cancel."""
+    S._state.clear()
+    msg = Q.poll_timeout_message("Athena", "some value nobody defined")
+    assert "STOPPED:" in msg
+    assert "cancel did not go through" in msg
+    assert "was cancelled" not in msg
+
+
+def test_the_boolean_flag_is_gone_rather_than_coexisting():
+    """Leaving a bool beside the enum is the truthiness trap: `STOP_NOT_DONE` is a non-empty
+    string, so `if cancelled:` would read every enum member as confirmation, including the two
+    that are not. Retiring the bool removes that by construction rather than by discipline, so
+    this asserts the old spelling is absent rather than trusting a grep someone remembers."""
+    import ast
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parent.parent / "tools"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            # A parameter or a local still called `cancelled`, which is the bool's name.
+            if isinstance(node, ast.arg) and node.arg == "cancelled":
+                offenders.append(f"{path.name}: parameter")
+            if isinstance(node, ast.Name) and node.id == "cancelled":
+                offenders.append(f"{path.name}: {node.id}")
+    assert offenders == [], offenders
+    # And the three values must stay mutually distinct, or two branches collapse silently.
+    assert len({Q.STOP_CONFIRMED, Q.STOP_REQUESTED, Q.STOP_NOT_DONE}) == 3
+
+
 def test_no_branch_claims_the_query_is_definitely_still_scanning():
     """The same discipline as removing "the window was too large" from the retry advice, one
     layer down. A refused cancel and a query that had already ended are indistinguishable from
