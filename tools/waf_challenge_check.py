@@ -8,8 +8,6 @@ from tools.session_state import get_webacl_name, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
 
 _cwl_semaphore = threading.Semaphore(8)
-MAX_POLL = 120
-POLL_INTERVAL = 2
 
 
 @tool

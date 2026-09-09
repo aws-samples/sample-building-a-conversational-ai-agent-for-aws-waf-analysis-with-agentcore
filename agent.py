@@ -131,7 +131,7 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 - First Athena query includes table creation overhead on top of normal query time.
 - Athena charges per TB scanned (~$5/TB). For repeated queries, mention potential cost.
 - **Athena queries are capped at 60 minutes** (production WAF logs can be 1-10TB/day). Split into multiple 60-min calls for longer windows. Report progress between calls. Merge findings by identifying IPs/patterns across windows.
-- If a query times out (high traffic), halve duration_minutes and retry: 60→30→15. Always able to reduce until query succeeds.
+- If a query times out, the tool result tells you whether to retry and you MUST follow it rather than deciding for yourself. It permits at most one narrower retry, then stops. Reducing the window does NOT always end in success: a scan can be too large at every window worth asking about, and in that case say so instead of trying again.
 - CWL queries default to 180 min (3h), max 360 min (6h).
 - For broader trends, use get_waf_overview (metrics-based, free, up to 14 days).
 

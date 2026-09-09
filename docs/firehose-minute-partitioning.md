@@ -6,7 +6,7 @@ English | [中文](firehose-minute-partitioning_zh.md)
 
 If your AWS WAF logs are delivered to S3 via Amazon Data Firehose with the **default prefix** (`YYYY/MM/dd/HH/`), Athena queries scan an entire hour of data per query — even if you only need 5 minutes. For high-traffic WebACLs (>10K requests/hour), this causes:
 
-- Query timeouts (>5 minutes)
+- Queries stopped for running past the poll budget (2 minutes)
 - Slow investigation workflows
 - Higher Athena scan costs
 

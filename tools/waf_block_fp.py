@@ -31,8 +31,6 @@ def _format_match_details(details: list) -> str:
     return " | ".join(parts)
 
 
-MAX_POLL = 120
-POLL_INTERVAL = 2
 
 CONFIDENCE_RULES = """\
 ## Confidence Rules
