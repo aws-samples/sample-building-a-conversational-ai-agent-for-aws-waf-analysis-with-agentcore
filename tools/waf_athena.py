@@ -107,6 +107,19 @@ _ATHENA_STATE_DEFAULTS = {
     # selection, and cleared by reset_table_cache with everything else.
     "s3_path_memo": (),      # (((dest_arn, scope, webacl_name, region), s3_path), ...)
     "output_location_memo": (),  # (((region, workgroup), location), ...)
+    #
+    # **A memo here can now be written after the tool call that started it has returned.**
+    # Patrol's fan-out shuts its pool down with `wait=False, cancel_futures=True`, so the
+    # queries already in flight finish in the background, and `_run_athena_select` calls
+    # `_get_output_location` on the way. One of those stragglers can repopulate this memo
+    # after a `reset_table_cache()` has cleared it.
+    #
+    # Harmless for *this* key, and the reasons are specific rather than general: the write is
+    # lock-guarded, the memo is keyed on `(region, workgroup)`, and the value does not vary by
+    # WebACL, so restoring it after a reset restores the same string. Do not read that as a
+    # property of the state dict. Any key whose value depends on the *WebACL* would be a
+    # stale-state bug of exactly the kind `reset_table_cache` exists to prevent, reintroduced
+    # by a thread nobody is waiting for. Check that before adding one.
 }
 
 # Every default is immutable, so this shallow copy shares nothing with the live
