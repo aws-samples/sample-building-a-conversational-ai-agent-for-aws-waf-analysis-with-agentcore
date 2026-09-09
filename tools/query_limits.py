@@ -44,16 +44,20 @@ POLL_INTERVAL = 2
 # patrol. `MAX_POLL` bounds ONE query; this bounds a whole batch submitted to a thread pool,
 # in wall clock, and it is what `concurrent.futures.as_completed(timeout=...)` takes.
 #
-# **Their relative size decides which one fires, and patrol's answer is this one.** Patrol
-# submits three queries per rule for up to five rules, so fifteen futures over five workers
-# is three waves. At any per-query budget above a third of this, the batch runs out first and
-# the per-query budget is unreachable there. That was already true before `MAX_POLL` was
-# unified: 60 per query over three waves is 180, against 120 here. So patrol has always been
-# bounded by the batch rather than by the query, and raising its per-query budget to 120
-# changed nothing about how long a patrol takes.
+# **This bounds when patrol stops collecting, and only since the executor stopped being a
+# `with` block does it also bound when patrol returns.** The two are not the same thing, and
+# an earlier version of this comment claimed the batch budget capped patrol's wall clock. It
+# did not. `Executor.__exit__` calls `shutdown(wait=True)`, so the old `with` block waited
+# for every submitted future even after `as_completed` gave up on their results: fifteen
+# futures over five workers is three waves, so patrol returned after roughly 3 x `MAX_POLL`
+# and threw away waves two and three. Raising the per-query budget from 60 to 120 therefore
+# *did* double patrol's worst case, from about 180s to about 360s, which the same comment
+# denied. Both sites now shut down with `wait=False, cancel_futures=True`, which drops the
+# un-started futures and leaves the five in flight to finish in the background, so the
+# function returns at this budget.
 #
-# Kept at 120 for that reason, rather than widened to cover three full waves. Widening it
-# would make patrol slower to give up without making it more likely to answer.
+# Kept at 120 rather than widened to cover three full waves. Widening makes patrol slower to
+# give up without making it likelier to answer.
 MAX_FANOUT_WAIT = 120
 
 

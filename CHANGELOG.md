@@ -21,17 +21,21 @@
   `HIVE_S3_THROTTLING`, which is exactly the failure where retrying immediately makes things
   worse, and nothing said not to.
 
-### Fixed: one slow CloudWatch query could kill a whole patrol report
+### Fixed: one slow query could cost a whole patrol report, on both backends
 
-- **A fan-out timeout now costs the per-rule detail, not the report.** `patrol_scan` submits
-  three queries per rule to a thread pool, and the timeout `as_completed` raises comes from
-  the iterator rather than from inside the loop, so the handler in the body never saw it and
-  it propagated out. Whatever finished is kept now. This was already reachable before the
-  poll budgets were unified: fifteen futures over five workers is three waves, and three
-  waves at the old 60 s overruns the 120 s batch budget.
-- The batch budget has a name, `MAX_FANOUT_WAIT`, next to `MAX_POLL`. It is the limit that
-  actually governs how long a patrol takes, which is why raising patrol's per-query budget
-  to 120 s changed nothing about that.
+- **A fan-out timeout now costs the per-rule detail section, not everything.** `patrol_scan`
+  submits three queries per rule to a thread pool, and the timeout `as_completed` raises
+  comes from the iterator rather than from inside the loop, so the handler in the loop body
+  never saw it. On the CloudWatch path it propagated out and killed the report; on the Athena
+  path an outer handler swallowed it and silently discarded both the details already
+  collected and the resolved-table message. Whatever finished is kept now, on both.
+- **Patrol returns when it stops collecting, instead of waiting for work it discards.** The
+  thread pool was a `with` block, and exiting one waits for every submitted query even after
+  the collection loop has given up on the results. Fifteen queries over five workers is three
+  waves, so a patrol could return after roughly six minutes while throwing away two thirds of
+  what it waited for. It now cancels what has not started and returns at the batch budget.
+- The batch budget has a name, `MAX_FANOUT_WAIT`, beside `MAX_POLL`, and both fan-out sites
+  use it; one of them had the number as a bare literal.
 
 ### Known gaps, unchanged by this release
 

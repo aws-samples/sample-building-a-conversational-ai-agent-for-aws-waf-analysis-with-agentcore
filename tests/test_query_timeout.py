@@ -250,9 +250,39 @@ def test_a_fanout_timeout_costs_the_detail_not_the_whole_report(monkeypatch):
     for fn in ("_query_top_ips_by_rule", "_query_top_uris_by_rule", "_query_content_by_rule"):
         monkeypatch.setattr(P, fn, one_hangs)
 
-    # The precondition: without the fix this raises concurrent.futures.TimeoutError.
+    # The precondition: without the catch this raises concurrent.futures.TimeoutError.
     details = P._get_log_details(object(), "lg", 0, 60, ["ruleA", "ruleB"])
     assert isinstance(details, dict), "the exception must not escape"
+
+
+def test_a_fanout_timeout_returns_at_the_budget_not_after_the_stragglers(monkeypatch):
+    """Catching the timeout stops the crash without stopping the *wait*, and the six
+    perturbations behind the previous commit could not tell the difference.
+
+    `Executor.__exit__` calls `shutdown(wait=True)`, so a `with` block blocks until every
+    submitted future finishes even after the collection loop has given up on their results.
+    That meant returning after up to three waves at `MAX_POLL`, about 360 s, while discarding
+    waves two and three: waiting for work it throws away. Removing the `except TimeoutError`
+    makes the earlier test fail because the crash returns, which confirms the catch and never
+    touches the wait, so this asserts the elapsed time instead.
+    """
+    from tools import waf_patrol as P
+
+    monkeypatch.setattr(P, "MAX_FANOUT_WAIT", 0.3)
+
+    def all_hang(logs_client, log_group, start, end, rule_name):
+        time.sleep(3)  # every query outlives the batch budget, ten times over
+        return [{"ip": "1.2.3.4", "cnt": "9"}]
+
+    for fn in ("_query_top_ips_by_rule", "_query_top_uris_by_rule", "_query_content_by_rule"):
+        monkeypatch.setattr(P, fn, all_hang)
+
+    t0 = time.monotonic()
+    P._get_log_details(object(), "lg", 0, 60, ["a", "b", "c", "d", "e"])
+    elapsed = time.monotonic() - t0
+    # Fifteen futures over five workers is three waves. Under `wait=True` this returns after
+    # all three, so ~9 s; bounded by the batch budget it returns after ~0.3 s plus overhead.
+    assert elapsed < 2.0, f"returned after {elapsed:.1f}s, so it waited for discarded work"
 
 
 # --- the debt this item was filed about ------------------------------------
@@ -281,7 +311,8 @@ def test_the_poll_budget_has_exactly_one_definition():
     import pathlib
 
     BUDGET_NAMES = {"max_wait", "max_poll", "MAX_POLL", "POLL_INTERVAL", "poll_timeout",
-                    "timeout_seconds", "wait_seconds", "poll_interval"}
+                    "timeout_seconds", "wait_seconds", "poll_interval", "MAX_FANOUT_WAIT",
+                    "fanout_wait", "batch_timeout"}
     root = pathlib.Path(__file__).resolve().parent.parent / "tools"
     found = []
     for path in sorted(root.glob("*.py")):
@@ -305,5 +336,22 @@ def test_the_poll_budget_has_exactly_one_definition():
                             for d in defaults if d is not None):
                         found.append((path.name, f"{node.name}({arg.arg}=...)"))
 
-    assert sorted(found) == [("query_limits.py", "MAX_POLL"),
+    assert sorted(found) == [("query_limits.py", "MAX_FANOUT_WAIT"),
+                            ("query_limits.py", "MAX_POLL"),
                             ("query_limits.py", "POLL_INTERVAL")], found
+
+    # A budget can also hide as a bare literal at the call site, with no name at all, which
+    # is how the second fan-out kept `timeout=120` while the first used the constant. One
+    # name with two values is the defect this whole item exists to remove.
+    literals = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            fname = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            if fname not in ("as_completed", "wait", "result"):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "timeout" and isinstance(kw.value, ast.Constant):
+                    literals.append((path.name, f"{fname}(timeout={kw.value.value})"))
+    assert literals == [], f"a wait budget as a bare literal: {literals}"
