@@ -122,6 +122,21 @@ def query_failed_message(engine: str, status: str, reason: str = "") -> str:
     remedy and inviting it would be misdirection. CloudWatch's own `Timeout` status is
     routed to `poll_timeout_message` instead, being the same situation as running out of
     poll budget.
+
+    **`reason` defaults to empty because only one of the two engines has one, and that is a
+    fact about the API rather than an omission at the call sites.** Athena's
+    `GetQueryExecution` returns `Status.StateChangeReason`, and `_wait_query` passes it.
+    CloudWatch's `GetQueryResults` has no reason or message field at all: checked against the
+    botocore service model, its output shape is `encryptionKey`, `nextToken`, `queryLanguage`,
+    `results`, `statistics`, `status`, and `status` is a bare enum. So the two CloudWatch call
+    sites have nothing to pass. Said here because a defaulted parameter that only one of three
+    callers uses looks exactly like the case where two of them forgot, which is the defect the
+    Athena half was just fixed for.
+
+    The throttling advice below keys off the engine's own text rather than a status code, which
+    is deliberate: `HIVE_S3_THROTTLING` arrives as a reason string and cannot be reproduced on
+    demand once the poll budget pre-empts it, so matching the word is how that knowledge
+    survives without a test that can reach it.
     """
     # Athena's StateChangeReason does not end in punctuation, so concatenating produced
     # "...requested resources This is a query-execution failure". Seen in real output.
