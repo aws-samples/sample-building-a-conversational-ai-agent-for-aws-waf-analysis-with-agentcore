@@ -8,7 +8,7 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.query_limits import MAX_POLL, POLL_INTERVAL
+from tools.query_limits import MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL
 
 _latest_patrol_html: str | None = None
 
@@ -665,12 +665,14 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
     it spelled its budget `max_wait: int = 60` and counted iterations with
     `range(max_wait // 2)`, so nothing looking for `MAX_POLL` could find it, including the
     test written to guard against exactly this. No caller passed it, so the parameter is
-    gone. **Patrol's per-query budget therefore goes from 60 s to 120 s.** No recorded reason
-    for 60 exists, and patrol's queries are small `limit 5` and `limit 10` aggregates that
-    rarely approach either number, so in practice this only changes the pathological case,
-    where the extra time buys a real answer instead of the silent `[]` below. Worth knowing
-    that patrol runs these back to back with no chain-level budget anywhere, so the worst
-    case for a whole scan doubles.
+    gone. **Patrol's per-query budget therefore goes from 60 s to 120 s, and that changes
+    nothing about how long a patrol takes.** I first wrote that it doubles the worst case,
+    which was wrong twice over. These queries are submitted to a `ThreadPoolExecutor`, so
+    they run in waves rather than serially, and `as_completed` bounds the whole batch at
+    `MAX_FANOUT_WAIT`. Fifteen futures over five workers is three waves, so the batch budget
+    was already the binding constraint at 60 s per query and still is at 120 s. No reason for
+    60 was ever recorded, and these are small `limit 5` and `limit 10` aggregates that rarely
+    approach either number.
 
     The silent `[]` on a non-`Complete` status, and the `except Exception` around everything,
     are the same defect `_run_cwl` had and are deliberately left: changing what patrol
@@ -754,15 +756,27 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
             futures[executor.submit(_query_top_ips_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "ips")
             futures[executor.submit(_query_top_uris_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "uris")
             futures[executor.submit(_query_content_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "content")
-        for future in concurrent.futures.as_completed(futures, timeout=120):
-            rule_name, query_type = futures[future]
-            try:
-                result = future.result()
-                if rule_name not in details:
-                    details[rule_name] = {}
-                details[rule_name][query_type] = result
-            except Exception:
-                pass
+        # The TimeoutError as_completed raises comes from the iterator, at the `for`, not
+        # from inside the body, so the inner except never saw it and it propagated out of
+        # here into patrol_scan. One slow CloudWatch query therefore killed the entire
+        # patrol report rather than costing it the per-rule detail section. Already
+        # reachable before the poll budgets were unified, since three waves at 60 s each
+        # overruns a 120 s batch.
+        try:
+            for future in concurrent.futures.as_completed(futures, timeout=MAX_FANOUT_WAIT):
+                rule_name, query_type = futures[future]
+                try:
+                    result = future.result()
+                    if rule_name not in details:
+                        details[rule_name] = {}
+                    details[rule_name][query_type] = result
+                except Exception:
+                    pass
+        except concurrent.futures.TimeoutError:
+            # Whatever finished is still worth reporting. What is missing is per-rule
+            # detail, which the report renders as absent; it is not mistaken for "no
+            # traffic matched this rule" because the rules themselves come from metrics.
+            pass
     return details
 
 

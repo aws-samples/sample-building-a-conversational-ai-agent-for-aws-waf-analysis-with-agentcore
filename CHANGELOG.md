@@ -21,6 +21,18 @@
   `HIVE_S3_THROTTLING`, which is exactly the failure where retrying immediately makes things
   worse, and nothing said not to.
 
+### Fixed: one slow CloudWatch query could kill a whole patrol report
+
+- **A fan-out timeout now costs the per-rule detail, not the report.** `patrol_scan` submits
+  three queries per rule to a thread pool, and the timeout `as_completed` raises comes from
+  the iterator rather than from inside the loop, so the handler in the body never saw it and
+  it propagated out. Whatever finished is kept now. This was already reachable before the
+  poll budgets were unified: fifteen futures over five workers is three waves, and three
+  waves at the old 60 s overruns the 120 s batch budget.
+- The batch budget has a name, `MAX_FANOUT_WAIT`, next to `MAX_POLL`. It is the limit that
+  actually governs how long a patrol takes, which is why raising patrol's per-query budget
+  to 120 s changed nothing about that.
+
 ### Known gaps, unchanged by this release
 
 - Nothing cancels a query the agent stops waiting for, so it keeps running and keeps

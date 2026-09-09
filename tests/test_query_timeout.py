@@ -219,6 +219,42 @@ def test_the_budget_is_wall_clock_not_a_count_of_sleeps(no_sleep):
     assert fake.polls == Q.MAX_POLL // (Q.POLL_INTERVAL + 1) == 40, fake.polls
 
 
+# --- the fan-out budget, which is what actually bounds patrol ---------------
+
+
+def test_a_fanout_timeout_costs_the_detail_not_the_whole_report(monkeypatch):
+    """`as_completed(timeout=...)` raises from the iterator, at the `for`, so the `except`
+    inside the loop body never saw it and it propagated out of `_get_log_details` into
+    `patrol_scan`. One slow CloudWatch query killed the entire patrol report instead of
+    costing it the per-rule detail section.
+
+    Already reachable before the poll budgets were unified: fifteen futures over five
+    workers is three waves, and three waves at 60 s overruns a 120 s batch.
+    """
+    from tools import waf_patrol as P
+
+    # One query hangs past the batch budget; the rest answer at once. A real timeout, but
+    # a short one, since this asserts the exception does not escape rather than a duration.
+    # Patrol imports the constant into its own namespace, so this is the binding one.
+    monkeypatch.setattr(P, "MAX_FANOUT_WAIT", 0.1)
+    calls = {"n": 0}
+
+    def one_hangs(logs_client, log_group, start, end, rule_name):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A real sleep, not the fake clock: as_completed's timeout is real wall time.
+            # The pool joins its threads on exit, so this sets the test's floor.
+            time.sleep(1)
+        return [{"ip": "1.2.3.4", "cnt": "9"}]
+
+    for fn in ("_query_top_ips_by_rule", "_query_top_uris_by_rule", "_query_content_by_rule"):
+        monkeypatch.setattr(P, fn, one_hangs)
+
+    # The precondition: without the fix this raises concurrent.futures.TimeoutError.
+    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA", "ruleB"])
+    assert isinstance(details, dict), "the exception must not escape"
+
+
 # --- the debt this item was filed about ------------------------------------
 
 

@@ -40,6 +40,22 @@ query takes, which nobody has gathered.
 MAX_POLL = 120
 POLL_INTERVAL = 2
 
+# The fan-out budget, which is a different kind of limit and the one that actually governs
+# patrol. `MAX_POLL` bounds ONE query; this bounds a whole batch submitted to a thread pool,
+# in wall clock, and it is what `concurrent.futures.as_completed(timeout=...)` takes.
+#
+# **Their relative size decides which one fires, and patrol's answer is this one.** Patrol
+# submits three queries per rule for up to five rules, so fifteen futures over five workers
+# is three waves. At any per-query budget above a third of this, the batch runs out first and
+# the per-query budget is unreachable there. That was already true before `MAX_POLL` was
+# unified: 60 per query over three waves is 180, against 120 here. So patrol has always been
+# bounded by the batch rather than by the query, and raising its per-query budget to 120
+# changed nothing about how long a patrol takes.
+#
+# Kept at 120 for that reason, rather than widened to cover three full waves. Widening it
+# would make patrol slower to give up without making it more likely to answer.
+MAX_FANOUT_WAIT = 120
+
 
 def _stop_header(engine: str) -> str:
     # "given up on" rather than "cancelled", because nothing cancels it. There is no
