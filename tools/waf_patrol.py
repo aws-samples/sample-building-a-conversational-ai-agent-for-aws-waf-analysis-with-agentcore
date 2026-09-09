@@ -974,6 +974,14 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     _dims_rule = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
     if scope == "REGIONAL" and region:
         _dims_rule.append({"Name": "Region", "Value": region})
+    # Why a section came back empty, keyed by the section name `_missing_sections` reports.
+    #
+    # This exists because four `except Exception: pass` handlers below, plus two "the numbers
+    # were all zero" branches, all produced the same None. The report then attributed every
+    # empty section to one hardcoded cause. An absence cannot say which of its causes applied,
+    # so the handler has to say it at the point it still knows.
+    skips: dict[str, str] = {}
+
     chart_data = None
     try:
         chart_resp = cw.get_metric_data(
@@ -1008,8 +1016,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
             if any(v > 0 for v in other):
                 series["Other"] = other
             chart_data = {"labels": labels, "series": series}
-    except Exception:
-        pass
+        else:
+            skips["attack_chart"] = _skip_reason("chart_no_datapoints")
+    except Exception as exc:
+        skips["attack_chart"] = _skip_reason("chart_query_failed", type(exc).__name__)
 
     # 10b. Bot Activity (label metrics — precise, not sampled)
     bot_data = None
@@ -1037,6 +1047,13 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         u_blocked = vals.get("b2", 0)
         u_challenged = vals.get("b3", 0)
         u_captchaed = vals.get("b4", 0)
+        if v_allowed + u_allowed + u_blocked + u_challenged + u_captchaed == 0:
+            # Zero covers two different worlds and the rule list is what separates them.
+            # Saying "no traffic" to someone who never enabled Bot Control is as wrong as
+            # saying "not enabled" to someone who enabled it and had a quiet hour.
+            reason = _bot_zero_reason(webacl_data)
+            skips["bot_names"] = reason
+            skips["targeted_signals"] = reason
         if v_allowed + u_allowed + u_blocked + u_challenged + u_captchaed > 0:
             bot_data = {
                 "verified_allowed": v_allowed,
@@ -1075,8 +1092,11 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                         targeted_signals[lbl_name][metric_name] = targeted_signals[lbl_name].get(metric_name, 0) + val
                 if targeted_signals:
                     bot_data["targeted_signals"] = targeted_signals
-            except Exception:
-                pass
+                else:
+                    skips["targeted_signals"] = _skip_reason("targeted_no_labels")
+            except Exception as exc:
+                skips["targeted_signals"] = _skip_reason(
+                    "targeted_query_failed", type(exc).__name__)
             # Bot categories: use SEARCH to discover all bot names dynamically
             try:
                 cat_resp = cw.get_metric_data(MetricDataQueries=[
@@ -1093,10 +1113,22 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                         bot_names[bot_name] = bot_names.get(bot_name, 0) + val
                 if bot_names:
                     bot_data["bot_names"] = bot_names
-            except Exception:
-                pass
-    except Exception:
-        pass
+                else:
+                    skips["bot_names"] = _skip_reason("bot_names_no_labels")
+            except Exception as exc:
+                skips["bot_names"] = _skip_reason(
+                    "bot_names_query_failed", type(exc).__name__)
+    except Exception as exc:
+        # `setdefault` and not assignment, and **no current path reaches both handlers**, so
+        # the two are equivalent today: the inner `bot_names` handler is the last statement in
+        # this `try`, so anything it catches never arrives here. Written this way because the
+        # ordering intent is the part that would break silently. Add a statement between that
+        # inner handler and this line and assignment would start overwriting a specific reason
+        # with the coarse one, which is the failure this whole change exists to prevent. Not
+        # perturbation-tested, because a guard with no reachable case cannot be.
+        reason = _skip_reason("bot_metrics_query_failed", type(exc).__name__)
+        skips.setdefault("bot_names", reason)
+        skips.setdefault("targeted_signals", reason)
 
     # 10c. Bot-derived action items
     if bot_data:
@@ -1159,6 +1191,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         # `if wr.get("bot_data"):` guards are unaffected, and nothing outside this module
         # reads the key.
         **({"bot_data": bot_data} if bot_data else {}),
+        "skips": skips,
     }
     all_action_items = [{**a, "webacl": webacl_name} for a in action_items]
     _latest_patrol_html = _render_patrol_html_v2([wr], all_action_items, start, end, hours, lang)
@@ -1220,14 +1253,98 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
     missing = _missing_sections(wr, chart_data)
     if missing:
-        summary += (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {missing}\n"
-                    "REASON: CloudWatch metric auto-discovery requires recent activity (last 14 days). These sections had no matching traffic recently.\n"
-                    "ACTION: Inform user that some sections are empty due to a CloudWatch limitation. Continuous traffic ensures all sections populate correctly.")
+        # One reason per section, from the handler that knew. The single hardcoded REASON this
+        # replaces said every empty section meant "no matching traffic recently", which told a
+        # user with a failed query to go generate traffic, and a user without Bot Control to
+        # wait for data that cannot arrive.
+        lines = "\n".join(f"- {name}: {why}" for name, why in missing.items())
+        summary += (f"\n\nPARTIAL_DATA: true\nMISSING_SECTIONS: {sorted(missing)}\n"
+                    f"WHY_EACH_ONE_IS_EMPTY:\n{lines}\n"
+                    "ACTION: tell the user which sections are empty and give the reason above "
+                    "for each. Do not offer one shared explanation, and do not suggest "
+                    "generating traffic unless the reason says the query found none.")
 
     return summary
 
 
-def _missing_sections(wr: dict, chart_data) -> list[str]:
+# Every explanation for an empty report section, in one place, for the same reason
+# `query_limits.py` keeps its budget beside the sentences about it: these strings are the
+# product's answer to "why is this blank", they are produced at six scattered handlers, and
+# scattered wording drifts. Keyed rather than inline so a test can enumerate them and check the
+# invariants that matter, above all that no reason asserts a traffic condition it cannot know.
+_SKIP_REASONS = {
+    "chart_no_datapoints":
+        "CloudWatch returned no per-minute datapoints for this window, so there is nothing to "
+        "plot. Requests in the window would still show in the totals.",
+    "chart_query_failed":
+        "the CloudWatch query for the timeline failed ({detail}), so the chart is missing for a "
+        "fetch error rather than for lack of traffic",
+    "bot_not_configured":
+        "this WebACL has no AWS Managed Bot Control rule group, so no bot labels exist to "
+        "aggregate and this section cannot populate until one is added",
+    "bot_configured_but_quiet":
+        "Bot Control is enabled but emitted no bot labels in this window, so there was no bot "
+        "traffic to report rather than missing data",
+    "targeted_no_labels":
+        "the targeted-signal query succeeded but matched no TGT_ labels, so Targeted inspection "
+        "is either not enabled or saw nothing this window",
+    "targeted_query_failed":
+        "the targeted-signal query failed ({detail}), so this section is missing for a fetch "
+        "error rather than for lack of targeted bots",
+    "bot_names_no_labels":
+        "the bot-name query succeeded but matched no bot labels, so no named bots were seen "
+        "this window",
+    "bot_names_query_failed":
+        "the bot-name query failed ({detail}), so this section is missing for a fetch error "
+        "rather than for lack of bot traffic",
+    "bot_metrics_query_failed":
+        "the Bot Control metric query failed ({detail}), so both bot sections are missing for a "
+        "fetch error rather than for lack of bot traffic",
+    "unrecorded":
+        "this section came back empty and the code did not record why, which is a gap in the "
+        "reporting rather than a statement about your traffic",
+}
+
+
+def _skip_reason(kind: str, detail: str = "") -> str:
+    """One explanation from `_SKIP_REASONS`, with `{detail}` filled in where it takes one."""
+    return _SKIP_REASONS[kind].format(detail=detail)
+
+
+def _has_bot_control(webacl_data: dict) -> bool:
+    """Is an AWS Managed Bot Control rule group attached to this WebACL?
+
+    Read off the rule list rather than off the label metrics, because the metric sum cannot
+    tell "never configured" from "configured and quiet" and both matter to the reader. Checked
+    against the raw statement rather than `_analyze_detection_tools`' output, whose `layer` and
+    `mode` strings are localised, so matching them would break in whichever language nobody
+    tested. Handles both the boto3 and the lowercase-key shapes, as `_classify_rules` does.
+    """
+    for rule in webacl_data.get("Rules", webacl_data.get("rules", [])):
+        stmt = rule.get("Statement", rule.get("statement", {}))
+        mrg = stmt.get("ManagedRuleGroupStatement", stmt.get("managed_rule_group_statement", {}))
+        if "BotControl" in mrg.get("Name", mrg.get("name", "")):
+            return True
+    return False
+
+
+def _bot_zero_reason(webacl_data: dict) -> str:
+    """Why the five Bot Control label metrics summed to zero, when the query itself worked.
+
+    A function so the choice is reachable from a test: inline in `patrol_scan` it could only be
+    exercised against live CloudWatch, which is how the wrong version of this survived.
+
+    Zero covers two worlds and the rule list is the only thing that separates them. Telling
+    someone who never enabled Bot Control to wait for traffic is as wrong as telling someone
+    who enabled it and had a quiet hour that the feature is off, and the second user is the one
+    likeliest to notice.
+    """
+    if not _has_bot_control(webacl_data):
+        return _skip_reason("bot_not_configured")
+    return _skip_reason("bot_configured_but_quiet")
+
+
+def _missing_sections(wr: dict, chart_data) -> dict[str, str]:
     """Which report sections came back empty, for the PARTIAL_DATA note.
 
     A function rather than a block inside `patrol_scan` so it can be tested against a
@@ -1249,14 +1366,16 @@ def _missing_sections(wr: dict, chart_data) -> list[str]:
     raised and the broad handler above swallowed it. So the reach is wider than "not
     configured", and which of the three it was is information this function cannot recover.
     """
-    missing = []
+    skips = wr.get("skips") or {}
+    unexplained = _skip_reason("unrecorded")
+    missing = {}
     if not chart_data:
-        missing.append("attack_chart")
+        missing["attack_chart"] = skips.get("attack_chart", unexplained)
     bot = wr.get("bot_data") or {}
     if not bot.get("bot_names"):
-        missing.append("bot_names")
+        missing["bot_names"] = skips.get("bot_names", unexplained)
     if not bot.get("targeted_signals"):
-        missing.append("targeted_signals")
+        missing["targeted_signals"] = skips.get("targeted_signals", unexplained)
     return missing
 
 

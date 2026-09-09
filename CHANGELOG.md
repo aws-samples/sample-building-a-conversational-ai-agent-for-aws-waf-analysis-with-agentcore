@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Changed: an empty patrol report section now says why it is empty
+
+- **One explanation per section, from the code that knew.** The report used to attribute every
+  empty section to a single hardcoded cause, "CloudWatch metric auto-discovery requires recent
+  activity". That told a user whose query had *failed* to go and generate traffic, and a user
+  with no Bot Control rule group to wait for data that cannot arrive.
+- Four `except Exception: pass` handlers and two all-zero branches produced the same empty
+  result, so each now records why: the query failed and with which error, the query succeeded
+  and matched nothing, or the feature is not configured on this WebACL.
+- **"Bot Control is off" and "Bot Control is on and saw nothing" are told apart** using the
+  WebACL's rule list, because the label counts are zero in both cases and picking one would be
+  wrong for half of the readers.
+- When nothing recorded a reason, the report says that plainly instead of guessing one.
+
 ### Fixed: a patrol scan no longer crashes when a report section is empty
 
 - **It failed on the ordinary case, not an edge case.** A patrol scan raised
