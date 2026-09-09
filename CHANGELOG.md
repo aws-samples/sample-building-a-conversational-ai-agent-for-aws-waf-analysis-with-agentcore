@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 (2026-09-09)
 
 ### Added: a long query shows progress instead of going silent
 
