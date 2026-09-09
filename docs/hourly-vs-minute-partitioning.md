@@ -117,10 +117,25 @@ minute-level log queries. Your raw objects are never lost; only the detail-query
 **Since 2026-09-09 that asymmetry is something you can hit, not just something to plan around.**
 Detection used to misread a bucket holding both layouts as hourly, which refused every log-detail
 query outright. It now reads such a bucket as minute-level, so recent windows work and a window
-from before the cutover comes back with zero rows and no error. To read that history, build a
-second table over the old range with an hourly `projection.<col>.format`: an hourly table can read
-minute-nested objects, so in that direction one table covers both eras. Detecting the mixed layout
-and offering you the choice up front is on the [roadmap](roadmap.md).
+from before the cutover comes back with zero rows and no error. To read that history, build a second table
+over the old range with an hourly `projection.<col>.format`, because an hourly table can read
+minute-nested objects while a minute-level one cannot read hourly ones.
+
+Two things about that table, and both matter more than they look:
+
+- **End its `projection.<col>.range` at the cutover, not at `NOW`.** A closed end in the past is
+  deliberate here. WAF Analyst refuses to resolve a table whose projected range has already stopped,
+  and that refusal is what keeps the history table from shadowing your minute-level one. A history
+  table ending at `NOW` sits at the same S3 location as the minute-level table, wins discovery because
+  a table you maintain outranks the agent's own, and then every log-detail query is declined on
+  hourly scan cost, including the recent windows that worked before you added it.
+- **Query the history table in the Athena console**, not through WAF Analyst. Following from the
+  above, the agent will not resolve it, and it will say so: the query output lists the table with
+  `projection range ends at ..., already in the past` as the reason it was passed over. That note is
+  expected, not a misconfiguration.
+
+Telling you the cutover date, so you know where one table's coverage ends and the other's begins, is
+on the [roadmap](roadmap.md).
 
 ## External factor
 
