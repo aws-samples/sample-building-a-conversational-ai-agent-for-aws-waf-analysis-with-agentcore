@@ -31,8 +31,34 @@ query takes, which nobody has gathered.
 
 # One deliberate value, the tightest of the five it replaces. Raising this is almost
 # always the wrong response to a timeout: see the module docstring.
+#
+# Seconds of wall clock, and the polling loops measure it with a monotonic deadline
+# rather than by adding up their sleeps. Counting sleeps undercounts: each iteration also
+# pays a GetQueryExecution round trip, so a 120 that meant "60 sleeps of 2" actually ran
+# 131 s when measured, and the message promising 120 seconds was wrong by the polling
+# overhead. It also means the budget stretched on a slow link and shrank on a fast one.
 MAX_POLL = 120
 POLL_INTERVAL = 2
+
+# The fan-out budget, which is a different kind of limit and the one that actually governs
+# patrol. `MAX_POLL` bounds ONE query; this bounds a whole batch submitted to a thread pool,
+# in wall clock, and it is what `concurrent.futures.as_completed(timeout=...)` takes.
+#
+# **This bounds when patrol stops collecting, and only since the executor stopped being a
+# `with` block does it also bound when patrol returns.** The two are not the same thing, and
+# an earlier version of this comment claimed the batch budget capped patrol's wall clock. It
+# did not. `Executor.__exit__` calls `shutdown(wait=True)`, so the old `with` block waited
+# for every submitted future even after `as_completed` gave up on their results: fifteen
+# futures over five workers is three waves, so patrol returned after roughly 3 x `MAX_POLL`
+# and threw away waves two and three. Raising the per-query budget from 60 to 120 therefore
+# *did* double patrol's worst case, from about 180s to about 360s, which the same comment
+# denied. Both sites now shut down with `wait=False, cancel_futures=True`, which drops the
+# un-started futures and leaves the five in flight to finish in the background, so the
+# function returns at this budget.
+#
+# Kept at 120 rather than widened to cover three full waves. Widening makes patrol slower to
+# give up without making it likelier to answer.
+MAX_FANOUT_WAIT = 120
 
 
 def _stop_header(engine: str) -> str:
@@ -80,7 +106,7 @@ def poll_timeout_message(engine: str) -> str:
             f"pre-aggregated CloudWatch metrics and does not scan logs at all.")
 
 
-def query_failed_message(engine: str, status: str) -> str:
+def query_failed_message(engine: str, status: str, reason: str = "") -> str:
     """What to say when the engine itself reports a terminal non-success state.
 
     Separate from a poll timeout and deliberately not counted against the retry bound:
@@ -89,7 +115,9 @@ def query_failed_message(engine: str, status: str) -> str:
     routed to `poll_timeout_message` instead, being the same situation as running out of
     poll budget.
     """
-    return (f"STOPPED: {engine} reported the query as {status}, so no rows were returned. "
-            f"This is a query-execution failure, NOT an absence of traffic.\n"
-            f"ACTION: say so plainly rather than reporting zero results, and do not "
-            f"re-run the same query unchanged.")
+    detail = f" Reason: {reason}" if reason else ""
+    return (f"STOPPED: {engine} reported the query as {status}, so no rows were returned."
+            f"{detail} This is a query-execution failure, NOT an absence of traffic.\n"
+            f"ACTION: say so plainly rather than reporting zero results, and do not re-run the "
+            f"same query unchanged. If the reason mentions throttling, re-running it "
+            f"immediately makes the throttling worse rather than better.")

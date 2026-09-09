@@ -8,6 +8,7 @@ import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
+from tools.query_limits import MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL
 
 _latest_patrol_html: str | None = None
 
@@ -580,7 +581,15 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
         # Query top IPs and URIs per rule (parallel)
         from tools.waf_query import inspection_location, athena_content_expr
         details = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        # Not a `with` block, deliberately. Executor.__exit__ calls shutdown(wait=True),
+        # which blocks until every submitted future finishes, so catching the batch timeout
+        # would stop the crash and keep the wait: up to three waves at MAX_POLL, about 360s,
+        # and the results of waves two and three get discarded because the collection loop
+        # has already exited. It would wait for work it throws away. shutdown(wait=False,
+        # cancel_futures=True) drops the un-started futures and lets the five in flight
+        # finish in the background, so this returns at the batch budget.
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        try:
             futures = {}
             for rule_name in attention_rules[:5]:
                 safe_rule = rule_name.replace("'", "''")
@@ -602,7 +611,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                                    f" WHERE {time_cond} AND {rule_pred} AND {expr} <> ''"
                                    f" GROUP BY {expr} ORDER BY cnt DESC LIMIT 5")
                     futures[executor.submit(_run_athena_select, content_sql, region)] = (rule_name, "content")
-            for future in concurrent.futures.as_completed(futures, timeout=120):
+            for future in concurrent.futures.as_completed(futures, timeout=MAX_FANOUT_WAIT):
                 rule_name, qtype = futures[future]
                 try:
                     result = future.result()
@@ -621,6 +630,14 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                     details[rule_name][qtype] = result
                 except Exception:
                     pass
+        except concurrent.futures.TimeoutError:
+            # Caught here rather than by the outer handler, which returns `{}, None` and so
+            # discards both the details collected before the timeout and the table message.
+            # A throttling failure arrives through future.result() and is caught in the body;
+            # a merely slow query trips the iterator and never reached that except.
+            pass
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
         return details, table_msg
     except Exception:
         return {}, None
@@ -657,13 +674,34 @@ def _classify_rules(webacl_data: dict) -> list[dict]:
     return rules
 
 
-def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: str, max_wait: int = 60) -> list[dict]:
-    """Run a Logs Insights query and wait for results."""
+def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: str) -> list[dict]:
+    """Run a Logs Insights query and wait for results.
+
+    The sixth polling site, and the one that shows why the collapse in 2.1 was not finished:
+    it spelled its budget `max_wait: int = 60` and counted iterations with
+    `range(max_wait // 2)`, so nothing looking for `MAX_POLL` could find it, including the
+    test written to guard against exactly this. No caller passed it, so the parameter is
+    gone. **Patrol's per-query budget therefore goes from 60 s to 120 s, and that changes
+    nothing about how long a patrol takes.** I first wrote that it doubles the worst case,
+    which was wrong, and the correction to it was wrong too. These run in waves through a
+    `ThreadPoolExecutor` rather than serially, so the naive serial doubling was never right.
+    But `as_completed` bounds only how long the *caller collects*, and while the executor was
+    a `with` block `shutdown(wait=True)` still blocked on every future, so the worst case was
+    about 3 x `MAX_POLL` and 60 to 120 really did double it. Now that both sites shut down
+    with `wait=False, cancel_futures=True`, `MAX_FANOUT_WAIT` is the bound and the per-query
+    budget no longer moves it. No reason for 60 was ever recorded, and these are small
+    `limit 5` and `limit 10` aggregates that rarely approach either number.
+
+    The silent `[]` on a non-`Complete` status, and the `except Exception` around everything,
+    are the same defect `_run_cwl` had and are deliberately left: changing what patrol
+    returns means changing what its report says, which is a roadmap item rather than a
+    drive-by."""
     try:
         resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=10)
         query_id = resp["queryId"]
-        for _ in range(max_wait // 2):
-            time.sleep(2)
+        deadline = time.monotonic() + MAX_POLL
+        while time.monotonic() < deadline:
+            time.sleep(POLL_INTERVAL)
             result = logs_client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break
@@ -730,13 +768,22 @@ def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, ru
 def _get_log_details(logs_client, log_group: str, start: int, end: int, attention_rules: list[str]) -> dict:
     """Query log details for rules that need attention. Parallel execution."""
     details = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # See the Athena twin above for why this is not a `with` block: shutdown(wait=True)
+    # would block on futures whose results the loop has already stopped collecting.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+    try:
         futures = {}
         for rule_name in attention_rules[:5]:  # max 5 rules
             futures[executor.submit(_query_top_ips_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "ips")
             futures[executor.submit(_query_top_uris_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "uris")
             futures[executor.submit(_query_content_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "content")
-        for future in concurrent.futures.as_completed(futures, timeout=120):
+        # The TimeoutError as_completed raises comes from the iterator, at the `for`, not
+        # from inside the body, so the inner except never saw it and it propagated out of
+        # here into patrol_scan. One slow CloudWatch query therefore killed the entire
+        # patrol report rather than costing it the per-rule detail section. Already
+        # reachable before the poll budgets were unified, since three waves at 60 s each
+        # overruns a 120 s batch.
+        for future in concurrent.futures.as_completed(futures, timeout=MAX_FANOUT_WAIT):
             rule_name, query_type = futures[future]
             try:
                 result = future.result()
@@ -745,6 +792,13 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
                 details[rule_name][query_type] = result
             except Exception:
                 pass
+    except concurrent.futures.TimeoutError:
+        # Whatever finished is still worth reporting. What is missing is per-rule detail,
+        # which the report renders as absent; it is not mistaken for "no traffic matched this
+        # rule" because the rules themselves come from metrics.
+        pass
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
     return details
 
 

@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name
 
-from tools.query_limits import MAX_POLL, POLL_INTERVAL, poll_timeout_message
+from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
+                                 query_failed_message)
 TMP_DATABASE = "waf_analysis_tmp"
 
 # Serializes DROP+CREATE of a scratch table. Held inside _create_named_table.
@@ -106,6 +107,19 @@ _ATHENA_STATE_DEFAULTS = {
     # selection, and cleared by reset_table_cache with everything else.
     "s3_path_memo": (),      # (((dest_arn, scope, webacl_name, region), s3_path), ...)
     "output_location_memo": (),  # (((region, workgroup), location), ...)
+    #
+    # **A memo here can now be written after the tool call that started it has returned.**
+    # Patrol's fan-out shuts its pool down with `wait=False, cancel_futures=True`, so the
+    # queries already in flight finish in the background, and `_run_athena_select` calls
+    # `_get_output_location` on the way. One of those stragglers can repopulate this memo
+    # after a `reset_table_cache()` has cleared it.
+    #
+    # Harmless for *this* key, and the reasons are specific rather than general: the write is
+    # lock-guarded, the memo is keyed on `(region, workgroup)`, and the value does not vary by
+    # WebACL, so restoring it after a reset restores the same string. Do not read that as a
+    # property of the state dict. Any key whose value depends on the *WebACL* would be a
+    # stale-state bug of exactly the kind `reset_table_cache` exists to prevent, reintroduced
+    # by a thread nobody is waiting for. Check that before adding one.
 }
 
 # Every default is immutable, so this shallow copy shares nothing with the live
@@ -1418,16 +1432,19 @@ def _wait_query(athena, qid: str):
     bound in `poll_timeout_message` scoped to a run of failures rather than to the session.
     """
     from tools.session_state import note_query_success
-    elapsed = 0
-    while elapsed < MAX_POLL:
+    deadline = time.monotonic() + MAX_POLL
+    while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL)  # nosemgrep: arbitrary-sleep — polling for Athena query completion
-        elapsed += POLL_INTERVAL
         resp = athena.get_query_execution(QueryExecutionId=qid)
         state = resp["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
             note_query_success()
             return
         if state in ("FAILED", "CANCELLED"):
+            # Carries the engine's own reason, and the same "not an absence of traffic"
+            # framing the CloudWatch path got. Observed on a real bucket: a wide query
+            # returned HIVE_S3_THROTTLING, which is exactly the failure where an
+            # unprompted retry makes things worse.
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
-            raise RuntimeError(f"Athena query {state}: {reason}")
+            raise RuntimeError(query_failed_message("Athena", state, reason))
     raise RuntimeError(poll_timeout_message("Athena"))

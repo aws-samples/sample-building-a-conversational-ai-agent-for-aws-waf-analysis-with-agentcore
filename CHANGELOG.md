@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: the poll budget was two of six, and shorter than it claimed
+
+- **Two more per-query wait budgets existed under a different name.**
+  `report._poll_log_query` carried `max_wait=120` and `waf_patrol._poll_log_query` carried
+  `max_wait: int = 60`, spending it through `range(max_wait // 2)`. Neither was findable by
+  looking for `MAX_POLL`, including by the test written to guard against exactly this, which
+  matched a string rather than the idea and now walks the syntax tree instead. **Patrol's
+  per-query budget goes from 60 s to 120 s** as a result; no reason for 60 was ever
+  recorded, and patrol's queries are small aggregates that rarely approach either number.
+- **The budget is wall-clock now, not a count of sleeps.** Each poll also pays an API round
+  trip, which the old arithmetic ignored, so a budget described as 120 seconds ran 131 when
+  measured against real Athena, and it stretched on a slow connection and shrank on a fast
+  one.
+- **An Athena query the engine fails now says so like the CloudWatch one already did**, with
+  the engine's own reason kept and the "this is not an absence of traffic, do not re-run it
+  unchanged" guidance added. Found by running a wide query for real: it came back
+  `HIVE_S3_THROTTLING`, which is exactly the failure where retrying immediately makes things
+  worse, and nothing said not to.
+
+### Fixed: one slow query could cost a whole patrol report, on both backends
+
+- **A fan-out timeout now costs the per-rule detail section, not everything.** `patrol_scan`
+  submits three queries per rule to a thread pool, and the timeout `as_completed` raises
+  comes from the iterator rather than from inside the loop, so the handler in the loop body
+  never saw it. On the CloudWatch path it propagated out and killed the report; on the Athena
+  path an outer handler swallowed it and silently discarded both the details already
+  collected and the resolved-table message. Whatever finished is kept now, on both.
+- **Patrol returns when it stops collecting, instead of waiting for work it discards.** The
+  thread pool was a `with` block, and exiting one waits for every submitted query even after
+  the collection loop has given up on the results. Fifteen queries over five workers is three
+  waves, so a patrol could return after roughly six minutes while throwing away two thirds of
+  what it waited for. It now cancels what has not started and returns at the batch budget.
+- The batch budget has a name, `MAX_FANOUT_WAIT`, beside `MAX_POLL`, and both fan-out sites
+  use it; one of them had the number as a bare literal.
+
+### Known gaps, unchanged by this release
+
+- Nothing cancels a query the agent stops waiting for, so it keeps running and keeps
+  billing. `logs:StopQuery` is granted for a call that does not exist.
+- `report._poll_log_query` and `waf_patrol._poll_log_query` still return partial or empty
+  results on a timeout with no way for the caller to tell, and the weekly report attributes
+  any missing section to an idle WebACL.
+
 ## 0.14.0 (2026-09-09)
 
 ### Fixed: repeated log queries paid AWS control-plane calls they did not need

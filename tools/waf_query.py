@@ -506,10 +506,9 @@ def _run_cwl(log_group: str, query: str, start_epoch: int, end_epoch: int, limit
             queryString=query, limit=limit,
         )
         query_id = resp["queryId"]
-        elapsed = 0
-        while elapsed < MAX_POLL:
+        deadline = time.monotonic() + MAX_POLL
+        while time.monotonic() < deadline:
             time.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
             result = client.get_query_results(queryId=query_id)
             if result["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
                 break
