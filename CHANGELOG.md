@@ -14,6 +14,17 @@
 - No permission change was needed: `logs:StopQuery` was already granted, for a call that did
   not exist until now.
 
+### Fixed: a deleted log bucket is reported instead of quietly accepted
+
+- **Setup used to succeed over an S3 bucket that no longer exists.** If a WebACL's logging
+  destination pointed at a deleted bucket and an Athena table was still declared over it, the
+  table was accepted as valid and every query afterwards failed with a raw engine error
+  naming the bucket. Setup now fails once, saying the path cannot be read, what S3 said, and
+  that the bucket may have been deleted or the role may not be allowed to list it.
+- **A bucket that is merely empty still works as before.** A table over a prefix that has not
+  received data yet is trusted as declared, which is the whole point of that behaviour. The
+  two cases used to be indistinguishable; only the unreadable one changed.
+
 ## 0.15.0 (2026-09-09)
 
 ### Added: a long query shows progress instead of going silent

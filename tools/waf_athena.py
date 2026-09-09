@@ -1071,11 +1071,26 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
     layout, layout_error = None, None
     try:
         layout = _detect_partitions(s3_path)
-    except Exception as exc:
-        # Nothing readable under the path. Not fatal yet: an existing table is still
+    except RuntimeError as exc:
+        # Walked the path and found nothing recognisable under it: an empty bucket, or a
+        # prefix that has not received data yet. Not fatal: an existing table is still
         # trusted as declared, and the create path re-raises this below rather than
         # writing a second copy of the same message.
         layout_error = exc
+    except Exception as exc:
+        # Could not walk the path at all, which `except Exception` used to flatten into
+        # the case above. Trusting a declaration because the bucket is *empty* is sound;
+        # trusting one because the bucket is *gone* is not. Measured on a real account
+        # with a deleted bucket: resolution succeeded, published `layout_data_start` as
+        # None, and every query then failed with a raw `HIVE_FILESYSTEM_ERROR` naming a
+        # bucket, once per query, where resolution had already held the information to
+        # say so once and say it usefully.
+        raise RuntimeError(
+            f"Cannot read the S3 log path for this WebACL: {s3_path}. S3 said "
+            f"{type(exc).__name__}: {exc}. The bucket may have been deleted, or this "
+            f"role may not be allowed to list it. This is NOT an absence of traffic. Any "
+            f"Athena table still declared over this path will fail every query rather "
+            f"than return rows, so check the WebACL's logging destination.") from exc
     if layout is not None:
         _athena_state["layout_mixed"] = layout["mixed"]
         _athena_state["layout_cutover"] = layout["cutover"]

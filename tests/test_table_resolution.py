@@ -388,26 +388,94 @@ def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
     assert len(walks) == 1
 
 
-def test_an_unreadable_bucket_still_resolves_an_existing_table(catalog):
+def test_an_empty_bucket_still_resolves_an_existing_table(catalog, monkeypatch):
     """The other half of the None contract, and the one that used to live inside
     `_cross_check_declared`'s try block.
 
-    The walk now happens once at the top of resolution, so a bucket it cannot read
-    has to fail soft there rather than abort the resolve. A user with a declared
-    table over a prefix that has not received data yet must still get their table.
+    The walk now happens once at the top of resolution, so a path it finds nothing under
+    has to fail soft there rather than abort the resolve. A user with a declared table
+    over a prefix that has not received data yet must still get their table.
+
+    Named for the empty case rather than "unreadable", which is what it said before and
+    is now the *other* branch: an empty listing and a missing bucket are no longer the
+    same outcome, and this is the one that stays soft.
     """
     glue = catalog({"userdb": [table("waf", SCOPED_PATH)]})
 
     def boom(_):
         raise RuntimeError("Cannot detect partition structure")
 
-    monkeypatch_target = A._detect_partitions
-    A._detect_partitions = boom
-    try:
-        assert A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl") == "userdb.waf"
-    finally:
-        A._detect_partitions = monkeypatch_target
+    monkeypatch.setattr(A, "_detect_partitions", boom)
+    assert A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl") == "userdb.waf"
     assert glue.deleted == []
+
+
+def test_a_deleted_bucket_does_not_resolve_a_table_over_it(catalog, monkeypatch):
+    """A silent-success path, found by enumerating the account's own catalog rather than
+    by reading code: `waf_log_db.waf_logs` points at a bucket that no longer exists.
+
+    `_find_existing_table` reads Glue only, so it finds the table with S3 gone.
+    `_cross_check_declared` is handed `layout=None` and trusts the declaration by design.
+    The trust is right for an empty prefix and wrong here, and `except Exception` was what
+    made the two indistinguishable. Reproduced on the real account before this test
+    existed: resolution returned `waf_log_db.waf_logs` with no error and published
+    `layout_data_start=None`, then every query failed with `HIVE_FILESYSTEM_ERROR`.
+
+    So the user-visible symptom was a loud failure per query rather than the silent zero
+    rows first supposed, which lowers the severity and does not change the fix: the error
+    arrives once per query at the engine layer, naming a bucket, when resolution could
+    raise once and name the logging destination.
+    """
+    glue = catalog({"userdb": [table("waf", SCOPED_PATH)]})
+
+    class NoSuchBucket(Exception):
+        """Stands in for botocore's; the point is only that it is not a RuntimeError."""
+
+    def gone(_):
+        raise NoSuchBucket("The specified bucket does not exist")
+
+    monkeypatch.setattr(A, "_detect_partitions", gone)
+    with pytest.raises(RuntimeError) as e:
+        A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    msg = str(e.value)
+    assert SCOPED_PATH in msg, "the path is the actionable part"
+    assert "NoSuchBucket" in msg, "the S3 error has to survive, not be paraphrased"
+    assert "NOT an absence of traffic" in msg
+    assert glue.deleted == [], "a user's table is never dropped over an S3 failure"
+
+
+def test_a_listing_failure_is_not_converted_into_an_empty_listing(monkeypatch):
+    """What the fix rests on, asserted so it cannot quietly stop being true.
+
+    The resolver now discriminates on exception *type*: `_detect_partitions` raises its
+    own `RuntimeError` once it has walked and found nothing, and anything else means the
+    walk itself failed. Both halves measured on the real account, where a deleted bucket
+    raised `NoSuchBucket` from `list_objects_v2` and an existing-but-empty prefix returned
+    `[]`.
+
+    Two assertions, because the first one alone was claiming more than it proves. Stubbing
+    the lister shows `_detect_partitions` propagates rather than swallows, which is what
+    the resolver's discriminator needs. It says nothing about the real lister, and the way
+    this regresses is someone adding a `try` there that returns `[]` on error: the two
+    outcomes collapse back together, resolution resumes trusting a dead declaration, and a
+    test that stubbed the lister out would not notice.
+    """
+    # This has to come FIRST. Read after the monkeypatch below it inspected the stub's
+    # source, found no `try` there, and passed with the real lister swallowing everything.
+    import ast
+    import inspect
+    assert A._s3_list_dirs.__module__ == "tools.waf_athena", "reading the wrong function"
+    tree = ast.parse(inspect.getsource(A._s3_list_dirs).strip())
+    assert not [n for n in ast.walk(tree) if isinstance(n, (ast.Try, ast.ExceptHandler))], \
+        "_s3_list_dirs must let S3 errors out; catching one makes a dead bucket look empty"
+
+    def raises(bucket, prefix):
+        raise LookupError("NoSuchBucket")
+
+    monkeypatch.setattr(A, "_s3_list_dirs", raises)
+    # Not RuntimeError: that is the value reserved for "walked it, found nothing".
+    with pytest.raises(LookupError):
+        A._detect_partitions("s3://bkt")
 
 
 # --- WebACL scoping ---------------------------------------------------------
