@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed: with logging off, the agent is pointed at the tool that still works
+
+- **`get_waf_config` told the agent to use `get_waf_metrics` only when logging is disabled.** That
+  is not true: `get_waf_overview` reads CloudWatch and the WAF config and needs no log destination,
+  so its eight curated views and their time series are all available with logging off. The system
+  prompt already routed to `get_waf_overview` for the same state, so the two disagreed, on exactly
+  the setup where there is least else to work with. The hint now names views that exist and points
+  a per-country breakdown at `get_waf_metrics`, where the `Country` dimension filter lives.
+- A hint in `analyze_ip` passed a list to `lookup_ja4`, which takes a comma-separated string.
+
 ### Changed: the false-positive investigation runs its independent queries at once
 
 - **`investigate_block` took the sum of its query times.** Five of its seven queries are

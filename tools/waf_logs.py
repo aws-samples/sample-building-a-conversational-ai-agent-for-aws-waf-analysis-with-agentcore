@@ -1103,7 +1103,12 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     lines.append("")
     lines.append("→ If malicious: suggest user add IP to block list or adjust rate-limit threshold.")
-    lines.append("→ For JA4 fingerprint analysis: lookup_ja4(fingerprints=[...])")
+    # A list literal here, while the signature is `fingerprints: str` split on commas. The
+    # generated schema constrains the model to a string regardless, so this was wrong syntax
+    # in a hint rather than a break. This line is also what makes `lookup_ja4` reachable at
+    # all, since the prompt never names it: see tests/test_tool_reachability.py.
+    lines.append("→ For JA4 fingerprint analysis: "
+                 "lookup_ja4(fingerprints='<comma-separated fingerprints>')")
     if is_log_filter_active():
         lines.append("\n⚠️  Log Filter active — this analysis only covers logged actions. Some requests may be filtered out.")
     return "\n".join(lines)
