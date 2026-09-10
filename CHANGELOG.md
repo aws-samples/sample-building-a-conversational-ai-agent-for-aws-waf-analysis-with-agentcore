@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Changed: your own Athena table is checked against what the queries actually read
+
+- **A table used to bind on two column names and fail later, one query at a time.** Validation
+  checked that `action` and `httprequest` existed and nothing else, so a `timestamp` declared
+  `string`, or an `httprequest` missing `clientip`, was accepted and then produced a raw Athena
+  `COLUMN_NOT_FOUND` on every query that touched it. Those three columns carry every query, so a
+  table missing or mis-declaring one is now refused at bind with a line naming the column, the
+  type it declares, and what reads it.
+- **Every other WAF log column is optional, and losing one costs a feature rather than the
+  table.** AWS WAF has added columns over the years and a Glue table declared before `labels` or
+  `ja4fingerprint` existed still reads today's logs, so refusing it would defeat the point of
+  using your own table. Such a table is accepted with a note pairing each missing column with
+  what it would have answered. Measured on that shape: 2 of the bypass scan's 6 log queries fail,
+  the other 4 return rows, and the scan still produces a report.
+- **`webaclid` is required only when the table's location covers more than one WebACL**, which is
+  when every query carries the `webaclid` filter. On a table whose location already names one
+  WebACL, no query mentions the column, so asking for it would refuse a table over something
+  nothing reads.
+
 ## 0.17.0 (2026-09-09)
 
 ### Changed: a report says which log queries failed instead of calling the WebACL idle

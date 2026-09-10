@@ -89,10 +89,18 @@ The agent searches **all Glue databases**, paginated, for a table whose `LOCATIO
 ### When Detection Succeeds
 
 - The S3 path resolved from WAF logging config is your table's `LOCATION` or sits underneath it. The comparison is on a path boundary, so a table at `s3://b/waf-logs` does not claim `s3://b/waf-logs-prod`
-- Your table has both `action` and `httprequest` columns, by those exact names
+- Your table declares the three columns that carry every query, with types those queries can use: `timestamp` as an integer of epoch milliseconds, `action` as a string, and `httprequest` as a struct with `clientip` and `uri` fields. Names are matched lowercase and exactly
+- `webaclid` as a string, but **only if** the table's location covers more than one WebACL. That is when every query adds a `webaclid` filter to keep the other WebACLs' rows out. On a table whose location already names one WebACL, no query mentions the column and it is not asked for
+- Every other WAF log column is optional. Missing one costs a feature, not the table, and the next section says what you are told
 - Your table has **exactly one** partition column, using partition projection of type `date`. Its name is free
 - Its `projection.<col>.format` is `yyyy/MM/dd`, `yyyy/MM/dd/HH` or `yyyy/MM/dd/HH/mm`, with any separator you like
 - Its `projection.<col>.range` upper bound is `NOW` or a future date
+
+### Older Log Schemas Are Accepted, With a Note
+
+Most WAF log columns carry one feature rather than every query, so a table without them is used rather than refused. Miss `terminatingruleid`, `labels`, `nonterminatingmatchingrules`, `rulegrouplist`, `ja4fingerprint`, `challengeresponse` or `captcharesponse` and you get the table plus a line in the query output pairing each missing column with what it would have answered. A column declared with the wrong type, or without a field the queries read, is reported the same way, because it loses the same queries.
+
+AWS WAF has added log columns over the years, and a Glue table declared before `labels` or `ja4fingerprint` existed still reads today's logs, because the JSON SerDe ignores fields the table does not declare. Refusing that table would cost you far more than the note does: on it, the bypass scan's JA4 aggregation fails and everything else in the scan still reports. Add the missing columns to your table and the agent picks the change up the next time it selects the WebACL.
 
 ### Which Table Wins
 
@@ -105,7 +113,8 @@ Ties between two equally specific tables in different databases resolve alphabet
 | Scenario | Why it fails | Workaround |
 |----------|-------------|------------|
 | Firehose prefix is entirely dynamic expressions | Resolved path is just the bucket root, doesn't match a more-specific user table LOCATION | The agent's own scratch table self-heals (drops + recreates at the resolved path); a *user-provided* table at a deeper path still won't match |
-| Custom column names | `httprequest` named differently (e.g., `http_request`) | Rename column to `httprequest` (the agent's SQL references it by that exact name) |
+| Custom names on the three required columns | `timestamp`, `action` or `httprequest` named differently (e.g., `http_request`, `event_time`) | Rename it. The agent's SQL references these by their exact names. Renaming an *optional* column is not fatal, it just loses that column's features |
+| A required column of the wrong type | `timestamp` declared `string` cannot be compared against an epoch-millisecond bound, and an `httprequest` flattened into separate scalar columns has no `clientip` field to read | Redeclare the column. The rejection names the column, the type you gave it, and what reads it |
 | Integer or enum partition projection | Pruning compares the partition value against a rendered timestamp, which only works for a `date` projection | Recreate the column as `projection.<col>.type=date` |
 | Non-projected Hive partitions | The agent never runs `ALTER TABLE ADD PARTITION`, so it cannot see them | Switch the table to partition projection |
 | More than one partition key | Queries prune on a single time column | Use one projected time column |
@@ -160,3 +169,5 @@ Resolution precedence: `WAF_AGENT_PARTITION_TZ` env → detected Firehose `Custo
 3. **On a bucket that changed layout, the pre-cutover logs are out of reach.** The agent reads the minute era and tells you where it starts. Reaching the hourly era needs a table you build yourself, because the agent will not build an hourly one while log-detail queries on hourly are refused.
 
 4. **Custom S3 prefix on Vended Logs is invisible.** If you configured a custom key prefix via the API (not console), the agent may not resolve the correct path because `GetLoggingConfiguration` doesn't return the prefix.
+
+5. **Schema validation reads your declaration, not your data.** It compares the column names and types in the Glue catalog against what the queries need. A table that declares the right shape over objects that do not match it still passes bind and fails at query time, because nothing short of reading an object can tell the difference.
