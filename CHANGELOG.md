@@ -23,6 +23,11 @@
   stopped CloudWatch query could render its own error message into their reports as a finding.
   The check for a failed query is now one function beside the query layer that every tool
   uses, rather than something each tool had to know about separately.
+- **A message that was previously untrue became true.** The false-positive investigation says
+  "No BLOCK records found for this IP. The IP may not have been blocked during this period, or
+  BLOCK logs are filtered", naming two causes and not the third one that was reachable: the
+  query failed. Now that a failed query raises instead of arriving as data, empty means empty
+  and those really are the two causes.
 
 ### Changed: one query-window cap, enforced everywhere and stated once
 
