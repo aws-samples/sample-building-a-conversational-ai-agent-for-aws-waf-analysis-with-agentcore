@@ -19,6 +19,10 @@
 - **The same swallow in COUNT evaluation was engine-asymmetric.** CloudWatch failures were
   reported and Athena failures were not, so a cancelled Athena query reached you as "this rule
   has no low-volume clients". Both now say the query did not run.
+- **The false-positive investigation and the challenge check had no guard at all**, so a
+  stopped CloudWatch query could render its own error message into their reports as a finding.
+  The check for a failed query is now one function beside the query layer that every tool
+  uses, rather than something each tool had to know about separately.
 
 ### Changed: one query-window cap, enforced everywhere and stated once
 
