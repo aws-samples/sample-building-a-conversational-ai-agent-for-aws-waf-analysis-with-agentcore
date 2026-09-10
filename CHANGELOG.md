@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Fixed: a bypass scan no longer reports "no candidates" when its queries failed
+
+- **A failed log query and a query that found nothing were the same result.** `detect_bypass`
+  swallowed both to an empty list and rendered empty as `(none found)`, which is a claim about
+  your traffic. Measured on a table missing `ja4fingerprint`: two of six queries failed with
+  `COLUMN_NOT_FOUND` and the scan still produced a full report asserting no bypass candidates,
+  with the errors visible only in the container log. Each section now names the query that
+  failed, and a scan whose sections are all empty because queries failed says it cannot tell.
+- **A failed Bot Control label query used to push the verdict toward declaring a bypass.** The
+  confidence rules read "no bot label present", and an unread label set looks identical to an
+  unlabelled IP, so a swallowed error made two HIGH CONFIDENCE branches *more* likely to fire.
+  `investigate_ip` now refuses to reach a verdict when that query fails.
+- **A CloudWatch query failure could render as a bypass candidate.** The failure arrives as a
+  one-row result, which is truthy, so a section printed it as a table row of `?` cells.
+- **The same swallow in COUNT evaluation was engine-asymmetric.** CloudWatch failures were
+  reported and Athena failures were not, so a cancelled Athena query reached you as "this rule
+  has no low-volume clients". Both now say the query did not run.
+
+### Changed: one query-window cap, enforced everywhere and stated once
+
+- **The prompt told the agent Athena queries were capped at 60 minutes and nothing enforced
+  that.** Meanwhile four tools defaulted to 180 and the only real limit was 360, applied at two
+  places through a constant and three more as a bare literal. There is now one cap for both
+  engines, `MAX_MINUTES` in `tools/query_limits.py`, every tool clamps to it, and the system
+  prompt renders the number from it so the two cannot drift apart again.
+- **On an hourly-partitioned table, "retry with a narrower window" is now honest about what
+  narrowing buys.** Athena reads a whole hour whatever sub-hour window you ask for, so the old
+  advice to retry with a quarter of the window could not work and used up the one retry allowed.
+  The timeout message now says narrowing helps only down to one whole hour, and to use metrics
+  below that.
+
 ### Changed: your own Athena table is checked against what the queries actually read
 
 - **A table used to bind on two column names and fail later, one query at a time.** Validation

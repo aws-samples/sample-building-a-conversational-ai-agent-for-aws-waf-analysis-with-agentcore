@@ -11,6 +11,7 @@ from tools.session_state import (
     is_log_filter_active,
 )
 from tools.waf_query import query_logs, get_log_type
+from tools.query_limits import MAX_MINUTES
 
 _cwl_semaphore = threading.Semaphore(8)
 
@@ -86,7 +87,7 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    _duration = min(duration_minutes, 360)
+    _duration = min(duration_minutes, MAX_MINUTES)
     end_epoch = start_epoch + _duration * 60
 
     # Check ALLOW log availability for both steps

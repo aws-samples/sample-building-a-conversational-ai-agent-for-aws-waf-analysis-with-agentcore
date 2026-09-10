@@ -12,9 +12,8 @@ from tools.aws_session import get_client
 from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active, note_query_success
 
 MAX_RESULTS = 25
-from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
-                                query_failed_message, stop_query)
-MAX_MINUTES = 360  # Hard cap for CWL queries (6 hours)
+from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL,
+                                poll_timeout_message, query_failed_message, stop_query)
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
 _cwl_semaphore = threading.Semaphore(8)

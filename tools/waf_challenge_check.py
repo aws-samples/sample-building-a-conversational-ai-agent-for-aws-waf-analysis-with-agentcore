@@ -6,6 +6,7 @@ import threading
 from strands import tool
 from tools.session_state import get_webacl_name, is_log_filter_active
 from tools.waf_query import query_logs, get_log_type
+from tools.query_limits import MAX_MINUTES
 
 _cwl_semaphore = threading.Semaphore(8)
 
@@ -31,7 +32,7 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
         action_type: "CHALLENGE" or "CAPTCHA". Default "CHALLENGE".
     """
     from tools.waf_logs import _parse_start_time
-    _duration = min(duration_minutes, 360)
+    _duration = min(duration_minutes, MAX_MINUTES)
 
     if not get_webacl_name():
         return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
