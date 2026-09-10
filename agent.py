@@ -113,7 +113,7 @@ For bypass complaints ("scraper got through", "attack bypassed WAF"):
 Do NOT assume the user's claim is correct — verify with WAF evidence before concluding.
 
 ## Tool Parameters
-- **get_waf_overview**: `minutes` param (not hours). Default 1440 (1 day). Granularity auto-scales: 1440→15min, 240→5min, 60→1min. Returns full time-series. "Change" column = vs previous period of equal length. Zero rows omitted.
+- **get_waf_overview**: `minutes` param (not hours). Default 1440 (1 day). Granularity auto-scales: 1440→15min, 240→5min, 60→1min. Five of the eight query types return a time-series (top_rules, attack_types, bot_summary, rate_limits, challenge_solve_rate); bot_names, targeted_signals and top_labels return totals only, so do not promise the user a trend from those three. "Change" column = vs previous period of equal length. Zero rows omitted.
 - **run_logs_query**: `start_time` + `duration_minutes` (default 180, max {MAX_MINUTES}, both engines). Queries logs for IP/URI/request-level details.
 - **patrol_scan**: `webacl_name` + `start_time`. Max 24h window.
 - **generate_weekly_report**: `webacl_name` + `start_time`. Max 7 days.
