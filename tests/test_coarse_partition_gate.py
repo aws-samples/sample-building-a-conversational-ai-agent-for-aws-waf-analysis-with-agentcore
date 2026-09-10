@@ -172,3 +172,20 @@ def test_the_mixed_bucket_message_no_longer_claims_hourly_is_unbuildable():
     assert "second, hourly table you create yourself" in out
     # And it must still say the old era is unreachable, which is the point of the message.
     assert "zero rows" in out and "2022/05/26" in out
+
+
+def test_no_user_facing_string_still_says_hourly_is_unbuildable():
+    """A sweep, because correcting the sentence twice was not enough.
+
+    3.2 made "an hourly table, which this agent does not build yet" false, and the first fix
+    corrected the copy in `describe_table_resolution` while missing a second in
+    `partition_predicate`'s out-of-range message, which kept shipping. Asserting the phrase's
+    ABSENCE across `tools/` costs a line and catches a third copy, where a test per call site
+    only covers the sites someone remembered."""
+    import pathlib
+    offenders = []
+    for path in sorted(pathlib.Path("tools").glob("*.py")):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if "does not build yet" in line and "used to read" not in line:
+                offenders.append(f"{path}:{n}")
+    assert not offenders, offenders

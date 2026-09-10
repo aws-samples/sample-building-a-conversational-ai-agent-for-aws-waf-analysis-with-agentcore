@@ -1439,10 +1439,14 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
             # actively wrong: the pre-cutover directories are hourly, so a wider
             # minute-level projection generates paths that do not exist and returns
             # nothing, which looks like the advice was followed and the data is gone.
+            # Second copy of the sentence 3.2 falsified, and the sweep that corrected the one
+            # in `describe_table_resolution` missed it. Hourly tables ARE queryable now; what
+            # stays true is that the agent builds one table per WebACL, for the newest layout,
+            # so the older era needs a second one the user creates.
             problem += (f"{mixed} Widening the range would not help, because the paths a "
                         f"minute-level projection generates are not there before the "
-                        f"cutover. Query a window after it, or read the older era with "
-                        f"an hourly table, which this agent does not build yet.")
+                        f"cutover. Query a window after it, or read the older era with a "
+                        f"second, hourly table you create yourself over the same bucket.")
         else:
             problem += (f"Widen the table's projection.{part_col}.range or query a "
                         f"later window.")
