@@ -10,7 +10,8 @@ from tools.session_state import (
     get_webacl_name, get_scope, resolve_region,
     is_log_filter_active,
 )
-from tools.waf_query import query_logs, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type
+from tools.query_limits import MAX_MINUTES
 
 _cwl_semaphore = threading.Semaphore(8)
 
@@ -86,7 +87,7 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    _duration = min(duration_minutes, 360)
+    _duration = min(duration_minutes, MAX_MINUTES)
     end_epoch = start_epoch + _duration * 60
 
     # Check ALLOW log availability for both steps
@@ -648,6 +649,15 @@ def _extract_transforms_from_statement(stmt: dict) -> list[str]:
 
 
 def _run_query(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict]:
-    """Execute log query via unified layer (CWL or Athena)."""
+    """Execute log query via unified layer, raising if the query did not run.
+
+    The two engines were asymmetric here and only one of them was safe. An Athena
+    failure already raised out of `_run_athena_select`; a CloudWatch failure came back
+    as a truthy `[{"_error": ...}]` row, and all 12 call sites below read it as data,
+    so a stopped query rendered its own error message into the report as a finding.
+    Raising makes CloudWatch behave like Athena, which is the loud direction."""
     results = query_logs(cwl, athena, start_epoch, end_epoch, limit=25)
+    reason = log_query_error(results)
+    if reason:
+        raise RuntimeError(reason)
     return results if results is not None else []

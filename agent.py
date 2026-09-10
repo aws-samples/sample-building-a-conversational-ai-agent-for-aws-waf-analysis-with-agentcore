@@ -14,6 +14,7 @@ from tools.waf_config import list_webacls, get_waf_config
 from tools.waf_metrics import get_waf_metrics
 from tools.waf_overview import get_waf_overview
 from tools.waf_logs import run_logs_query, analyze_ip
+from tools.query_limits import MAX_MINUTES
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
 from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
@@ -112,7 +113,7 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 
 ## Tool Parameters
 - **get_waf_overview**: `minutes` param (not hours). Default 1440 (1 day). Granularity auto-scales: 1440→15min, 240→5min, 60→1min. Returns full time-series. "Change" column = vs previous period of equal length. Zero rows omitted.
-- **run_logs_query**: `start_time` + `duration_minutes` (default 180 for CWL, 60 for Athena). Queries logs for IP/URI/request-level details.
+- **run_logs_query**: `start_time` + `duration_minutes` (default 180, max {MAX_MINUTES}, both engines). Queries logs for IP/URI/request-level details.
 - **patrol_scan**: `webacl_name` + `start_time`. Max 24h window.
 - **generate_weekly_report**: `webacl_name` + `start_time`. Max 7 days.
 - ALL get_waf_overview query_types support zoom in. ALWAYS zoom in after finding a spike.
@@ -127,16 +128,16 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 - Timestamps returned by run_logs_query and analyze_ip (e.g. time_bucket, minute, first_seen, last_seen, per-minute timelines) are ALSO already in the user's session timezone — the tools convert the raw UTC log time for you. Present them to the user as-is and NEVER re-label them as UTC or re-convert them. The underlying AWS WAF log `timestamp` field is UTC epoch, but you never see the raw value — only the converted local string.
 - For **get_waf_overview**: pass `minutes` and optionally `start_time`. Example: "what happened on May 9th" → start_time='2026-05-09', minutes=1440. To zoom in: minutes=240 around peak hour, then minutes=60 around peak 5-min block.
 - For **run_logs_query**: pass `start_time` + `duration_minutes`. Example: user says "2pm to 4pm" → start_time="2026-05-09T14:00", duration_minutes=120.
-- If user says "last 6 hours" → calculate start_time = now - 6h in session timezone, duration_minutes=360 (CWL) or split into 6×60-min calls (Athena).
+- If user says "last 6 hours" → calculate start_time = now - 6h in session timezone, duration_minutes=360. That is the cap, so anything longer has to be split into several calls.
 
 ## Athena vs CloudWatch Logs
 - run_logs_query works for BOTH CWL and S3/Athena users (auto-routes based on log destination).
 - **When get_waf_config shows S3/Athena logging**: immediately tell the user: "This WebACL uses Athena for log queries. Each query may take up to several minutes depending on data volume. I'll use metrics (instant) for initial analysis and only query logs when we need IP/URI-level details." This sets expectations before any slow query.
 - First Athena query includes table creation overhead on top of normal query time.
 - Athena charges per TB scanned (~$5/TB). For repeated queries, mention potential cost.
-- **Athena queries are capped at 60 minutes** (production WAF logs can be 1-10TB/day). Split into multiple 60-min calls for longer windows. Report progress between calls. Merge findings by identifying IPs/patterns across windows.
+- **A wider Athena window costs more, and it costs bytes rather than time.** Athena reads a scan in parallel, so about 4x the bytes took the same wall time in testing. Prefer narrower windows to save money, not to avoid timeouts, and merge findings across calls by identifying IPs and patterns.
 - If a query times out, the tool result tells you whether to retry and you MUST follow it rather than deciding for yourself. It permits at most one narrower retry, then stops. Reducing the window does NOT always end in success: a scan can be too large at every window worth asking about, and in that case say so instead of trying again.
-- CWL queries default to 180 min (3h), max 360 min (6h).
+- One window cap for both engines: {MAX_MINUTES} minutes. Anything larger is clamped to it.
 - For broader trends, use get_waf_overview (metrics-based, free, up to 14 days).
 
 ## Tool Disambiguation: analyze_ip vs detect_bypass(step='investigate_ip')
@@ -199,7 +200,7 @@ The tool will:
 4. Rank remaining rules by hit volume and find peak hours for analysis
 5. Guide you through client-level analysis for rules that need it
 
-**Scope limitation**: Log-level analysis is limited to 60 min per query (Athena) or 360 min (CWL). Production logs can exceed 1B entries/day. Split longer windows into multiple calls. The count-eval tool identifies the peak hour — use that as your starting point.
+**Scope limitation**: Log-level analysis is limited to {MAX_MINUTES} min per query, either engine. Production logs can exceed 1B entries/day. Split longer windows into multiple calls. The count-eval tool identifies the peak hour — use that as your starting point.
 
 If the user asks to evaluate multiple rules, the tool handles prioritization. Follow its step-by-step instructions. Do NOT attempt to evaluate all rules sequentially in one conversation — limit to 1-2 rules requiring deep analysis per round.
 
@@ -323,7 +324,13 @@ def _build_system_prompt(tz_offset: float | None = None) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     tz_str = f"UTC{tz_offset:+g}" if tz_offset is not None else "UTC (not set by user)"
     version = _get_version()
-    return f"Current date/time: {now}\nSession timezone: {tz_str} — All times from the user are in this timezone. Pass them to tools as-is, NEVER convert to UTC.\nAgent version: {version}\n\n" + SYSTEM_PROMPT
+    return (f"Current date/time: {now}\nSession timezone: {tz_str} — All times from the user are in this timezone. Pass them to tools as-is, NEVER convert to UTC.\nAgent version: {version}\n\n"
+            # The window cap is rendered from the constant the tools enforce, so the
+            # model cannot be told a limit the code does not apply. That is exactly how
+            # the prompt came to claim a 60-minute Athena cap nothing implemented.
+            # `.replace` and not an f-string: the prompt is full of literal braces
+            # ({TABLE}, {START_MS}) that an f-string would try to interpolate.
+            + SYSTEM_PROMPT.replace("{MAX_MINUTES}", str(MAX_MINUTES)))
 
 
 # ---------------------------------------------------------------------------

@@ -8,16 +8,55 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
-from tools.waf_query import query_logs, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type
+from tools.query_limits import MAX_MINUTES
 
 
-def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10) -> list[dict]:
-    """query_logs wrapper that never raises."""
-    try:
-        return query_logs(cwl, athena, start, end, limit) or []
-    except Exception as e:
-        print(f"[waf_bypass] query_logs error: {e}", file=sys.stderr, flush=True)
+def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
+                failures: dict | None = None, label: str = "") -> list[dict]:
+    """Run a log query, return its rows, and record why if there are none.
+
+    Still never raises, which is what a report assembled from many independent queries
+    needs. What it no longer does is destroy the reason: a query that failed and a query
+    that matched nothing both arrived as `[]`, and this file renders `[]` as
+    `(none found)`, which is a claim about the traffic rather than a report of what we
+    know. Measured on 2026-09-10 against a table missing `ja4fingerprint`: two of six
+    queries failed with COLUMN_NOT_FOUND and the scan produced a full report asserting no
+    bypass candidates, with the errors visible only on stderr.
+
+    Both spellings of failure land here. An **exception** is the Athena path, where
+    `_run_athena_select` raises on a stop or an engine failure. An **`_error` row** is the
+    CloudWatch path, and passing that through as data was the worse of the two: the row is
+    truthy, so a section rendered it as a table row of `?` placeholders, which is a
+    fabricated finding rather than a missing one.
+    """
+    def _record(reason: str) -> list[dict]:
+        print(f"[waf_bypass] {label or 'log query'} failed: {reason}",
+              file=sys.stderr, flush=True)
+        if failures is not None:
+            failures[label] = reason
         return []
+
+    try:
+        rows = query_logs(cwl, athena, start, end, limit)
+    except Exception as e:
+        return _record(f"{type(e).__name__}: {e}")
+    reason = log_query_error(rows)
+    if reason:
+        return _record(reason)
+    return rows or []
+
+
+def _empty_reason(failures: dict, label: str, none_text: str = "  (none found)") -> str:
+    """The line an empty section shows, which depends on why it is empty.
+
+    Every `none_text` in this file is a statement about the traffic: "(none found)",
+    "(not available)", "(no query strings on ALLOW traffic)". A failed query supports no
+    statement about the traffic at all, so the two must not read alike."""
+    reason = failures.get(label)
+    if reason:
+        return f"  UNKNOWN, the query for this section failed: {reason}"
+    return none_text
 
 CONFIDENCE_RULES = """\
 ## Confidence Rules
@@ -97,7 +136,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'."
 
-    _duration = min(duration_minutes, 360)
+    _duration = min(duration_minutes, MAX_MINUTES)
     end_epoch = min(start_epoch + _duration * 60, int(time.time()))
 
     if step == "scan":
@@ -233,6 +272,11 @@ def _step_volume_anomaly() -> str:
 def _step_scan(start_epoch: int, end_epoch: int) -> str:
     """Proactive scan: find suspicious IPs in ALLOW traffic."""
 
+    # Why a section is empty, keyed by the section. Six sections render an empty
+    # list as "(none found)", which is a claim about the traffic, so a failed query
+    # has to be told apart from a query that matched nothing.
+    failures: dict[str, str] = {}
+
     # 0. Quick coverage check (config-based) + WoW volume check
     coverage_gaps = _check_coverage_gaps()
 
@@ -321,9 +365,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " ORDER BY total DESC LIMIT 10"
     )
 
-    crawlers = _safe_query(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10)
-    repeaters = _safe_query(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10)
-    datacenter = _safe_query(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10)
+    crawlers = _safe_query(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10, failures=failures, label="crawlers")
+    repeaters = _safe_query(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10, failures=failures, label="repeaters")
+    datacenter = _safe_query(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10, failures=failures, label="datacenter")
 
     # Automation UA filter (curl, python-requests, wget, etc. that are ALLOW'd)
     auto_ua_cwl = (
@@ -348,7 +392,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " HAVING count(*) > 10"
         " ORDER BY total DESC LIMIT 10"
     )
-    auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10)
+    auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10, failures=failures, label="auto_ua")
 
     # Single tool distributed across many IPs (JA4 aggregation)
     # Require high URI diversity per JA4 to filter out normal browser traffic sharing common fingerprints
@@ -376,7 +420,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND count(DISTINCT httprequest.uri) > 50"
         " ORDER BY total DESC LIMIT 10"
     )
-    distributed = _safe_query(distributed_cwl, distributed_athena, start_epoch, end_epoch, limit=10)
+    distributed = _safe_query(distributed_cwl, distributed_athena, start_epoch, end_epoch, limit=10, failures=failures, label="distributed")
 
     # For each JA4 candidate, get representative IPs for drill-down
     distributed_ips: dict[str, list[str]] = {}
@@ -400,7 +444,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             f" AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
             f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 3"
         )
-        ip_results = _safe_query(ips_cwl, ips_athena, start_epoch, end_epoch, limit=3)
+        ip_results = _safe_query(ips_cwl, ips_athena, start_epoch, end_epoch, limit=3, failures=failures, label="distributed_ips")
         distributed_ips[ja4] = [r2.get("httpRequest.clientIp", "?") for r2 in (ip_results or [])]
 
     # UA rotation: one TLS fingerprint (JA4) behind many different User-Agents.
@@ -432,7 +476,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND count(DISTINCT httprequest.clientip) < 5"
         " ORDER BY unique_uas DESC LIMIT 10"
     )
-    ua_rotation = _safe_query(ua_rotation_cwl, ua_rotation_athena, start_epoch, end_epoch, limit=10)
+    ua_rotation = _safe_query(ua_rotation_cwl, ua_rotation_athena, start_epoch, end_epoch, limit=10, failures=failures, label="ua_rotation")
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
@@ -454,7 +498,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         for r in crawlers:
             lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} | {r.get('unique_uris', '?'):>11} |")
     else:
-        lines.append("  (none found)")
+        lines.append(_empty_reason(failures, "crawlers"))
 
     lines.append("")
     lines.append("### High Frequency + Low URI Diversity (endpoint hammering)")
@@ -464,7 +508,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         for r in repeaters:
             lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} | {r.get('unique_uris', '?'):>11} |")
     else:
-        lines.append("  (none found)")
+        lines.append(_empty_reason(failures, "repeaters"))
 
     lines.append("")
     lines.append("### Data-Center IPs Not Caught by Bot Control")
@@ -475,7 +519,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} |")
         lines.append("  (signal:known_bot_data_center label present but not classified as bot)")
     else:
-        lines.append("  (none found)")
+        lines.append(_empty_reason(failures, "datacenter"))
 
     lines.append("")
     lines.append("### Automation User-Agents Allowed Through")
@@ -485,7 +529,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         for r in auto_ua:
             lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {str(r.get('ua', '?'))[:30]:<30} | {r.get('total', '?'):>8} |")
     else:
-        lines.append("  (none found)")
+        lines.append(_empty_reason(failures, "auto_ua"))
 
     lines.append("")
     lines.append("### Single Tool Distributed Across Many IPs (JA4 aggregation)")
@@ -500,7 +544,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append("  ⚠️  Candidate signal: single TLS fingerprint + high URI diversity across many IPs. Needs IP-level investigation to confirm.")
         lines.append("  → For deeper analysis, call detect_bypass(step='investigate_ip', ip='<top IP from table above>')")
     else:
-        lines.append("  (none found)")
+        lines.append(_empty_reason(failures, "distributed"))
 
     lines.append("")
     lines.append("### UA Rotation — Single JA4 Behind Many User-Agents (UA spoofing)")
@@ -512,13 +556,24 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append("  ⚠️  Candidate signal: one TLS fingerprint faking many User-Agents from few IPs. JA4 is hard to forge, so this is a strong UA-spoofing indicator. Needs IP-level investigation to confirm.")
         lines.append("  → For deeper analysis, call detect_bypass(step='investigate_ip', ip='<an IP behind this JA4>')")
     else:
-        lines.append("  (none found)")
+        lines.append(_empty_reason(failures, "ua_rotation"))
 
     if not crawlers and not repeaters and not datacenter and not auto_ua and not distributed and not ua_rotation:
         lines.append("")
-        lines.append("### No Obvious Bypass Candidates Found")
-        lines.append("No IPs matched the anomaly filters in this time window.")
-        lines.append("⚠️  This does NOT guarantee no bypass exists — only that no IP exceeded the detection thresholds.")
+        if failures:
+            # The emptiness guard, and it is the whole point of recording the reasons.
+            # Every section came back empty and at least one query failed, so this scan
+            # supports no verdict at all. Reporting it as clean is the wrong answer that
+            # was shipping: on 2026-09-10 two failed queries produced exactly this block.
+            lines.append("### Cannot Say Whether Bypass Candidates Exist")
+            lines.append(f"Every section is empty and {len(failures)} of this scan's log "
+                         f"queries failed ({', '.join(sorted(failures))}), so there is no "
+                         f"evidence either way.")
+            lines.append("Tell the user the scan did not complete and do NOT report it as clean.")
+        else:
+            lines.append("### No Obvious Bypass Candidates Found")
+            lines.append("No IPs matched the anomaly filters in this time window.")
+            lines.append("⚠️  This does NOT guarantee no bypass exists — only that no IP exceeded the detection thresholds.")
 
     lines.append("")
     lines.append("---")
@@ -542,6 +597,13 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
 def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     """Deep-dive a specific IP's behavior in ALLOW logs."""
 
+    # Same channel as _step_scan. It matters more here: the verdict block at the
+    # bottom reads `not has_bot_label`, and a failed `labels` query makes that True,
+    # so a swallowed error pushed the conclusion TOWARD declaring a bypass with HIGH
+    # CONFIDENCE. Absence of evidence was being read as evidence of absence, in the
+    # direction that produces a false alarm.
+    failures: dict[str, str] = {}
+
     # 1. Frequency (ALLOW only — bypass context)
     freq_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
@@ -556,7 +618,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
-    freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1)
+    freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1, failures=failures, label="frequency")
     peak_rpm = freq[0].get("peak_rpm", "?") if freq else "?"
     avg_rpm = freq[0].get("avg_rpm", "?") if freq else "?"
 
@@ -572,7 +634,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
         f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
     )
-    uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1)
+    uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1, failures=failures, label="uri_diversity")
     unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"
     total_reqs = uri_data[0].get("total", "?") if uri_data else "?"
 
@@ -589,7 +651,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW' AND httprequest.args <> ''"
         f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
     )
-    qs_data = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8)
+    qs_data = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8, failures=failures, label="query_strings")
 
     # 3. Action breakdown
     action_cwl = (
@@ -602,7 +664,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY action"
     )
-    actions = _safe_query(action_cwl, action_athena, start_epoch, end_epoch, limit=10)
+    actions = _safe_query(action_cwl, action_athena, start_epoch, end_epoch, limit=10, failures=failures, label="actions")
     action_map = {r.get("action", ""): int(r.get("hits", 0)) for r in actions}
 
     # 4. Labels (bot detection)
@@ -620,7 +682,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND labels IS NOT NULL AND cardinality(labels) > 0"
         f" GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT 5"
     )
-    labels = _safe_query(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5)
+    labels = _safe_query(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5, failures=failures, label="labels")
 
     # 5. Country
     country_cwl = (
@@ -634,7 +696,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY httprequest.country LIMIT 1"
     )
-    country_data = _safe_query(country_cwl, country_athena, start_epoch, end_epoch, limit=1)
+    country_data = _safe_query(country_cwl, country_athena, start_epoch, end_epoch, limit=1, failures=failures, label="country")
     country = country_data[0].get("httpRequest.country", "?") if country_data else "?"
 
     # 6. User-Agent
@@ -652,7 +714,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
         f" ORDER BY hits DESC LIMIT 3"
     )
-    ua_data = _safe_query(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3)
+    ua_data = _safe_query(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3, failures=failures, label="user_agent")
 
     # 7. JA4 fingerprint
     ja4_cwl = (
@@ -666,7 +728,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY ja4fingerprint ORDER BY hits DESC LIMIT 3"
     )
-    ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3)
+    ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3, failures=failures, label="ja4")
 
     # 8. COUNT rules triggered (nonTerminatingMatchingRules)
     count_rules_cwl = (
@@ -683,7 +745,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND t.action = 'COUNT'"
         f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
     )
-    count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5)
+    count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures, label="count_rules")
 
     # Build output
     lines = [
@@ -712,7 +774,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             if any(t in ua.lower() for t in ("curl", "python", "wget", "httpie", "go-http", "java/", "okhttp")):
                 is_automation_ua = True
     else:
-        lines.append("  (not available)")
+        lines.append(_empty_reason(failures, "user_agent", "  (not available)"))
 
     lines.append("")
     lines.append("### JA4 Fingerprint")
@@ -720,7 +782,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         for r in ja4_data:
             lines.append(f"  {r.get('ja4Fingerprint', r.get('ja4fingerprint', '?'))} ({r.get('hits', '?')} requests)")
     else:
-        lines.append("  (not available)")
+        lines.append(_empty_reason(failures, "ja4", "  (not available)"))
 
     lines.append("")
     lines.append("### COUNT Rules Triggered (matched but not blocked)")
@@ -728,7 +790,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         for r in count_rules:
             lines.append(f"  {r.get('rule', '?')} ({r.get('hits', '?')} hits)")
     else:
-        lines.append("  (none — no COUNT rule matches for this IP)")
+        lines.append(_empty_reason(failures, "count_rules", "  (none, no COUNT rule matches for this IP)"))
 
     lines.append("")
     lines.append("### Bot Control Labels")
@@ -752,7 +814,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         if not has_bot_labels:
             lines.append("  ⚠️  No bot detection labels — Bot Control did not classify this IP")
     else:
-        lines.append("  (no labels found — Bot Control may not be deployed or IP has no label matches)")
+        lines.append(_empty_reason(failures, "labels", "  (no labels found, Bot Control may not be deployed or IP has no label matches)"))
 
     # Directional judgment
     lines.append("")
@@ -768,7 +830,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         if _qs_masked:
             lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
     else:
-        lines.append("  (no query strings on ALLOW traffic)")
+        lines.append(_empty_reason(failures, "query_strings", "  (no query strings on ALLOW traffic)"))
 
     lines.append("")
     lines.append("---")
@@ -784,10 +846,25 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     except (ValueError, TypeError):
         uri_val = 0
 
+    # `any()` over an empty list is False, and `labels` is empty both when Bot Control
+    # applied no labels and when the label query failed. Every branch below that reads
+    # `not has_bot_label` treats False as "Bot Control did not classify this IP", so on a
+    # failed query the verdict moved TOWARD declaring a bypass at HIGH CONFIDENCE. Refuse
+    # to conclude instead: a security verdict must not be built on an unread input.
+    labels_unknown = "labels" in failures
     has_bot_label = any("bot:" in r.get("Labels", "") for r in labels)
     has_datacenter = any("known_bot_data_center" in r.get("Labels", "") for r in labels)
 
-    if has_datacenter and peak_val > 50 and not has_bot_label:
+    if labels_unknown:
+        lines.append("**CANNOT DETERMINE: the Bot Control label query failed.**")
+        lines.append(f"Reason: {failures['labels']}")
+        lines.append("Every confidence rule here turns on whether Bot Control labelled this "
+                     "IP, and that is exactly what could not be read. An unlabelled IP and an "
+                     "unread label set look identical from here, and reading the second as the "
+                     "first is what produces a false bypass call.")
+        lines.append("→ Re-run this investigation once the query succeeds. Do NOT report a "
+                     "verdict from this run.")
+    elif has_datacenter and peak_val > 50 and not has_bot_label:
         lines.append("**HIGH CONFIDENCE: Undetected bot from data center.**")
         lines.append("Evidence: data-center IP (signal:known_bot_data_center) + high frequency + no bot classification.")
         lines.append("→ Bot Control is not catching this IP.")

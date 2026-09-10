@@ -485,6 +485,24 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
     raise RuntimeError(f"Unsupported log destination format: {dest}")
 
 
+def log_query_error(rows: list[dict] | None) -> str | None:
+    """The failure reason carried by a `query_logs` result, or None when it holds rows.
+
+    Lives here rather than in a consumer because the sentinel row is `query_logs`' own
+    contract: a CloudWatch query that failed or was stopped comes back as
+    `[{"_error": reason}]`, which is **truthy**, so a caller that only checks `if rows`
+    treats the reason as data. Four tool modules call `query_logs` and each one had to know
+    that independently; two of them did not, and rendered the error string into a report.
+
+    Same lesson as the five `MAX_POLL` constants: a rule every caller must apply is one
+    function, not a convention. `tests/test_window_cap.py` pairs the two structurally, so a
+    fifth caller that forgets is a test failure rather than a defect found later.
+    """
+    if rows and isinstance(rows[0], dict) and "_error" in rows[0]:
+        return str(rows[0]["_error"])
+    return None
+
+
 def get_log_type() -> str:
     """Return 'cwl', 's3', or 'none'."""
     dest = get_log_destination()

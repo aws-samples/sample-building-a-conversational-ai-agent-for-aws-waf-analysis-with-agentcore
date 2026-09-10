@@ -6,7 +6,7 @@ import time
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
-from tools.waf_query import query_logs, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type
 
 # Rules that should NEVER be recommended to switch from Count.
 # These have known high false-positive rates in production environments.
@@ -26,22 +26,40 @@ LOW_FP_RULES = {
 }
 
 
+class LogQueryFailed(Exception):
+    """A log query did not return its rows. The message is the engine's own reason.
+
+    Named for what happens rather than for one hypothetical cause. It was
+    `QueryCapError`, "raised when Athena query window cap is hit", and there has never
+    been a window cap to hit: the only producers of an `_error` row are a CloudWatch poll
+    timeout and a CloudWatch engine failure, so the name described a cause the code cannot
+    produce and sent the reader looking for a limit that is not there."""
+
+
 def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict]:
-    """Execute a log query via unified layer (CWL or Athena). Returns [] on error, raises QueryCapError if Athena cap hit."""
+    """Execute a log query via the unified layer. Raises LogQueryFailed if it did not run.
+
+    The `except Exception: return []` this replaces was **engine-asymmetric**, and that is
+    the defect rather than the untidiness. CloudWatch failures arrive as an `_error` row and
+    were reported; Athena failures arrive as a raised `RuntimeError` carrying
+    `poll_timeout_message`, and swallowing those to `[]` meant a cancelled or failed Athena
+    query reached the user as "this rule has no low-volume clients", which is a statement
+    about their traffic. Same class as the patrol and weekly-report fix in 0.17.0, in a file
+    that sweep did not reach.
+
+    `None` still returns `[]`: that is the no-logging-configured case, which `_has_logging`
+    checks before any caller gets here.
+    """
     try:
         results = query_logs(query_cwl, query_athena, start_epoch, end_epoch, limit)
-    except Exception:
-        return []
+    except Exception as exc:
+        raise LogQueryFailed(f"{type(exc).__name__}: {exc}") from exc
     if results is None:
         return []
-    if results and isinstance(results[0], dict) and "_error" in results[0]:
-        raise QueryCapError(results[0]["_error"])
+    reason = log_query_error(results)
+    if reason:
+        raise LogQueryFailed(reason)
     return results
-
-
-class QueryCapError(Exception):
-    """Raised when Athena query window cap is hit."""
-    pass
 
 
 def _has_logging() -> bool:
@@ -393,8 +411,12 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     try:
         bottom = _run_log_query(cwl_bottom, athena_bottom, start_epoch, end_epoch, limit=5)
         top = _run_log_query(cwl_top, athena_top, start_epoch, end_epoch, limit=5)
-    except QueryCapError as e:
-        return str(e)
+    except LogQueryFailed as exc:
+        # Return the engine's reason rather than an empty client table. Both queries feed
+        # the same recommendation, so one failing makes the whole step unanswerable.
+        return (f"## Client Distribution: {rule_name}\n\n"
+                f"The log query did not run, so this says nothing about {rule_name}'s "
+                f"clients.\n{exc}")
 
     lines = [
         f"## Client Distribution: {rule_name}",

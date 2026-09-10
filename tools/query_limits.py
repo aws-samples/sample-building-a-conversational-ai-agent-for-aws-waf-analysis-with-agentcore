@@ -20,13 +20,33 @@ Insights has no partitions at all, so none of that transfers: there it is a flat
 the log group is small enough to scan in the window asked for, and when the bet loses the
 only remedy is a narrower window, which is what the message says.
 
-**Not to be confused with the query window cap**, which is how many minutes of logs a
-query may ask for. Athena's is prose-only and enforcing it is ROADMAP 3.1. CloudWatch's is
-real: `MAX_MINUTES = 360` in `waf_logs.py`. **That pair is inconsistent and 2.1 records it
-as an open decision** rather than pretending this file settled it: the product will accept
-a six-hour CloudWatch request and give it two minutes. Either the window comes down or
-this comes up, and picking one needs evidence about how long a real six-hour Insights
-query takes, which nobody has gathered.
+**Not to be confused with the query window cap**, `MAX_MINUTES` below, which is how many
+minutes of logs a query may ask for. Both now live here, which is the point: the window cap
+used to be applied at five sites, two through a `MAX_MINUTES` in `waf_logs.py` and three as
+a bare literal `360`, while the prompt separately told the model Athena was capped at 60.
+Four numbers for one behaviour, and the only enforced one was the one nobody had written
+down as a decision.
+
+**Why one number and not one per engine.** ROADMAP 3.1 asked for a separate, tighter Athena
+cap, on the reasoning that a wide window on an hourly table is the path that fails badly.
+Three things say otherwise. The prompt's 60 was never true, since four tools default to 180
+and work. The cost is small and measured: at 4000 RPS an hour of logs is about 1.1 GB
+scanned, so 360 minutes is roughly 6.6 GB, and
+`docs/hourly-vs-minute-partitioning.md` finds the dominant cost is the *number* of queries
+rather than the width of one. And a static per-engine window is wrong in both directions,
+because what a query can finish depends on the install: at 10 TB/day 60 minutes may time
+out, and on a small bucket 360 finishes easily. `MAX_POLL` is the limit that adapts, since
+it measures what actually happened instead of guessing beforehand.
+
+So what a window cap still earns is a cheap refusal instead of an expensive discovery:
+rejecting a 10,000-minute request costs nothing, while discovering it at the poll budget
+costs two minutes and a scan. That is an argument for *a* ceiling, not for a tight one.
+
+**The inconsistency this file used to record is still open, and it is not about 60 versus
+360.** It is that a 360-minute request gets a 120-second poll budget: the product accepts a
+six-hour window and abandons it after two minutes. Picking a side needs evidence about how
+long a real six-hour query takes at production volume, which nobody has gathered, and this
+account cannot supply it because its log volume is too small to be representative.
 """
 
 # One deliberate value, the tightest of the five it replaces. Raising this is almost
@@ -39,6 +59,12 @@ query takes, which nobody has gathered.
 # overhead. It also means the budget stretched on a slow link and shrank on a fast one.
 MAX_POLL = 120
 POLL_INTERVAL = 2
+
+# The query WINDOW cap: how many minutes of logs one query may ask for, both engines. Six
+# hours. Every tool that takes `duration_minutes` clamps to this, and `agent.py` renders the
+# number into the system prompt from here rather than restating it, so the model cannot be
+# told a limit the code does not apply.
+MAX_MINUTES = 360
 
 # The fan-out budget, which is a different kind of limit and the one that actually governs
 # patrol. `MAX_POLL` bounds ONE query; this bounds a whole batch submitted to a thread pool,
@@ -179,6 +205,51 @@ def _stop_header(engine: str, stop: str = STOP_NOT_DONE) -> str:
             f"and it says nothing about whether traffic existed.")
 
 
+def _athena_granularity() -> str | None:
+    """The resolved table's partition granularity, or None when nothing is resolved.
+
+    Derived from `partition_format` rather than read from a `partition_granularity` key,
+    because `_record_table` publishes no such key: the granularity lives only in the
+    metadata dicts `_table_metadata` and `_create_named_table` return.
+
+    Imported inside the function because `waf_athena` imports this module at module level,
+    so a top-level import here would be circular. `ImportError` only: any other failure
+    should surface rather than quietly downgrade the advice below."""
+    try:
+        from tools.waf_athena import _athena_state, _partition_granularity
+    except ImportError:
+        return None
+    return _partition_granularity(_athena_state.get("partition_format"))
+
+
+def _narrowing_advice(engine: str) -> str:
+    """Whether narrowing the window is worth anything on this table, which is not a given.
+
+    Athena prunes by partition directory, so on an hourly table there is no sub-hour
+    directory to skip: a 5-minute request and a 60-minute request scan **identical bytes**,
+    measured in `docs/hourly-vs-minute-partitioning.md`. "Retry with a quarter of the
+    window" is then advice that cannot work, and it spends the single retry this message
+    allows. Narrowing still helps down to one hour, because that drops whole hour
+    directories; below an hour it does nothing.
+
+    The requested window is deliberately not threaded in here (see the caller's docstring),
+    so this states the rule and lets the model apply it to the number it already knows."""
+    generic = "retry ONCE with roughly a quarter of the window you just asked for."
+    if engine != "Athena":
+        # CloudWatch Logs Insights has no partitions, so a narrower window always scans
+        # less. None of the reasoning below transfers.
+        return generic
+    granularity = _athena_granularity()
+    if granularity not in ("hours", "days"):
+        return generic
+    unit = granularity[:-1]
+    return (f"do NOT just cut the window. This table is partitioned by {unit}, so Athena "
+            f"reads a whole {unit} whatever narrower window you ask for. Narrowing helps "
+            f"only down to one {unit}, by dropping whole {granularity}; below that a "
+            f"smaller window scans exactly the same bytes. If you already asked for one "
+            f"{unit} or less, do not narrow at all, use get_waf_overview instead.")
+
+
 def poll_timeout_message(engine: str, stop: str = STOP_NOT_DONE) -> str:
     """What to say when a query outlives `MAX_POLL`, and the retry bound.
 
@@ -205,6 +276,7 @@ def poll_timeout_message(engine: str, stop: str = STOP_NOT_DONE) -> str:
     from tools.session_state import note_query_timeout
     attempt = note_query_timeout()
     if attempt == 1:
+        narrow = _narrowing_advice(engine)
         # Says what happened and declines to say why, matching `_stop_header` two functions
         # up. The text here used to assert "the window was too large to scan
         # interactively", and on the one bucket this was verified against that was wrong:
@@ -212,8 +284,7 @@ def poll_timeout_message(engine: str, stop: str = STOP_NOT_DONE) -> str:
         # right *action*, because it is the only lever available from here, but it must not
         # arrive dressed as a diagnosis.
         return (f"{_stop_header(engine, stop)}\n"
-                f"ACTION: retry ONCE with roughly a quarter of the window you just asked "
-                f"for. If you do not already know which minutes spiked, call "
+                f"ACTION: {narrow} If you do not already know which minutes spiked, call "
                 f"get_waf_overview first and query only those minutes. Do not retry more "
                 f"than once. Tell the user the scan did not finish in time, that this can "
                 f"be either too wide a window or data denser than the window suggests, and "
