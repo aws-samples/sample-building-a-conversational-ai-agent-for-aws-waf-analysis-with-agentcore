@@ -11,6 +11,7 @@ from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
 from tools.waf_query import query_logs, log_query_error, get_log_type
 from tools.query_limits import MAX_MINUTES
+from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
 
 
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
@@ -206,7 +207,7 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
 
     cwl = (
         f"filter action = 'ALLOW' and ja4Fingerprint = '{safe_ja4}'"
-        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        f"{CWL_EXCLUDE_STATIC}"
         " and @message not like 'bot:verified'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 10"
@@ -216,7 +217,7 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = 'ALLOW' AND ja4fingerprint = '{safe_ja4}'"
-        f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f"{ATHENA_EXCLUDE_STATIC}"
         f" AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
     )
@@ -394,7 +395,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # 1. Run anomaly filters (exclusions built into queries)
     crawlers_cwl = (
         "filter action = 'ALLOW'"
-        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        f"{CWL_EXCLUDE_STATIC}"
         " and @message not like 'bot:verified'"
         " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"
         " | filter unique_uris > 50"
@@ -406,7 +407,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " FROM {TABLE}"
         " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
         " AND action = 'ALLOW'"
-        " AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f"{ATHENA_EXCLUDE_STATIC}"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY httprequest.clientip"
         " HAVING count(DISTINCT httprequest.uri) > 50"
@@ -415,7 +416,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
 
     repeaters_cwl = (
         "filter action = 'ALLOW'"
-        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        f"{CWL_EXCLUDE_STATIC}"
         " and @message not like 'bot:verified'"
         " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"
         " | filter total > 200 and unique_uris < 10"
@@ -427,7 +428,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " FROM {TABLE}"
         " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
         " AND action = 'ALLOW'"
-        " AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f"{ATHENA_EXCLUDE_STATIC}"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY httprequest.clientip"
         " HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10"
@@ -487,7 +488,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # Require high URI diversity per JA4 to filter out normal browser traffic sharing common fingerprints
     distributed_cwl = (
         "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
-        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        f"{CWL_EXCLUDE_STATIC}"
         " and @message not like 'bot:verified'"
         " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips,"
         " count_distinct(httpRequest.uri) as unique_uris by ja4Fingerprint"
@@ -502,7 +503,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
         " AND action = 'ALLOW'"
         " AND ja4fingerprint IS NOT NULL AND ja4fingerprint != ''"
-        " AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f"{ATHENA_EXCLUDE_STATIC}"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY ja4fingerprint"
         " HAVING count(DISTINCT httprequest.clientip) > 10 AND count(*) > 500"
@@ -697,14 +698,14 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     # 2. URI diversity (ALLOW only)
     uri_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
-        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        f"{CWL_EXCLUDE_STATIC}"
         " | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total"
     )
     uri_athena = (
         f"SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
-        f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f"{ATHENA_EXCLUDE_STATIC}"
     )
     uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1, failures=failures, label="uri_diversity")
     unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"

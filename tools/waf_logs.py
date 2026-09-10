@@ -11,9 +11,11 @@ from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active, note_query_success
 
-MAX_RESULTS = 25
+from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
 from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL,
                                 poll_timeout_message, query_failed_message, stop_query)
+
+MAX_RESULTS = 25
 
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
 _cwl_semaphore = threading.Semaphore(8)
@@ -201,26 +203,26 @@ TEMPLATES = {
         "description": "Per-minute request rate for a specific IP (detect automation)",
     },
     "ip_unique_uris": {
-        "query": "filter httpRequest.clientIp = '{ip}' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
-        "athena": "SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_requests, min(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS})) as first_seen, max(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS})) as last_seen FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')",
+        "query": "filter httpRequest.clientIp = '{ip}'" + CWL_EXCLUDE_STATIC + " | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_requests, min(@timestamp) as first_seen, max(@timestamp) as last_seen",
+        "athena": "SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_requests, min(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS})) as first_seen, max(from_unixtime(\"timestamp\"/1000 + {TZ_OFFSET_SECONDS})) as last_seen FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND httprequest.clientip = '{ip}'" + ATHENA_EXCLUDE_STATIC,
         "params": ["ip"],
         "description": "Unique non-static URI count and time span for an IP",
     },
     "top_allowed_by_volume": {
-        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "query": "filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " | stats count(*) as cnt, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'" + ATHENA_EXCLUDE_STATIC + " GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top ALLOW IPs with unique non-static URI count",
     },
     "top_allowed_crawlers": {
-        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') ) GROUP BY httprequest.clientip HAVING count(DISTINCT httprequest.uri) > 50 ORDER BY unique_uris DESC LIMIT {LIMIT}",
+        "query": "filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'" + ATHENA_EXCLUDE_STATIC + " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') ) GROUP BY httprequest.clientip HAVING count(DISTINCT httprequest.uri) > 50 ORDER BY unique_uris DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Find IPs with high URI diversity (likely crawlers)",
     },
     "top_allowed_repeaters": {
-        "query": "filter action = 'ALLOW' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/ and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 200 and unique_uris < 10 | sort total desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW' AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$') AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') ) GROUP BY httprequest.clientip HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10 ORDER BY total DESC LIMIT {LIMIT}",
+        "query": "filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 200 and unique_uris < 10 | sort total desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'" + ATHENA_EXCLUDE_STATIC + " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') ) GROUP BY httprequest.clientip HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10 ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Find IPs hitting few URIs at high frequency",
     },
@@ -916,14 +918,14 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     uri_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
-        ' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/'
+        f"{CWL_EXCLUDE_STATIC}"
         ' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static'
     )
     uri_athena = (
         f"SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_non_static"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}'"
-        f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f"{ATHENA_EXCLUDE_STATIC}"
     )
 
     # Run queries (sequential via unified layer — each is fast with IP filter)
