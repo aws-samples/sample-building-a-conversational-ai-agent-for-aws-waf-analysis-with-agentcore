@@ -183,9 +183,18 @@ def test_no_user_facing_string_still_says_hourly_is_unbuildable():
     ABSENCE across `tools/` costs a line and catches a third copy, where a test per call site
     only covers the sites someone remembered."""
     import pathlib
-    offenders = []
-    for path in sorted(pathlib.Path("tools").glob("*.py")):
-        for n, line in enumerate(path.read_text().splitlines(), 1):
-            if "does not build yet" in line and "used to read" not in line:
-                offenders.append(f"{path}:{n}")
+    # Resolved from __file__, not from the working directory. `Path("tools")` globbed nothing
+    # unless pytest ran from the repo root, and an empty search space satisfies an
+    # absence claim perfectly, so the first version passed from anywhere else. Both halves
+    # below are needed and they do different work: resolving fixes this instance, and the
+    # non-empty assertion survives `tools/` being renamed or emptied.
+    #
+    # No exemption for a comment quoting the old sentence. The one comment that does quote it
+    # splits the phrase across two lines, so this per-line sweep never sees it, and an exemption
+    # with no user is a standing hole a live claim can hide behind.
+    files = sorted((pathlib.Path(__file__).resolve().parents[1] / "tools").glob("*.py"))
+    assert len(files) > 10, f"searched {len(files)} files, so a green result proves nothing"
+    offenders = [f"{p.name}:{n}" for p in files
+                 for n, line in enumerate(p.read_text().splitlines(), 1)
+                 if "does not build yet" in line]
     assert not offenders, offenders
