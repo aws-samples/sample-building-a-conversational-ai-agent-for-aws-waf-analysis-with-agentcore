@@ -161,3 +161,63 @@ def test_the_prompt_routes_to_nothing_that_does_not_exist():
     assert called, "no call-shaped names parsed from the prompt, so this proves nothing"
     unknown = sorted(called - REGISTERED)
     assert not unknown, f"the prompt routes to names that are not registered tools: {unknown}"
+
+
+# --- the prompt's claims about get_waf_overview's query types ----------------
+#
+# Added because the sentence at `agent.py:116` was made PRECISE, and precision is what makes a
+# claim able to rot. "Returns full time-series" was too vague to ever be provably stale; naming
+# five query types and three others cannot survive a ninth landing. The eight are derivable from
+# the dispatch, so the naming half is mechanizable. The series-versus-totals half is derivable
+# too, from whether a handler appends inside a `timestamps` loop, and it is deliberately left to
+# the prose: that heuristic is fragile enough to become its own false claim, which is how a
+# reviewer's probe first mis-sorted `bot_names` by matching "ts" inside `sorted_bots`.
+
+_NUMBER_WORDS = {"three": 3, "five": 5, "eight": 8, "nine": 9, "ten": 10}
+
+
+def _dispatch_query_types() -> set:
+    """The query types `get_waf_overview` actually dispatches, read from its comparisons."""
+    tree = ast.parse((TOOLS_DIR / "waf_overview.py").read_text())
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) \
+                and node.left.id == "query_type":
+            for c in node.comparators:
+                if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                    found.add(c.value)
+    return found
+
+
+def _series_sentence() -> str:
+    """The one sentence in the prompt that enumerates query types by time-series behaviour."""
+    anchor = "query types return a time-series"
+    assert anchor in PROMPT, "the prompt no longer makes this claim; delete these two tests"
+    start = PROMPT.rindex(".", 0, PROMPT.index(anchor)) + 1
+    return PROMPT[start:PROMPT.index("\n", start)]
+
+
+def test_the_prompt_names_every_overview_query_type_and_no_others():
+    """Both directions in one set comparison. A ninth query type makes the sentence incomplete;
+    a renamed one makes it wrong, and the model would ask for a type that no longer dispatches."""
+    dispatch = _dispatch_query_types()
+    assert len(dispatch) >= 5, sorted(dispatch)
+    named = set(re.findall(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b", _series_sentence()))
+    assert named == dispatch, {"named but not dispatched": sorted(named - dispatch),
+                              "dispatched but not named": sorted(dispatch - named)}
+
+
+def test_the_counts_in_that_sentence_match_the_lists_it_gives():
+    """"Five of the eight" is the part a reader acts on, so it has to track the lists. Without
+    this, a ninth type could be added to the prose and the set comparison above would pass while
+    the sentence still said eight."""
+    sentence = _series_sentence()
+    words = [_NUMBER_WORDS[w] for w in re.findall(r"\b([a-z]+)\b", sentence.lower())
+             if w in _NUMBER_WORDS]
+    assert len(words) >= 2, f"no two number words found in: {sentence!r}"
+    with_series, total = words[0], words[1]
+    named = set(re.findall(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b", sentence))
+    assert total == len(named), f"sentence says {total} query types, names {len(named)}"
+    assert total == len(_dispatch_query_types()), \
+        f"sentence says {total} query types, the code dispatches {len(_dispatch_query_types())}"
+    assert with_series < total, f"{with_series} of {total} leaves nothing without a series"
