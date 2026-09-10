@@ -63,8 +63,33 @@ def test_each_file_still_says_the_true_thing(rel, corrected):
 
 
 # `design/` records superseded reasoning on purpose, which is exactly where a falsified claim
-# belongs. `tests/` is excluded because this file quotes every banned phrase in order to ban it.
-EXCLUDED = ("design/", ".venv/", "node_modules/", "tests/")
+# belongs. This file is excluded because it quotes every banned phrase in order to ban them.
+#
+# **The exclusion is THIS FILE, not all of `tests/`, and the difference is the stated reason.**
+# The justification only ever covered one file, and it is the only file under `tests/` containing
+# a banned phrase, so narrowing it passes today and stops the next test file from carrying the
+# claim in a docstring. Same shape as excluding the registration site rather than the whole
+# module, which is the mistake that let the `log_query_error` sweep pass.
+EXCLUDED_PREFIXES = ("design/", ".venv/")
+EXCLUDED_FILES = ("tests/test_partition_timezone_claim.py",)
+
+
+def _excluded(rel: str) -> bool:
+    """Whether a repo-relative path is out of the search space.
+
+    **`node_modules` is matched anywhere in the path, not as a prefix.** It used to sit in the
+    prefix tuple, where it never matched, because the real path is `frontend/node_modules/...`:
+    56 of the 147 files swept were inside an npm package, 38% of the search space, walked once
+    per parametrized claim. Nothing in there matches a banned phrase today, so the test was
+    green, and a dependency bump could have turned a product-claim test red with an offender
+    path inside a third-party README. A false-positive generator inside the one test whose whole
+    value is a trustworthy signal.
+
+    Not gitignore-aware, so anything untracked but present locally is still swept. Left that way
+    deliberately: reading `.gitignore` here would be a second exclusion mechanism to keep in
+    step with this one, and an extra file in the search space is the harmless direction."""
+    return (rel.startswith(EXCLUDED_PREFIXES) or rel in EXCLUDED_FILES
+            or "node_modules" in rel)
 
 
 def _unreleased_only(lines: list[str]) -> list[str]:
@@ -90,7 +115,7 @@ def test_no_file_claims_a_non_utc_prefix_zone_breaks_queries(claim):
         if path.suffix not in (".py", ".md") or not path.is_file():
             continue
         rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith(EXCLUDED):
+        if _excluded(rel):
             continue
         lines = path.read_text(errors="ignore").splitlines()
         if rel == "CHANGELOG.md":
@@ -98,7 +123,12 @@ def test_no_file_claims_a_non_utc_prefix_zone_breaks_queries(claim):
         for n, line in enumerate(lines, 1):
             if claim in line.lower():
                 offenders.append(f"{rel}:{n}")
-    assert not offenders, f"{claim!r} still shipped at: {offenders}"
+    assert not offenders, (
+        f"{claim!r} still shipped at: {offenders}. If one of these is a CHANGELOG entry "
+        f"DESCRIBING the old claim, that is legitimate and this is not a regression: attribute "
+        f"it, as in 'used to say a non-UTC zone returned no rows', so the sentence reads as "
+        f"history rather than as the product's current behaviour. Released sections are already "
+        f"exempt; the Unreleased section is not, on purpose.")
 
 
 def test_the_sweep_searched_the_files_it_claims_to_cover():
@@ -106,5 +136,5 @@ def test_the_sweep_searched_the_files_it_claims_to_cover():
     an exclusion that swallowed the shipped tree, satisfies every absence claim above."""
     searched = {p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*")
                 if p.is_file() and p.suffix in (".py", ".md")
-                and not p.relative_to(ROOT).as_posix().startswith(EXCLUDED)}
+                and not _excluded(p.relative_to(ROOT).as_posix())}
     assert set(SUBJECTS) <= searched, sorted(set(SUBJECTS) - searched)

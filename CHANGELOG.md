@@ -4,7 +4,7 @@
 
 ### Fixed: a non-UTC Firehose prefix time zone is no longer reported as broken
 
-- **Four places told you a non-UTC S3 prefix time zone makes Athena queries return 0 results.**
+- **Four places told you that a non-UTC S3 prefix time zone meant Athena would find no rows.**
   It does not. The agent reads the delivery stream's `CustomTimeZone` and prunes partitions in
   that zone, and has since 0.13.0. The setup guide, its Chinese translation, the searchable
   knowledge base and the agent's own hint to the model all still carried the old rule, so a
