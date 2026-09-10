@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 (2026-09-10)
 
 ### Changed: a bypass scan runs its six queries at once
 
