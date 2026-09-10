@@ -102,9 +102,10 @@ First classify the failure — the fix lives in different places:
 **Behavior vs. roadmap.** The docs above describe how the *deployed* build behaves. What is
 *planned but not yet shipped* lives in [`docs/roadmap.md`](docs/roadmap.md). Check the version you
 deployed (the `what version are you running?` step) against the CHANGELOG before assuming a
-roadmap item is live — e.g. the roadmap lists accepting hourly-partitioned logs, but until that
-ships the deployed agent still declines hourly log-detail queries as described above. Don't tell a
-user a roadmap item is present when their build predates it.
+roadmap item is live. Hourly log-detail queries are the worked example of why: they were declined
+for most of this project's life and now run, so a build from before that change still declines them
+and the CHANGELOG is how you tell. Don't tell a user a roadmap item is present when their build
+predates it.
 
 ## Updating & cleanup
 

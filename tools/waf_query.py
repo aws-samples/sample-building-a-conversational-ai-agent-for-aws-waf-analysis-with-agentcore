@@ -341,23 +341,46 @@ REDACTION_POSSIBLE_HINT = (
 )
 
 
-_HOURLY_PARTITION_ERROR = (
-    "BLOCKED: This table uses hourly partitioning (the Firehose default). Log-detail queries "
-    "are intentionally stopped here — on production traffic they would scan a whole hour per "
-    "query and take 30-60s or time out, which breaks interactive analysis. This is a deliberate "
-    "stop for query speed, NOT a data error and NOT a tool failure.\n"
-    "ACTION: Call search_waf_knowledge(query='Firehose minute-level partitioning for Athena WAF "
-    "log queries') to retrieve the guide, then explain to the user IN YOUR OWN WORDS: (1) why "
-    "the agent stopped (scan-time/UX, not correctness), (2) that aggregate CloudWatch metrics "
-    "still work meanwhile, and (3) the concrete one-time Firehose prefix change to fix it "
-    "(Console or CLI steps from the knowledge base). Do NOT just paste a link — walk them "
-    "through the cause and the fix."
+_COARSE_PARTITION_ERROR = (
+    "BLOCKED: This table is partitioned by day or coarser. Log-detail queries are stopped "
+    "here because one day of production WAF logs is a multiple of what an hourly scan reads, "
+    "with none of hourly's excuse that it is the delivery default. This is a deliberate stop "
+    "for scan cost, NOT a data error and NOT a tool failure.\n"
+    "ACTION: tell the user that aggregate CloudWatch metrics still work and are unaffected, "
+    "then offer the fix: re-deliver logs with an hourly or minute-level prefix. Call "
+    "search_waf_knowledge(query='Firehose minute-level partitioning for Athena WAF log "
+    "queries') for the concrete steps. Hourly is enough to unblock these queries; "
+    "minute-level costs less per query."
+)
+
+# 3.3, and it replaced a refusal rather than being added next to one. Hourly used to be
+# blocked, which blocked most Firehose users, since hourly is the Firehose default. What the
+# load test actually found is that hourly is a COST difference: about 4x the bytes of
+# minute-level at the same wall time, because Athena's split parallelism follows object
+# count rather than partition count. So the honest response is to run the query and say what
+# it costs, which is what this does.
+#
+# Stated once per resolved table rather than once per query. It is a property of the table,
+# and a per-query notice would train the model to ignore it.
+HOURLY_COST_NOTICE = (
+    "This table is partitioned by hour, which is the Firehose default. Log queries work "
+    "normally. Two consequences worth telling the user once, not per query: each query reads "
+    "a whole hour even when it asks for five minutes, so it scans more and costs more than the "
+    "same question on a minute-level table; and narrowing a window below one hour saves "
+    "nothing, so zoom in by asking for fewer hours rather than fewer minutes. Switching the "
+    "Firehose prefix to minute-level is a one-time change that removes both; "
+    "search_waf_knowledge(query='Firehose minute-level partitioning for Athena WAF log "
+    "queries') has the steps."
 )
 
 
-def check_hourly_partition_block() -> str | None:
-    """Return the coarse-partition error if the Athena table is coarser than
-    minute-level, else None.
+def check_coarse_partition_block() -> str | None:
+    """Return the coarse-partition error if the Athena table is coarser than HOURLY,
+    else None.
+
+    Renamed from `check_hourly_partition_block` with the threshold move (ROADMAP 3.2),
+    because a function named for blocking hourly that no longer blocks hourly is the
+    defect this project keeps finding: prose asserting what the code contradicts.
 
     Best-effort pre-flight only, and deliberately so. It reads
     `_athena_state["partition_format"]`, which is written by table resolution, so
@@ -368,10 +391,10 @@ def check_hourly_partition_block() -> str | None:
     use it as a cheap guard and resolution walks S3 and the Glue catalog."""
     if get_log_type() != "s3":
         return None
-    from tools.waf_athena import _athena_state, _partition_has_minutes
+    from tools.waf_athena import _athena_state, _partition_too_coarse
     part_fmt = _athena_state.get("partition_format")
-    if part_fmt and not _partition_has_minutes(part_fmt):
-        return _HOURLY_PARTITION_ERROR
+    if part_fmt and _partition_too_coarse(part_fmt):
+        return _COARSE_PARTITION_ERROR
     return None
 
 
@@ -442,9 +465,9 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         # Athena scan too much data per query and time out on production traffic.
         # Safe as a bare granularity test because discovery rejects any declared
         # format it could not classify, so nothing unclassifiable reaches here.
-        from tools.waf_athena import _athena_state, _partition_has_minutes
-        if _athena_state.get("partition_format") and not _partition_has_minutes(_athena_state["partition_format"]):
-            raise RuntimeError(_HOURLY_PARTITION_ERROR)
+        from tools.waf_athena import _athena_state, _partition_too_coarse
+        if _athena_state.get("partition_format") and _partition_too_coarse(_athena_state["partition_format"]):
+            raise RuntimeError(_COARSE_PARTITION_ERROR)
         sql = query_athena.replace("{TABLE}", table)
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))

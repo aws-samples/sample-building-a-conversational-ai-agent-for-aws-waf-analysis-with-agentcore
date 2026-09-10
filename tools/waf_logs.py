@@ -439,7 +439,7 @@ def run_logs_query(
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
     from tools.waf_query import (query_logs, log_query_error, get_log_type,
-                                 check_hourly_partition_block)
+                                 check_coarse_partition_block)
 
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
@@ -488,9 +488,9 @@ def run_logs_query(
             results = []
     else:
         log_type = get_log_type()
-        hourly_err = check_hourly_partition_block()
-        if hourly_err:
-            return hourly_err
+        coarse_err = check_coarse_partition_block()
+        if coarse_err:
+            return coarse_err
         _log(f"routing via unified layer: log_type={log_type} start={start_epoch} end={end_epoch}")
         try:
             results = query_logs(query, athena_query, start_epoch, end_epoch, limit=params["limit"])
@@ -808,12 +808,12 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
 
     from tools.waf_query import (query_logs, log_query_error, get_log_type,
-                                 check_hourly_partition_block)
+                                 check_coarse_partition_block)
     if get_log_type() == "none":
         return "Error: no logging configured. Run get_waf_config first."
-    hourly_err = check_hourly_partition_block()
-    if hourly_err:
-        return hourly_err
+    coarse_err = check_coarse_partition_block()
+    if coarse_err:
+        return coarse_err
 
     _duration = min(duration_minutes, MAX_MINUTES)
     start_epoch = _parse_start_time(start_time)

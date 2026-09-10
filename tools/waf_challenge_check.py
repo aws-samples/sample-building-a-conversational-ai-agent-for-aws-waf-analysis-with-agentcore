@@ -41,10 +41,10 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     if get_log_type() == "none":
         return ("Error: No logging configured for this WebACL. "
                 "Cannot query Challenge/CAPTCHA logs. Enable WAF logging first.")
-    from tools.waf_query import check_hourly_partition_block
-    hourly_err = check_hourly_partition_block()
-    if hourly_err:
-        return hourly_err
+    from tools.waf_query import check_coarse_partition_block
+    coarse_err = check_coarse_partition_block()
+    if coarse_err:
+        return coarse_err
 
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:

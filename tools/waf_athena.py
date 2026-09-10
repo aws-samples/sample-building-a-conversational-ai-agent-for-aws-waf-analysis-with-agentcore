@@ -180,15 +180,6 @@ def _java_date_format_to_strftime(java_fmt: str) -> str:
     return out
 
 
-def _partition_has_minutes(java_fmt: str | None) -> bool:
-    """True if the partition format resolves to minute-level granularity.
-
-    Case-sensitive `mm` (minute) check — `MM` (month) must not count. Anything
-    coarser than minute-level (hourly, daily) returns False and is subject to
-    the coarse-partition query guard. Only call this on a format that
-    _partition_granularity has already accepted; on an unclassifiable format the
-    bare `mm` test can be wrong in either direction."""
-    return bool(java_fmt) and "mm" in java_fmt
 
 
 # The only partition layouts the pruning predicate is valid for. Pruning is a
@@ -226,6 +217,28 @@ def _partition_granularity(java_fmt: str | None) -> str | None:
         return None
     tokens = tuple(t for t in _JAVA_TOKEN_RE.findall(java_fmt) if t[0] in "yMdHms")
     return _GRANULARITY_BY_TOKENS.get(tokens)
+
+def _partition_too_coarse(java_fmt: str | None) -> bool:
+    """True when the layout is too coarse to serve log-detail queries, i.e. coarser
+    than hourly.
+
+    **This replaces `_partition_has_minutes`, and the threshold moved with it (ROADMAP
+    3.2).** Hourly used to be refused, which refused most Firehose users, since hourly is
+    the Firehose default. The load test in `docs/hourly-vs-minute-partitioning.md` settled
+    it: hourly scans about 4x the bytes of minute-level at the *same* wall time, because
+    Athena's split parallelism follows object count rather than partition count. So hourly
+    is a cost difference and not a speed wall, and the right response is to run it and say
+    what it costs. Daily and coarser stay refused: nobody configures daily, its per-query
+    scan is a multiple of hourly's, and it has none of hourly's "it is just the default"
+    excuse.
+
+    An unclassifiable format is refused. Reading it as fine-grained would run at unknown
+    scan cost while the product believes it refuses coarse layouts, which is the one
+    direction of this decision that cannot be walked back after the bill arrives."""
+    granularity = _partition_granularity(java_fmt)
+    if granularity is None:
+        return True
+    return _GRANULARITY_ORDER[granularity] > _GRANULARITY_ORDER["hours"]
 
 
 def _zone_from_str(name: str | None):
@@ -402,11 +415,25 @@ def _date_levels(bucket: str, root: str, parts: list[str], newest: bool, ls=None
 
 
 def _era_of(levels: list[str]) -> str | None:
-    """'minutes', 'hours', or None when the subtree is too shallow to be a date tree."""
+    """'minutes', 'hours', 'days', or None when the subtree is too shallow to read.
+
+    Three-way as of ROADMAP 3.2, and it had to become three-way in the same change that
+    opened the gate to hourly. While hourly was refused outright, folding daily in with it
+    was harmless: both were rejected and the message was right either way. Open the gate and
+    a daily bucket declared as `yyyy/MM/dd/HH` projects `.../27/00` through `/23` while the
+    objects sit directly under `.../27/`, so no projected partition covers them and Athena
+    reports that as **zero rows with no error**. A loud refusal would have become a silent
+    wrong answer.
+
+    `days` and None stay distinct on purpose. `mixed` is only reported when both ends read as
+    a real era, so folding an unreadable subtree into `days` would make an unreadable bucket
+    claim a layout change it knows nothing about."""
     if len(levels) >= 5:
         return "minutes"
     if len(levels) == 4:
         return "hours"
+    if len(levels) == 3:
+        return "days"
     return None
 
 
@@ -469,6 +496,17 @@ def _detect_partitions(s3_path: str) -> dict:
     raise PartitionsNotFound(f"Cannot detect partition structure under {s3_path}")
 
 
+# Padding for a range start, one entry per declared unit. `range_start_parts` is always
+# [year, month, day], so each unit needs the fields its format adds beyond the day.
+_RANGE_START_SUFFIX = {"days": "", "hours": "/00", "minutes": "/00/00"}
+
+_FORMAT_BY_ERA = {
+    "minutes": ("yyyy/MM/dd/HH/mm", "minutes"),
+    "hours": ("yyyy/MM/dd/HH", "hours"),
+    "days": ("yyyy/MM/dd", "days"),
+}
+
+
 def _layout_from_years(bucket: str, root: str, years: list[str], ls=None) -> dict:
     """Decide the layout and its start date, given the years present under `root`.
 
@@ -482,10 +520,18 @@ def _layout_from_years(bucket: str, root: str, years: list[str], ls=None) -> dic
 
     # The layout to declare is whatever the newest data uses: that is what the user
     # switched to, and it is what new objects will keep arriving as.
-    if era_new == "minutes":
-        fmt, unit = "yyyy/MM/dd/HH/mm", "minutes"
-    else:
-        fmt, unit = "yyyy/MM/dd/HH", "hours"
+    #
+    # A table rather than an if/else, because the old `else` collected two different cases
+    # and declared hourly for both. Daily data got a format one level too fine, which
+    # projects partitions that do not exist. An unreadable subtree got a guess.
+    #
+    # An unreadable subtree now falls back to the COARSEST layout, not the middle one.
+    # Declaring coarser than reality is safe, since `storage.location.template` resolves to
+    # the day directory and Athena scans recursively beneath it; declaring finer is the
+    # zero-rows failure above. So when we cannot tell, guess in the direction that still
+    # reads the data. It is then refused for log detail, which is the honest outcome for a
+    # layout nobody could classify.
+    fmt, unit = _FORMAT_BY_ERA[era_new or "days"]
 
     # Minute-level means interval 1, never inferred from the directory names.
     # Firehose's !{timestamp:mm} emits whatever minute the buffer happened to flush
@@ -531,7 +577,11 @@ def _layout_from_years(bucket: str, root: str, years: list[str], ls=None) -> dic
         # anyway, so the earliest data is the safe start in both cases.
         range_start_parts = data_start_parts
 
-    range_start = "/".join(range_start_parts) + ("/00/00" if unit == "minutes" else "/00")
+    # The suffix has to match the DECLARED format field for field: `_create_named_table`
+    # parses this string with `strptime` against `_java_date_format_to_strftime(fmt)`, so a
+    # daily table given `yyyy/MM/dd/00` raises. The old two-way test read "minutes or not",
+    # which was true while `not minutes` could only mean hourly.
+    range_start = "/".join(range_start_parts) + _RANGE_START_SUFFIX[unit]
 
     return {
         "storage_template": f"s3://{bucket}/{root}${{log_time}}",
@@ -1438,13 +1488,29 @@ def describe_table_resolution() -> str:
         # coarse. Say so here rather than only when a query happens to ask for it: a
         # user who switched prefixes months ago has no reason to suspect the older
         # objects are invisible, and Athena's answer for them is zero rows.
+        # The last sentence used to read "an hourly table, which this agent does not build
+        # yet", and 3.2 made that false: the agent now declares hourly when the newest data
+        # is hourly, and hourly log queries run. What is still true is narrower, so say the
+        # narrower thing. The agent builds ONE table, for the layout the newest data uses,
+        # and reading the older era needs a SECOND table over the same bucket that it does
+        # not build. That is also why the manual second-table recipe in
+        # docs/hourly-vs-minute-partitioning.md stays: it is still the only way to read a
+        # pre-cutover era, which 3.2 was expected to change and did not.
         lines.append(
             f"{mixed} This table covers the minute-level era only. Logs from "
             f"{_athena_state.get('layout_data_start')} up to the cutover are in the "
             f"bucket, but no minute-level table can address them, and Athena reports "
-            f"that as zero rows rather than as an error. Reading them needs an hourly "
-            f"table, which this agent does not build yet. The cutover date is "
-            f"best-effort.")
+            f"that as zero rows rather than as an error. Hourly tables are queryable "
+            f"now, but the agent builds one table per WebACL, for the newest layout, so "
+            f"reading the older era needs a second, hourly table you create yourself over "
+            f"the same bucket. The cutover date is best-effort.")
+    # 3.3's cost notice. Here rather than per query because it is a property of the table:
+    # once per resolved table is information, once per query is noise the model learns to
+    # skip. Fires for hourly only; daily and coarser are refused outright and say so at the
+    # query, and minute-level has nothing to report.
+    if _partition_granularity(_athena_state.get("partition_format")) == "hours":
+        from tools.waf_query import HOURLY_COST_NOTICE
+        lines.append(HOURLY_COST_NOTICE)
     if _athena_state.get("schema_note"):
         lines.append(_athena_state["schema_note"])
     for note in _athena_state.get("discovery_notes") or []:

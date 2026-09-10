@@ -109,10 +109,10 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
         return ("Error: No logging configured for this WebACL. Cannot analyze ALLOW traffic without logs.\n"
                 "Enable WAF logging (S3 or CloudWatch Logs) first.\n"
                 "For a metrics-only volume check, call detect_bypass(step='volume_anomaly').")
-    from tools.waf_query import check_hourly_partition_block
-    hourly_err = check_hourly_partition_block()
-    if hourly_err:
-        return hourly_err
+    from tools.waf_query import check_coarse_partition_block
+    coarse_err = check_coarse_partition_block()
+    if coarse_err:
+        return coarse_err
 
     if is_log_filter_active():
         # Check if ALLOW logs are available
