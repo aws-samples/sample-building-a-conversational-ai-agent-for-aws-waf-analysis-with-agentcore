@@ -29,6 +29,43 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BACKFILL_FLOOR = (0, 13, 0)
 
 
+def _default_branch_ref() -> str | None:
+    """A remote-tracking ref for the default branch, or None when none resolves.
+
+    Resolved rather than hardcoded, and that is not defensiveness. This repo's remote is
+    `github`, not `origin`, so `origin/main` does not exist, and `merge-base --is-ancestor`
+    against a missing ref exits non-zero exactly as it does for "not an ancestor". Hardcoding
+    `origin/main` would therefore read every run as unmerged and disable the check permanently,
+    which is the one failure direction that matters here."""
+    for remote in subprocess.run(["git", "remote"], cwd=ROOT, capture_output=True,
+                                 text=True, check=True).stdout.split():
+        ref = f"{remote}/main"
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                          cwd=ROOT, capture_output=True).returncode == 0:
+            return ref
+    return None
+
+
+def _is_shipped() -> bool:
+    """True when HEAD is reachable from the default branch, i.e. this code has landed.
+
+    **Fails closed.** When no remote ref resolves we cannot tell, so the answer is "shipped"
+    and the assertion applies. Guessing "unshipped" would be the exemption swallowing the check
+    on any clone whose remotes are named unexpectedly.
+
+    **The hole, named rather than left for someone to find.** A local default branch that is
+    ahead of its remote counterpart reads as unshipped, so a cut merged locally and not yet
+    pushed would go quiet. This workflow merges on GitHub and fast-forwards, so the two agree,
+    and the pre-cut step already requires a clean tree in sync with the remote. A branch-name
+    check has no such hole but breaks the moment a cut happens on a differently-named branch,
+    and that is the likelier accident."""
+    ref = _default_branch_ref()
+    if ref is None:
+        return True
+    return subprocess.run(["git", "merge-base", "--is-ancestor", "HEAD", ref],
+                          cwd=ROOT, capture_output=True).returncode == 0
+
+
 def _dirty(path: str) -> bool:
     """True when `path` has uncommitted changes.
 
@@ -80,10 +117,17 @@ def test_every_heading_since_the_backfill_floor_is_tagged(headings, tags):
     green on `main`. Do not weaken it to quiet the window: quieting it removes the only check
     that a forgotten tag ever trips."""
     untagged = {h for h in headings if _v(h) >= BACKFILL_FLOOR} - set(tags)
-    # Mid-cut the newest heading is written and the tag comes after the merge, so exempt it
-    # while CHANGELOG.md is uncommitted. Only the newest: an OLDER untagged heading is the real
-    # defect and still fails, dirty tree or not.
-    if _dirty("CHANGELOG.md") and headings:
+    # Exempt the newest heading until this code has shipped. The tag goes on the cut PR's MERGE
+    # commit, so it cannot exist while the branch does, and the window is the whole life of the
+    # PR rather than just the uncommitted part. Keying on the dirty tree covered only the
+    # uncommitted half and left every release PR red, which costs nothing while CI runs CodeQL
+    # only and turns into a standing false alarm the moment ROADMAP 5.4 puts pytest in CI.
+    #
+    # Ancestry keeps the property the exemption needs: the defect it guards, a heading cut and
+    # never tagged, can only manifest on the default branch, because a release branch cannot be
+    # shipped. So the exemption keys on being unshipped and cannot cover shipped state. Only the
+    # newest heading either way: an OLDER untagged heading is the real defect and still fails.
+    if headings and (not _is_shipped() or _dirty("CHANGELOG.md")):
         untagged -= {max(headings, key=_v)}
     assert not sorted(untagged, key=_v), f"in CHANGELOG.md with no v-tag: {sorted(untagged, key=_v)}"
 
