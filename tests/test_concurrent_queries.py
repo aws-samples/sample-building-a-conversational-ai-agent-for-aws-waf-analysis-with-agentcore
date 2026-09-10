@@ -216,3 +216,158 @@ def test_the_scan_registers_a_job_for_every_section_that_reports_one(monkeypatch
     assert rendered, "no rendered labels parsed, so this proves nothing"
     assert seen["keys"] == rendered, {"registered only": seen["keys"] - rendered,
                                       "rendered only": rendered - seen["keys"]}
+
+
+# --- investigate_block, the second 4.6 target ------------------------------
+
+
+BLOCK_ROW = {"terminatingRuleId": "SomeRule", "terminatingRuleType": "RATE_BASED",
+             "action": "BLOCK", "hits": "9", "peak_rpm": "9", "avg_rpm": "9",
+             "sub_rule": "SubRule", "httpRequest.uri": "/x",
+             "httpRequest.httpMethod": "GET"}
+
+# label -> a string that appears only in that query's pair, so one query can be failed
+# without touching the other four. Verified by the completeness test below.
+ONLY_IN = {
+    "block": "by terminatingRuleId, terminatingRuleType",
+    "ratio": "as hits by action",
+    "freq": "as peak_rpm",
+    "multi": "action != 'ALLOW'",
+    "uri": "httpRequest.httpMethod",
+}
+
+
+def _fake_block_query(fail_marker=None):
+    def run(cwl, athena, start, end, limit=25):
+        if fail_marker and fail_marker in f"{cwl}\n{athena}":
+            return [{"_error": "CloudWatch Logs Insights did not finish within 120 seconds."}]
+        return [dict(BLOCK_ROW)]
+    return run
+
+
+def test_the_investigation_registers_exactly_the_independent_queries(monkeypatch):
+    """Five of six. The sub-rule lookup is excluded because whether it runs depends on the
+    primary rule's TYPE, which only the block query can tell us, so it cannot join the wave.
+    Asserted as a set: adding a sixth job without checking its dependencies is the way this
+    change turns into a wrong answer rather than a slow one."""
+    from tools import waf_block_fp as F
+
+    seen = {}
+    monkeypatch.setattr(F, "query_logs", _fake_block_query())
+    real = Q.run_concurrently
+    monkeypatch.setattr(F, "run_concurrently",
+                        lambda jobs, **k: (seen.update({"k": set(jobs)}), real(jobs, **k))[1])
+    F._investigate_gather("203.0.113.9", 0, 3600)
+    assert seen["k"] == {"block", "ratio", "freq", "multi", "uri"}, seen["k"]
+
+
+def test_each_markers_string_identifies_exactly_one_query(monkeypatch):
+    """The precondition for the sweep below, and it is the part that could silently rot. If a
+    marker matched two queries, "failing only the ratio query" would fail two and the
+    refusal test would pass for the wrong reason."""
+    from tools import waf_block_fp as F
+
+    captured = []
+    monkeypatch.setattr(F, "query_logs", _fake_block_query())
+    real = Q.run_concurrently
+    monkeypatch.setattr(F, "run_concurrently",
+                        lambda jobs, **k: (captured.append(jobs), real(jobs, **k))[1])
+    F._investigate_gather("203.0.113.9", 0, 3600)
+    jobs = captured[0]
+    assert set(jobs) == set(ONLY_IN), (set(jobs), set(ONLY_IN))
+    # Re-run each job with a recording query layer to get its text back.
+    texts = {}
+    def capture(cwl, athena, start, end, limit=25):
+        texts[len(texts)] = f"{cwl}\n{athena}"
+        return [dict(BLOCK_ROW)]
+    monkeypatch.setattr(F, "query_logs", capture)
+    for label, job in jobs.items():
+        before = len(texts)
+        job()
+        texts[label] = texts.pop(before)
+    for label, marker in ONLY_IN.items():
+        hits = [l for l, t in texts.items() if marker in t]
+        assert hits == [label], f"{marker!r} matches {hits}, not just {label}"
+
+
+@pytest.mark.parametrize("label", sorted(ONLY_IN))
+def test_one_failed_query_refuses_the_investigation_rather_than_degrading(monkeypatch, label):
+    """The invariant that makes this a latency change and not a behaviour change.
+
+    The false-positive verdict branches on `allow_count == 0`, which it reads as "this IP was
+    only ever blocked" and leans toward a real attack. `allow_count` comes from the ratio
+    query, so a failed ratio query produces exactly that value: a query that did not run,
+    turned into evidence against the user's IP. Same for `peak_rpm` (freq) and
+    `rules_triggered` (multi). 0.18.0 removed that shape from the bypass verdict and a
+    fan-out that absorbed failures into `reasons` would put it back here.
+
+    Swept over all five rather than tested on ratio alone, because the next person to add a
+    job is who this protects, and a per-query test only covers the ones someone remembered."""
+    from tools import waf_block_fp as F
+
+    monkeypatch.setattr(F, "query_logs", _fake_block_query(ONLY_IN[label]))
+    with pytest.raises(RuntimeError) as exc:
+        F._investigate_gather("203.0.113.9", 0, 3600)
+    assert label in str(exc.value), str(exc.value)
+    assert "did not finish" in str(exc.value)
+
+
+def test_the_investigation_runs_its_five_queries_concurrently(monkeypatch):
+    """Gated to five arrivals, since there are exactly five jobs and a `Barrier` rearms."""
+    from tools import waf_block_fp as F
+
+    gate = threading.Barrier(5, timeout=10)
+    arrivals = itertools.count()
+
+    def run(cwl, athena, start, end, limit=25):
+        if next(arrivals) < 5:
+            gate.wait()
+        return [dict(BLOCK_ROW)]
+
+    monkeypatch.setattr(F, "query_logs", run)
+    began = time.monotonic()
+    data = F._investigate_gather("203.0.113.9", 0, 3600)
+    assert data is not None
+    assert time.monotonic() - began < 5, "the barrier released late, so five never overlapped"
+
+
+def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
+    """It is data-dependent: it runs only when the primary rule is a MANAGED_RULE_GROUP,
+    which only the block query's result reveals. If it ever joined the wave it would run
+    against a rule type nobody had read yet, so this pins it outside.
+
+    The barrier is sized to the wave, so a sixth arrival inside it would block and this test
+    would time out rather than quietly pass."""
+    from tools import waf_block_fp as F
+
+    order, lock = [], threading.Lock()
+    gate = threading.Barrier(5, timeout=10)
+    arrivals = itertools.count()
+
+    def classify(cwl, athena):
+        text = f"{cwl}\n{athena}"
+        if "ruleGroupList" in cwl or "UNNEST(rulegrouplist)" in athena:
+            return "sub"
+        for label, marker in ONLY_IN.items():
+            if marker in text:
+                return label
+        # `_gather_match_detail` runs a further query after the sub-rule lookup. Classified
+        # rather than lumped in with the wave: the first version of this test asserted the
+        # sub-rule query ran LAST, and it does not, so the assertion failed on correct code.
+        # What the ordering claim is actually about is the wave, not the tail.
+        return "other"
+
+    def run(cwl, athena, start, end, limit=25):
+        kind = classify(cwl, athena)
+        if kind in ONLY_IN and next(arrivals) < 5:
+            gate.wait()
+        with lock:
+            order.append(kind)
+        return [dict(BLOCK_ROW, terminatingRuleType="MANAGED_RULE_GROUP")]
+
+    monkeypatch.setattr(F, "query_logs", run)
+    data = F._investigate_gather("203.0.113.9", 0, 3600)
+    assert order.count("sub") == 1, order
+    assert set(order[:5]) == set(ONLY_IN), f"the wave is not the first five: {order}"
+    assert order.index("sub") > 4, f"the sub-rule query ran inside the wave: {order}"
+    assert data["sub_rule"] == "SubRule"

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed: the false-positive investigation runs its independent queries at once
+
+- **`investigate_block` took the sum of its query times.** Five of its seven queries are
+  independent, so they now run together; the sub-rule lookup and the match-detail query stay
+  serial because both need an earlier result. Measured on a 25M-record log group over a
+  15-minute window, twice: 52.6s to 24.9s and 49.6s to 25.1s, about 2x, with the same seven
+  queries either way.
+- **A failed query still refuses the investigation rather than answering without it.** The
+  verdict reads "no ALLOW traffic from this IP" as evidence of a real attack, and a query that
+  failed to run produces the same zero, so absorbing failures here would turn a broken query
+  into evidence against your IP. Nothing about the verdict changed; only its latency.
+
 ## 0.20.0 (2026-09-10)
 
 ### Changed: a bypass scan runs its six queries at once

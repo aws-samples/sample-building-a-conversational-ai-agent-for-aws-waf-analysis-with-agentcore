@@ -10,7 +10,7 @@ from tools.session_state import (
     get_webacl_name, get_scope, resolve_region,
     is_log_filter_active,
 )
-from tools.waf_query import query_logs, log_query_error, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently
 from tools.query_limits import MAX_MINUTES
 
 _cwl_semaphore = threading.Semaphore(8)
@@ -136,6 +136,14 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
 def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | None:
     """Run all investigation queries for an IP. Returns a dict of signals, or
     None if the IP had no BLOCK records in the window."""
+    # Each query is registered rather than run, so all five independent ones start together
+    # below. `later` closes over the pair it is given, so nothing here depends on loop
+    # variables.
+    jobs: dict[str, object] = {}
+
+    def later(label: str, cwl: str, athena: str):
+        jobs[label] = lambda: _run_query(cwl, athena, start_epoch, end_epoch)
+
     # 1. Find what blocked this IP
     block_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
@@ -148,7 +156,96 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
         f" GROUP BY terminatingruleid, terminatingruletype ORDER BY hits DESC LIMIT 10"
     )
-    block_results = _run_query(block_cwl, block_athena, start_epoch, end_epoch)
+    later("block", block_cwl, block_athena)
+
+    # 3. Allow Ratio
+    ratio_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | stats count(*) as hits by action"
+        " | sort hits desc"
+    )
+    ratio_athena = (
+        f"SELECT action, count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}'"
+        f" GROUP BY action ORDER BY hits DESC"
+    )
+    later("ratio", ratio_cwl, ratio_athena)
+
+    # 4. Request frequency
+    freq_cwl = (
+        f"filter httpRequest.clientIp = '{ip}'"
+        " | stats count(*) as hits by bin(1m)"
+        " | stats max(hits) as peak_rpm, avg(hits) as avg_rpm"
+    )
+    freq_athena = (
+        f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{ip}'"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    later("freq", freq_cwl, freq_athena)
+
+    # 5. Multi-rule check
+    multi_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and action != 'ALLOW'"
+        " | stats count(*) as hits by terminatingRuleId"
+        " | sort hits desc | limit 10"
+    )
+    multi_athena = (
+        f"SELECT terminatingruleid as \"terminatingRuleId\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}' AND action != 'ALLOW'"
+        f" GROUP BY terminatingruleid ORDER BY hits DESC LIMIT 10"
+    )
+    later("multi", multi_cwl, multi_athena)
+
+    # 6. URI distribution for blocked requests
+    uri_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
+        " | stats count(*) as hits by httpRequest.uri, httpRequest.httpMethod"
+        " | sort hits desc | limit 10"
+    )
+    uri_athena = (
+        f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
+        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 10"
+    )
+    later("uri", uri_cwl, uri_athena)
+
+    # ROADMAP 4.6. Five of the six queries above are independent: only the sub-rule lookup
+    # needs another's output, because whether it runs at all depends on the primary rule's
+    # TYPE. So the five start together and the sub-rule follows.
+    #
+    # **`_run_query` raises, and every one of these keeps refusing rather than degrading.**
+    # That is not caution about threads, it is what the verdict is built from. `allow_count`
+    # comes from the ratio query and the judgment at the bottom of this file branches on
+    # `allow_count == 0`, reading it as "this IP was only ever blocked" and leaning toward a
+    # real attack. A failed ratio query produces exactly `allow_count == 0`, so absorbing the
+    # failure here would turn a query that did not run into evidence against the user's IP,
+    # which is the shape 0.18.0 removed from the bypass verdict. Same for `peak_rpm` and
+    # `rules_triggered`. So a failure in any of the five is re-raised.
+    #
+    # **One thing this does report that the serial chain could not, and it is not an accident
+    # worth removing.** Serially, the first failing query raised and the other four never ran,
+    # so the message named one cause. All five run now, so `reasons` can hold several, and the
+    # raise joins them sorted by label: more information than before, deterministic enough for
+    # a test to assert on. The refusal is unchanged; only its completeness improved.
+    #
+    # `uri_results` is display-only and COULD degrade to a section note. It does not yet,
+    # because this module has no per-section reason plumbing and adding it is a separate
+    # change; today a uri failure refuses like the rest, exactly as it did serially.
+    results, reasons = run_concurrently(jobs)
+    if reasons:
+        raise RuntimeError("; ".join(f"{k}: {v}" for k, v in sorted(reasons.items())))
+    block_results = results["block"]
+    ratio_results = results["ratio"]
+    freq_results = results["freq"]
+    multi_results = results["multi"]
+    uri_results = results["uri"]
 
     if not block_results:
         return None
@@ -179,70 +276,15 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         if sub_results:
             sub_rule = sub_results[0].get("sub_rule", "")
 
-    # 3. Allow Ratio
-    ratio_cwl = (
-        f"filter httpRequest.clientIp = '{ip}'"
-        " | stats count(*) as hits by action"
-        " | sort hits desc"
-    )
-    ratio_athena = (
-        f"SELECT action, count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND httprequest.clientip = '{ip}'"
-        f" GROUP BY action ORDER BY hits DESC"
-    )
-    ratio_results = _run_query(ratio_cwl, ratio_athena, start_epoch, end_epoch)
     action_counts = {r.get("action", ""): int(r.get("hits", 0)) for r in ratio_results}
     allow_count = action_counts.get("ALLOW", 0)
     block_count = action_counts.get("BLOCK", 0)
     total = sum(action_counts.values())
 
-    # 4. Request frequency
-    freq_cwl = (
-        f"filter httpRequest.clientIp = '{ip}'"
-        " | stats count(*) as hits by bin(1m)"
-        " | stats max(hits) as peak_rpm, avg(hits) as avg_rpm"
-    )
-    freq_athena = (
-        f"SELECT max(cnt) as peak_rpm, avg(cnt) as avg_rpm FROM ("
-        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
-        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f"  AND httprequest.clientip = '{ip}'"
-        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
-        f")"
-    )
-    freq_results = _run_query(freq_cwl, freq_athena, start_epoch, end_epoch)
     peak_rpm = freq_results[0].get("peak_rpm", "?") if freq_results else "?"
     avg_rpm = freq_results[0].get("avg_rpm", "?") if freq_results else "?"
 
-    # 5. Multi-rule check
-    multi_cwl = (
-        f"filter httpRequest.clientIp = '{ip}' and action != 'ALLOW'"
-        " | stats count(*) as hits by terminatingRuleId"
-        " | sort hits desc | limit 10"
-    )
-    multi_athena = (
-        f"SELECT terminatingruleid as \"terminatingRuleId\", count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND httprequest.clientip = '{ip}' AND action != 'ALLOW'"
-        f" GROUP BY terminatingruleid ORDER BY hits DESC LIMIT 10"
-    )
-    multi_results = _run_query(multi_cwl, multi_athena, start_epoch, end_epoch)
     rules_triggered = len(multi_results)
-
-    # 6. URI distribution for blocked requests
-    uri_cwl = (
-        f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
-        " | stats count(*) as hits by httpRequest.uri, httpRequest.httpMethod"
-        " | sort hits desc | limit 10"
-    )
-    uri_athena = (
-        f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
-        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
-        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 10"
-    )
-    uri_results = _run_query(uri_cwl, uri_athena, start_epoch, end_epoch)
 
     # 7. Match detail (see _gather_match_detail for the why/how)
     match_detail, match_detail_note = _gather_match_detail(ip, start_epoch, end_epoch)
