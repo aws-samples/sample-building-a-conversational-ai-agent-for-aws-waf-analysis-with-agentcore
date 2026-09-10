@@ -223,7 +223,18 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("  Prefer get_waf_overview (metrics, instant) for initial analysis. Only query logs for IP/URI-level details.")
         lines.append("  Note: If the first Athena query fails with a permissions error, the Athena workgroup may not have an output location configured. The agent will auto-fallback to writing results in the WAF log bucket (athena-results/ prefix). If that also fails, advise the user to configure a query result location in the Athena console (Workgroups → primary → Edit).")
         if ":firehose:" in log_dest:
-            lines.append("  ⚠️ IMPORTANT: Firehose S3 prefix time zone MUST be UTC (default). If the user configured a non-UTC time zone, Athena queries will return 0 results. Ask the user to confirm their Firehose prefix time zone is UTC.")
+            # This told the model a non-UTC prefix zone returns 0 rows and to ask the user to
+            # confirm UTC. `resolve_log_table` has read `CustomTimeZone` off the delivery
+            # stream since PR #12 and prunes in that zone, verified 2026-09-09 against a
+            # throwaway stream at Asia/Tokyo with a UTC control: the detected zone moved the
+            # rendered bounds nine hours. `agent.py` already said detection was automatic, so
+            # the two disagreed. What is still unverified is row equality end to end, which is
+            # what the caveat below is scoped to rather than the read itself.
+            lines.append("  Note: the S3 prefix time zone is detected from the delivery "
+                         "stream and partitions are pruned in that zone, so a non-UTC zone "
+                         "needs nothing from you. If log queries return 0 rows while metrics "
+                         "show traffic, ask the user which time zone their Firehose prefix "
+                         "uses and report it rather than re-running the query.")
     else:
         # "get_waf_metrics only" was false and disagreed with the prompt for the same state.
         # `get_waf_overview` reads wafv2 and CloudWatch and touches no log destination, so it

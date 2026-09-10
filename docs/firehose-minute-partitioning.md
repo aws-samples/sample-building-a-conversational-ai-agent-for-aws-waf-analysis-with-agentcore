@@ -43,7 +43,7 @@ Athena can now scan just the relevant minutes instead of the full hour — **10-
    ```
    errors/!{firehose:error-output-type}/!{timestamp:yyyy/MM/dd/HH/}
    ```
-6. **S3 bucket prefix time zone**: Keep as **UTC** (default). Do NOT change this — Athena partition pruning assumes UTC paths. Using a non-UTC time zone will cause queries to return 0 results.
+6. **S3 bucket prefix time zone**: leave it as **UTC**, the default. A non-UTC zone works too: the agent reads the delivery stream's `CustomTimeZone` and prunes partitions in that zone. UTC is just one less moving part. If log queries return 0 rows while metrics show traffic, tell us which zone your prefix uses.
 7. Save changes
 
 ### Option B: AWS CLI

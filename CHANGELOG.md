@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed: a non-UTC Firehose prefix time zone is no longer reported as broken
+
+- **Four places told you a non-UTC S3 prefix time zone makes Athena queries return 0 results.**
+  It does not. The agent reads the delivery stream's `CustomTimeZone` and prunes partitions in
+  that zone, and has since 0.13.0. The setup guide, its Chinese translation, the searchable
+  knowledge base and the agent's own hint to the model all still carried the old rule, so a
+  working configuration read as a broken one and the agent asked you to confirm a setting it had
+  already detected. UTC is still the simplest choice and still the default; it is no longer
+  presented as a requirement.
+
 ### Fixed: with logging off, the agent is pointed at the tool that still works
 
 - **`get_waf_config` told the agent to use `get_waf_metrics` only when logging is disabled.** That
