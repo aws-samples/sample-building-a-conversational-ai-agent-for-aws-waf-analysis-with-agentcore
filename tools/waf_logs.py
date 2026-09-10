@@ -17,6 +17,55 @@ from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL,
 
 MAX_RESULTS = 25
 
+
+def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 25, *,
+                failures: dict | None = None, label: str = "") -> list[dict]:
+    """The one place this module reaches the query layer. Never raises.
+
+    ROADMAP 4.6 found `analyze_ip` calling `query_logs` at seven sites and checking none of
+    them, for eight releases. On Athena a failure raised and took the whole tool call; on
+    CloudWatch it arrived as a truthy `[{"_error": ...}]` row and was rendered as data. The
+    other four tool modules already funnel every call through one wrapper, which is why
+    0.17.0 could fix them at once and missed this one.
+
+    It went unnoticed because `analyze_ip` **imports** `log_query_error` in its own scope and
+    never calls it, and the sweep that was supposed to catch this asked whether the module
+    text contained that name. It did, twice over: once for the import nobody used and once
+    for `run_logs_query`, which does check. `tests/test_window_cap.py` now asserts the funnel
+    itself, per scope, so one call site per module is the property rather than a coincidence.
+    """
+    from tools.waf_query import query_logs, log_query_error
+
+    def _record(reason: str) -> list[dict]:
+        if failures is not None:
+            failures[label] = reason
+        return []
+
+    try:
+        rows = query_logs(cwl, athena, start, end, limit)
+    except Exception as e:
+        return _record(f"{type(e).__name__}: {e}")
+    reason = log_query_error(rows)
+    if reason:
+        return _record(reason)
+    return rows or []
+
+
+def _empty_reason(failures: dict, label: str, none_text: str = "") -> str:
+    """What an empty section says, which depends on why it is empty.
+
+    Same contract as `waf_bypass._empty_reason`, including stripping the `ACTION:` block: that
+    advice is addressed to whoever chose the window, and these queries use the window
+    `analyze_ip` was handed. Deliberately a second copy rather than an import, because
+    `waf_bypass` already imports from this module and the reverse direction would be circular.
+    Unifying them means moving both into `waf_query`, which moves the patch point every
+    existing test uses; recorded in ROADMAP 4.6 rather than done here."""
+    reason = failures.get(label)
+    if reason:
+        return f"  UNKNOWN, the query for this section failed: {reason.split(chr(10) + 'ACTION:')[0].strip()}"
+    return none_text
+
+
 # Concurrency control: max 8 concurrent CWL queries (CWL limit is 10 TPS, ~30 concurrent)
 _cwl_semaphore = threading.Semaphore(8)
 
@@ -440,8 +489,7 @@ def run_logs_query(
     _log(f"query_type={query_type} start_time={start_time} duration={_duration}min dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
-    from tools.waf_query import (query_logs, log_query_error, get_log_type,
-                                 check_coarse_partition_block)
+    from tools.waf_query import get_log_type, check_coarse_partition_block
 
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
@@ -494,19 +542,13 @@ def run_logs_query(
         if coarse_err:
             return coarse_err
         _log(f"routing via unified layer: log_type={log_type} start={start_epoch} end={end_epoch}")
-        try:
-            results = query_logs(query, athena_query, start_epoch, end_epoch, limit=params["limit"])
-        except Exception as e:
-            _log(f"ERROR in query_logs: {type(e).__name__}: {e}")
-            return f"Log query failed: {type(e).__name__}: {e}"
-        _query_error = log_query_error(results)
-        if _query_error:
-            _log(f"query_logs returned error: {_query_error}")
-            return _query_error
-        if not results:
-            results = []
-        else:
-            _log(f"query_logs returned {len(results)} results")
+        _failures: dict[str, str] = {}
+        results = _safe_query(query, athena_query, start_epoch, end_epoch,
+                              limit=params["limit"], failures=_failures, label="query")
+        if _failures:
+            _log(f"query_logs failed: {_failures['query']}")
+            return _failures["query"]
+        _log(f"query_logs returned {len(results)} results")
 
     if not results:
         msg = f"Query returned 0 results. (query: {query_type})"
@@ -809,8 +851,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
 
-    from tools.waf_query import (query_logs, log_query_error, get_log_type,
-                                 check_coarse_partition_block)
+    from tools.waf_query import get_log_type, check_coarse_partition_block
     if get_log_type() == "none":
         return "Error: no logging configured. Run get_waf_config first."
     coarse_err = check_coarse_partition_block()
@@ -824,6 +865,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     end_epoch = min(start_epoch + _duration * 60, int(time.time()))
     safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
 
+    # Why a section is empty, keyed by the section. Seven independent queries build one
+    # report, so a failure has to cost its own section rather than the whole answer or,
+    # worse, arrive as a statement about the traffic.
+    failures: dict[str, str] = {}
+
     # Phase 1: Diversity check (NAT detection)
     div_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
@@ -836,11 +882,23 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}'"
     )
-    try:
-        diversity = query_logs(div_cwl, div_athena, start_epoch, end_epoch, limit=1)
-    except RuntimeError as e:
-        return f"Log query failed: {e}"
-
+    diversity = _safe_query(div_cwl, div_athena, start_epoch, end_epoch, limit=1,
+                            failures=failures, label="diversity")
+    # The `try` this replaces caught `RuntimeError` from a `query_logs` that was never
+    # guarded, so it only ever fired on an Athena raise and turned it into a bare string.
+    # `_safe_query` handles both spellings, which leaves one thing to decide here: whether
+    # there is anything to report.
+    #
+    # **The early return is the sharpest form of this whole defect class.** "No log records
+    # found for this IP" is a statement about the traffic, and it was returned whenever the
+    # first query came back empty, which includes every way that query can fail. An analyst
+    # asking about an IP would be told it was quiet. So the failure is checked FIRST and the
+    # absence claim is made only when the query actually answered.
+    if failures.get("diversity"):
+        return (f"## IP Analysis: {ip}\nCould not analyze {ip}: the first query failed, so "
+                f"nothing below it ran.\n{_empty_reason(failures, 'diversity')}\n\n"
+                f"This is a query failure, NOT a quiet IP. Say so rather than reporting no "
+                f"activity, and do not re-run it unchanged.")
     if not diversity:
         return f"No log records found for {ip} in this time window."
 
@@ -864,7 +922,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
             f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
             f" ORDER BY cnt DESC LIMIT 20"
         )
-        ua_rows = query_logs(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20)
+        ua_rows = _safe_query(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20,
+                              failures=failures, label="user_agents")
         if not ua_rows or _is_nat_traffic(ua_rows):
             lines = [
                 f"## {ip} — NAT/Shared IP (skipped)",
@@ -929,10 +988,14 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     )
 
     # Run queries (sequential via unified layer — each is fast with IP filter)
-    cross = query_logs(cross_cwl, cross_athena, start_epoch, end_epoch, limit=15) or []
-    rate = query_logs(rate_cwl, rate_athena, start_epoch, end_epoch, limit=1) or []
-    ja4 = query_logs(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5) or []
-    uri_div = query_logs(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1) or []
+    cross = _safe_query(cross_cwl, cross_athena, start_epoch, end_epoch, limit=15,
+                        failures=failures, label="actions")
+    rate = _safe_query(rate_cwl, rate_athena, start_epoch, end_epoch, limit=1,
+                       failures=failures, label="request_rate")
+    ja4 = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5,
+                      failures=failures, label="ja4")
+    uri_div = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1,
+                          failures=failures, label="uri_diversity")
 
     # Query strings this IP sent — the content that triggers QUERYARGUMENTS rules
     # (XSS/SQLi/LFI payloads show up here). Sensitive params are redacted below.
@@ -946,7 +1009,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" AND httprequest.clientip = '{safe_ip}' AND httprequest.args <> ''"
         f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
     )
-    query_strings = query_logs(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8) or []
+    query_strings = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8,
+                                failures=failures, label="query_strings")
 
     # Format output
     lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]
@@ -963,6 +1027,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     lines.append("**Action breakdown**:")
     for row in cross[:10]:
         lines.append(f"  {row.get('action', '?')} / {row.get('terminatingRuleId', 'default')} : {row.get('cnt', '0')}")
+    if not cross:
+        lines.append(_empty_reason(failures, "actions", "  (no requests in this window)"))
     lines.append("")
 
     # Request rate
@@ -972,12 +1038,19 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         peak_rpm = r.get("peak_rpm", "0")
         active_min = r.get("active_minutes", "0")
         lines.append(f"**Request rate**: avg {avg_rpm} req/min, peak {peak_rpm} req/min, active {active_min} minutes")
+    else:
+        # `if rate:` with no else erased the whole line, so a failed rate query looked like
+        # a report that simply does not cover request rate.
+        lines.append("**Request rate**:")
+        lines.append(_empty_reason(failures, "request_rate", "  (no requests in this window)"))
     lines.append("")
 
     # JA4 fingerprints
     lines.append("**JA4 fingerprints**:")
     for row in ja4[:5]:
         lines.append(f"  {row.get('ja4Fingerprint', 'N/A')} : {row.get('cnt', '0')} requests")
+    if not ja4:
+        lines.append(_empty_reason(failures, "ja4", "  (none recorded; JA4 needs CloudFront or an ALB)"))
     lines.append("")
 
     # URI diversity
@@ -986,6 +1059,9 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         unique = u.get("unique_uris", "0")
         total_ns = u.get("total_non_static", "0")
         lines.append(f"**URI diversity** (non-static): {unique} unique URIs out of {total_ns} requests")
+    else:
+        lines.append("**URI diversity** (non-static):")
+        lines.append(_empty_reason(failures, "uri_diversity", "  (no non-static requests)"))
     lines.append("")
 
     # Query strings (raw request content; QUERYARGUMENTS attack payloads land here)

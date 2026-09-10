@@ -5,13 +5,15 @@
 import re
 import json
 import time
+import concurrent.futures
 import threading
 from collections import Counter
 from tools.aws_session import get_client
 from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success
 
 _cwl_semaphore = threading.Semaphore(8)
-from tools.query_limits import (MAX_POLL, POLL_INTERVAL, poll_timeout_message,
+from tools.query_limits import (MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL,
+                                fanout_timeout_message, poll_timeout_message,
                                 query_failed_message, stop_query)
 
 
@@ -246,6 +248,25 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
     label, kind = loc
     backend = get_log_type()
 
+    def _q(cwl: str, athena: str, limit: int) -> list[dict]:
+        """The one place this function reaches the query layer, and it raises on failure.
+
+        Six call sites read `query_logs(...) or []` directly and none checked for an error
+        row. The Athena spelling of failure was already handled, since `_run_athena_select`
+        raises and the `except` below turns that into the documented `samples=None`, meaning
+        "could not be retrieved". The CloudWatch spelling was not: `[{"_error": ...}]` is
+        truthy, every reader below does `r.get(field, "")` on it, and an empty string redacts
+        to nothing, so a failed query arrived as `samples=[]`, meaning "none found". Two
+        backends, two different answers, and the wrong one is a claim about the traffic.
+
+        Raising here routes the CloudWatch failure into the same `except` as the Athena one,
+        so the three-state contract in the docstring above is true on both."""
+        rows = query_logs(cwl, athena, start_epoch, end_epoch, limit=limit)
+        reason = log_query_error(rows)
+        if reason:
+            raise RuntimeError(reason)
+        return rows or []
+
     raw_samples = []  # list of (raw_content, hits)
     try:
         if kind in ("args", "uri"):
@@ -253,7 +274,7 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
             fc = "httpRequest.args" if kind == "args" else "httpRequest.uri"
             if backend == "cwl":
                 cwl = f"{cwl_filter} | stats count(*) as hits by {fc} | sort hits desc | limit {limit}"
-                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=limit) or []
+                rows = _q(cwl, "", limit)
                 raw_samples = [(r.get(fc, ""), int(r.get("hits", 0) or 0)) for r in rows]
             else:
                 athena = (
@@ -261,14 +282,14 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
                     f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
                     f" AND {athena_where} GROUP BY {fa} ORDER BY hits DESC LIMIT {limit}"
                 )
-                rows = query_logs("", athena, start_epoch, end_epoch, limit=limit) or []
+                rows = _q("", athena, limit)
                 raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
         elif kind == "cookie":
             if backend == "cwl":
                 # Aggregate over a sample of messages so hits are real frequencies
                 # (consistent with the args/uri stats and the Athena GROUP BY).
                 cwl = f"{cwl_filter} | fields @message | limit 25"
-                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=25) or []
+                rows = _q(cwl, "", 25)
                 counter = Counter()
                 for r in rows:
                     hdrs = _headers_from_message(r.get("@message", ""))
@@ -284,12 +305,12 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
                     f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
                     f" AND {athena_where} AND {expr} <> '' GROUP BY {expr} ORDER BY hits DESC LIMIT {limit}"
                 )
-                rows = query_logs("", athena, start_epoch, end_epoch, limit=limit) or []
+                rows = _q("", athena, limit)
                 raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
         elif kind == "header":
             if backend == "cwl":
                 cwl = f"{cwl_filter} | fields @message | limit 25"
-                rows = query_logs(cwl, "", start_epoch, end_epoch, limit=25) or []
+                rows = _q(cwl, "", 25)
                 counter = Counter()
                 for r in rows:
                     hdrs = _headers_from_message(r.get("@message", ""))
@@ -303,7 +324,7 @@ def sample_inspection_content(rule_name: str, cwl_filter: str, athena_where: str
                     f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
                     f" AND {athena_where} GROUP BY {expr} ORDER BY hits DESC LIMIT {limit}"
                 )
-                rows = query_logs("", athena, start_epoch, end_epoch, limit=limit) or []
+                rows = _q("", athena, limit)
                 raw_samples = [(r.get("content", ""), int(r.get("hits", 0) or 0)) for r in rows]
     except Exception:
         return (label, None, False)
@@ -506,6 +527,59 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
         return _run_athena(sql)
     raise RuntimeError(f"Unsupported log destination format: {dest}")
+
+
+def run_concurrently(jobs: dict, budget: int = MAX_FANOUT_WAIT,
+                     workers: int = 5) -> tuple[dict, dict]:
+    """Run independent no-argument jobs at once. ROADMAP 4.6.
+
+    Returns `(results, reasons)`. Every key of `jobs` appears in **exactly one** of them:
+    in `results` with whatever the job returned, or in `reasons` with a sentence saying why
+    there is no result. That partition is the whole contract, because the defect this
+    replaces is a chain of serial queries where an unfinished one is indistinguishable from
+    one that matched nothing, and a fan-out adds a second way to have no answer.
+
+    The three outcomes, and none of them may collapse into "empty":
+
+    - the job returned, even if what it returned is empty. That is the caller's to interpret.
+    - the job raised. Its own text is carried through, since a wrapper like `_safe_query`
+      handles its errors and anything reaching here is unexpected.
+    - the job never answered inside `budget`. `as_completed` stops iterating and the
+      remaining futures are abandoned.
+
+    **`workers` caps concurrency deliberately.** Athena's account-level active-DML quota is
+    shared with everything else running, patrol included, and there is no semaphore around
+    `_run_athena_select`. 5 matches patrol's pool. The CloudWatch path is separately bounded
+    by `_cwl_semaphore` at 8.
+
+    **The pool is not a `with` block, and that is the 2.3 defect rather than a style choice.**
+    `Executor.__exit__` calls `shutdown(wait=True)`, which waits for every submitted future
+    even after `as_completed` has given up on their results, so a `with` block would make
+    `budget` bound when collecting stops and not when this returns. `wait=False,
+    cancel_futures=True` drops the un-started futures and leaves those in flight to finish in
+    the background.
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
+    results: dict = {}
+    reasons: dict = {}
+    futures = {executor.submit(job): key for key, job in jobs.items()}
+    try:
+        # The TimeoutError comes from the iterator, at the `for`, not from inside the body,
+        # so it cannot be caught by an except inside the loop. Patrol learned that the
+        # expensive way: one slow query took out a whole report.
+        for future in concurrent.futures.as_completed(futures, timeout=budget):
+            key = futures[future]
+            try:
+                results[key] = future.result()
+            except Exception as exc:
+                reasons[key] = f"{type(exc).__name__}: {exc}"
+    except concurrent.futures.TimeoutError:
+        for future, key in futures.items():
+            if key not in results and key not in reasons:
+                reasons[key] = fanout_timeout_message()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return results, reasons
 
 
 def log_query_error(rows: list[dict] | None) -> str | None:

@@ -349,3 +349,87 @@ def test_a_section_note_carries_no_retry_advice():
     assert "quarter of the window" not in note
     # The header still has to survive, or the note says nothing about what happened.
     assert "120 seconds" in note
+
+
+# --- the fifth module, found by ROADMAP 4.6 --------------------------------
+
+
+def test_analyze_ip_sections_say_the_query_failed_instead_of_going_missing(monkeypatch):
+    """`analyze_ip` called `query_logs` at seven sites and checked none of them, for eight
+    releases, while `tests/test_window_cap.py` reported the module clean.
+
+    Patched at `tools.waf_query.query_logs` rather than at `waf_logs.query_logs`, because
+    `waf_logs._safe_query` imports it inside the function. Worth stating: patching the wrong
+    one leaves the real query layer live and the test reaches for AWS."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+
+    monkeypatch.setattr(WQ, "query_logs", fake_query_logs([""], "error_row"))
+    # Patched on `waf_query`, not on `waf_logs`: `analyze_ip` imports both of these
+    # inside the function, so the module attribute is the only patch point.
+    monkeypatch.setattr(WQ, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: None)
+    out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+
+    # The first query failing stops the rest, and what it must NOT say is the sentence it
+    # used to: "No log records found for this IP", which is a claim about the traffic.
+    assert "No log records found" not in out
+    assert "NOT a quiet IP" in out
+    assert CWL_ERROR in out
+
+
+def test_analyze_ip_survives_an_athena_raise(monkeypatch):
+    """The other spelling. `query_logs` raising used to propagate out of `analyze_ip` and
+    take the whole tool call, so the user got a stack trace instead of six good sections."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+
+    monkeypatch.setattr(WQ, "query_logs", fake_query_logs([""], "raise"))
+    # Patched on `waf_query`, not on `waf_logs`: `analyze_ip` imports both of these
+    # inside the function, so the module attribute is the only patch point.
+    monkeypatch.setattr(WQ, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: None)
+    out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+    assert "## IP Analysis" in out
+    assert "UNKNOWN, the query for this section failed" in out
+
+
+def test_one_failed_section_does_not_erase_the_others(monkeypatch):
+    """The per-section claim, which needs a section that legitimately has no rows next to one
+    that failed. With everything failing, "this section's reason" and "any reason" give the
+    same answer and a lookup that ignores the label would pass."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+
+    # `avg_rpm` appears only in the request-rate query, so exactly one section fails and the
+    # first query still answers. A marker that also matched the diversity query would trip
+    # the early return above and this test would prove the opposite of its name.
+    monkeypatch.setattr(WQ, "query_logs", fake_query_logs(["avg_rpm"], "error_row"))
+    # Patched on `waf_query`, not on `waf_logs`: `analyze_ip` imports both of these
+    # inside the function, so the module attribute is the only patch point.
+    monkeypatch.setattr(WQ, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: None)
+    out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+    # The rate section failed; the action breakdown answered and must still show its row.
+    assert out.count("UNKNOWN, the query for this section failed") == 1, out
+    assert "**Request rate**" in out
+    assert "ALLOW" in out, out
+    assert "No log records found" not in out
+
+
+def test_a_failed_content_sample_is_unavailable_not_absent(monkeypatch):
+    """`sample_inspection_content` documents three states: rows, `[]` for none found, and
+    `None` for "could not be retrieved". The Athena spelling already produced `None`; the
+    CloudWatch `_error` row produced `[]`, so the same failure meant "no matching content" on
+    one backend and "could not retrieve" on the other. Six unguarded call sites, in the module
+    that DEFINES `log_query_error`, which is why a module-level substring sweep could never
+    fail there."""
+    from tools import waf_query as WQ
+
+    monkeypatch.setattr(WQ, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(WQ, "query_logs", fake_query_logs([""], "error_row"))
+    label, samples, masked = WQ.sample_inspection_content(
+        "AWS-AWSManagedRulesSQLiRuleSet_QUERYARGUMENTS", "filter action='BLOCK'",
+        "action='BLOCK'", 0, 3600)
+    assert label is not None
+    assert samples is None, "an error row must not read as 'no matching content'"
