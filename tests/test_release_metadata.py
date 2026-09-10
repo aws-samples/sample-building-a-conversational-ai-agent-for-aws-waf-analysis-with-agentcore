@@ -111,11 +111,16 @@ def test_every_heading_since_the_backfill_floor_is_tagged(headings, tags):
     """The direction that catches a cut nobody tagged, which is the easier half to forget:
     the version bump is four file edits and the tag is a separate step afterwards.
 
-    **This test is expected to fail on a release branch, between the cut commit and the tag, and
-    that is the signal rather than a nuisance.** The tag goes on the cut PR's *merge* commit, so
-    it cannot exist while the branch does. Once the merge lands and the tag is pushed, this goes
-    green on `main`. Do not weaken it to quiet the window: quieting it removes the only check
-    that a forgotten tag ever trips."""
+    **The contract.** Every heading at or above the backfill floor must have a tag, except the
+    newest one while this code is unshipped, because the tag goes on the cut PR's merge commit
+    and cannot exist while the branch does. An older untagged heading fails always.
+
+    **What still needs protecting, since the exemption is the load-bearing part.** Do not widen
+    it past the newest heading, and do not let `_is_shipped` fail open: either turns the only
+    check a forgotten tag ever trips into a check that cannot fail. An earlier version of this
+    docstring argued the opposite, that failing on a release branch was the signal and should not
+    be quieted, and that argument is superseded rather than merely out of date: keying on
+    unshipped rather than on uncommitted closes the window without weakening anything."""
     untagged = {h for h in headings if _v(h) >= BACKFILL_FLOOR} - set(tags)
     # Exempt the newest heading until this code has shipped. The tag goes on the cut PR's MERGE
     # commit, so it cannot exist while the branch does, and the window is the whole life of the
