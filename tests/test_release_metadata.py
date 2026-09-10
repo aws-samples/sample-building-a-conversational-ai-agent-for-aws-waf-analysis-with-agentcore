@@ -75,30 +75,48 @@ def test_the_backfill_floor_still_describes_reality(headings, tags):
 
 
 def test_the_four_version_strings_agree(headings):
-    """All four, though only three of the legs are perturbation-provable and it is worth
-    saying which.
+    """The three legs a developer can get wrong by hand: `pyproject.toml`,
+    `frontend/package.json` and the CHANGELOG heading. The heading matters most, because
+    `frontend/vite.config.js` regexes the first `## X.Y.Z` into `__APP_VERSION__`, so a
+    mismatch ships a UI labelled with the previous release.
 
-    `uv.lock` was the one that drifted historically: `v0.14.0` tagged a lockfile still reading
-    0.13.0, because it was hand-edited instead of regenerated. **That state cannot survive a
-    `uv run` in this repo.** Measured 2026-09-10: setting the lockfile back to 0.17.0 and then
-    invoking anything through `uv` rewrites it to match `pyproject.toml` before pytest reads a
-    byte, so a perturbation of this leg reports a false pass. The leg stays in the comparison,
-    because it costs nothing and it fails when `pyproject.toml` itself is wrong, but the
-    self-healing is why nobody should treat it as the guard.
-
-    The provable legs are `pyproject.toml`, `frontend/package.json` and the CHANGELOG heading,
-    which `uv` does not touch. The heading matters most: `frontend/vite.config.js` regexes the
-    first `## X.Y.Z` into `__APP_VERSION__`, so a mismatch ships a UI labelled with the
-    previous release."""
+    **`uv.lock` is deliberately absent from this comparison, and the reason is not that its
+    failure is hard to synthesize. It is that the assertion could not fail.** `uv run` rewrites
+    the lockfile from `pyproject.toml` before pytest reads a byte, measured 2026-09-10 by
+    setting it to 0.17.0 and watching it come back 0.18.0. So a test runner that enforces the
+    invariant would have been checking it: a tautology, not an unprovable claim. The next
+    reader should not go looking for a cleverer perturbation, because there is nothing to
+    catch. The check with teeth is the test below."""
     newest = headings[0]
     pyproject = re.search(r'^version = "(.+?)"', (ROOT / "pyproject.toml").read_text(), re.M)
     package = re.search(r'^  "version": "(.+?)"',
                         (ROOT / "frontend/package.json").read_text(), re.M)
-    lock = re.search(r'name = "waf-agent"\nversion = "(.+?)"', (ROOT / "uv.lock").read_text())
-    assert pyproject and package and lock, "a version string could not be located at all"
-    assert {pyproject.group(1), package.group(1), lock.group(1)} == {newest}, {
+    assert pyproject and package, "a version string could not be located at all"
+    assert {pyproject.group(1), package.group(1)} == {newest}, {
         "CHANGELOG": newest, "pyproject.toml": pyproject.group(1),
-        "frontend/package.json": package.group(1), "uv.lock": lock.group(1)}
+        "frontend/package.json": package.group(1)}
+
+
+def test_the_committed_lockfile_is_not_stale(tags):
+    """The defect `v0.14.0` actually shipped: a tag pointing at a commit whose `uv.lock` still
+    read 0.13.0, because the lockfile was hand-edited rather than regenerated.
+
+    Reading the working copy cannot see that, since `uv` has already repaired it. What can is
+    the diff: **once `uv` has normalised the working lockfile, any difference against `HEAD` is
+    a committed lockfile that disagrees with `pyproject.toml`.** That is exactly the state
+    `v0.14.0` was tagged in, and it is the same signal the pre-cut clean-tree step checks by
+    hand.
+
+    Not perturbable by editing a file, because synthesizing the failure means committing a
+    stale lockfile. It was proven on a throwaway branch instead: committing a lockfile at
+    0.17.0 under a `pyproject.toml` at 0.18.0 makes this fail and nothing else in the suite
+    notice. Failure-capability and perturbability are different properties, and only the first
+    decides whether an assertion earns its place."""
+    dirty = subprocess.run(["git", "status", "--porcelain", "--", "uv.lock"], cwd=ROOT,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert not dirty, (
+        "uv.lock differs from HEAD after uv normalised it, which means the COMMITTED lockfile "
+        "does not match pyproject.toml. Run `uv lock` and commit the result before tagging.")
 
 
 def test_the_newest_heading_is_the_highest_version(headings):
