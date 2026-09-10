@@ -223,7 +223,18 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("  Prefer get_waf_overview (metrics, instant) for initial analysis. Only query logs for IP/URI-level details.")
         lines.append("  Note: If the first Athena query fails with a permissions error, the Athena workgroup may not have an output location configured. The agent will auto-fallback to writing results in the WAF log bucket (athena-results/ prefix). If that also fails, advise the user to configure a query result location in the Athena console (Workgroups → primary → Edit).")
         if ":firehose:" in log_dest:
-            lines.append("  ⚠️ IMPORTANT: Firehose S3 prefix time zone MUST be UTC (default). If the user configured a non-UTC time zone, Athena queries will return 0 results. Ask the user to confirm their Firehose prefix time zone is UTC.")
+            # This told the model a non-UTC prefix zone returns 0 rows and to ask the user to
+            # confirm UTC. `resolve_log_table` has read `CustomTimeZone` off the delivery
+            # stream since PR #12 and prunes in that zone, verified 2026-09-09 against a
+            # throwaway stream at Asia/Tokyo with a UTC control: the detected zone moved the
+            # rendered bounds nine hours. `agent.py` already said detection was automatic, so
+            # the two disagreed. What is still unverified is row equality end to end, which is
+            # what the caveat below is scoped to rather than the read itself.
+            lines.append("  Note: the S3 prefix time zone is detected from the delivery "
+                         "stream and partitions are pruned in that zone, so a non-UTC zone "
+                         "needs nothing from you. If log queries return 0 rows while metrics "
+                         "show traffic, ask the user which time zone their Firehose prefix "
+                         "uses and report it rather than re-running the query.")
     else:
         # "get_waf_metrics only" was false and disagreed with the prompt for the same state.
         # `get_waf_overview` reads wafv2 and CloudWatch and touches no log destination, so it
@@ -237,9 +248,18 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         # breakdown comes from get_waf_metrics via dimension_filters. Replacing a false claim
         # with a smaller false claim on the same branch fails the same way, because the model
         # asks for a query type that does not exist and gets "unknown query_type".
+        #
+        # The time-series adjective came off for the same reason, one round later. "each with a
+        # time series" was false for three of the eight: bot_names, targeted_signals and
+        # top_labels sum their metric values into totals and print no timestamps. Milder than the
+        # country claim, since no call errors, but the model is promised a trend that never
+        # arrives and can report its absence as a finding. Both false claims were generalized
+        # from the SYSTEM PROMPT rather than read off the code, which is the one source that must
+        # never be trusted about the code: it is the artifact this whole sweep exists because it
+        # drifts.
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Metrics still work: "
                      "get_waf_overview covers top rules, attack types, bot summary, labels "
-                     "and rate limits, each with a time series; get_waf_metrics reads one "
+                     "and rate limits; get_waf_metrics reads one "
                      "CloudWatch metric and accepts dimension_filters, which is where a "
                      "per-country breakdown comes from. IP-level and URI-level analysis "
                      "needs logging.")

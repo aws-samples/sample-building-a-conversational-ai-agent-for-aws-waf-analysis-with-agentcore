@@ -70,8 +70,10 @@ s3://bucket/2026/05/25/14/05/   ← only minutes 05–09
    ```
    errors/!{firehose:error-output-type}/!{timestamp:yyyy/MM/dd/HH/}
    ```
-6. **S3 bucket prefix time zone**: keep as **UTC** (default). Do NOT change this — Athena
-   partition pruning assumes UTC paths; a non-UTC time zone makes queries return 0 results.
+6. **S3 bucket prefix time zone**: leave it as **UTC**, the default. A non-UTC zone works
+   too: the agent reads the delivery stream's `CustomTimeZone` and prunes partitions in
+   that zone. UTC is just one less moving part. If log queries return 0 rows while
+   metrics show traffic, tell us which zone your prefix uses.
 7. Save.
 
 ### Option B — AWS CLI

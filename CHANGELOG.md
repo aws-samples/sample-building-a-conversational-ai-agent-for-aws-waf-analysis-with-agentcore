@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed: a non-UTC Firehose prefix time zone is no longer reported as broken
+
+- **Four places told you that a non-UTC S3 prefix time zone meant Athena would find no rows.**
+  It does not. The agent reads the delivery stream's `CustomTimeZone` and prunes partitions in
+  that zone, and has since 0.13.0. The setup guide, its Chinese translation, the searchable
+  knowledge base and the agent's own hint to the model all still carried the old rule, so a
+  working configuration read as a broken one and the agent asked you to confirm a setting it had
+  already detected. UTC is still the simplest choice and still the default; it is no longer
+  presented as a requirement.
+
 ### Fixed: with logging off, the agent is pointed at the tool that still works
 
 - **`get_waf_config` told the agent to use `get_waf_metrics` only when logging is disabled.** That
@@ -10,6 +20,10 @@
   prompt already routed to `get_waf_overview` for the same state, so the two disagreed, on exactly
   the setup where there is least else to work with. The hint now names views that exist and points
   a per-country breakdown at `get_waf_metrics`, where the `Country` dimension filter lives.
+- **`get_waf_overview` does not return a time-series for every query type**, and both the system
+  prompt and that hint said it did. `bot_names`, `targeted_signals` and `top_labels` return totals
+  only, so the agent was promised a trend that never arrives and could report its absence as a
+  finding. Three of the eight; the other five do.
 - A hint in `analyze_ip` passed a list to `lookup_ja4`, which takes a comma-separated string.
 
 ### Changed: the false-positive investigation runs its independent queries at once
