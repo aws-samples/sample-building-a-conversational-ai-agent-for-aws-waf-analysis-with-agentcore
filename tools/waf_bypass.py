@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
-from tools.waf_query import query_logs, log_query_error, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently
 from tools.query_limits import MAX_MINUTES
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
 
@@ -367,6 +367,25 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # has to be told apart from a query that matched nothing.
     failures: dict[str, str] = {}
 
+    # ROADMAP 4.6. The six anomaly filters are independent: none reads another's output, so
+    # the serial chain's wall time was the sum for no reason. Each is registered here as a
+    # thunk and they all start together below.
+    #
+    # Deferred in place rather than by hoisting the six query strings to the top. Moving them
+    # would be a hundred-line diff whose review burden is entirely in the movement, and the
+    # queries read better next to the comment explaining what each one looks for.
+    jobs: dict[str, object] = {}
+
+    def later(label: str, cwl: str, athena: str, limit: int = 10):
+        """Queue one independent query. Nothing runs until `run_concurrently` below.
+
+        `_safe_query` is what makes the fan-out safe to write this way: it never raises, and
+        it records its own reason under `label`, so six threads write six distinct keys of
+        `failures`. Distinct-key dict assignment is atomic under the GIL, so no lock is
+        needed here; a job that MUTATED a shared value would need one."""
+        jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
+                                          failures=failures, label=label)
+
     # 0. Quick coverage check (config-based) + WoW volume check
     coverage_gaps = _check_coverage_gaps()
 
@@ -455,9 +474,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " ORDER BY total DESC LIMIT 10"
     )
 
-    crawlers = _safe_query(crawlers_cwl, crawlers_athena, start_epoch, end_epoch, limit=10, failures=failures, label="crawlers")
-    repeaters = _safe_query(repeaters_cwl, repeaters_athena, start_epoch, end_epoch, limit=10, failures=failures, label="repeaters")
-    datacenter = _safe_query(datacenter_cwl, datacenter_athena, start_epoch, end_epoch, limit=10, failures=failures, label="datacenter")
+    later("crawlers", crawlers_cwl, crawlers_athena)
+    later("repeaters", repeaters_cwl, repeaters_athena)
+    later("datacenter", datacenter_cwl, datacenter_athena)
 
     # Automation UA filter (curl, python-requests, wget, etc. that are ALLOW'd)
     auto_ua_cwl = (
@@ -482,7 +501,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " HAVING count(*) > 10"
         " ORDER BY total DESC LIMIT 10"
     )
-    auto_ua = _safe_query(auto_ua_cwl, auto_ua_athena, start_epoch, end_epoch, limit=10, failures=failures, label="auto_ua")
+    later("auto_ua", auto_ua_cwl, auto_ua_athena)
 
     # Single tool distributed across many IPs (JA4 aggregation)
     # Require high URI diversity per JA4 to filter out normal browser traffic sharing common fingerprints
@@ -510,7 +529,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND count(DISTINCT httprequest.uri) > 50"
         " ORDER BY total DESC LIMIT 10"
     )
-    distributed = _safe_query(distributed_cwl, distributed_athena, start_epoch, end_epoch, limit=10, failures=failures, label="distributed")
+    later("distributed", distributed_cwl, distributed_athena)
 
     # The per-JA4 drill-down loop used to live here: one extra query per candidate, capped
     # at 10, so a scan issued up to 16 serial Athena queries. The full-chain measurement found
@@ -547,7 +566,20 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND count(DISTINCT httprequest.clientip) < 5"
         " ORDER BY unique_uas DESC LIMIT 10"
     )
-    ua_rotation = _safe_query(ua_rotation_cwl, ua_rotation_athena, start_epoch, end_epoch, limit=10, failures=failures, label="ua_rotation")
+    later("ua_rotation", ua_rotation_cwl, ua_rotation_athena)
+
+    # All six at once. `reasons` carries the labels that never answered inside the batch
+    # budget, which is a THIRD way to have no rows alongside "failed" and "matched
+    # nothing", and it has to reach the section note or a batch timeout renders as
+    # "(none found)", the exact wrong answer 0.17.0 removed from the other two paths.
+    results, reasons = run_concurrently(jobs)
+    failures.update(reasons)
+    crawlers = results.get("crawlers") or []
+    repeaters = results.get("repeaters") or []
+    datacenter = results.get("datacenter") or []
+    auto_ua = results.get("auto_ua") or []
+    distributed = results.get("distributed") or []
+    ua_rotation = results.get("ua_rotation") or []
 
     # Build output
     lines = ["## Bypass Scan Results", ""]

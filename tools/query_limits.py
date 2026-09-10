@@ -250,6 +250,24 @@ def _narrowing_advice(engine: str) -> str:
             f"{unit} or less, do not narrow at all, use get_waf_overview instead.")
 
 
+def fanout_timeout_message() -> str:
+    """Why a concurrently-run query has no result. ROADMAP 4.6.
+
+    Separate from `poll_timeout_message` and deliberately not counted against the retry
+    bound, for the reason 3.4 established: that message ends in an `ACTION:` block telling
+    the reader to retry with a quarter of the window, which is written for whoever CHOSE the
+    window. Nobody chose this one. A tool fanned out its own queries and this was the one
+    still outstanding when the batch budget ran out, so inviting a narrowing asks the model
+    to act on a decision it never made.
+
+    States what happened and stops. The caller wraps it in its own per-section vocabulary,
+    which is why this is a bare clause rather than a sentence with a subject.
+    """
+    return (f"the batch of concurrent log queries ran past its {MAX_FANOUT_WAIT}s budget "
+            f"and this one had not answered, so there is no result for a batch timeout "
+            f"rather than for lack of matching requests")
+
+
 def poll_timeout_message(engine: str, stop: str = STOP_NOT_DONE) -> str:
     """What to say when a query outlives `MAX_POLL`, and the retry bound.
 

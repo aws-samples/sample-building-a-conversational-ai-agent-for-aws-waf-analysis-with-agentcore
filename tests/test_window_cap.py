@@ -144,6 +144,76 @@ def test_the_timeout_message_carries_the_granularity_advice():
 # --- every query_logs caller has to know about the sentinel row ---------------
 
 
+def _calls_in_own_scope(fn, name: str) -> list[int]:
+    """Line numbers where `fn` itself calls `name`, not counting nested functions.
+
+    `ast.walk` descends into nested `FunctionDef`s, so a wrapper defined INSIDE the function
+    it serves gets its call attributed to both. That is not pedantry: it made the funnel
+    assertion below report `sample_inspection_content` and its own nested `_q` as two callers
+    of one line, i.e. it failed on a module that had just been fixed. Attribution has to stop
+    at every construct that introduces a scope."""
+    lines = []
+    stack = list(fn.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
+                            ast.ClassDef)):
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id == name:
+            lines.append(node.lineno)
+        stack.extend(ast.iter_child_nodes(node))
+    return sorted(lines)
+
+
+def _query_logs_sites(path) -> dict:
+    """`{function name: [line numbers]}` for every `query_logs` call in a module."""
+    tree = ast.parse(path.read_text())
+    sites = {}
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            lines = _calls_in_own_scope(fn, "query_logs")
+            if lines:
+                sites[fn.name] = lines
+    return sites
+
+
+def test_every_query_logs_caller_calls_it_from_exactly_one_place():
+    """The funnel, which is the invariant the error-row guard actually depends on.
+
+    Four of the five tool modules that query logs route every call through one wrapper:
+    `_safe_query`, `_run_query`, `_run_q`, `_run_log_query`. That is *why* 0.17.0 could fix
+    them at all, and it is the property worth asserting, because once a module has one call
+    site "is the result checked" is a question about one place instead of a dataflow problem.
+    A result can be handed to a wrapper three frames up, so per-call-site guarding cannot be
+    read off the syntax; a count of call sites can.
+
+    One per module is an invariant rather than an incidental number, which is what makes it
+    a legitimate count to assert: the wrapper exists precisely so there is exactly one.
+
+    Found by ROADMAP 4.6: `analyze_ip` had seven, which is how it went eight releases without
+    the guard while the sweep below reported it clean.
+
+    **This assertion alone is not the design; it is half of it.** A module can call
+    `log_query_error` from a sibling function and satisfy any module-level check while the
+    function doing the querying does nothing with the result. The pair is what holds: one call
+    per scope here, and the guard in *that* scope below. Together they are as strong as
+    dataflow analysis while staying a location check, which is the only reason they can be read
+    off the syntax at all. Weakening either half puts the residual back.
+
+    Phrased per module because that is where it currently bites, and the invariant asserted is
+    per scope. A module with two separately-guarded wrappers would be correct and would fail
+    this wording; if that ever happens, widen the wording rather than deleting the check."""
+    sites = {p.name: _query_logs_sites(p) for p in TOOLS}
+    callers = {name: s for name, s in sites.items() if s}
+    assert callers, "no query_logs callers found, so this test proves nothing"
+    spread = {name: s for name, s in callers.items()
+              if sum(len(v) for v in s.values()) != 1}
+    assert not spread, (
+        f"call query_logs from more than one place, so no wrapper owns the result: {spread}. "
+        f"Route them through one function per module.")
+
+
 def test_every_query_logs_caller_checks_for_an_error_row():
     """The pairing that would have caught `waf_block_fp` and `waf_challenge_check`.
 
@@ -153,21 +223,39 @@ def test_every_query_logs_caller_checks_for_an_error_row():
     investigation whose output tells a user whether to unblock traffic.
 
     Structural rather than behavioural on purpose: a fifth caller added later is a failure
-    here, where a behavioural test would only cover the callers someone remembered."""
-    callers, guarded = [], []
+    here, where a behavioural test would only cover the callers someone remembered.
+
+    **Scoped to the enclosing function, and the module-level version this replaces was
+    hollow.** It asked `if "log_query_error" in src`, so one guarded site anywhere in a module
+    marked the whole module clean. `waf_logs.py` passed it while `analyze_ip` called
+    `query_logs` seven times and checked none of them, because a *different* function,
+    `run_logs_query`, did check. Worse than a coincidence: `analyze_ip` **imports**
+    `log_query_error` in its own scope and never calls it, so the name the sweep matched on was
+    present only because someone meant to use it exactly here. An unused-import lint scoped to
+    that function would have flagged what this test declared fine.
+
+    Reads cleanly per function only because of the funnel asserted above. Without it this
+    would be the dataflow problem that docstring describes."""
+    unguarded, examined = {}, []
     for path in TOOLS:
-        src = path.read_text()
-        tree = ast.parse(src)
-        calls = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                    and n.func.id == "query_logs" for n in ast.walk(tree))
-        if not calls:
-            continue
-        callers.append(path.name)
-        if "log_query_error" in src:
-            guarded.append(path.name)
-    assert callers, "no query_logs callers found, so this test proves nothing"
-    assert sorted(callers) == sorted(guarded), \
-        f"call query_logs without checking for an error row: {sorted(set(callers) - set(guarded))}"
+        tree = ast.parse(path.read_text())
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            calls = _calls_in_own_scope(fn, "query_logs")
+            if not calls:
+                continue
+            examined.append(f"{path.name}:{fn.name}")
+            # The guard is looked for in the SAME scope, for the same reason the funnel is
+            # asserted per scope: a check in a sibling function protects nothing.
+            checks = _calls_in_own_scope(fn, "log_query_error")
+            if not checks:
+                unguarded[f"{path.name}:{fn.name}"] = calls
+    # Name the subjects rather than counting them. These are the five modules that query
+    # logs, so a walk that reaches none of them has not searched what the claim covers.
+    assert {"waf_bypass.py", "waf_logs.py"} <= {e.split(":")[0] for e in examined}, examined
+    assert not unguarded, \
+        f"call query_logs without checking for an error row in the same scope: {unguarded}"
 
 
 def test_the_error_row_check_is_written_once():

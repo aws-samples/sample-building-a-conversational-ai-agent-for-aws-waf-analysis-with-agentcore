@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Changed: a bypass scan runs its six queries at once
+
+- **A scan took the sum of its six query times for no reason.** None of the six anomaly filters
+  reads another's output. They now run concurrently, capped at five at a time so a scan does not
+  compete with patrol for Athena's account-level query quota. Measured on a 25M-record log group
+  over a 15-minute window, twice: 41.9s to 17.1s and 33.9s to 14.0s, both 2.4x, with the same six
+  queries issued either way.
+- **A query still running when the batch gives up says so, rather than showing you no findings.**
+  Concurrency adds a third reason a section can be empty, next to "the query failed" and "nothing
+  matched". All three are now told apart, so a slow query cannot read as a clean scan.
+- The scan is the first of three tools this applies to. `investigate_block` still runs its queries
+  one at a time.
+
+### Fixed: `analyze_ip` reported a failed query as a quiet IP
+
+- **`analyze_ip` said "No log records found for this IP" when its first query had failed**, not when
+  the IP was quiet. It ran seven log queries and checked none of them for failure: on Athena one
+  failure aborted the whole analysis, and on CloudWatch the error was rendered into the report as
+  data. Each section now says whether it has no rows because nothing matched or because its query
+  failed, and the other six sections survive one failure.
+- **A rule's sampled request content no longer reads as "nothing matched" when the query failed.**
+  `investigate_block` and the patrol detail tables show which query string or header matched a rule;
+  on CloudWatch a failed sample query came back as no content found. It now reports that the content
+  could not be retrieved, which is what the Athena path already did.
+- Both were the same defect the 0.17.0 release fixed in four other tools. They were missed because
+  the test guarding against it checked whether a *file* mentioned the guard, not whether the code
+  that needed it used it.
+
 ### Changed: one static-asset extension list, and the same answer from both log backends
 
 - **The same request could be a static asset on CloudWatch and a real request on Athena.** The
