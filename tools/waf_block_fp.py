@@ -75,10 +75,10 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
     if get_log_type() == "none":
         return ("Error: No logging configured (neither CWL nor S3/Firehose) for this WebACL. "
                 "Cannot investigate block FPs without logs. Enable WAF logging first.")
-    from tools.waf_query import check_hourly_partition_block
-    hourly_err = check_hourly_partition_block()
-    if hourly_err:
-        return hourly_err
+    from tools.waf_query import check_coarse_partition_block
+    coarse_err = check_coarse_partition_block()
+    if coarse_err:
+        return coarse_err
 
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate."

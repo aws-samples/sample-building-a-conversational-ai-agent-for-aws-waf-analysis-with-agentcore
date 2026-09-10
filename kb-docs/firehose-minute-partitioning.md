@@ -1,33 +1,45 @@
-# Why Athena log queries need minute-level partitioning, and how to enable it
+# What hourly partitioning costs you, and how to switch to minute-level
 
-This explains why the agent stops and asks you to re-partition when your WAF logs use
-hourly partitioning, and gives the exact steps to fix it. Use this whenever a log query is
-blocked with a "hourly partition detected" message.
+Hourly partitioning is the Firehose default and log queries work on it. What it costs you is
+bytes scanned, and therefore money. This explains the size of that cost and gives the exact
+steps to switch, which is a one-time in-place Firehose change.
 
-## Why the agent stops (and why it's not a bug)
+Read this if the agent told you your table is partitioned by hour, or if you want to lower
+what log queries cost.
+
+## What hourly partitioning costs
 
 When AWS WAF logs are delivered to S3 through Amazon Data Firehose with the **default prefix**
 (`YYYY/MM/dd/HH/`), each partition holds a whole hour of data. Athena then has to scan the
 **entire hour** even when you only asked about a 5-minute window.
 
-For any real traffic volume (>10K requests/hour) this means:
+**It costs bytes, not time, and that surprises people.** Measured at 4000 requests per second
+against two real tables over the same traffic: an unaligned 30-minute query scanned 2108 MB on
+the hourly table against 545 MB on the minute-level one, about 3.9x the bytes, and both
+finished in about 13 seconds. A full 6-query analysis chain scanned 5x the bytes for roughly
+25% more wall time. Athena reads a scan in parallel across many splits, and for gzipped WAF
+logs one object is roughly one split, so parallelism follows object count rather than partition
+count and absorbs most of the extra volume.
 
-- Queries take 30–60 seconds, or get stopped for running past the 2-minute poll budget
-- Drill-down investigation becomes too slow to be usable in a conversation
-- Athena scan costs go up (you pay per byte scanned)
+So the honest summary is:
 
-Important: this is **not** a correctness problem. Every query already filters on the exact
-`timestamp` (epoch milliseconds), so results would still be accurate — just slow. The agent
-is an interactive assistant: a user asks "any false positives between 14:30 and 15:00?" and
-waits in the chat. A 30–60 second answer breaks that. So the agent deliberately **does not run
-slow log queries** on hourly-partitioned tables. Instead it stops, explains why, and points
-you here. (Aggregate CloudWatch metrics still work — they don't depend on partitioning — so
-the agent can still give you trends and volume while log-level detail is blocked.)
+- **You pay for the extra bytes.** Athena bills per byte scanned, so an hourly query costs
+  several times what the same question costs on minute-level data.
+- **Wall time is close.** Expect the same order of seconds for one query, and a modest increase
+  across a long chain.
+- **Narrowing a window below one hour saves nothing.** There is no sub-hour directory to skip,
+  so asking for 5 minutes and asking for 60 minutes scan exactly the same bytes. Zoom in by
+  asking for fewer hours instead.
+- **Nothing is wrong with your results.** Every query filters on the exact `timestamp` in epoch
+  milliseconds, so the rows are correct either way.
 
-The fix is a **one-time, in-place** Firehose configuration change: switch the S3 prefix from
-hourly to minute-level. No stream recreation, no data loss, no downtime. After that, Athena
-scans only the relevant minutes — **10–60× faster** — and the agent picks up the new structure
-automatically on the next query.
+**Only day-level and coarser partitioning is refused**, because one day of production logs is a
+multiple of what an hourly scan reads with none of hourly's excuse that it is the delivery
+default. If the agent refused a log query outright, your prefix is coarser than hourly.
+
+Switching to minute-level is a **one-time, in-place** Firehose configuration change: no stream
+recreation, no data loss, no downtime. The agent picks up the new structure automatically on
+the next query.
 
 ## What changes
 
@@ -107,7 +119,9 @@ Replace `YOUR_ACCOUNT_ID`, `YOUR_REGION`, `YOUR_WEBACL_NAME` with actual values.
 
 - **No downtime** — the stream stays active; new prefix takes effect within a few minutes.
 - **Old data is not moved** — existing files stay at their original hourly paths; only new
-  data uses the minute-level prefix. (So the speed-up applies to data written after the change.)
+  data uses the minute-level prefix, so the saving applies to data written after the change.
+  The agent reads one table per WebACL, for whichever layout your newest data uses, so if you
+  need the older hourly era as well you create a second table over the same bucket yourself.
 - **The agent auto-detects** — on the next query it sees the new minute structure and recreates
   its Athena table automatically. No manual table work needed.
 - **No extra cost** — timestamp-based prefixes are a standard Firehose feature, no per-GB

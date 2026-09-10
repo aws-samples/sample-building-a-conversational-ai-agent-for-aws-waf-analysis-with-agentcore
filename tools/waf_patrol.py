@@ -541,7 +541,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
     try:
         from tools.waf_athena import _run_athena_select, _athena_state, \
             resolve_s3_log_path, resolve_log_table, partition_predicate, \
-            _partition_has_minutes
+            _partition_too_coarse
         import re as _re
 
         # Same memoized translation query_logs uses. This path used to do it inline,
@@ -559,15 +559,17 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             table_msg = f"Created permanent Athena table: {full_table} (reusable for future queries)"
         part_fmt = _athena_state.get("partition_format")
 
-        # Block queries on coarse (hourly or coarser) partitions.
-        if part_fmt and not _partition_has_minutes(part_fmt):
+        # Refuse only daily and coarser (ROADMAP 3.2). Hourly runs and pays the cost notice
+        # below, because blocking it blocked most Firehose users for a query path that works.
+        if part_fmt and _partition_too_coarse(part_fmt):
             return {"details": {}, "table_msg": table_msg, "unavailable": (
-                        "⚠️ Coarse (hourly or coarser) partitioning detected — per-rule log details were "
-                        "skipped (coarse partitions make Athena scan too much data per query, "
-                        "timeout risk). This is a scan-time/UX stop, NOT a data error; the metrics "
-                        "in this report are unaffected and accurate. To enable log-level details, "
-                        "call search_waf_knowledge(query='Firehose minute-level partitioning for "
-                        "Athena WAF log queries') and walk the user through the one-time fix.")}
+                        "⚠️ This table is partitioned by day or coarser, so per-rule log details "
+                        "were skipped: one day of production logs is a multiple of what an hourly "
+                        "scan reads. This is a scan-cost stop, NOT a data error; the metrics in "
+                        "this report are unaffected and accurate. To enable log-level details, "
+                        "re-deliver logs with an hourly or minute-level prefix. Call "
+                        "search_waf_knowledge(query='Firehose minute-level partitioning for "
+                        "Athena WAF log queries') for the steps.")}
 
         # Build time filter WITH partition pruning (critical for performance)
         start_ms = int(start.timestamp()) * 1000

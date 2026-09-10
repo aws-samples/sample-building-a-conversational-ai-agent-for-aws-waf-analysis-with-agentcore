@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Changed: log queries run on hourly-partitioned tables
+
+- **Hourly was refused and should not have been.** Hourly is the Firehose default, so refusing
+  it refused most Firehose users a query path that works. Our own load test is what settled it:
+  at 4000 requests per second an unaligned 30-minute query scanned 2108 MB on an hourly table
+  against 545 MB on a minute-level one, about 3.9x the bytes, and both finished in about 13
+  seconds. Athena reads a scan in parallel across splits that follow object count rather than
+  partition count, so the extra volume costs money rather than time.
+- **So hourly runs and is told what it costs, once per table.** The notice says each query reads
+  a whole hour even when it asks for five minutes, and that narrowing a window below one hour
+  saves nothing, so zoom in by asking for fewer hours. Day-level and coarser is still refused.
+- **A daily bucket used to be detected as hourly, which mattered only once the gate opened.**
+  Declared `yyyy/MM/dd/HH`, a daily bucket projects `.../27/00` through `/23` while the objects
+  sit directly under `.../27/`, so Athena answers zero rows with no error. Detection is now
+  three-way, and an unreadable layout falls back to the coarsest option rather than the middle
+  one, because declaring coarser than reality still reads the data while declaring finer does
+  not.
+- **On a timeout, the advice to retry with a narrower window now depends on your layout.** On
+  hourly it says narrowing helps only down to one whole hour and to use metrics below that,
+  because a quarter of the window scans identical bytes there.
+- The knowledge-base article on minute-level partitioning no longer says the agent stops on
+  hourly, and no longer claims hourly queries take 30-60 seconds, which our measurements
+  refuted. It presents the cost and the one-time fix.
+
 ## 0.18.0 (2026-09-10)
 
 ### Fixed: a bypass scan no longer reports "no candidates" when its queries failed
