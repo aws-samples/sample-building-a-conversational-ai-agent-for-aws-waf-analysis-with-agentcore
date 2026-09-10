@@ -51,6 +51,15 @@ def _dispatched_steps(path: str, func: str) -> set[str]:
 
 @pytest.mark.parametrize("tool,path", sorted(STEP_TOOLS.items()))
 def test_the_prompt_names_every_step_the_tool_dispatches(tool, path):
+    """One notch stronger than the invariant strictly needs, and that is a known trade.
+
+    A step could legitimately be **output-discovered**: reached only from a tool's own output
+    rather than from prompt routing, which is how `ja4_ips` was first going to work. Such a step
+    would fail here and the wrong fix is deleting the assertion. The right one is already in this
+    suite: an exemption that asserts its own necessity, the way `BACKFILL_FLOOR` in
+    `test_release_metadata.py` fails once nothing needs excusing. Add the step to a named
+    `OUTPUT_DISCOVERED` set plus a test that its own tool's output does name it, so the exemption
+    cannot quietly widen."""
     steps = _dispatched_steps(path, tool)
     assert steps, f"no step literals parsed from {tool}, so this test proves nothing"
     prompt = agent._build_system_prompt(9)
