@@ -70,10 +70,18 @@ Agent 会搜索**所有 Glue 数据库**，带分页，找 `LOCATION` 覆盖解�
 ### 检测成功的条件
 
 - 从 WAF 日志配置解析出的 S3 路径，就是你的表的 `LOCATION`，或者在它之下。比较按路径边界做，所以 `s3://b/waf-logs` 上的表不会去认领 `s3://b/waf-logs-prod`
-- 表里有 `action` 和 `httprequest` 两列，名字要完全一致
+- 撑起每条查询的三列都在，类型也用得上：`timestamp` 是整型的 epoch 毫秒，`action` 是字符串，`httprequest` 是 struct 并且带 `clientip` 和 `uri` 两个字段。列名按小写精确匹配
+- `webaclid` 是字符串，但**只在**表的位置盖着多个 WebACL 时才要。那种表上每条查询都要加一道 `webaclid` 过滤，把别的 WebACL 的行挡在外面。位置里已经写明某一个 WebACL 的表，查询根本不提这一列，也就不要求它
+- 其余的 WAF 日志列都是可选的。缺一个丢的是一项功能，不是整张表，下一节说会怎么告诉你
 - 表**只有一个**分区列，用 `date` 类型的 partition projection。列名随意
 - 该列的 `projection.<col>.format` 是 `yyyy/MM/dd`、`yyyy/MM/dd/HH` 或 `yyyy/MM/dd/HH/mm`，分隔符随便
 - 该列的 `projection.<col>.range` 上界是 `NOW` 或者一个将来的日期
+
+### 老版本的日志 schema 照用，但会提示你
+
+WAF 日志里多数列只服务一项功能，不是每条查询都要，缺了就不拒表。`terminatingruleid`、`labels`、`nonterminatingmatchingrules`、`rulegrouplist`、`ja4fingerprint`、`challengeresponse`、`captcharesponse` 缺哪个，表照用，查询输出里多一行，把每个缺的列和它本来能回答什么写在一起。类型声明错了、或者少了查询要读的字段，报法一样，因为丢的查询是同一批。
+
+AWS WAF 这些年一直在往日志里加列。`labels`、`ja4fingerprint` 还不存在的年代建的 Glue 表，今天照样读得动当前的日志，JSON SerDe 会忽略表里没声明的字段。这种表拒掉，你亏得比看一行提示多得多：在它上面 bypass 扫描的 JA4 聚合会失败，扫描其余部分照样出结果。把缺的列补进表里，下次选 WebACL 时 Agent 就认了。
 
 ### 多张表都合格时选哪张
 
@@ -88,7 +96,8 @@ Agent 会搜索**所有 Glue 数据库**，带分页，找 `LOCATION` 覆盖解�
 | 场景 | 失败原因 | 应对 |
 |---|---|---|
 | Firehose 前缀全是动态表达式 | 解析出的路径只是桶根，跟位置更具体的用户表对不上 | Agent 自己那张临时表会自愈（在解析出的路径上删掉重建）；位置更深的*用户表*仍然匹配不上 |
-| 列名不一样 | `httprequest` 叫了别的名字（如 `http_request`） | 把列改名成 `httprequest`，Agent 的 SQL 就是按这个名字写的 |
+| 三个必需列的列名不一样 | `timestamp`、`action`、`httprequest` 叫了别的名字（如 `http_request`、`event_time`） | 改回来，Agent 的 SQL 就是按这些名字写的。*可选*列改了名不致命，只是丢掉那一列的功能 |
+| 必需的列类型不对 | `timestamp` 声明成 `string`，没法跟 epoch 毫秒比大小；`httprequest` 被拍平成一堆标量列，就没有 `clientip` 字段可读 | 改列的声明。拒绝信息里写清了是哪一列、你给的什么类型、谁要读它 |
 | integer 或 enum 类型的 partition projection | 分区裁剪是把分区值跟渲染出的时间戳比，只有 `date` 类型能这么比 | 把该列重建成 `projection.<col>.type=date` |
 | 非投影的 Hive 分区 | Agent 从不执行 `ALTER TABLE ADD PARTITION`，看不到这类分区 | 把表改成 partition projection |
 | 分区键超过一个 | 查询只按单个时间列做裁剪 | 只用一个投影的时间列 |
@@ -141,3 +150,5 @@ Agent 会搜索**所有 Glue 数据库**，带分页，找 `LOCATION` 覆盖解�
 3. **换过格式的桶，切换之前的日志读不到。** Agent 读分钟级那段，并且告诉你它从哪天开始。要读小时级那段，得你自己建一张表，因为小时级的明细查询还被拒着，Agent 就不会去建小时级的表。
 
 4. **Vended Logs 上的自定义 S3 前缀是看不见的。** 如果你是通过 API（不是控制台）配的自定义 key 前缀，Agent 可能解析不出正确路径，因为 `GetLoggingConfiguration` 不返回这个前缀。
+
+5. **schema 校验看的是你的声明，不是你的数据。** 它拿 Glue 目录里的列名和类型跟查询需要的比。声明得没毛病、底下的对象跟声明不一致，这种表照样过得了绑定，到查询时才失败。不真读一个对象出来，这两种情况分不出来。
