@@ -23,7 +23,19 @@ import agent
 from tools import query_limits as Q
 from tools import waf_athena as A
 
-TOOLS = sorted(pathlib.Path("tools").glob("*.py"))
+# Resolved from __file__ rather than the working directory, which is what every other sweep in
+# `tests/` does. `Path("tools")` globs nothing unless pytest runs from the repo root, and the
+# four sweeps below then search an empty set. Their own preconditions catch that today, which is
+# why it showed up as failures rather than as false passes, but a wrong path caught by a
+# precondition is still a wrong path.
+TOOLS = sorted((pathlib.Path(__file__).resolve().parents[1] / "tools").glob("*.py"))
+# The subjects the sweeps below name in their own assertions, so this precondition tracks what
+# they actually depend on. A headcount was the first version and it pins the module count, which
+# is unrelated to whether the glob found the right modules: it would pass on unrelated files and
+# fail on a legitimate consolidation. A precondition reads as plumbing and gets less scrutiny
+# than the assertion it protects, which is exactly why it has to state an invariant too.
+_SUBJECTS = {"query_limits.py", "waf_query.py", "waf_patrol.py", "waf_bypass.py"}
+assert _SUBJECTS <= {p.name for p in TOOLS}, sorted(_SUBJECTS - {p.name for p in TOOLS})
 
 
 def test_the_prompt_states_the_number_the_code_enforces():
@@ -59,7 +71,7 @@ def test_every_tool_clamps_to_the_shared_constant():
             if "duration_minutes" not in args:
                 continue
             if "MAX_MINUTES" not in args:
-                literal_clamps.append(f"{path}:{node.lineno}: min({', '.join(args)})")
+                literal_clamps.append(f"{path.name}:{node.lineno}: min({', '.join(args)})")
     # The log-filter probe is a deliberate 60-minute existence check, not a window cap:
     # it asks "are there any ALLOW rows at all" before the scan commits to anything.
     allowed = [c for c in literal_clamps if "waf_bypass.py" in c and "60" in c]
@@ -70,9 +82,9 @@ def test_every_tool_clamps_to_the_shared_constant():
 def test_the_cap_is_defined_once():
     """`MAX_POLL` was five disagreeing constants before it was one. Same shape, so the same
     guard: only `query_limits` may define this name."""
-    definers = [str(p) for p in TOOLS
+    definers = [p.name for p in TOOLS
                 if re.search(r"^MAX_MINUTES\s*=", p.read_text(), re.M)]
-    assert definers == ["tools/query_limits.py"], definers
+    assert definers == ["query_limits.py"], definers
 
 
 # --- the retry advice, which is where partition granularity actually matters ---
@@ -162,6 +174,6 @@ def test_the_error_row_check_is_written_once():
     """`log_query_error` is only one function if nobody re-derives it inline. `waf_patrol`
     is excluded because it produces those rows for its own fan-out cells rather than reading
     a `query_logs` result: it never calls `query_logs` at all."""
-    inline = [str(p) for p in TOOLS
+    inline = [p.name for p in TOOLS
               if '"_error" in ' in p.read_text() and p.name != "waf_patrol.py"]
-    assert inline == ["tools/waf_query.py"], inline
+    assert inline == ["waf_query.py"], inline

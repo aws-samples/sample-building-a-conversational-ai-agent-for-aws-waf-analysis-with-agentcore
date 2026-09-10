@@ -172,3 +172,34 @@ def test_the_mixed_bucket_message_no_longer_claims_hourly_is_unbuildable():
     assert "second, hourly table you create yourself" in out
     # And it must still say the old era is unreachable, which is the point of the message.
     assert "zero rows" in out and "2022/05/26" in out
+
+
+def test_no_user_facing_string_still_says_hourly_is_unbuildable():
+    """A sweep, because correcting the sentence twice was not enough.
+
+    3.2 made "an hourly table, which this agent does not build yet" false, and the first fix
+    corrected the copy in `describe_table_resolution` while missing a second in
+    `partition_predicate`'s out-of-range message, which kept shipping. Asserting the phrase's
+    ABSENCE across `tools/` costs a line and catches a third copy, where a test per call site
+    only covers the sites someone remembered."""
+    import pathlib
+    # Resolved from __file__, not from the working directory. `Path("tools")` globbed nothing
+    # unless pytest ran from the repo root, and an empty search space satisfies an
+    # absence claim perfectly, so the first version passed from anywhere else. Both halves
+    # below are needed and they do different work: resolving fixes this instance, and the
+    # non-empty assertion survives `tools/` being renamed or emptied.
+    #
+    # No exemption for a comment quoting the old sentence. The one comment that does quote it
+    # splits the phrase across two lines, so this per-line sweep never sees it, and an exemption
+    # with no user is a standing hole a live claim can hide behind.
+    files = sorted((pathlib.Path(__file__).resolve().parents[1] / "tools").glob("*.py"))
+    # Name the subject rather than counting the files. `len(files) > 10` was the first version
+    # and it pins the module count, which has nothing to do with whether the sweep searched what
+    # it was supposed to: it passes on eleven unrelated files and fails on a legitimate
+    # consolidation. This fails for exactly one reason, the glob missing the module the claim
+    # lived in.
+    assert "waf_athena.py" in {f.name for f in files}, sorted(f.name for f in files)
+    offenders = [f"{p.name}:{n}" for p in files
+                 for n, line in enumerate(p.read_text().splitlines(), 1)
+                 if "does not build yet" in line]
+    assert not offenders, offenders
