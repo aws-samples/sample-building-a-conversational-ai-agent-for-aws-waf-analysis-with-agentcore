@@ -227,8 +227,13 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
     # real attack. A failed ratio query produces exactly `allow_count == 0`, so absorbing the
     # failure here would turn a query that did not run into evidence against the user's IP,
     # which is the shape 0.18.0 removed from the bypass verdict. Same for `peak_rpm` and
-    # `rules_triggered`. So a failure in any of the five is re-raised, and this change is a
-    # latency change with no behavioural component.
+    # `rules_triggered`. So a failure in any of the five is re-raised.
+    #
+    # **One thing this does report that the serial chain could not, and it is not an accident
+    # worth removing.** Serially, the first failing query raised and the other four never ran,
+    # so the message named one cause. All five run now, so `reasons` can hold several, and the
+    # raise joins them sorted by label: more information than before, deterministic enough for
+    # a test to assert on. The refusal is unchanged; only its completeness improved.
     #
     # `uri_results` is display-only and COULD degrade to a section note. It does not yet,
     # because this module has no per-section reason plumbing and adding it is a separate
