@@ -16,13 +16,28 @@ those.
 """
 
 import datetime as dt
+import re
 
 import pytest
 
 from tools import waf_athena as A
 
-WAF_COLS = [{"Name": "action"}, {"Name": "httprequest"},
-            {"Name": "webaclid"}, {"Name": "timestamp"}]
+
+def _cols_from_ddl():
+    """The Glue `Columns` a table built from `DDL_TEMPLATE` would carry.
+
+    Read out of the template rather than hand-listed, and that is load-bearing: the
+    hand-listed four-column version passed bind-time validation while lacking columns
+    every query dereferences, so it could not fail the check it was standing in for.
+    Deriving it means a column added to the template is a column the fixture has.
+    """
+    body = A.DDL_TEMPLATE.split("PARTITIONED BY")[0]
+    pairs = re.findall(r"^  `(\w+)` (.+?),?$", body, re.M)
+    assert len(pairs) == 23, f"expected 23 declared columns, parsed {len(pairs)}"
+    return [{"Name": n, "Type": t} for n, t in pairs]
+
+
+WAF_COLS = _cols_from_ddl()
 
 # A vended-log path, i.e. one specific to a single WebACL.
 SCOPED_PATH = "s3://bkt/AWSLogs/1/WAFLogs/us-east-1/myacl"
@@ -529,6 +544,35 @@ def test_webacl_specific_location_keeps_scoping(catalog):
     catalog({"userdb": [table("own", SCOPED_PATH)]})
     A._record_table(A._find_existing_table(SCOPED_PATH, "us-east-1"))
     assert A._athena_state["webacl_scoped"] is True
+
+
+def _without(col):
+    """WAF_COLS minus one column, for the schema tier that depends on the location."""
+    kept = [dict(c) for c in WAF_COLS if c["Name"] != col]
+    assert len(kept) == len(WAF_COLS) - 1, col
+    return kept
+
+
+def test_a_shared_location_table_must_declare_webaclid(catalog):
+    """`webaclid` is required on a shared location and not asked for on a scoped one, and
+    the join between those two halves is a single expression in `_table_metadata`:
+    `shared_location=not _is_webacl_scoped(location)`. Both halves are covered on their
+    own, the join was not, and dropping the `not` inverted the tier's entire meaning with
+    the whole suite still green. On a shared table every query appends the webaclid
+    filter, so without the column Athena raises COLUMN_NOT_FOUND on all of them."""
+    catalog({"userdb": [table("shared", SHARED_PATH, cols=_without("webaclid"))]})
+    assert A._find_existing_table(SHARED_PATH, "us-east-1") is None
+    assert "`webaclid`" in " ".join(A._athena_state["discovery_notes"])
+
+
+def test_a_webacl_scoped_table_does_not_need_webaclid(catalog):
+    """The mirror, and it is the half that has to be asserted separately: a
+    single-direction test is satisfied by a constant, and refusing this table would
+    refuse it over a column no query on it reads."""
+    catalog({"userdb": [table("own", SCOPED_PATH, cols=_without("webaclid"))]})
+    chosen = A._find_existing_table(SCOPED_PATH, "us-east-1")
+    assert chosen is not None, A._athena_state["discovery_notes"]
+    assert chosen["schema_note"] is None
 
 
 # --- pruning predicate ------------------------------------------------------

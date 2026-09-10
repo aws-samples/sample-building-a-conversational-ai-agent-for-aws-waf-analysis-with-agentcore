@@ -114,6 +114,9 @@ _ATHENA_STATE_DEFAULTS = {
                              # history the resolved table cannot reach.
     "table_choice": None,    # one line naming the resolved table, for tool output
     "discovery_notes": (),   # why candidate tables were rejected, for tool output
+    "schema_note": None,     # optional columns the resolved table lacks, and the
+                             # features that will therefore fail. None when nothing
+                             # is missing, which is every table the agent builds.
     # Memo of the log-destination ARN -> S3 path translation. Not a second table
     # cache: it caches the AWS calls that happen BEFORE resolution, which are the
     # ones with a hard rate ceiling. firehose:DescribeDeliveryStream is capped at
@@ -665,6 +668,157 @@ def _path_covers(location: str, resolved: str) -> bool:
     return bool(location) and (resolved == location or resolved.startswith(location + "/"))
 
 
+_TYPE_KINDS = {
+    "int": lambda t: t in ("bigint", "int", "integer", "smallint", "tinyint"),
+    "string": lambda t: t in ("string", "varchar") or t.startswith(("varchar(", "char(")),
+    "struct": lambda t: t.startswith("struct<"),
+    "array_struct": lambda t: t.startswith("array<struct<"),
+}
+
+# The tier is NOT decided by "does the generated SQL read this column". The SQL reads
+# every column below, so that test puts all of them in one tier and explains nothing.
+# What decides it is **what the user loses without it**:
+#
+#   REQUIRED     nothing worth running runs, so refuse the table and name the column.
+#   SHARED_ONLY  required only when the table's location covers more than one WebACL.
+#                Every query on such a table carries the `webaclid` filter and would
+#                fail without the column; on a WebACL-scoped table no query mentions
+#                it, so asking for it there would refuse a table for a column nothing
+#                reads.
+#   OPTIONAL     a named set of features fails, loudly, and the rest still works.
+#
+# The split earns its keep on a table nobody has updated. AWS WAF has added log columns
+# over the years, and a Glue table declared before `labels` or `ja4fingerprint` existed
+# still reads today's logs, because JsonSerDe ignores fields the table does not declare.
+# Refusing that table is the outcome bring-your-own-table exists to avoid, so only the
+# three columns that carry every query can be fatal.
+#
+# `ja3fingerprint` is deliberately absent: DDL_TEMPLATE declares it and no query reads
+# it, so listing it would warn about losing a feature that does not exist.
+REQUIRED, SHARED_ONLY, OPTIONAL = "required", "shared only", "optional"
+
+# column -> (tier, type kind, struct fields the SQL dereferences, what reads it)
+_COLUMN_SPEC = {
+    "timestamp": (REQUIRED, "int", (),
+                  'every window bound, as `"timestamp" BETWEEN` epoch milliseconds'),
+    "action": (REQUIRED, "string", (),
+               "the ALLOW/BLOCK/COUNT filter that almost every query carries"),
+    "httprequest": (REQUIRED, "struct", ("clientip", "uri"),
+                    "every query that reports a client IP or a URI"),
+    "webaclid": (SHARED_ONLY, "string", (),
+                 "the filter that keeps another WebACL's rows out of a shared table"),
+    "terminatingruleid": (OPTIONAL, "string", (),
+                          "per-rule breakdowns in patrol, COUNT evaluation and bypass"),
+    "labels": (OPTIONAL, "array_struct", ("name",),
+               "label queries on bot, managed-rule and anti-DDoS labels"),
+    "nonterminatingmatchingrules": (OPTIONAL, "array_struct", ("ruleid",),
+                                    "the query that finds COUNT-mode rule hits, which is how COUNT evaluation works"),
+    "rulegrouplist": (OPTIONAL, "array_struct", ("nonterminatingmatchingrules",),
+                      "the queries that attribute a hit to a managed rule group, including COUNT-mode hits on its nested rules"),
+    "ja4fingerprint": (OPTIONAL, "string", (),
+                       "JA4 client-fingerprint aggregation in the bypass scan"),
+    "challengeresponse": (OPTIONAL, "struct", ("failurereason",),
+                          "the token failure-reason breakdown for CHALLENGE"),
+    "captcharesponse": (OPTIONAL, "struct", ("failurereason",),
+                        "the token failure-reason breakdown for CAPTCHA"),
+}
+
+
+def _is_webacl_scoped(location: str) -> bool:
+    """True when the table's own location names the active WebACL.
+
+    One implementation for two readers. `_record_table` publishes it so the SQL builders
+    know whether to add the `webaclid` filter, and `_check_schema` needs the same answer
+    to decide whether `webaclid` has to be declared at all. Two copies would drift, and
+    the drift would show up as a table refused for a column no query would have read.
+
+    Always score the RESOLVED table's own location, never the requested s3_path: matches
+    are ancestor-or-equal, so the requested path can contain the WebACL name while the
+    table sitting above it does not, and that error runs one way only, claiming
+    single-WebACL scoping a table does not have."""
+    wn = get_webacl_name() or ""
+    return bool(wn) and wn.lower() in (location or "").lower()
+
+
+def _struct_fields(glue_type: str) -> list[str]:
+    """Top-level field names of a Glue `struct<...>` or `array<struct<...>>` type.
+
+    Depth-aware rather than a substring test, and that is the whole reason it exists:
+    `httprequest` nests `headers:array<struct<name:string,value:string>>`, so
+    `"name:" in type_string` reports a top-level `name` field that is not there, and
+    `labels` would validate against any table whose httprequest has headers."""
+    t = glue_type.strip().lower()
+    if t.startswith("array<"):
+        t = t[len("array<"):-1].strip() if t.endswith(">") else t
+    if not (t.startswith("struct<") and t.endswith(">")):
+        return []
+    depth, field, out = 0, "", []
+    for ch in t[len("struct<"):-1]:
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(field)
+            field = ""
+        else:
+            field += ch
+    out.append(field)
+    return [f.split(":", 1)[0].strip() for f in out if ":" in f]
+
+
+def _column_readable(types: dict[str, str], col: str, kind: str, fields) -> bool:
+    """True when the column is declared and shaped so the generated SQL can read it.
+
+    Absent, wrongly typed and missing a dereferenced field give one answer on purpose:
+    all three lose exactly the same queries, so one sentence covers them and the caller
+    does not have to explain a distinction the user cannot act on differently."""
+    if col not in types or not _TYPE_KINDS[kind](types[col]):
+        return False
+    have = _struct_fields(types[col])
+    return all(f in have for f in fields)
+
+
+def _check_schema(name: str, types: dict[str, str],
+                  shared_location: bool) -> tuple[str | None, str | None]:
+    """Validate a candidate table against what the generated SQL reads.
+
+    Returns (rejection, note). The rejection is fatal and worded like the other
+    `_table_metadata` refusals; the note names the features that will fail on a table
+    that is otherwise fine. `shared_location` is False when the table's own location
+    names the active WebACL, which is what makes the `webaclid` column unnecessary.
+
+    Name-only checking was the gap: an `httprequest` of the wrong shape, or a
+    `timestamp` declared `string`, bound successfully and then failed once per query
+    with a raw Athena error naming a column but not what the agent wanted it for."""
+    for col, (tier, kind, fields, why) in _COLUMN_SPEC.items():
+        if tier == OPTIONAL or (tier == SHARED_ONLY and not shared_location):
+            continue
+        if col not in types:
+            return f"{name}: missing WAF log column `{col}`. It is read by {why}.", None
+        if not _TYPE_KINDS[kind](types[col]):
+            return (f"{name}: column `{col}` is declared `{types[col]}`, but it is read "
+                    f"by {why}, so it has to be declared "
+                    f"{kind.replace('array_struct', 'array<struct<…>>')}.", None)
+        absent = [f for f in fields if f not in _struct_fields(types[col])]
+        if absent:
+            return (f"{name}: `{col}` has no {', '.join(absent)} field"
+                    f"{'s' if len(absent) > 1 else ''}. Its fields are "
+                    f"{', '.join(_struct_fields(types[col])) or '(none readable)'}, and "
+                    f"it is read by {why}.", None)
+
+    # Each column travels next to its own reason. Two independently sorted lists, one of
+    # columns and one of reasons, invite the reader to pair them positionally, and the
+    # pairing is wrong for every entry.
+    lost = sorted((col, why) for col, (tier, kind, fields, why) in _COLUMN_SPEC.items()
+                  if tier == OPTIONAL and not _column_readable(types, col, kind, fields))
+    if not lost:
+        return None, None
+    return None, (f"{name} is missing or mis-declaring "
+                  + "; ".join(f"`{col}`, needed by {why}" for col, why in lost)
+                  + ". Those will fail; the table is usable for everything else.")
+
+
 def _table_metadata(db_name: str, tbl: dict) -> dict | str:
     """Validate one Glue table as a WAF log source for the pruning path.
 
@@ -673,11 +827,13 @@ def _table_metadata(db_name: str, tbl: dict) -> dict | str:
     is a confusing outcome unless it also says what was wrong with theirs."""
     name = f"{db_name}.{tbl['Name']}"
     sd = tbl.get("StorageDescriptor", {})
-    cols = [c["Name"].lower() for c in sd.get("Columns", [])]
-    missing = [c for c in ("action", "httprequest") if c not in cols]
-    if missing:
-        return (f"{name}: missing WAF log column(s) {', '.join(missing)}. Queries "
-                f"reference `action` and `httprequest` by those exact names.")
+    location = sd.get("Location", "").rstrip("/")
+    types = {c["Name"].lower(): (c.get("Type") or "").strip().lower()
+             for c in sd.get("Columns", [])}
+    rejection, schema_note = _check_schema(
+        name, types, shared_location=not _is_webacl_scoped(location))
+    if rejection:
+        return rejection
 
     part_keys = [p["Name"] for p in tbl.get("PartitionKeys", [])]
     if not part_keys:
@@ -747,7 +903,8 @@ def _table_metadata(db_name: str, tbl: dict) -> dict | str:
 
     return {
         "table": name,
-        "location": sd.get("Location", "").rstrip("/"),
+        "location": location,
+        "schema_note": schema_note,
         "partition_col": col,
         "partition_format": fmt,
         "partition_granularity": granularity,
@@ -897,6 +1054,9 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     return {
         "table": f"{TMP_DATABASE}.{table_name}",
         "location": target_location,
+        # DDL_TEMPLATE is where the required schema is defined, so a table this
+        # function wrote cannot be missing any of it.
+        "schema_note": None,
         "partition_col": "log_time",
         "partition_format": partition_format,
         "partition_granularity": _partition_granularity(partition_format),
@@ -1285,6 +1445,8 @@ def describe_table_resolution() -> str:
             f"that as zero rows rather than as an error. Reading them needs an hourly "
             f"table, which this agent does not build yet. The cutover date is "
             f"best-effort.")
+    if _athena_state.get("schema_note"):
+        lines.append(_athena_state["schema_note"])
     for note in _athena_state.get("discovery_notes") or []:
         lines.append(f"Skipped {note}")
     return "\n".join(lines)
@@ -1305,13 +1467,12 @@ def _record_table(meta: dict, created: bool = False) -> str:
     _athena_state["partition_range_start"] = meta["partition_range_start"]
     _athena_state["partition_range_end"] = meta["partition_range_end"]
     _athena_state["temp_created"] = created
+    # Subscript, not `.get`: both producers set this key, so a third one that forgets
+    # should raise here rather than have its table silently report a clean schema.
+    _athena_state["schema_note"] = meta["schema_note"]
     # A table whose location does not contain the WebACL name may hold several
-    # WebACLs' logs. Score the RESOLVED table's own location, never the requested
-    # s3_path: matches are ancestor-or-equal, so the requested path can contain
-    # the WebACL name while the table sitting above it does not, and that error
-    # runs one way only, claiming single-WebACL scoping a table does not have.
-    wn = get_webacl_name() or ""
-    _athena_state["webacl_scoped"] = bool(wn) and wn.lower() in meta["location"].lower()
+    # WebACLs' logs, and then every query has to carry the webaclid filter.
+    _athena_state["webacl_scoped"] = _is_webacl_scoped(meta["location"])
     _athena_state["table_choice"] = (
         f"{'Created' if created else 'Using'} Athena table `{meta['table']}` at "
         f"{meta['location']}, partitioned on `{meta['partition_col']}` "
