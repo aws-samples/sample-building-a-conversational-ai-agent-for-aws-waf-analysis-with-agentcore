@@ -29,7 +29,13 @@ from tools import waf_athena as A
 # why it showed up as failures rather than as false passes, but a wrong path caught by a
 # precondition is still a wrong path.
 TOOLS = sorted((pathlib.Path(__file__).resolve().parents[1] / "tools").glob("*.py"))
-assert len(TOOLS) > 10, f"collected {len(TOOLS)} tool modules, so every sweep here is vacuous"
+# The subjects the sweeps below name in their own assertions, so this precondition tracks what
+# they actually depend on. A headcount was the first version and it pins the module count, which
+# is unrelated to whether the glob found the right modules: it would pass on unrelated files and
+# fail on a legitimate consolidation. A precondition reads as plumbing and gets less scrutiny
+# than the assertion it protects, which is exactly why it has to state an invariant too.
+_SUBJECTS = {"query_limits.py", "waf_query.py", "waf_patrol.py", "waf_bypass.py"}
+assert _SUBJECTS <= {p.name for p in TOOLS}, sorted(_SUBJECTS - {p.name for p in TOOLS})
 
 
 def test_the_prompt_states_the_number_the_code_enforces():

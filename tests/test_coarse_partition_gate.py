@@ -193,7 +193,12 @@ def test_no_user_facing_string_still_says_hourly_is_unbuildable():
     # splits the phrase across two lines, so this per-line sweep never sees it, and an exemption
     # with no user is a standing hole a live claim can hide behind.
     files = sorted((pathlib.Path(__file__).resolve().parents[1] / "tools").glob("*.py"))
-    assert len(files) > 10, f"searched {len(files)} files, so a green result proves nothing"
+    # Name the subject rather than counting the files. `len(files) > 10` was the first version
+    # and it pins the module count, which has nothing to do with whether the sweep searched what
+    # it was supposed to: it passes on eleven unrelated files and fails on a legitimate
+    # consolidation. This fails for exactly one reason, the glob missing the module the claim
+    # lived in.
+    assert "waf_athena.py" in {f.name for f in files}, sorted(f.name for f in files)
     offenders = [f"{p.name}:{n}" for p in files
                  for n, line in enumerate(p.read_text().splitlines(), 1)
                  if "does not build yet" in line]
