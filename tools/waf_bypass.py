@@ -189,9 +189,20 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
     failures under the single label `distributed_ips`, so if two fingerprints failed the report
     kept one reason and silently dropped the other."""
     failures: dict[str, str] = {}
-    safe_ja4 = re.sub(r"[^0-9a-zA-Z_]", "", ja4)
-    if not safe_ja4:
-        return f"Error: '{ja4}' is not a JA4 fingerprint. Copy one from the scan's JA4 table."
+    # Reject, do not substitute. `re.sub` of the disallowed characters is injection-safe, since
+    # the quotes go, but it then queries a DIFFERENT fingerprint: paste `t13d…h2 ` with a stray
+    # character and the report's own header names a fingerprint the user never typed, which
+    # reads as authoritative. The two comparable places in this repo already do it this way,
+    # `waf_query.py:504` and `waf_patrol.py:593`, both fullmatch-or-refuse before a
+    # user-derived string reaches SQL. A legitimate JA4 is alphanumeric with underscores, so
+    # this costs a real one nothing.
+    # `.strip()` and nothing more. Surrounding whitespace is a paste artifact carrying no
+    # information, so removing it recovers the fingerprint the user meant. An INTERIOR
+    # stray character changes which fingerprint is named, and that is the case refused.
+    safe_ja4 = ja4.strip()
+    if not re.fullmatch(r"[0-9a-zA-Z_]+", safe_ja4):
+        return (f"Error: '{ja4}' is not a JA4 fingerprint. They are letters, digits and "
+                f"underscores only. Copy one from the scan's JA4 table without editing it.")
 
     cwl = (
         f"filter action = 'ALLOW' and ja4Fingerprint = '{safe_ja4}'"

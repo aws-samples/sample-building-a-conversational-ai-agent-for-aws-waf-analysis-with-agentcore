@@ -294,38 +294,47 @@ def test_the_drill_down_step_runs_exactly_one_query(monkeypatch):
     assert "198.51.100.7" in out and "investigate_ip" in out
 
 
-@pytest.mark.parametrize("bad", ["'; DROP TABLE x--", "a' OR '1'='1", "x-y/z", "t13d*"])
-def test_the_fingerprint_is_sanitised_before_it_reaches_sql(monkeypatch, bad):
-    """A JA4 arrives as a model-supplied string and is interpolated into SQL. The property that
-    matters is narrow: whatever lands inside the quoted literal contains no quote, so it cannot
-    escape it. Asserting "DROP not in sql" instead was wrong twice, because the sanitiser leaves
-    `DROPTABLEx` as a harmless identifier and the query's own labels clause contains ` OR `."""
+@pytest.mark.parametrize("bad", ["'; DROP TABLE x--", "a' OR '1'='1", "x-y/z", "t13d*",
+                                 "", "   ", "';--", "t13d 1516h2"])
+def test_a_malformed_fingerprint_is_refused_and_runs_no_query(monkeypatch, bad):
+    """A JA4 arrives as a model-supplied string and is interpolated into SQL, so it is checked
+    with `fullmatch` and refused, not stripped of the offending characters.
+
+    **Rejecting matters beyond injection.** Substituting was injection-safe, because the quotes
+    went, but it queried a DIFFERENT fingerprint and the report's own header echoed the
+    substituted value, so a stray character produced an authoritative-looking answer about a
+    fingerprint nobody asked for. `t13d 1516h2`, with an interior space, is the case that
+    silently renames the thing being queried. The two comparable sites in this repo,
+    `waf_query.py:504` and `waf_patrol.py:593`, already fullmatch-or-refuse.
+
+    **Surrounding whitespace is the deliberate exception and lives in the accepted sweep
+    below.** Edge whitespace carries no information, so stripping it recovers the fingerprint
+    the user meant rather than inventing a different one, which is the only harm this check
+    exists to prevent."""
+    seen = []
+    monkeypatch.setattr(B, "query_logs", lambda *a, **k: seen.append(1) or [])
+    out = B._step_ja4_ips(bad, 0, 3600)
+    assert not seen, "a malformed fingerprint reached the query layer"
+    assert "not a JA4 fingerprint" in out
+
+
+@pytest.mark.parametrize("good", ["t13d1516h2_8daaf6152771_b0da82dd1658", "abc123", "A_1",
+                                  "  t13d1516h2  ", "t13d1516h2\n"])
+def test_a_wellformed_fingerprint_reaches_the_query_intact(monkeypatch, good):
+    """The mirror, and it is what stops the check above being satisfied by refusing everything.
+    The literal is asserted non-empty before being matched, which is the mechanical version of
+    the trap the first draft of this test fell into: with the check removed, the extracted text
+    was EMPTY and `[0-9A-Za-z_]*` matched it, so the assertion passed with the fix deleted."""
     seen = []
     def counting(cwl, athena, start, end, limit=25):
         seen.append(athena)
         return []
     monkeypatch.setattr(B, "query_logs", counting)
-    B._step_ja4_ips(bad, 0, 3600)
-    assert seen, "no query was issued, so nothing was sanitised"
-    for sql in seen:
-        literal = sql.split("ja4fingerprint = '")[1].split("'")[0]
-        # `+` and not `*`. With the sanitiser removed, `'; DROP...` closes the literal
-        # immediately, so the extracted text is EMPTY and `*` matched it: the assertion passed
-        # with the fix deleted. An empty collection satisfying a "nothing bad in it" claim, one
-        # more time.
-        assert re.fullmatch(r"[0-9A-Za-z_]+", literal), repr(literal)
-        assert "DROP TABLE" not in sql and "'1'='1" not in sql
-
-
-@pytest.mark.parametrize("empty", ["", "   ", "';--"])
-def test_a_fingerprint_with_nothing_usable_in_it_runs_no_query(monkeypatch, empty):
-    """The mirror: sanitising to an empty string must refuse rather than query for `''`, which
-    would scan the window and return nothing, reading as "this fingerprint has no traffic"."""
-    seen = []
-    monkeypatch.setattr(B, "query_logs", lambda *a, **k: seen.append(1) or [])
-    out = B._step_ja4_ips(empty, 0, 3600)
-    assert not seen
-    assert "not a JA4 fingerprint" in out
+    B._step_ja4_ips(good, 0, 3600)
+    assert seen, "a valid fingerprint issued no query"
+    literal = seen[0].split("ja4fingerprint = '")[1].split("'")[0]
+    assert literal, "nothing was extracted, so the assertion below would be vacuous"
+    assert literal == good.strip()
 
 
 def test_a_section_note_carries_no_retry_advice():

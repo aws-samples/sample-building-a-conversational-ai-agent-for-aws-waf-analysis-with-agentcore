@@ -18,6 +18,11 @@
   timeout message ends with instructions to retry once with a narrower window, written for
   whoever chose the window. A scan chooses its own, so that block is dropped from the section
   note and only what happened is kept.
+- **A mistyped JA4 fingerprint is refused rather than quietly corrected.** Stripping the
+  characters that do not belong in a fingerprint left a valid one that named something else, and
+  the report's own header echoed it, so a stray character produced a confident answer about a
+  fingerprint nobody asked for. Surrounding whitespace is still trimmed, because that carries no
+  information.
 
 ### Changed: log queries run on hourly-partitioned tables
 
