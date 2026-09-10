@@ -231,10 +231,18 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         # routes to it. Two authoritative-sounding sources disagreeing pushed the model off
         # eight curated query types onto a raw metric call, on the account state where it has
         # least to work with.
+        # Every capability named here is checked against the code. The first version of this
+        # fix said get_waf_overview covers "countries", and it does not: it dispatches eight
+        # query types and the module contains no country handling at all. A per-country
+        # breakdown comes from get_waf_metrics via dimension_filters. Replacing a false claim
+        # with a smaller false claim on the same branch fails the same way, because the model
+        # asks for a query type that does not exist and gets "unknown query_type".
         lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Metrics still work: "
-                     "use get_waf_overview for curated views (top rules, labels, countries, "
-                     "time series), and get_waf_metrics to drill into one raw CloudWatch "
-                     "metric. IP-level and URI-level analysis needs logging.")
+                     "get_waf_overview covers top rules, attack types, bot summary, labels "
+                     "and rate limits, each with a time series; get_waf_metrics reads one "
+                     "CloudWatch metric and accepts dimension_filters, which is where a "
+                     "per-country breakdown comes from. IP-level and URI-level analysis "
+                     "needs logging.")
 
     # Contextual hints — call ask_user to collect missing info
     lines.append("\n---\nCall ask_user() tool to ask (if not already known):")

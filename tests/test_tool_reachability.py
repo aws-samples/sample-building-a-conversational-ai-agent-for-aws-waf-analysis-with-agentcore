@@ -36,13 +36,21 @@ import sys
 import pytest
 
 import agent
-from tools import waf_logs
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOOLS_DIR = ROOT / "tools"
 
 REGISTERED = {t.tool_name for t in agent._TOOLS}
 PROMPT = agent._build_system_prompt(9)
+
+
+def _routed(name: str) -> bool:
+    """Whether the prompt names this tool, on a word boundary.
+
+    `name in PROMPT` would read a tool as routed whenever its name is a substring of one that
+    is. No collision among the current nineteen, so this is latent rather than live, but the
+    failure direction is the bad one: a new tool would silently inherit another's routing."""
+    return re.search(r"\b" + re.escape(name) + r"\b", PROMPT) is not None
 
 # exempt tool -> the tool whose output names it. Values are checked against `REGISTERED` and
 # against the prompt, and the keys are checked against the derived set, so neither side of this
@@ -81,7 +89,16 @@ def _emitted_strings(fn) -> str:
     `test_window_cap.py`'s attribution rule, where a nested wrapper's call must NOT be credited
     to its enclosing function, and the difference is the claim: there it is "who calls this",
     here it is "what can this produce"."""
-    return "\n".join(n.value for n in ast.walk(fn)
+    body = fn.body
+    # Skip the leading docstring. Comments are excluded for free by reading the AST, but a
+    # docstring IS an `ast.Constant`, and it is schema text rather than output: deleting the
+    # `analyze_ip` hint line and writing "call lookup_ja4 after this" into its docstring would
+    # leave this green while nothing the tool emits names the tool. None of the three producers
+    # relies on a docstring today, so this closes a latent hole rather than a live one.
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+            and isinstance(body[0].value.value, str):
+        body = body[1:]
+    return "\n".join(n.value for stmt in body for n in ast.walk(stmt)
                      if isinstance(n, ast.Constant) and isinstance(n.value, str))
 
 
@@ -101,7 +118,7 @@ def test_every_registered_tool_is_either_routed_or_output_discovered():
     """The invariant. A tool in neither camp is dead surface: nothing in the prompt sends the
     model to it and no tool's output mentions it, so it can only be reached by the model
     guessing from the schema."""
-    unnamed = {t for t in REGISTERED if t not in PROMPT}
+    unnamed = {t for t in REGISTERED if not _routed(t)}
     assert unnamed == set(PRODUCERS), {
         "unnamed with no recorded producer": sorted(unnamed - set(PRODUCERS)),
         "recorded as exempt but now named in the prompt, so delete the entry":
@@ -117,7 +134,7 @@ def test_an_output_discovered_tool_is_named_by_a_tool_the_prompt_routes_to(exemp
     tool, read from its own string literals so a mention in a comment or an import does not
     count."""
     assert producer in REGISTERED, f"{producer} is not a registered tool"
-    assert producer in PROMPT, f"the prompt never routes to {producer}, so the chain is broken"
+    assert _routed(producer), f"the prompt never routes to {producer}, so the chain is broken"
     defined = _tool_functions()
     path, fn = defined[producer]
     assert exempt in _emitted_strings(fn), \
@@ -129,11 +146,18 @@ def test_the_prompt_routes_to_nothing_that_does_not_exist():
     line telling the model to call something that is gone produces an error it then has to
     interpret, and the line reads authoritative.
 
-    Query-type names are excluded by DERIVING them from `waf_logs.TEMPLATES` rather than by
-    listing them: `top_ips_by_volume` is a template key, not a tool, and hand-writing it here
-    would be the allowlist chore that `test_release_metadata.py` rejects."""
-    query_types = set(waf_logs.TEMPLATES)
-    called = set(re.findall(r"\b([a-z][a-z0-9_]*_[a-z0-9_]*)\s*\(", PROMPT))
+    **No exemption list, and removing the need for one also made this sharper.** The first
+    version allowed whitespace before the paren, which swallowed four prose parentheticals -- "top_ips_by_volume
+    (all actions)", "analyze_ip (e.g. ...)", "get_waf_overview (metrics-based...)",
+    "run_logs_query (strip the offset...)". Three were excused for being registered tools, and
+    the fourth was the ONLY reason a `waf_logs.TEMPLATES` subtraction existed. Requiring the
+    paren to be adjacent takes matches from 12 to 11 and leaves nothing unknown, so the
+    subtraction is gone.
+
+    Deleting it is what makes the test do its job: while template keys were subtracted, a prompt
+    line telling the model to call `ip_cross_query(ip='...')` as though it were a tool would have
+    been excused as a query type, which is exactly the defect this docstring claims to catch."""
+    called = set(re.findall(r"\b([a-z][a-z0-9_]*_[a-z0-9_]*)\(", PROMPT))
     assert called, "no call-shaped names parsed from the prompt, so this proves nothing"
-    unknown = sorted(called - REGISTERED - query_types)
-    assert not unknown, f"the prompt routes to names that are neither tools nor query types: {unknown}"
+    unknown = sorted(called - REGISTERED)
+    assert not unknown, f"the prompt routes to names that are not registered tools: {unknown}"
