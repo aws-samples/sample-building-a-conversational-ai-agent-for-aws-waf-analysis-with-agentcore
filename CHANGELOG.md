@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Changed: one static-asset extension list, and the same answer from both log backends
+
+- **The same request could be a static asset on CloudWatch and a real request on Athena.** The
+  extension filter was written out twenty times across two files, and the two dialects had
+  drifted: the Athena copies anchored the extension list to the end of the path, the CloudWatch
+  copies did not. An unanchored `.js` matches anywhere in a path, so `/api/data.json` was dropped
+  as an asset on CloudWatch and counted on Athena. If you read your logs from CloudWatch, JSON API
+  traffic has been missing from URI-diversity and non-static request counts.
+- **`.jpeg` was in neither copy**, so JPEG images counted as business requests on both engines.
+  Unanchored `.jpg` does not match `.jpeg`.
+- **An uppercase extension now counts as a static asset.** Both engines match case-sensitively,
+  measured, so `/IMG_1.PNG` used to read as a business request and inflate the unique-URI count
+  that the crawler and repeater queries treat as their bot signal.
+- **The list is one definition now, in `tools/static_assets.py`, and it went from 11 extensions to
+  29.** Video, audio, modern image and source-map extensions the old list missed. Document and
+  markup extensions stay out of it on purpose: `json`, `php`, `html`, `pdf`, `xml`, `txt` and the
+  office and archive extensions are real business requests and real scrape targets.
+- **A request whose logged URI is empty is no longer dropped on Athena.** `NOT
+  regexp_like(NULL, …)` is NULL in SQL, so a row with no `uri` failed the filter and vanished,
+  while CloudWatch kept it. On a table the agent builds this cannot happen. On a table you bring
+  yourself it can, and there the dropped row is a real request.
+- **Expect different numbers from both backends.** Anything counting non-static requests or unique
+  non-static URIs moves. CloudWatch stops discarding document traffic, and both engines now
+  exclude eighteen more extensions.
+
 ## 0.19.0 (2026-09-10)
 
 ### Changed: a bypass scan is six log queries, and the JA4 drill-down is on request
