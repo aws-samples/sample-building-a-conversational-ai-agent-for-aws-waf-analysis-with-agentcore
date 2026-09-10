@@ -225,7 +225,16 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         if ":firehose:" in log_dest:
             lines.append("  ⚠️ IMPORTANT: Firehose S3 prefix time zone MUST be UTC (default). If the user configured a non-UTC time zone, Athena queries will return 0 results. Ask the user to confirm their Firehose prefix time zone is UTC.")
     else:
-        lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Use get_waf_metrics only.")
+        # "get_waf_metrics only" was false and disagreed with the prompt for the same state.
+        # `get_waf_overview` reads wafv2 and CloudWatch and touches no log destination, so it
+        # is fully available with logging off, and the prompt's No-Logging Degradation section
+        # routes to it. Two authoritative-sounding sources disagreeing pushed the model off
+        # eight curated query types onto a raw metric call, on the account state where it has
+        # least to work with.
+        lines.append("  ⚠️ Logging NOT enabled — log queries unavailable. Metrics still work: "
+                     "use get_waf_overview for curated views (top rules, labels, countries, "
+                     "time series), and get_waf_metrics to drill into one raw CloudWatch "
+                     "metric. IP-level and URI-level analysis needs logging.")
 
     # Contextual hints — call ask_user to collect missing info
     lines.append("\n---\nCall ask_user() tool to ask (if not already known):")
