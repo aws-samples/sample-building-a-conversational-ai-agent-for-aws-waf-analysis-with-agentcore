@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.0 (2026-09-10)
 
 ### Changed: a bypass scan is six log queries, and the JA4 drill-down is on request
 

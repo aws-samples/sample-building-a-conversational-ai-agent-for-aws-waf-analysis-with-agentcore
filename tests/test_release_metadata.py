@@ -29,6 +29,56 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BACKFILL_FLOOR = (0, 13, 0)
 
 
+def _default_branch_ref() -> str | None:
+    """A remote-tracking ref for the default branch, or None when none resolves.
+
+    Resolved rather than hardcoded, and that is not defensiveness. This repo's remote is
+    `github`, not `origin`, so `origin/main` does not exist, and `merge-base --is-ancestor`
+    against a missing ref exits non-zero exactly as it does for "not an ancestor". Hardcoding
+    `origin/main` would therefore read every run as unmerged and disable the check permanently,
+    which is the one failure direction that matters here."""
+    for remote in subprocess.run(["git", "remote"], cwd=ROOT, capture_output=True,
+                                 text=True, check=True).stdout.split():
+        ref = f"{remote}/main"
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                          cwd=ROOT, capture_output=True).returncode == 0:
+            return ref
+    return None
+
+
+def _is_shipped() -> bool:
+    """True when HEAD is reachable from the default branch, i.e. this code has landed.
+
+    **Fails closed.** When no remote ref resolves we cannot tell, so the answer is "shipped"
+    and the assertion applies. Guessing "unshipped" would be the exemption swallowing the check
+    on any clone whose remotes are named unexpectedly.
+
+    **The hole, named rather than left for someone to find.** A local default branch that is
+    ahead of its remote counterpart reads as unshipped, so a cut merged locally and not yet
+    pushed would go quiet. This workflow merges on GitHub and fast-forwards, so the two agree,
+    and the pre-cut step already requires a clean tree in sync with the remote. A branch-name
+    check has no such hole but breaks the moment a cut happens on a differently-named branch,
+    and that is the likelier accident."""
+    ref = _default_branch_ref()
+    if ref is None:
+        return True
+    return subprocess.run(["git", "merge-base", "--is-ancestor", "HEAD", ref],
+                          cwd=ROOT, capture_output=True).returncode == 0
+
+
+def _dirty(path: str) -> bool:
+    """True when `path` has uncommitted changes.
+
+    Two assertions below describe a release that has LANDED, and a cut in progress is the
+    legitimate window where they are false: the heading exists before the tag, and `uv lock`
+    rewrites the lockfile before the commit. Keying the exemptions on dirtiness makes them
+    self-limiting rather than a flag, because a dirty tree cannot be tagged or shipped, and it
+    keeps the real defect failing: a cut that was committed and never tagged has a clean
+    CHANGELOG."""
+    return bool(subprocess.run(["git", "status", "--porcelain", "--", path], cwd=ROOT,
+                               capture_output=True, text=True, check=True).stdout.strip())
+
+
 def _v(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
@@ -59,9 +109,32 @@ def test_every_tag_has_a_changelog_section(headings, tags):
 
 def test_every_heading_since_the_backfill_floor_is_tagged(headings, tags):
     """The direction that catches a cut nobody tagged, which is the easier half to forget:
-    the version bump is four file edits and the tag is a separate step afterwards."""
-    untagged = sorted({h for h in headings if _v(h) >= BACKFILL_FLOOR} - set(tags), key=_v)
-    assert not untagged, f"in CHANGELOG.md with no v-tag: {untagged}"
+    the version bump is four file edits and the tag is a separate step afterwards.
+
+    **The contract.** Every heading at or above the backfill floor must have a tag, except the
+    newest one while this code is unshipped, because the tag goes on the cut PR's merge commit
+    and cannot exist while the branch does. An older untagged heading fails always.
+
+    **What still needs protecting, since the exemption is the load-bearing part.** Do not widen
+    it past the newest heading, and do not let `_is_shipped` fail open: either turns the only
+    check a forgotten tag ever trips into a check that cannot fail. An earlier version of this
+    docstring argued the opposite, that failing on a release branch was the signal and should not
+    be quieted, and that argument is superseded rather than merely out of date: keying on
+    unshipped rather than on uncommitted closes the window without weakening anything."""
+    untagged = {h for h in headings if _v(h) >= BACKFILL_FLOOR} - set(tags)
+    # Exempt the newest heading until this code has shipped. The tag goes on the cut PR's MERGE
+    # commit, so it cannot exist while the branch does, and the window is the whole life of the
+    # PR rather than just the uncommitted part. Keying on the dirty tree covered only the
+    # uncommitted half and left every release PR red, which costs nothing while CI runs CodeQL
+    # only and turns into a standing false alarm the moment ROADMAP 5.4 puts pytest in CI.
+    #
+    # Ancestry keeps the property the exemption needs: the defect it guards, a heading cut and
+    # never tagged, can only manifest on the default branch, because a release branch cannot be
+    # shipped. So the exemption keys on being unshipped and cannot cover shipped state. Only the
+    # newest heading either way: an OLDER untagged heading is the real defect and still fails.
+    if headings and (not _is_shipped() or _dirty("CHANGELOG.md")):
+        untagged -= {max(headings, key=_v)}
+    assert not sorted(untagged, key=_v), f"in CHANGELOG.md with no v-tag: {sorted(untagged, key=_v)}"
 
 
 def test_the_backfill_floor_still_describes_reality(headings, tags):
@@ -112,9 +185,12 @@ def test_the_committed_lockfile_is_not_stale(tags):
     0.17.0 under a `pyproject.toml` at 0.18.0 makes this fail and nothing else in the suite
     notice. Failure-capability and perturbability are different properties, and only the first
     decides whether an assertion earns its place."""
-    dirty = subprocess.run(["git", "status", "--porcelain", "--", "uv.lock"], cwd=ROOT,
-                           capture_output=True, text=True, check=True).stdout.strip()
-    assert not dirty, (
+    # `uv.lock` dirty ALONGSIDE `pyproject.toml` is a version bump in flight, which is the cut
+    # workflow. `uv.lock` dirty on its own is the defect: uv repaired the working copy because
+    # the committed one disagreed with a `pyproject.toml` nobody is editing.
+    if _dirty("pyproject.toml"):
+        pytest.skip("version bump in flight, so the committed lockfile is expected to lag")
+    assert not _dirty("uv.lock"), (
         "uv.lock differs from HEAD after uv normalised it, which means the COMMITTED lockfile "
         "does not match pyproject.toml. Run `uv lock` and commit the result before tagging.")
 
