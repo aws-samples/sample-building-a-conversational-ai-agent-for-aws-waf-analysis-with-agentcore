@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 (2026-09-10)
 
 ### Fixed: a bypass scan no longer reports "no candidates" when its queries failed
 
