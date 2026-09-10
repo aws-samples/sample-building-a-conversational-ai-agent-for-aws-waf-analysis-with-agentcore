@@ -16,6 +16,8 @@ badly, so every test here covers both spellings:
   through as data made a section render a table row of `?` placeholders.
 """
 
+import re
+
 import pytest
 
 from tools import waf_bypass as B
@@ -245,3 +247,96 @@ def test_the_remaining_wrappers_still_return_rows(monkeypatch, module, fn):
     mod = importlib.import_module(f"tools.{module}")
     monkeypatch.setattr(mod, "query_logs", fake_query_logs([]))
     assert getattr(mod, fn)("c", "a", 0, 3600) == [ROW]
+
+
+# --- 3.4: the chain is six queries, not up to sixteen ----------------------
+
+
+def test_the_scan_issues_no_per_candidate_drill_down(monkeypatch, offline):
+    """The whole point of 3.4. The scan used to issue one extra query per JA4 candidate, capped
+    at 10, so a run could reach 16 serial Athena queries. Counted rather than inspected, because
+    "the loop is gone" is a claim about behaviour and the loop's absence from the source is not
+    the same statement."""
+    seen = []
+    def counting(cwl, athena, start, end, limit=25):
+        seen.append(athena or cwl)
+        return [dict(ROW)]
+    monkeypatch.setattr(B, "query_logs", counting)
+    B._step_scan(0, 3600)
+    assert len(seen) == 6, [s[:60] for s in seen]
+    # And specifically: nothing queried a single fingerprint, which is what the loop did.
+    assert not [s for s in seen if "ja4fingerprint = '" in s]
+
+
+def test_the_scan_names_the_step_that_gets_the_ips(monkeypatch, offline):
+    """Removing the Top IPs column would strand the user with a fingerprint and no way to act,
+    so the section has to name the replacement. The UA-rotation section is asserted too: it told
+    the model to investigate "an IP behind this JA4" while containing no IPs at all, which was
+    already unactionable before this change."""
+    monkeypatch.setattr(B, "query_logs", fake_query_logs([]))
+    out = B._step_scan(0, 3600)
+    ja4_section = out.split("### Single Tool Distributed")[1].split("###")[0]
+    ua_section = out.split("### UA Rotation")[1].split("## ")[0]
+    assert "step='ja4_ips'" in ja4_section
+    assert "Top IPs" not in ja4_section
+    assert "step='ja4_ips'" in ua_section
+    assert "<an IP behind this JA4>" not in ua_section
+
+
+def test_the_drill_down_step_runs_exactly_one_query(monkeypatch):
+    seen = []
+    def counting(cwl, athena, start, end, limit=25):
+        seen.append(athena)
+        return [{"httpRequest.clientIp": "198.51.100.7", "hits": "42"}]
+    monkeypatch.setattr(B, "query_logs", counting)
+    out = B._step_ja4_ips("t13d1516h2_8daaf6152771_b0da82dd1658", 0, 3600)
+    assert len(seen) == 1
+    assert "198.51.100.7" in out and "investigate_ip" in out
+
+
+@pytest.mark.parametrize("bad", ["'; DROP TABLE x--", "a' OR '1'='1", "x-y/z", "t13d*"])
+def test_the_fingerprint_is_sanitised_before_it_reaches_sql(monkeypatch, bad):
+    """A JA4 arrives as a model-supplied string and is interpolated into SQL. The property that
+    matters is narrow: whatever lands inside the quoted literal contains no quote, so it cannot
+    escape it. Asserting "DROP not in sql" instead was wrong twice, because the sanitiser leaves
+    `DROPTABLEx` as a harmless identifier and the query's own labels clause contains ` OR `."""
+    seen = []
+    def counting(cwl, athena, start, end, limit=25):
+        seen.append(athena)
+        return []
+    monkeypatch.setattr(B, "query_logs", counting)
+    B._step_ja4_ips(bad, 0, 3600)
+    assert seen, "no query was issued, so nothing was sanitised"
+    for sql in seen:
+        literal = sql.split("ja4fingerprint = '")[1].split("'")[0]
+        # `+` and not `*`. With the sanitiser removed, `'; DROP...` closes the literal
+        # immediately, so the extracted text is EMPTY and `*` matched it: the assertion passed
+        # with the fix deleted. An empty collection satisfying a "nothing bad in it" claim, one
+        # more time.
+        assert re.fullmatch(r"[0-9A-Za-z_]+", literal), repr(literal)
+        assert "DROP TABLE" not in sql and "'1'='1" not in sql
+
+
+@pytest.mark.parametrize("empty", ["", "   ", "';--"])
+def test_a_fingerprint_with_nothing_usable_in_it_runs_no_query(monkeypatch, empty):
+    """The mirror: sanitising to an empty string must refuse rather than query for `''`, which
+    would scan the window and return nothing, reading as "this fingerprint has no traffic"."""
+    seen = []
+    monkeypatch.setattr(B, "query_logs", lambda *a, **k: seen.append(1) or [])
+    out = B._step_ja4_ips(empty, 0, 3600)
+    assert not seen
+    assert "not a JA4 fingerprint" in out
+
+
+def test_a_section_note_carries_no_retry_advice():
+    """`poll_timeout_message` ends in an ACTION block written for whoever chose the window.
+    Nobody chose a chain query's window, so the advice cannot be acted on, and on the second
+    consecutive timeout it reads "narrowing is not working" about a window the user never set."""
+    from tools import query_limits as Q
+    msg = Q.poll_timeout_message("Athena", Q.STOP_CONFIRMED)
+    assert "ACTION:" in msg, "the message shape changed, so this test is checking nothing"
+    note = B._empty_reason({"distributed": msg}, "distributed")
+    assert "ACTION:" not in note
+    assert "quarter of the window" not in note
+    # The header still has to survive, or the note says nothing about what happened.
+    assert "120 seconds" in note

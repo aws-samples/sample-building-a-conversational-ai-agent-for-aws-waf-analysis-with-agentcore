@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """Bypass/evasion detection tool — find malicious traffic that WAF is allowing through."""
 
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -52,10 +53,23 @@ def _empty_reason(failures: dict, label: str, none_text: str = "  (none found)")
 
     Every `none_text` in this file is a statement about the traffic: "(none found)",
     "(not available)", "(no query strings on ALLOW traffic)". A failed query supports no
-    statement about the traffic at all, so the two must not read alike."""
+    statement about the traffic at all, so the two must not read alike.
+
+    **The retry choreography is stripped, and that is the point of the transform.**
+    `poll_timeout_message` ends in an `ACTION:` block telling the reader to retry once with a
+    quarter of the window, which is written for whoever *chose* the window. Nobody chose this
+    one: the tool issues these queries itself with the scan's window. Rendering that advice into
+    a section note asks the model to act on a decision it did not make, and on two adjacent slow
+    queries in one scan the second message reads "that is 2 timeouts in a row, so narrowing is
+    not working", which is a statement about the user's window that the user never set.
+
+    The counter behind that count is shared session state and is still incremented by a chain
+    query, so a slow scan can still change what the next user-driven question is told. That half
+    needs the poller to know who chose the window, which is ROADMAP 2.1's remaining piece."""
     reason = failures.get(label)
     if reason:
-        return f"  UNKNOWN, the query for this section failed: {reason}"
+        first = reason.split("\nACTION:")[0].strip()
+        return f"  UNKNOWN, the query for this section failed: {first}"
     return none_text
 
 CONFIDENCE_RULES = """\
@@ -73,7 +87,8 @@ UNIQUE_IP_ANOMALY = 2.0
 
 
 @tool
-def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", duration_minutes: int = 180) -> str:
+def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "",
+                  duration_minutes: int = 180, ja4: str = "") -> str:
     """Detect potential WAF bypass — find malicious traffic in ALLOW logs.
 
     This tool provides evidence for human judgment. It does NOT make definitive
@@ -85,12 +100,14 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
 
     Steps:
     - "scan": Proactive check — run anomaly filters on ALLOW traffic to find suspicious IPs.
+    - "ja4_ips": The IPs behind one JA4 fingerprint from the scan's JA4 tables. Requires ja4.
     - "investigate_ip": Deep-dive a specific IP's behavior in ALLOW logs.
     - "volume_anomaly": Check for traffic volume anomalies (DDoS/scraping indicators).
 
     Args:
-        step: "scan", "investigate_ip", or "volume_anomaly".
+        step: "scan", "ja4_ips", "investigate_ip", or "volume_anomaly".
         ip: Client IP (required for investigate_ip).
+        ja4: JA4 fingerprint (required for ja4_ips), copied from the scan's JA4 table.
         start_time: Start time for log queries (required for scan and investigate_ip).
         duration_minutes: Duration in minutes (default 180, max 360 for CWL, 60 for Athena).
     """
@@ -141,6 +158,11 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
 
     if step == "scan":
         return _step_scan(start_epoch, end_epoch)
+    elif step == "ja4_ips":
+        if not ja4:
+            return ("Error: ja4 is required for step='ja4_ips'. Copy a fingerprint from the "
+                    "JA4 table in the scan output.")
+        return _step_ja4_ips(ja4, start_epoch, end_epoch)
     elif step == "investigate_ip":
         if not ip:
             return "Error: ip is required for step='investigate_ip'. Ask the user which IP to check."
@@ -151,7 +173,63 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "", durati
             return f"Error: invalid IP address '{ip}'"
         return _step_investigate_ip(ip, start_epoch, end_epoch)
     else:
-        return f"Error: unknown step '{step}'. Available: scan, investigate_ip, volume_anomaly"
+        return (f"Error: unknown step '{step}'. Available: scan, ja4_ips, investigate_ip, "
+                f"volume_anomaly")
+
+
+def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
+    """The IPs behind one JA4 fingerprint. One query, for one fingerprint the user chose.
+
+    This is the drill-down that used to run eagerly for every candidate the scan found, up to
+    ten extra serial queries on top of the scan's six. The measurement that mattered is that
+    chain length dominates cost, so the lever is not making each query cheaper but issuing
+    fewer of them, and the user almost never wants all ten.
+
+    Splitting it out also fixed a reporting bug the loop had: every iteration recorded its
+    failures under the single label `distributed_ips`, so if two fingerprints failed the report
+    kept one reason and silently dropped the other."""
+    failures: dict[str, str] = {}
+    safe_ja4 = re.sub(r"[^0-9a-zA-Z_]", "", ja4)
+    if not safe_ja4:
+        return f"Error: '{ja4}' is not a JA4 fingerprint. Copy one from the scan's JA4 table."
+
+    cwl = (
+        f"filter action = 'ALLOW' and ja4Fingerprint = '{safe_ja4}'"
+        " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
+        " and @message not like 'bot:verified'"
+        " | stats count(*) as hits by httpRequest.clientIp"
+        " | sort hits desc | limit 10"
+    )
+    athena = (
+        f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
+        f" FROM {{TABLE}}"
+        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND action = 'ALLOW' AND ja4fingerprint = '{safe_ja4}'"
+        f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
+        f" AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
+    )
+    rows = _safe_query(cwl, athena, start_epoch, end_epoch, limit=10,
+                       failures=failures, label="ja4_ips")
+
+    lines = [f"## IPs behind JA4 {safe_ja4}", ""]
+    if failures:
+        lines.append(_empty_reason(failures, "ja4_ips"))
+        return "\n".join(lines)
+    if not rows:
+        lines.append("  (no ALLOW traffic from this fingerprint in this window)")
+        lines.append("  The fingerprint came from the scan's window; if you widened or moved the "
+                     "window since, use the scan's window here.")
+        return "\n".join(lines)
+
+    lines.append(f"| {'IP':<15} | {'Requests':>8} |")
+    lines.append(f"| {'-'*15} | {'-'*8} |")
+    for r in rows:
+        lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('hits', '?'):>8} |")
+    lines.append("")
+    lines.append("→ Pick one and call detect_bypass(step='investigate_ip', ip='<IP>') for its "
+                 "behaviour, labels and query strings.")
+    return "\n".join(lines)
 
 
 def _step_volume_anomaly() -> str:
@@ -422,31 +500,12 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
     distributed = _safe_query(distributed_cwl, distributed_athena, start_epoch, end_epoch, limit=10, failures=failures, label="distributed")
 
-    # For each JA4 candidate, get representative IPs for drill-down
-    distributed_ips: dict[str, list[str]] = {}
-    for r in (distributed or []):
-        ja4 = r.get("ja4Fingerprint", "")
-        if not ja4:
-            continue
-        ips_cwl = (
-            f"filter action = 'ALLOW' and ja4Fingerprint = '{ja4}'"
-            " and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/"
-            " and @message not like 'bot:verified'"
-            " | stats count(*) as hits by httpRequest.clientIp"
-            " | sort hits desc | limit 3"
-        )
-        ips_athena = (
-            f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
-            f" FROM {{TABLE}}"
-            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-            f" AND action = 'ALLOW' AND ja4fingerprint = '{ja4}'"
-            f" AND NOT regexp_like(httprequest.uri, '\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)$')"
-            f" AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
-            f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 3"
-        )
-        ip_results = _safe_query(ips_cwl, ips_athena, start_epoch, end_epoch, limit=3, failures=failures, label="distributed_ips")
-        distributed_ips[ja4] = [r2.get("httpRequest.clientIp", "?") for r2 in (ip_results or [])]
-
+    # The per-JA4 drill-down loop used to live here: one extra query per candidate, capped
+    # at 10, so a scan issued up to 16 serial Athena queries. The full-chain measurement found
+    # the dominant cost is the NUMBER of queries run back to back rather than the partition
+    # layout, and this loop was the unbounded part of it, firing hardest at production volume
+    # where diverse fingerprints actually qualify. It is now `step="ja4_ips"`, one query for one
+    # fingerprint the user picked, which bounds the chain by construction instead of by a cap.
     # UA rotation: one TLS fingerprint (JA4) behind many different User-Agents.
     # A real client has a stable UA per TLS stack; many UAs on a single JA4 means
     # one client faking multiple browsers (UA spoofing/rotation). JA4 is much
@@ -534,15 +593,15 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("### Single Tool Distributed Across Many IPs (JA4 aggregation)")
     if distributed:
-        lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique IPs':>10} | {'Unique URIs':>11} | {'Top IPs':<45} |")
-        lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} | {'-'*11} | {'-'*45} |")
+        lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique IPs':>10} | {'Unique URIs':>11} |")
+        lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} | {'-'*11} |")
         for r in distributed:
-            ja4 = r.get('ja4Fingerprint', '?')
-            top_ips = distributed_ips.get(ja4, [])
-            ips_str = ", ".join(top_ips[:3]) if top_ips else "?"
-            lines.append(f"| {ja4:<34} | {r.get('total', '?'):>8} | {r.get('unique_ips', '?'):>10} | {r.get('unique_uris', '?'):>11} | {ips_str:<45} |")
+            lines.append(f"| {r.get('ja4Fingerprint', '?'):<34} | {r.get('total', '?'):>8} | {r.get('unique_ips', '?'):>10} | {r.get('unique_uris', '?'):>11} |")
         lines.append("  ⚠️  Candidate signal: single TLS fingerprint + high URI diversity across many IPs. Needs IP-level investigation to confirm.")
-        lines.append("  → For deeper analysis, call detect_bypass(step='investigate_ip', ip='<top IP from table above>')")
+        lines.append("  → Ask the user which fingerprint to look at, then call "
+                     "detect_bypass(step='ja4_ips', ja4='<fingerprint>') for the IPs behind it, "
+                     "then investigate_ip on one of those. Do NOT walk the whole table: each "
+                     "fingerprint costs a query and the user rarely wants all of them.")
     else:
         lines.append(_empty_reason(failures, "distributed"))
 
@@ -554,7 +613,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         for r in ua_rotation:
             lines.append(f"| {r.get('ja4Fingerprint', '?'):<34} | {r.get('total', '?'):>8} | {r.get('unique_uas', '?'):>10} | {r.get('unique_ips', '?'):>10} |")
         lines.append("  ⚠️  Candidate signal: one TLS fingerprint faking many User-Agents from few IPs. JA4 is hard to forge, so this is a strong UA-spoofing indicator. Needs IP-level investigation to confirm.")
-        lines.append("  → For deeper analysis, call detect_bypass(step='investigate_ip', ip='<an IP behind this JA4>')")
+        lines.append("  → This section has no IPs in it, so do not invent one: call "
+                     "detect_bypass(step='ja4_ips', ja4='<fingerprint>') first, then "
+                     "investigate_ip on one of the IPs it returns.")
     else:
         lines.append(_empty_reason(failures, "ua_rotation"))
 
