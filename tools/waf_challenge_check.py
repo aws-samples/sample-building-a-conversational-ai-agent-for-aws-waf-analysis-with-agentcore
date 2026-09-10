@@ -5,7 +5,7 @@
 import threading
 from strands import tool
 from tools.session_state import get_webacl_name, is_log_filter_active
-from tools.waf_query import query_logs, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type
 from tools.query_limits import MAX_MINUTES
 
 _cwl_semaphore = threading.Semaphore(8)
@@ -211,6 +211,15 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
 
 
 def _run_q(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict]:
-    """Execute log query via unified layer (CWL or Athena)."""
+    """Execute log query via unified layer, raising if the query did not run.
+
+    The two engines were asymmetric here and only one of them was safe. An Athena
+    failure already raised out of `_run_athena_select`; a CloudWatch failure came back
+    as a truthy `[{"_error": ...}]` row, and all 3 call sites below read it as data,
+    so a stopped query rendered its own error message into the report as a finding.
+    Raising makes CloudWatch behave like Athena, which is the loud direction."""
     results = query_logs(cwl, athena, start_epoch, end_epoch, limit=25)
+    reason = log_query_error(results)
+    if reason:
+        raise RuntimeError(reason)
     return results if results is not None else []

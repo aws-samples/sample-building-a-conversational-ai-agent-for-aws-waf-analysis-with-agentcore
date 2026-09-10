@@ -217,3 +217,31 @@ def test_the_count_step_says_the_query_failed_instead_of_showing_no_clients(monk
     assert "did not run" in out
     assert "Low-Volume Clients" not in out
     assert ATHENA_RAISE in out
+
+
+# --- the two tools that had no guard at all --------------------------------
+#
+# Neither caught exceptions nor checked for the sentinel row, so Athena failures already
+# raised while CloudWatch failures were rendered as data. 15 call sites between them, and one
+# is the false-positive investigation whose output tells a user whether to unblock traffic.
+
+
+@pytest.mark.parametrize("module,fn", [("waf_block_fp", "_run_query"),
+                                       ("waf_challenge_check", "_run_q")])
+def test_the_remaining_wrappers_raise_on_a_cloudwatch_error_row(monkeypatch, module, fn):
+    import importlib
+    mod = importlib.import_module(f"tools.{module}")
+    monkeypatch.setattr(mod, "query_logs", fake_query_logs([""], "error_row"))
+    with pytest.raises(RuntimeError) as caught:
+        getattr(mod, fn)("c", "a", 0, 3600)
+    assert CWL_ERROR in str(caught.value)
+
+
+@pytest.mark.parametrize("module,fn", [("waf_block_fp", "_run_query"),
+                                       ("waf_challenge_check", "_run_q")])
+def test_the_remaining_wrappers_still_return_rows(monkeypatch, module, fn):
+    """The mirror. Without it, `raise` on everything would satisfy the test above."""
+    import importlib
+    mod = importlib.import_module(f"tools.{module}")
+    monkeypatch.setattr(mod, "query_logs", fake_query_logs([]))
+    assert getattr(mod, fn)("c", "a", 0, 3600) == [ROW]

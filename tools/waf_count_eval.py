@@ -6,7 +6,7 @@ import time
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
-from tools.waf_query import query_logs, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type
 
 # Rules that should NEVER be recommended to switch from Count.
 # These have known high false-positive rates in production environments.
@@ -56,8 +56,9 @@ def _run_log_query(query_cwl: str, query_athena: str, start_epoch: int, end_epoc
         raise LogQueryFailed(f"{type(exc).__name__}: {exc}") from exc
     if results is None:
         return []
-    if results and isinstance(results[0], dict) and "_error" in results[0]:
-        raise LogQueryFailed(results[0]["_error"])
+    reason = log_query_error(results)
+    if reason:
+        raise LogQueryFailed(reason)
     return results
 
 

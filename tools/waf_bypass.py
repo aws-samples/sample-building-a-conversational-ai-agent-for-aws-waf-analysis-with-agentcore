@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
-from tools.waf_query import query_logs, get_log_type
+from tools.waf_query import query_logs, log_query_error, get_log_type
 from tools.query_limits import MAX_MINUTES
 
 
@@ -41,8 +41,9 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
         rows = query_logs(cwl, athena, start, end, limit)
     except Exception as e:
         return _record(f"{type(e).__name__}: {e}")
-    if rows and isinstance(rows[0], dict) and "_error" in rows[0]:
-        return _record(str(rows[0]["_error"]))
+    reason = log_query_error(rows)
+    if reason:
+        return _record(reason)
     return rows or []
 
 

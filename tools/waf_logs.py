@@ -438,7 +438,8 @@ def run_logs_query(
     _log(f"query_type={query_type} start_time={start_time} duration={_duration}min dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
-    from tools.waf_query import query_logs, get_log_type, check_hourly_partition_block
+    from tools.waf_query import (query_logs, log_query_error, get_log_type,
+                                 check_hourly_partition_block)
 
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: run_logs_query(query_type=\"...\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
@@ -496,11 +497,12 @@ def run_logs_query(
         except Exception as e:
             _log(f"ERROR in query_logs: {type(e).__name__}: {e}")
             return f"Log query failed: {type(e).__name__}: {e}"
+        _query_error = log_query_error(results)
+        if _query_error:
+            _log(f"query_logs returned error: {_query_error}")
+            return _query_error
         if not results:
             results = []
-        elif results and isinstance(results[0], dict) and "_error" in results[0]:
-            _log(f"query_logs returned error: {results[0]['_error']}")
-            return results[0]["_error"]
         else:
             _log(f"query_logs returned {len(results)} results")
 
@@ -805,7 +807,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to investigate.\nExample: analyze_ip(ip=\"1.2.3.4\", start_time=\"2026-05-09T14:00\", duration_minutes=60)"
 
-    from tools.waf_query import query_logs, get_log_type, check_hourly_partition_block
+    from tools.waf_query import (query_logs, log_query_error, get_log_type,
+                                 check_hourly_partition_block)
     if get_log_type() == "none":
         return "Error: no logging configured. Run get_waf_config first."
     hourly_err = check_hourly_partition_block()

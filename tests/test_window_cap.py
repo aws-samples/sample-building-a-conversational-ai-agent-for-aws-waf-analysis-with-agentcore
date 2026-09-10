@@ -78,12 +78,6 @@ def test_the_cap_is_defined_once():
 # --- the retry advice, which is where partition granularity actually matters ---
 
 
-@pytest.fixture(autouse=True)
-def _clean_state():
-    yield
-    A.reset_table_cache()
-
-
 @pytest.mark.parametrize("fmt,granularity", [
     ("yyyy/MM/dd/HH/mm", "minutes"),
     ("yyyy/MM/dd/HH", "hours"),
@@ -125,11 +119,49 @@ def test_the_timeout_message_carries_the_granularity_advice():
     on the FIRST consecutive timeout and withdraws it after that, and the counter lives in
     session state shared across the whole suite. Written without this the test passed alone
     and failed in the suite, and the first attempt reset the wrong key name."""
-    from tools.session_state import note_query_success, _state
-    note_query_success()
-    assert _state["query_timeouts"] == 0
+    from tools.session_state import _state
+    # conftest clears session state per test; assert the precondition rather than trusting
+    # it, because this test is only meaningful on the FIRST consecutive timeout.
+    assert _state.get("query_timeouts", 0) == 0
     A._athena_state["partition_format"] = "yyyy/MM/dd/HH"
     msg = Q.poll_timeout_message("Athena", Q.STOP_CONFIRMED)
     assert "partitioned by hour" in msg
     assert "a quarter of the window" not in msg
-    note_query_success()
+
+
+# --- every query_logs caller has to know about the sentinel row ---------------
+
+
+def test_every_query_logs_caller_checks_for_an_error_row():
+    """The pairing that would have caught `waf_block_fp` and `waf_challenge_check`.
+
+    A CloudWatch failure comes back from `query_logs` as a truthy `[{"_error": ...}]` row, so
+    a caller that only tests `if rows` renders the reason as data. Four tool modules call
+    `query_logs` and two of them did not know that, one being the false-positive
+    investigation whose output tells a user whether to unblock traffic.
+
+    Structural rather than behavioural on purpose: a fifth caller added later is a failure
+    here, where a behavioural test would only cover the callers someone remembered."""
+    callers, guarded = [], []
+    for path in TOOLS:
+        src = path.read_text()
+        tree = ast.parse(src)
+        calls = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id == "query_logs" for n in ast.walk(tree))
+        if not calls:
+            continue
+        callers.append(path.name)
+        if "log_query_error" in src:
+            guarded.append(path.name)
+    assert callers, "no query_logs callers found, so this test proves nothing"
+    assert sorted(callers) == sorted(guarded), \
+        f"call query_logs without checking for an error row: {sorted(set(callers) - set(guarded))}"
+
+
+def test_the_error_row_check_is_written_once():
+    """`log_query_error` is only one function if nobody re-derives it inline. `waf_patrol`
+    is excluded because it produces those rows for its own fan-out cells rather than reading
+    a `query_logs` result: it never calls `query_logs` at all."""
+    inline = [str(p) for p in TOOLS
+              if '"_error" in ' in p.read_text() and p.name != "waf_patrol.py"]
+    assert inline == ["tools/waf_query.py"], inline
