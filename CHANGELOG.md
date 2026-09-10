@@ -16,9 +16,9 @@
 
 - **`get_waf_config` told the agent to use `get_waf_metrics` only when logging is disabled.** That
   is not true: `get_waf_overview` reads CloudWatch and the WAF config and needs no log destination,
-  so its eight curated views and their time series are all available with logging off. The system
-  prompt already routed to `get_waf_overview` for the same state, so the two disagreed, on exactly
-  the setup where there is least else to work with. The hint now names views that exist and points
+  so its eight curated views are all available with logging off, five of them with a time series.
+  The system prompt already routed to `get_waf_overview` for the same state, so the two disagreed,
+  on exactly the setup where there is least else to work with. The hint now names views that exist and points
   a per-country breakdown at `get_waf_metrics`, where the `Country` dimension filter lives.
 - **`get_waf_overview` does not return a time-series for every query type**, and both the system
   prompt and that hint said it did. `bot_names`, `targeted_signals` and `top_labels` return totals
