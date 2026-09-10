@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Changed: a bypass scan is six log queries, and the JA4 drill-down is on request
+
+- **A scan used to issue one extra query per JA4 candidate, capped at ten, so a run could
+  reach sixteen serial Athena queries.** The measurement behind this is that the number of
+  queries run back to back dominates the cost, not the partition layout: a six-query chain
+  took over two minutes even on minute-level data. The scan now lists the candidate
+  fingerprints with their request, IP and URI counts, and `detect_bypass(step='ja4_ips',
+  ja4='...')` returns the IPs behind whichever one you care about, one query for one
+  fingerprint. That bounds the chain by construction rather than by a cap.
+- **The UA-rotation section told the agent to investigate "an IP behind this JA4" while
+  containing no IPs**, so the advice could only be followed by guessing. It now points at the
+  same step.
+- **A section whose query timed out no longer repeats retry advice nobody can act on.** The
+  timeout message ends with instructions to retry once with a narrower window, written for
+  whoever chose the window. A scan chooses its own, so that block is dropped from the section
+  note and only what happened is kept.
+- **A mistyped JA4 fingerprint is refused rather than quietly corrected.** Stripping the
+  characters that do not belong in a fingerprint left a valid one that named something else, and
+  the report's own header echoed it, so a stray character produced a confident answer about a
+  fingerprint nobody asked for. Surrounding whitespace is still trimmed, because that carries no
+  information.
+
 ### Changed: log queries run on hourly-partitioned tables
 
 - **Hourly was refused and should not have been.** Hourly is the Firehose default, so refusing
