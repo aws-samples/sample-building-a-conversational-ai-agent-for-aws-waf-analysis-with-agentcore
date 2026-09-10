@@ -189,12 +189,48 @@ def _dispatch_query_types() -> set:
     return found
 
 
+SERIES_ANCHOR = "query types return a time-series"
+
+
+def _sentence_containing(text: str, anchor: str) -> str:
+    """The one sentence of `text` holding `anchor`. A pure function so it can be tested directly.
+
+    **It used to return the LINE, while its name and both failure messages said sentence.** On the
+    real prompt that line holds three sentences, and the assertions below passed on it by two
+    independent coincidences: the trailing two happen to contain no snake_case token, and the third
+    number word happens to come third. Neither is a property anyone maintains.
+
+    The concrete cost was a false failure on a correct edit. `agent.py` already documents
+    `start_time` for this tool in the neighbouring section, so anyone consolidating parameter docs
+    into this bullet would add a name the dispatch does not have and turn the test red. The quieter
+    direction is a false pass: a query type dropped from the prose still satisfies the set
+    comparison if the trailing text happens to mention it.
+
+    One more instance of the search space being wider than the claim it supports, which is the
+    defect class this session produced six of. Every one erred the same way, because the wider
+    expression is the cheaper one to write and gives the right answer most of the time."""
+    line = text[text.rindex("\n", 0, text.index(anchor)) + 1:
+                text.index("\n", text.index(anchor))]
+    return next(s for s in line.split(". ") if anchor in s)
+
+
 def _series_sentence() -> str:
     """The one sentence in the prompt that enumerates query types by time-series behaviour."""
-    anchor = "query types return a time-series"
-    assert anchor in PROMPT, "the prompt no longer makes this claim; delete these two tests"
-    start = PROMPT.rindex(".", 0, PROMPT.index(anchor)) + 1
-    return PROMPT[start:PROMPT.index("\n", start)]
+    assert SERIES_ANCHOR in PROMPT, "the prompt no longer makes this claim; delete these tests"
+    return _sentence_containing(PROMPT, SERIES_ANCHOR)
+
+
+def _query_type_names(sentence: str) -> set:
+    """The snake_case tokens in a sentence that could be query types.
+
+    Registered tool names are subtracted, derived from `REGISTERED` rather than listed. The
+    sentence currently sits after the one naming the tool, so `get_waf_overview` falls outside it
+    and this changes nothing today. It removes a false-failure path: rewording so the tool name
+    lands in the same sentence is a correct edit that would otherwise report a name the dispatch
+    does not have. A query type can never legitimately share a tool's name, so nothing real is
+    hidden, and the missing-type direction is unaffected."""
+    tokens = set(re.findall(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b", sentence))
+    return tokens - REGISTERED
 
 
 def test_the_prompt_names_every_overview_query_type_and_no_others():
@@ -202,7 +238,7 @@ def test_the_prompt_names_every_overview_query_type_and_no_others():
     a renamed one makes it wrong, and the model would ask for a type that no longer dispatches."""
     dispatch = _dispatch_query_types()
     assert len(dispatch) >= 5, sorted(dispatch)
-    named = set(re.findall(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b", _series_sentence()))
+    named = _query_type_names(_series_sentence())
     assert named == dispatch, {"named but not dispatched": sorted(named - dispatch),
                               "dispatched but not named": sorted(dispatch - named)}
 
@@ -212,12 +248,34 @@ def test_the_counts_in_that_sentence_match_the_lists_it_gives():
     this, a ninth type could be added to the prose and the set comparison above would pass while
     the sentence still said eight."""
     sentence = _series_sentence()
-    words = [_NUMBER_WORDS[w] for w in re.findall(r"\b([a-z]+)\b", sentence.lower())
-             if w in _NUMBER_WORDS]
-    assert len(words) >= 2, f"no two number words found in: {sentence!r}"
-    with_series, total = words[0], words[1]
-    named = set(re.findall(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b", sentence))
+    # Matched by ROLE, not by position. Taking the first two number words in order relied on
+    # "a trend from those three" coming third, which is the same wider-than-the-claim shape as
+    # the line-versus-sentence bug above, one level down.
+    phrase = re.search(r"\b([a-z]+) of the ([a-z]+) query types", sentence, re.I)
+    assert phrase, f"no 'N of the M query types' phrase in: {sentence!r}"
+    with_series = _NUMBER_WORDS[phrase.group(1).lower()]
+    total = _NUMBER_WORDS[phrase.group(2).lower()]
+    named = _query_type_names(sentence)
     assert total == len(named), f"sentence says {total} query types, names {len(named)}"
     assert total == len(_dispatch_query_types()), \
         f"sentence says {total} query types, the code dispatches {len(_dispatch_query_types())}"
     assert with_series < total, f"{with_series} of {total} leaves nothing without a series"
+
+
+def test_the_sentence_helper_returns_a_sentence_and_not_the_line():
+    """Pins the fix directly, with a decoy that the line-scoped version would have swallowed.
+
+    The decoy is `start_time`, chosen because it is the real thing that would land here: the
+    prompt documents it for this tool one section away, so consolidating parameter docs into this
+    bullet is the ordinary edit that used to break the test."""
+    # Mirrors the real line's shape: the tool named in a first sentence, the claim in a second,
+    # a parameter mentioned in a third. The first version put the tool name inside the anchor
+    # sentence, which the real prompt does not do, so the fixture was testing a shape that does
+    # not occur. Getting that wrong is the same defect in the test's own inputs.
+    line = ("- **get_waf_overview**: `minutes` param. Two of the two query types return a "
+            "time-series (top_a, top_b). Pass start_time for a historical window.\n")
+    got = _sentence_containing("preamble\n" + line + "trailer\n", SERIES_ANCHOR)
+    assert got.endswith("(top_a, top_b)"), got
+    assert "start_time" not in got, "the helper swallowed the next sentence"
+    assert "minutes" not in got, "the helper swallowed the previous sentence"
+    assert _query_type_names(got) == {"top_a", "top_b"}
