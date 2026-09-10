@@ -29,6 +29,19 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BACKFILL_FLOOR = (0, 13, 0)
 
 
+def _dirty(path: str) -> bool:
+    """True when `path` has uncommitted changes.
+
+    Two assertions below describe a release that has LANDED, and a cut in progress is the
+    legitimate window where they are false: the heading exists before the tag, and `uv lock`
+    rewrites the lockfile before the commit. Keying the exemptions on dirtiness makes them
+    self-limiting rather than a flag, because a dirty tree cannot be tagged or shipped, and it
+    keeps the real defect failing: a cut that was committed and never tagged has a clean
+    CHANGELOG."""
+    return bool(subprocess.run(["git", "status", "--porcelain", "--", path], cwd=ROOT,
+                               capture_output=True, text=True, check=True).stdout.strip())
+
+
 def _v(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
@@ -59,9 +72,20 @@ def test_every_tag_has_a_changelog_section(headings, tags):
 
 def test_every_heading_since_the_backfill_floor_is_tagged(headings, tags):
     """The direction that catches a cut nobody tagged, which is the easier half to forget:
-    the version bump is four file edits and the tag is a separate step afterwards."""
-    untagged = sorted({h for h in headings if _v(h) >= BACKFILL_FLOOR} - set(tags), key=_v)
-    assert not untagged, f"in CHANGELOG.md with no v-tag: {untagged}"
+    the version bump is four file edits and the tag is a separate step afterwards.
+
+    **This test is expected to fail on a release branch, between the cut commit and the tag, and
+    that is the signal rather than a nuisance.** The tag goes on the cut PR's *merge* commit, so
+    it cannot exist while the branch does. Once the merge lands and the tag is pushed, this goes
+    green on `main`. Do not weaken it to quiet the window: quieting it removes the only check
+    that a forgotten tag ever trips."""
+    untagged = {h for h in headings if _v(h) >= BACKFILL_FLOOR} - set(tags)
+    # Mid-cut the newest heading is written and the tag comes after the merge, so exempt it
+    # while CHANGELOG.md is uncommitted. Only the newest: an OLDER untagged heading is the real
+    # defect and still fails, dirty tree or not.
+    if _dirty("CHANGELOG.md") and headings:
+        untagged -= {max(headings, key=_v)}
+    assert not sorted(untagged, key=_v), f"in CHANGELOG.md with no v-tag: {sorted(untagged, key=_v)}"
 
 
 def test_the_backfill_floor_still_describes_reality(headings, tags):
@@ -112,9 +136,12 @@ def test_the_committed_lockfile_is_not_stale(tags):
     0.17.0 under a `pyproject.toml` at 0.18.0 makes this fail and nothing else in the suite
     notice. Failure-capability and perturbability are different properties, and only the first
     decides whether an assertion earns its place."""
-    dirty = subprocess.run(["git", "status", "--porcelain", "--", "uv.lock"], cwd=ROOT,
-                           capture_output=True, text=True, check=True).stdout.strip()
-    assert not dirty, (
+    # `uv.lock` dirty ALONGSIDE `pyproject.toml` is a version bump in flight, which is the cut
+    # workflow. `uv.lock` dirty on its own is the defect: uv repaired the working copy because
+    # the committed one disagreed with a `pyproject.toml` nobody is editing.
+    if _dirty("pyproject.toml"):
+        pytest.skip("version bump in flight, so the committed lockfile is expected to lag")
+    assert not _dirty("uv.lock"), (
         "uv.lock differs from HEAD after uv normalised it, which means the COMMITTED lockfile "
         "does not match pyproject.toml. Run `uv lock` and commit the result before tagging.")
 
