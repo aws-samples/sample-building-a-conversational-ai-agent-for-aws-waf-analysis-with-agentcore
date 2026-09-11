@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### Added: aggregate_logs, so a question no template covers still has an answer
+
+- **`top_blocked_ips`, `top_allowed_ips`, `top_challenged_ips`, `top_captcha_ips` and
+  `top_counted_ips` are one query with the action welded into the name.** So are the
+  `top_*_countries`. Every new combination of "filter by this, group by that" needed a new
+  hand-written template in two query languages, which means the combinations nobody wrote were
+  simply unavailable. `aggregate_logs` takes the welded parts as parameters instead: 13 group
+  dimensions, 9 filters and 3 metrics, in one tool. The SQL is still written by us and never by
+  the model.
+- **A hit RATE rather than a count.** `metric="ratio"` treats `filter_by` as the numerator and
+  every request in the group as the denominator, so `group_by="uri"` with
+  `filter_by='{"rule": "X"}'` is that rule's hit rate per URI. That is the number a
+  COUNT-to-Block decision needs and nothing produced it before.
+- **A rate-limit threshold to set.** `metric="percentile"` returns the min, average, p95, p99 and
+  max of per-bucket request counts per group, which is how you size a rate-based rule instead of
+  guessing. Read p99 as the level normal traffic stays under and set the limit above it.
+- **Six group dimensions no template had**: referer, user-agent, JA4, HTTP method, rule type and
+  label, plus time buckets at any width. Referer and JA4 are absent on some upstreams and the tool
+  says which reason applies rather than returning an empty table.
+- **A rule filter that finds every kind of match.** A rule match is recorded in one of six places in
+  a WAF log record and the existing per-rule templates check three, so a rule counted inside a
+  managed rule group could read as "no traffic". Verified against real records: the nested-Count
+  path finds matches the old shape misses.
+- **Filtering by rule now agrees between the two backends on rules excluded the old way.** If you
+  use the legacy `ExcludedRules` setting rather than `RuleActionOverrides`, a request where that
+  rule matched and was counted was found on CloudWatch and missed on Athena. Both find it now.
+- Unknown dimensions, metrics and filter keys are refused with the valid ones listed, and a filter
+  value that could break out of a SQL literal is refused rather than escaped or rewritten.
+- **A label filter means the same thing on both backends.** Filtering by label on CloudWatch first
+  matched the value anywhere in the record, so filtering for `bot` also matched a
+  `User-Agent: Googlebot`, a `/robots.txt` request and a referer containing "bot", none of which
+  carried a label at all. On Athena the same filter looked at label names only. It now looks at
+  label names on both, and at every label on the request rather than the first: a URI that used to
+  match 293,371 records now matches none, while a real label returns the same count it always did.
+- It is a fallback, tried after the scenario tools and after `run_logs_query`, and the agent is
+  told so. Those tools carry the method; this one only answers what you ask.
+
 ### Fixed: a non-UTC Firehose prefix time zone is no longer reported as broken
 
 - **Four places told you that a non-UTC S3 prefix time zone meant Athena would find no rows.**

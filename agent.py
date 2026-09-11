@@ -14,6 +14,7 @@ from tools.waf_config import list_webacls, get_waf_config
 from tools.waf_metrics import get_waf_metrics
 from tools.waf_overview import get_waf_overview
 from tools.waf_logs import run_logs_query, analyze_ip
+from tools.waf_aggregate import aggregate_logs
 from tools.query_limits import MAX_MINUTES
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
@@ -72,6 +73,7 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - Specific IP general check → analyze_ip(ip="...", start_time="...")
 - "credential stuffing" / "brute force" → beyond WAF capability, recommend ATP
 - User confirmed FP, wants fix → search_waf_knowledge for scope-down best practices
+- "hit rate" / "what % of traffic" / "what rate limit should I set" / any (filter x group) combination no template names → aggregate_logs (tier-2 fallback, see its own section)
 - "blocked SQLi/XSS/LFI" / "injection attempts" / "what attacks blocked" → Injection Attack Investigation (see below)
 - "SQLi false positive" / "legitimate request blocked by injection rule" → investigate_block_fp targeting the injection rule
 - "possible injection bypass" / "encoded payload allowed" → detect_bypass(step="scan") + check COUNT labels for SQLi/XSS/LFI rules
@@ -115,6 +117,7 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 ## Tool Parameters
 - **get_waf_overview**: `minutes` param (not hours). Default 1440 (1 day). Granularity auto-scales: 1440→15min, 240→5min, 60→1min. Five of the eight query types return a time-series (top_rules, attack_types, bot_summary, rate_limits, challenge_solve_rate); bot_names, targeted_signals and top_labels return totals only, so do not promise the user a trend from those three. "Change" column = vs previous period of equal length. Zero rows omitted.
 - **run_logs_query**: `start_time` + `duration_minutes` (default 180, max {MAX_MINUTES}, both engines). Queries logs for IP/URI/request-level details.
+- **aggregate_logs**: `start_time` + `duration_minutes` (same cap), plus `group_by`, `metric` in count/ratio/percentile, `filter_by` as a JSON STRING not an object, and `bucket_minutes` for time buckets and percentiles. Unknown `group_by`, `metric` or `filter_by` keys are refused with the list of valid ones, so read the refusal instead of guessing again.
 - **patrol_scan**: `webacl_name` + `start_time`. Max 24h window.
 - **generate_weekly_report**: `webacl_name` + `start_time`. Max 7 days.
 - ALL get_waf_overview query_types support zoom in. ALWAYS zoom in after finding a spike.
@@ -162,6 +165,23 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 - IP identity verification → `ip_label_breakdown` (bot:verified, Anti-DDoS labels, token status)
 - Multi-domain attack attribution → `host_top_ips` (which domain is being targeted?)
 - Prefer Metrics (get_waf_overview) for initial triage. Use Logs (run_logs_query) when you need IP/URI-level attribution.
+
+## aggregate_logs: the long-tail fallback, tried LAST
+
+aggregate_logs answers any (filter x group) combination, so it covers the questions no scenario tool and no run_logs_query template covers. It is deliberately tier-2: it carries no judgment about what to look at or in what order, it just answers exactly what you ask. So work down this order and stop at the first that fits:
+
+1. A scenario tool — evaluate_count_rules, investigate_block_fp, detect_bypass, check_challenge_compatibility. These embed the method, including steps you would not think to run.
+2. A run_logs_query template, when one names your question.
+3. aggregate_logs, when neither does.
+
+Reaching for it first is a mistake even when it would work, because the scenario tools' embedded judgment is the product and you lose all of it.
+
+What it adds that nothing else has:
+- **A hit RATE, not a count.** metric="ratio" with filter_by as the numerator: aggregate_logs(group_by="uri", metric="ratio", filter_by='{"rule": "MyRule"}') is that rule's hit rate per URI, which is the number a COUNT-to-Block decision actually needs. Several filters AND together into one numerator, and the denominator is always every request in the group, so narrow the WINDOW rather than expecting filter_by to narrow the denominator.
+- **A threshold to set.** metric="percentile" returns min/avg/p95/p99/max of per-bucket request counts per group. group_by="clientIp" sizes a rate-based rule: read p99 as the level normal traffic stays under, then set the limit ABOVE it. Never quote p99 itself as the threshold.
+- **Group dimensions no template has**, notably referer, ua, ja4, method, ruletype and label, plus combinations like country x action.
+
+Two things to tell the user rather than work around: referer and ja4 are absent on some upstreams (API Gateway and AppSync do not send ja4), and on CloudWatch group_by="label" reports only the FIRST label per request while Athena reports all of them.
 
 ## No-Logging Degradation
 
@@ -364,6 +384,7 @@ class PreQueryGuard(HookProvider):
 _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
+          aggregate_logs,
           lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
           patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,
