@@ -863,7 +863,17 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
     end_epoch = min(start_epoch + _duration * 60, int(time.time()))
-    safe_ip = re.sub(r"[^0-9a-fA-F.:]", "", ip)
+    # `ipaddress.ip_address(ip)` at the top of this function has already parsed this, so `ip` is
+    # a valid address literal by the time it gets here: no quote, no space, nothing to escape.
+    #
+    # This replaced `re.sub(r"[^0-9a-fA-F.:]", "", ip)`, which was DEAD defence rather than a live
+    # defect. It looked like the substituting sanitiser the JA4 fix removed from `waf_bypass.py`,
+    # where stripping characters yielded a valid fingerprint naming something else, but nothing
+    # malformed can reach it here. The first fix for it added a `fullmatch`-or-refuse guard, which
+    # was a second and WEAKER copy of a check a real parser was already doing. A redundant guard
+    # implies the input is untrusted at this point and sends the next reader looking for the
+    # validation that already happened.
+    safe_ip = ip
 
     # Why a section is empty, keyed by the section. Seven independent queries build one
     # report, so a failure has to cost its own section rather than the whole answer or,

@@ -243,7 +243,20 @@ def _step_init(rule_name: str = "") -> str:
 def _step_analyze_rule(rule_name: str) -> str:
     """Step 4-5: Find peak hour for this rule, then get client distribution."""
     import re as _re
-    rule_name = _re.sub(r"[^a-zA-Z0-9_\-.]", "", rule_name)
+    # Refuse, do not substitute, matching the JA4 fix in `waf_bypass.py:204`. Stripping the
+    # characters that do not belong left a VALID rule name meaning something else, and here that
+    # is worse than an echo: the stripped name is compared against PERMANENT_COUNT_RULES two lines
+    # down, so a rewrite can change whether the permanent-Count GATE fires. AWS restricts rule
+    # names to letters, digits, hyphen and underscore, so a legitimate one loses nothing; the dot
+    # is kept because managed rule-group sub-rule names carry it.
+    #
+    # No upstream validator here, unlike `analyze_ip`, where `ipaddress.ip_address` already parses
+    # the input and the equivalent substitution was dead code.
+    rule_name = rule_name.strip()
+    if not _re.fullmatch(r"[a-zA-Z0-9_\-.]+", rule_name):
+        return (f"Error: '{rule_name}' is not a rule name. Rule names are letters, digits, "
+                f"hyphens, underscores and dots. Copy one from get_waf_overview's output "
+                f"without editing it.")
     # Step 0 gate: check if this rule should never leave Count
     if rule_name in PERMANENT_COUNT_RULES:
         return (

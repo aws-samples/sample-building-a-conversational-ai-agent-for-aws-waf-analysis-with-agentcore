@@ -433,3 +433,59 @@ def test_a_failed_content_sample_is_unavailable_not_absent(monkeypatch):
         "action='BLOCK'", 0, 3600)
     assert label is not None
     assert samples is None, "an error row must not read as 'no matching content'"
+
+
+def test_analyze_ip_refuses_a_malformed_address_rather_than_editing_it(monkeypatch):
+    """`analyze_ip` used to run `re.sub(r"[^0-9a-fA-F.:]", "", ip)` before building its queries,
+    which is the substituting sanitiser the JA4 fix removed from `waf_bypass.py`: stripping the
+    characters that do not belong leaves a VALID value naming something else, echoed by every
+    section and the header.
+
+    **It was dead defence, not a live defect, and finding that out is why this test exists.**
+    `ipaddress.ip_address(ip)` runs first and is a real parser, so nothing malformed reaches the
+    substitution. The first attempt at a fix added a `fullmatch`-or-refuse guard and this test
+    caught it by failing with the message the EXISTING validator already emits, which is a weaker
+    duplicate of a check already being done. So the substitution was deleted rather than replaced.
+
+    Swept over inputs that all sanitise to something valid, because that is the class a
+    substituting sanitiser gets wrong while looking careful. If the parser is ever removed, these
+    go red."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+
+    monkeypatch.setattr(WQ, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: None)
+    monkeypatch.setattr(WQ, "query_logs", lambda *a, **k: [dict(ROW)])
+    for bad in ("203.0.113.9x", "203.0.113.9'", "203.0.113.9 OR 1=1", "2003.0.113.9/24",
+                " 203.0.113.9 "):
+        out = L.analyze_ip._tool_func(bad, "2026-09-10 00:00", 60)
+        assert "invalid IP address" in out, f"{bad!r} was not refused: {out[:120]}"
+        assert bad in out, "the refusal must echo what the user actually typed"
+    ok = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+    assert "invalid IP address" not in ok
+    assert "## IP Analysis: 203.0.113.9" in ok, ok[:200]
+
+
+def test_analyze_rule_refuses_a_rewritten_rule_name(monkeypatch):
+    """The same substituting sanitiser, still live, and here it guards a GATE rather than a label.
+
+    `_step_analyze_rule` stripped disallowed characters out of `rule_name` and then compared the
+    result against `PERMANENT_COUNT_RULES`, so a rewrite could change whether the permanent-Count
+    gate fires. Unlike `analyze_ip`, nothing upstream validates this one, so it was live rather
+    than dead.
+
+    **No sweep for this pattern, deliberately.** Grepping `tools/` for `re.sub(r"[^...]"` finds
+    three hits and only one is a defect: `waf_athena.py:1350` normalises a WebACL name into an
+    Athena table identifier, where substituting IS correct and refusing would break every WebACL
+    with a hyphen. The distinction is whether the value reaches a predicate, which is semantic and
+    not greppable, so a sweep here would be a false-positive generator. Same call as leaving the
+    series-versus-totals heuristic to prose."""
+    from tools import waf_count_eval as C
+
+    for bad in ("MyRule'--", "MyRule OR 1=1", "SizeRestrictions_BODY'"):
+        out = C._step_analyze_rule(bad)
+        assert "is not a rule name" in out, f"{bad!r} was not refused: {out[:120]}"
+    # The gate case specifically: the stripped form of this IS a permanent-Count rule, so a
+    # substituting sanitiser would have routed it into that branch under a name nobody typed.
+    assert "PERMANENT COUNT" not in C._step_analyze_rule("SizeRestrictions_BODY'")
+    assert "PERMANENT COUNT" in C._step_analyze_rule("SizeRestrictions_BODY")
