@@ -182,6 +182,71 @@ def test_a_metric_is_named_where_metric_is_documented(metric):
     assert metric in _arg_block("metric"), f"metric '{metric}' is not documented"
 
 
+@pytest.mark.parametrize("key", sorted(AG._FILTERS))
+def test_no_filter_matches_the_raw_record_instead_of_a_field(key):
+    """**The general form of a real defect, which is why this is a sweep and not one assertion.**
+
+    The `label` filter shipped as `@message like '{v}'`, a substring test over the WHOLE record.
+    So `filter_by={"label": "bot"}` also matched a `User-Agent: Googlebot`, a `/robots.txt` URI and
+    a referer containing "bot", none of them carrying any label, while Athena matched label names
+    only. One filter, two meanings, depending on which backend the WebACL happens to log to.
+    Measured: the URI `k6test` matched 293371 records that way and 0 once scoped.
+
+    It came from copying the `label_top_ips` template, and the `host` entry in the same table
+    already stated the principle it broke. A per-dimension assertion would have needed someone to
+    suspect `label` specifically; enumerating the filters catches the next one to be written this
+    way, which is the direction that matters given the copy is right there to be made.
+
+    **A bare `@message` ban was the first version and it was too blunt**: it flagged the `rule`
+    filter, whose `@message like '"ruleId":"{v}"'` is how CloudWatch reaches all four nested rule
+    arrays at once, with no array accessor available. That predicate is ANCHORED, to a JSON key, so
+    the value cannot be satisfied by turning up in a URI. `label`'s was anchored to nothing.
+
+    So the property is the anchoring, not the absence of `@message`: a raw-record comparison must
+    carry a quote character, which is what puts the value inside a JSON key/value pair rather than
+    loose in the record. `@message` in a PRELUDE is fine either way, since a `parse` has to read
+    the raw record to produce a field at all."""
+    spec = AG._FILTERS[key]
+    if "@message" not in spec.cwl:
+        return
+    # Only the literals belonging to a `@message` comparison. Taking EVERY quoted literal was the
+    # second wrong version: it flagged `rule` again, this time for its `terminatingRuleId = '{v}'`
+    # clause, which is a field comparison and needs no anchoring. The search space has to be the
+    # claim's, which is the lesson this whole file keeps relearning.
+    literals = re.findall(r"@message\s+(?:not\s+)?like\s+'([^']*)'", spec.cwl)
+    assert literals, f"the {key} filter names @message outside a `like`: {spec.cwl}"
+    for lit in literals:
+        assert '"' in lit, (
+            f"the {key} filter matches the raw record with an unanchored value, so it also matches "
+            f"that value appearing in any other field: {lit!r} in {spec.cwl}")
+
+
+def test_the_label_filter_sees_every_label_and_only_labels():
+    """The two halves of the label fix, and each rules out one of the wrong answers.
+
+    Scoped to the `labels` array, so a value occurring in a URI or a User-Agent cannot satisfy it.
+    And scoped to the WHOLE array rather than one extracted name, so it does not inherit the group
+    dimension's first-label-only limit: a record's capture carried all 8 of its labels, verified on
+    the live group, where a real label returns the same 293371 either way."""
+    cwl, athena = AG._build("action", "count", {"label": "bot"}, 5, 25)
+    assert '"labels"' in cwl, f"the filter is not scoped to the labels array: {cwl}"
+    assert "lbls like 'bot'" in cwl, cwl
+    # The extraction that reads only the first label must NOT be in the pipeline when `label` is
+    # merely a filter, or the filter would test one name instead of the array.
+    assert '(?<label>' not in cwl, f"the filter went through the first-label extraction: {cwl}"
+    assert "strpos(l.name" in athena, athena
+
+
+def test_the_shared_labels_stage_is_emitted_once_when_it_is_both_group_and_filter():
+    """`group_by="label"` and `filter_by={"label": ...}` need the same capture. As single strings
+    the two preludes differed, nothing deduplicated them, and `lbls` was defined a second time
+    after it had already been read. Stages are deduplicated element-wise for this case."""
+    cwl, _ = AG._build("label", "count", {"label": "bot"}, 5, 25)
+    assert cwl.count(AG._LABELS_ARRAY) == 1, cwl
+    # Order still has to hold: the capture, then the extraction that reads it, then the filter.
+    assert cwl.index(AG._LABELS_ARRAY) < cwl.index('(?<label>') < cwl.index("lbls like"), cwl
+
+
 def test_a_header_dimension_emits_its_cloudwatch_parse_before_any_filter():
     """CloudWatch has no array accessor, so a header is reached by parsing the raw JSON, and
     `parse` must come before any `filter` naming the parsed field. Emitted in the wrong order the

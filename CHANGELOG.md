@@ -27,6 +27,12 @@
   nested-Count path finds matches the old shape misses.
 - Unknown dimensions, metrics and filter keys are refused with the valid ones listed, and a filter
   value that could break out of a SQL literal is refused rather than escaped or rewritten.
+- **A label filter means the same thing on both backends.** Filtering by label on CloudWatch first
+  matched the value anywhere in the record, so filtering for `bot` also matched a
+  `User-Agent: Googlebot`, a `/robots.txt` request and a referer containing "bot", none of which
+  carried a label at all. On Athena the same filter looked at label names only. It now looks at
+  label names on both, and at every label on the request rather than the first: a URI that used to
+  match 293,371 records now matches none, while a real label returns the same count it always did.
 - It is a fallback, tried after the scenario tools and after `run_logs_query`, and the agent is
   told so. Those tools carry the method; this one only answers what you ask.
 

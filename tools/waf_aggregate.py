@@ -68,20 +68,32 @@ _PERCENTILES = (95, 99)
 class _Dim:
     """A group-by dimension in both dialects.
 
-    `cwl_parse` is a `parse` command that must run before any `filter` referring to the field,
+    `cwl_pre` is the pipeline stages that must run before any `filter` referring to the field,
     which is how CloudWatch reaches a request header at all: there is no array accessor, so the
     value is pulled out of the raw JSON by regex. `unnest` marks the one dimension whose Athena
-    form multiplies rows, so it can never be used as a filter."""
+    form multiplies rows, so it can never be used as a filter.
 
-    def __init__(self, athena: str, cwl: str, cwl_parse: str = "", unnest: str = ""):
+    **`cwl_pre` is a SEQUENCE, not one string, so a stage shared by a dimension and a filter is
+    emitted once.** `group_by="label"` and `filter_by={"label": ...}` both need the same
+    `"labels":[...]` capture; as single strings the two preludes differed, so nothing deduplicated
+    them and `lbls` was defined twice in one query, the second time after it had already been
+    read."""
+
+    def __init__(self, athena: str, cwl: str, cwl_pre: tuple = (), unnest: str = ""):
         self.athena = athena
         self.cwl = cwl
-        self.cwl_parse = cwl_parse
+        self.cwl_pre = tuple(cwl_pre)
         self.unnest = unnest
 
 
 def _header(name: str) -> str:
     return f"element_at(filter(httprequest.headers, h -> lower(h.name) = '{name}'), 1).value"
+
+
+# The `labels` array as one raw string, shared by the label group dimension and the label filter.
+# `[^\]]*` reaches the closing bracket because a WAF label name cannot contain one, and the whole
+# array is captured, so a filter over it sees EVERY label rather than the first.
+_LABELS_ARRAY = r'parse @message /"labels":\[(?<lbls>[^\]]*)\]/'
 
 
 def _parse(name: str, into: str) -> str:
@@ -103,16 +115,15 @@ _GROUP_BY = {
     "rule": _Dim("terminatingruleid", "terminatingRuleId"),
     "ruletype": _Dim("terminatingruletype", "terminatingRuleType"),
     "ja4": _Dim("ja4fingerprint", "ja4Fingerprint"),
-    "host": _Dim(_header("host"), "host", _parse("host", "host")),
-    "ua": _Dim(_header("user-agent"), "ua", _parse("user-agent", "ua")),
-    "referer": _Dim(_header("referer"), "referer", _parse("referer", "referer")),
+    "host": _Dim(_header("host"), "host", (_parse("host", "host"),)),
+    "ua": _Dim(_header("user-agent"), "ua", (_parse("user-agent", "ua"),)),
+    "referer": _Dim(_header("referer"), "referer", (_parse("referer", "referer"),)),
     # The only dimension that changes the FROM clause. On CloudWatch this reads the FIRST label
     # per request and no more, the same limitation `ip_label_breakdown` documents, because the
     # raw JSON has to be parsed rather than unnested.
     "label": _Dim("l.name", "label",
-                  r'parse @message /"labels":\[(?<lbls>[^\]]*)\]/'
-                  r' | filter ispresent(lbls)'
-                  r' | parse lbls /"name":"(?<label>[^"]*)"/',
+                  (_LABELS_ARRAY, "filter ispresent(lbls)",
+                   r'parse lbls /"name":"(?<label>[^"]*)"/'),
                   unnest="CROSS JOIN UNNEST(labels) AS t(l)"),
     # Rendered from `bucket_minutes`, so it is built in `_group_expr` rather than sitting here.
     "time_bucket": None,
@@ -160,11 +171,11 @@ def _checked_rule(raw) -> tuple[str, str | None]:
 
 
 class _Filter:
-    def __init__(self, check, athena: str, cwl: str, cwl_parse: str = ""):
+    def __init__(self, check, athena: str, cwl: str, cwl_pre: tuple = ()):
         self.check = check
         self.athena = athena
         self.cwl = cwl
-        self.cwl_parse = cwl_parse
+        self.cwl_pre = tuple(cwl_pre)
 
 
 # **The rule filter names all four places a match can be recorded**, which is the nested-COUNT
@@ -219,14 +230,33 @@ _FILTERS = {
     # wildcard matching any single character: `bot_verified` would also match `botXverified`. A
     # filter matching more than it says it matches is the defect class this whole item keeps
     # running into, so the wildcard-free spelling wins.
+    #
+    # **The CloudWatch side is scoped to the labels array, and shipping it as `@message like` was
+    # a real defect.** That spelling matches the value anywhere in the record, so
+    # `filter_by={"label": "bot"}` also matched a `User-Agent: Googlebot`, a `/robots.txt` URI and
+    # a referer containing "bot", none of them carrying any label. Same filter, same question, two
+    # different answers per backend. It came from copying `label_top_ips`, and the `host` entry two
+    # lines down already stated the principle it broke. Measured on the live account: `k6test`, a
+    # URI, matched 293371 records as `@message like` and 0 once scoped, while a real label
+    # (`token:absent`) returns the same 293371 either way.
+    #
+    # The array capture holds EVERY label, so this does not inherit the group dimension's
+    # first-label-only limit: one record's capture carried all 8 of its labels.
+    #
+    # Residual divergence, stated rather than implied: the capture includes the JSON scaffolding,
+    # so a value that is a substring of `name` or is a bare `:` can match the wrapper on
+    # CloudWatch while Athena matches only label names. Closing that needs a regex, which would
+    # reintroduce `.` as a metacharacter, and no label filter anyone would write is a substring of
+    # `name`. This trades an over-match spanning every field in the record for one spanning four
+    # letters of scaffolding.
     "label": _Filter(_checked(r"[0-9a-zA-Z_:.\-]+", "a WAF label"),
                      "any_match(labels, l -> strpos(l.name, '{v}') > 0)",
-                     "@message like '{v}'"),
+                     "lbls like '{v}'", (_LABELS_ARRAY,)),
     # Matched through the parse rather than a raw-message substring, so `example.com` cannot be
     # satisfied by the string turning up in a URI or a referer.
     "host": _Filter(_checked(r"[0-9a-zA-Z.\-]+(:[0-9]+)?", "a hostname"),
                     f"{_header('host')} = '{{v}}'", "host = '{v}'",
-                    _parse("host", "host")),
+                    (_parse("host", "host"),)),
 }
 
 
@@ -242,13 +272,13 @@ def _group_expr(group_by: str, bucket_minutes: int, tz_token: str = "{TZ_OFFSET_
         secs = bucket_minutes * 60
         floor = f'("timestamp" / {secs * 1000}) * {secs}'
         return (f"from_unixtime({floor} + {tz_token})", floor,
-                f"bin({bucket_minutes}m) as time_bucket", "", "", "time_bucket")
+                f"bin({bucket_minutes}m) as time_bucket", (), "", "time_bucket")
     dim = _GROUP_BY[group_by]
     # The alias is `dim.cwl`, NOT the dimension key: CloudWatch has no `as` on a plain field, so
     # its column header is the field path itself, and Athena aliasing to anything else would make
     # the same request return `ruletype` on one backend and `terminatingRuleType` on the other.
     # Every existing template resolves it this direction too.
-    return dim.athena, dim.athena, dim.cwl, dim.cwl_parse, dim.unnest, dim.cwl
+    return dim.athena, dim.athena, dim.cwl, dim.cwl_pre, dim.unnest, dim.cwl
 
 
 def _parse_filters(filter_by: str) -> tuple[dict, str | None]:
@@ -286,18 +316,19 @@ def _build(group_by: str, metric: str, filters: dict, bucket_minutes: int,
 
     Both dialects are assembled from the same three decisions, which is the point: a dimension
     added to `_GROUP_BY` reaches both engines or neither."""
-    a_select, a_group, cwl_by, cwl_parse, unnest, alias = _group_expr(group_by, bucket_minutes)
+    a_select, a_group, cwl_by, cwl_pre, unnest, alias = _group_expr(group_by, bucket_minutes)
 
-    parses = [p for p in [cwl_parse] if p]
+    stages = list(cwl_pre)
     a_preds, cwl_preds = [], []
     for key, value in sorted(filters.items()):
         spec = _FILTERS[key]
         a_preds.append(spec.athena.replace("{v}", value))
         cwl_preds.append(spec.cwl.replace("{v}", value))
-        if spec.cwl_parse and spec.cwl_parse not in parses:
-            parses.append(spec.cwl_parse)
+        # Deduplicated per STAGE, which is what makes `_LABELS_ARRAY` shareable between the label
+        # dimension and the label filter without defining `lbls` twice.
+        stages.extend(stage for stage in spec.cwl_pre if stage not in stages)
 
-    prelude = "".join(f"{p} | " for p in parses)
+    prelude = "".join(f"{stage} | " for stage in stages)
     a_where = (f'"timestamp" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}')
     a_from = f"FROM {{TABLE}} {unnest}".strip()
 
@@ -403,7 +434,11 @@ def aggregate_logs(
             "percentile" for the min/avg/p95/p99/max of per-bucket request counts — use that
             one to size a rate-based rule threshold.
         filter_by: JSON string of filters, e.g. '{"action": "BLOCK", "country": "CN"}'. Keys:
-            action, rule, ip, country, method, ruletype, ja4, label, host. For metric="count"
+            action, rule, ip, country, method, ruletype, ja4, label, host. A label value is
+            matched as a substring of the full namespaced name, so
+            filter_by='{"label": "bot-control:bot:verified"}' works and so does the whole
+            "awswaf:managed:aws:bot-control:bot:verified"; a bare word like "bot" matches every
+            bot-control label at once, which is usually not the question. For metric="count"
             and "percentile" these narrow which requests are counted. For metric="ratio" they
             are the NUMERATOR instead, and the denominator is every request in the group: so
             filter_by='{"rule": "X"}' with group_by="uri" gives rule X's hit rate per URI. Give
