@@ -582,6 +582,35 @@ def run_concurrently(jobs: dict, budget: int = MAX_FANOUT_WAIT,
     return results, reasons
 
 
+def rule_name_error(rule_name: str) -> str | None:
+    """The refusal message for a rule name that must not reach a query, or None if it may.
+
+    **One definition because the precedent set had five members and disagreed.** `rule_name` is
+    model-supplied and reaches single-quoted literals in both dialects. Before this,
+    `waf_patrol.py` escaped it for CloudWatch, `waf_patrol.py:610` and `waf_block_fp.py:302`
+    doubled the quote for Athena, `waf_count_eval.py` substituted characters out of it, and
+    **`_step_check_clients` and `waf_block_fp._step_scan` did nothing at all** while interpolating
+    it into eight query strings between them. So "copy the existing precedent" named five things.
+
+    Refuse rather than escape, which is the house rule and is available here because the charset is
+    known: AWS restricts WebACL and rule names to letters, digits, hyphen and underscore, and the
+    dot is kept because managed rule-group sub-rule names carry it. Refusing removes the
+    per-dialect escaping question rather than answering it twice, and a legitimate name loses
+    nothing.
+
+    `.strip()` and nothing more, matching `waf_bypass.py:200`: edge whitespace is a paste artifact
+    carrying no information, while an interior character changes which rule is queried.
+
+    Returns a message rather than raising, because every caller is a tool returning text to the
+    model, and ROADMAP 4.1 decision 3 makes this the precedent the new primitive copies.
+    """
+    if not re.fullmatch(r"[a-zA-Z0-9_\-.]+", (rule_name or "").strip()):
+        return (f"Error: '{rule_name}' is not a rule name. Rule names are letters, digits, "
+                f"hyphens, underscores and dots. Copy one from get_waf_overview's output "
+                f"without editing it.")
+    return None
+
+
 def log_query_error(rows: list[dict] | None) -> str | None:
     """The failure reason carried by a `query_logs` result, or None when it holds rows.
 
