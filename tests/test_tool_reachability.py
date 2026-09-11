@@ -211,7 +211,12 @@ def _sentence_containing(text: str, anchor: str) -> str:
     expression is the cheaper one to write and gives the right answer most of the time."""
     line = text[text.rindex("\n", 0, text.index(anchor)) + 1:
                 text.index("\n", text.index(anchor))]
-    return next(s for s in line.split(". ") if anchor in s)
+    # Split on a period followed by whitespace and a capital or a quote, not on every ". ".
+    # A bare `". "` split breaks the sentence at an internal abbreviation, so an author writing
+    # "e.g. top_rules" inside this claim would lose the names after it and the test would report
+    # "dispatched but not named", which reads like real drift rather than like a split artifact.
+    parts = re.split(r'(?<=\.)\s+(?=[A-Z"`])', line)
+    return next(s for s in parts if anchor in s)
 
 
 def _series_sentence() -> str:
@@ -253,6 +258,15 @@ def test_the_counts_in_that_sentence_match_the_lists_it_gives():
     # the line-versus-sentence bug above, one level down.
     phrase = re.search(r"\b([a-z]+) of the ([a-z]+) query types", sentence, re.I)
     assert phrase, f"no 'N of the M query types' phrase in: {sentence!r}"
+    # Membership checked rather than `.get`-defaulted, and not indexed blind either: a word
+    # outside the map used to raise KeyError, so rewording "Five" to "Seven" produced a bare
+    # traceback instead of the message written for exactly that case. An error is still caught,
+    # since the perturbation runner separates one from a failure, but illegibly.
+    for group in (1, 2):
+        word = phrase.group(group).lower()
+        assert word in _NUMBER_WORDS, (
+            f"{word!r} is not a number word this test knows; add it to _NUMBER_WORDS. "
+            f"Sentence: {sentence!r}")
     with_series = _NUMBER_WORDS[phrase.group(1).lower()]
     total = _NUMBER_WORDS[phrase.group(2).lower()]
     named = _query_type_names(sentence)
@@ -260,6 +274,20 @@ def test_the_counts_in_that_sentence_match_the_lists_it_gives():
     assert total == len(_dispatch_query_types()), \
         f"sentence says {total} query types, the code dispatches {len(_dispatch_query_types())}"
     assert with_series < total, f"{with_series} of {total} leaves nothing without a series"
+    # **The number a reader acts on.** `total` was pinned three ways and `with_series` only by
+    # being less than it, so "Three of the eight ... (five names)" passed everything while telling
+    # the model to expect totals from five views that return a series. The sentence separates the
+    # two groups with a semicolon, so its own halves pin it: no handler heuristic needed, which is
+    # why this is not the part deliberately left to prose.
+    halves = sentence.split(";")
+    assert len(halves) == 2, f"expected one semicolon separating the two groups: {sentence!r}"
+    with_series_named = _query_type_names(halves[0])
+    assert len(with_series_named) == with_series, (
+        f"sentence says {with_series} query types return a time-series but names "
+        f"{len(with_series_named)} before the semicolon: {sorted(with_series_named)}")
+    assert len(_query_type_names(halves[1])) == total - with_series, (
+        f"the two halves do not account for all {total}: "
+        f"{sorted(_query_type_names(halves[1]))}")
 
 
 def test_the_sentence_helper_returns_a_sentence_and_not_the_line():
@@ -275,7 +303,21 @@ def test_the_sentence_helper_returns_a_sentence_and_not_the_line():
     line = ("- **get_waf_overview**: `minutes` param. Two of the two query types return a "
             "time-series (top_a, top_b). Pass start_time for a historical window.\n")
     got = _sentence_containing("preamble\n" + line + "trailer\n", SERIES_ANCHOR)
-    assert got.endswith("(top_a, top_b)"), got
+    # The terminator is part of the sentence now, since the boundary-aware split keeps it. That
+    # is the more correct contract and nothing downstream cares: the name extraction, the
+    # semicolon split and the number regex are all indifferent to it.
+    assert got.endswith("(top_a, top_b)."), got
     assert "start_time" not in got, "the helper swallowed the next sentence"
     assert "minutes" not in got, "the helper swallowed the previous sentence"
     assert _query_type_names(got) == {"top_a", "top_b"}
+
+
+def test_the_helper_survives_an_abbreviation_inside_the_sentence():
+    """`e.g.` inside the claim used to truncate it at the abbreviation, dropping every name after
+    it. That surfaces as "dispatched but not named", which reads like the prose having drifted
+    rather than like the extractor having split in the wrong place."""
+    line = ("- **get_waf_overview**: Two of the two query types return a time-series, e.g. "
+            "top_a and top_b. Zero rows omitted.\n")
+    got = _sentence_containing("head\n" + line + "tail\n", SERIES_ANCHOR)
+    assert _query_type_names(got) == {"top_a", "top_b"}, got
+    assert "Zero rows" not in got
