@@ -461,6 +461,54 @@ def test_the_rule_filter_reaches_every_place_a_match_is_recorded():
         f"location was found, update the closed-set claim in this docstring: {athena}")
 
 
+def test_the_cloudwatch_rule_clause_carries_no_sibling_key():
+    """**The other half of the same invariant, and its absence was the real gap.**
+
+    The divergence this closed was Athena missing what CloudWatch already covered, so both fixes
+    landed on the Athena side and every assertion above inspects `athena` only. That leaves
+    CloudWatch free to drift, which is the pairing rule this file already applies to group
+    dimensions, applied to the one place it was skipped.
+
+    The regression is a specific edit, not a hypothetical. `waf_count_eval.py` (three sites) and
+    `waf_patrol.py` use the tighter two-key form `'"ruleId":"X","action":"COUNT"'`, which is correct
+    there because those tools only want COUNT matches. Copied into `_RULE_CWL` as an improvement it
+    silently reopens the divergence: an `excludedRules` entry's siblings are `exclusionType` and
+    `ruleId` and there is NO `action`, so the suffix cannot match it. Measured on a throwaway log
+    group holding one record with both shapes: the one-key form finds the excluded rule and the
+    two-key form does not, while the two-key form does find a `nonTerminatingMatchingRules` entry
+    where `action` really is a sibling.
+
+    The copy is right there to be made, which is the same argument for enumerating filters rather
+    than asserting per dimension."""
+    from tools.waf_aggregate import _RULE_CWL
+    clauses = re.findall(r"@message\s+like\s+'([^']*)'", _RULE_CWL)
+    assert clauses, f"no raw-record clause in the CloudWatch rule predicate: {_RULE_CWL}"
+    rule_clauses = [c for c in clauses if "ruleId" in c]
+    assert len(rule_clauses) == 1, f"expected one `ruleId` clause, got {rule_clauses}"
+    assert rule_clauses[0] == '"ruleId":"{v}"', (
+        f'the CloudWatch rule clause is {rule_clauses[0]!r}, not \'"ruleId":"{{v}}"\'. A sibling '
+        f'key after the value cannot match an excludedRules entry, whose only siblings are '
+        f'exclusionType and ruleId, so it drops the sixth location on CloudWatch while Athena '
+        f'keeps it.')
+
+
+def test_both_engines_reach_the_same_number_of_rule_locations():
+    """Stated as a count on both sides, because that is the invariant rather than either half.
+
+    CloudWatch needs fewer clauses than Athena for the same coverage: it has no array accessor, so
+    one anchored raw-JSON search reaches all four `ruleId` locations at once where Athena needs a
+    branch each. What must hold is that neither side loses a LOCATION, so the two numbers are
+    asserted against the locations they cover, not against each other."""
+    from tools.waf_aggregate import _RULE_CWL
+    _, athena = AG._build("uri", "count", {"rule": "R"}, 5, 25)
+    assert athena.count(" OR ") + 1 == 6, athena
+    # CloudWatch: the top-level field, the `ruleId` search covering four locations, and the
+    # rate-based name. Three clauses, six locations.
+    assert _RULE_CWL.count(" or ") + 1 == 3, _RULE_CWL
+    assert "terminatingRuleId = '{v}'" in _RULE_CWL, _RULE_CWL
+    assert '"rateBasedRuleName":"{v}"' in _RULE_CWL, _RULE_CWL
+
+
 def test_the_excluded_rules_branch_searches_the_key_the_serde_actually_writes():
     """The one branch whose spelling is not the log's own, and it is the trap worth pinning.
 
