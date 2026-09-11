@@ -97,10 +97,20 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
     elif step == "analyze_rule":
         if not rule_name:
             return "Error: rule_name is required for step='analyze_rule'."
+        # Validated at the dispatch so every step is covered by one check. `_step_check_clients`
+        # interpolated this into six Athena literals and three CWL filters with no guard at all.
+        from tools.waf_query import rule_name_error
+        bad = rule_name_error(rule_name)
+        if bad:
+            return bad
         return _step_analyze_rule(rule_name)
     elif step == "check_low_volume_clients":
         if not rule_name or not start_time:
             return "Error: rule_name and start_time are required for step='check_low_volume_clients'."
+        from tools.waf_query import rule_name_error
+        bad = rule_name_error(rule_name)
+        if bad:
+            return bad
         return _step_check_clients(rule_name, start_time, duration_minutes)
     else:
         return f"Error: unknown step '{step}'. Available: init, analyze_rule, check_low_volume_clients"
@@ -252,11 +262,10 @@ def _step_analyze_rule(rule_name: str) -> str:
     #
     # No upstream validator here, unlike `analyze_ip`, where `ipaddress.ip_address` already parses
     # the input and the equivalent substitution was dead code.
+    # Validated at the dispatch in `evaluate_count_rules`, which is the only caller, so this
+    # only normalises. A second copy of the check here would be the weaker-duplicate mistake
+    # that `analyze_ip`'s dead `re.sub` was.
     rule_name = rule_name.strip()
-    if not _re.fullmatch(r"[a-zA-Z0-9_\-.]+", rule_name):
-        return (f"Error: '{rule_name}' is not a rule name. Rule names are letters, digits, "
-                f"hyphens, underscores and dots. Copy one from get_waf_overview's output "
-                f"without editing it.")
     # Step 0 gate: check if this rule should never leave Count
     if rule_name in PERMANENT_COUNT_RULES:
         return (

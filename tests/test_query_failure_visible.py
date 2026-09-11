@@ -466,26 +466,73 @@ def test_analyze_ip_refuses_a_malformed_address_rather_than_editing_it(monkeypat
     assert "## IP Analysis: 203.0.113.9" in ok, ok[:200]
 
 
-def test_analyze_rule_refuses_a_rewritten_rule_name(monkeypatch):
-    """The same substituting sanitiser, still live, and here it guards a GATE rather than a label.
+@pytest.fixture
+def webacl_selected(monkeypatch):
+    """Both tools refuse before anything else when no WebACL is selected, which is correct
+    ordering and would otherwise make every assertion below pass for the wrong reason."""
+    from tools import waf_count_eval as C
+    from tools import waf_block_fp as F
+    for mod in (C, F):
+        monkeypatch.setattr(mod, "get_webacl_name", lambda: "acl", raising=False)
+    # `investigate_block_fp` also refuses when no logging is configured, before it looks at
+    # `rule_name`. Environment preconditions first is the convention in both tools and is left
+    # alone; the fixture satisfies them so the assertions reach the guard under test.
+    monkeypatch.setattr(F, "get_log_type", lambda: "cwl", raising=False)
+    monkeypatch.setattr(C, "_has_logging", lambda: True, raising=False)
+    return None
 
-    `_step_analyze_rule` stripped disallowed characters out of `rule_name` and then compared the
-    result against `PERMANENT_COUNT_RULES`, so a rewrite could change whether the permanent-Count
-    gate fires. Unlike `analyze_ip`, nothing upstream validates this one, so it was live rather
-    than dead.
 
-    **No sweep for this pattern, deliberately.** Grepping `tools/` for `re.sub(r"[^...]"` finds
-    three hits and only one is a defect: `waf_athena.py:1350` normalises a WebACL name into an
-    Athena table identifier, where substituting IS correct and refusing would break every WebACL
-    with a hyphen. The distinction is whether the value reaches a predicate, which is semantic and
-    not greppable, so a sweep here would be a false-positive generator. Same call as leaving the
-    series-versus-totals heuristic to prose."""
+def test_every_step_taking_a_rule_name_refuses_one_that_would_break_out_of_a_literal(
+        webacl_selected):
+    """`rule_name` is model-supplied and reaches single-quoted literals in both dialects. Three
+    call sites escaped it, one substituted characters out of it, and **two did nothing at all**
+    while interpolating it into eight query strings between them:
+    `waf_count_eval._step_check_clients` (six Athena literals plus three CWL filters) and
+    `waf_block_fp._step_scan` (:526, :527). Both reachable from the tool dispatch, and
+    `_step_analyze_rule`'s own output tells the model to make the first of those calls with the
+    name interpolated in.
+
+    Driven through the public entry points, because that is what the model calls and because the
+    validation deliberately lives at the dispatch: one check covering every step beats a copy per
+    step, which is the weaker-duplicate mistake `analyze_ip`'s dead `re.sub` was."""
+    from tools import waf_count_eval as C
+    from tools import waf_block_fp as F
+
+    breaking = ("MyRule'--", "MyRule' OR '1'='1", "x' AND r.action = 'COUNT", 'MyRule"')
+    for bad in breaking:
+        for step in ("analyze_rule", "check_low_volume_clients"):
+            out = C.evaluate_count_rules._tool_func(step=step, rule_name=bad,
+                                                    start_time="2026-09-10 00:00")
+            assert "is not a rule name" in out, f"count_eval {step} accepted {bad!r}: {out[:110]}"
+        for step in ("investigate", "scan"):
+            out = F.investigate_block_fp._tool_func(step=step, ip="203.0.113.9",
+                                                   start_time="2026-09-10 00:00", rule_name=bad)
+            assert "is not a rule name" in out, f"block_fp {step} accepted {bad!r}: {out[:110]}"
+
+
+def test_a_legitimate_rule_name_still_gets_through():
+    """The other side, or the guard is just a wall. Managed rule-group sub-rule names carry dots
+    and hyphens, so those must pass; `investigate_block_fp` also takes no rule name at all."""
+    from tools.waf_query import rule_name_error
+
+    for good in ("SizeRestrictions_BODY", "AWS-AWSManagedRulesCommonRuleSet",
+                 "CrossSiteScripting_BODY", "my.rule.v2", "Rule-1_x"):
+        assert rule_name_error(good) is None, good
+    assert rule_name_error("  SizeRestrictions_BODY  ") is None, "edge whitespace must be tolerated"
+    for bad in ("", "   ", None):
+        assert rule_name_error(bad) is not None, repr(bad)
+
+
+def test_the_permanent_count_gate_reads_the_name_the_user_typed(webacl_selected):
+    """`_step_analyze_rule` compared a *rewritten* name against `PERMANENT_COUNT_RULES`, and the
+    branch it guards returns "Keep as Count, do NOT switch to Block" plus a `record_finding` call.
+
+    **The direction is bounded and worth stating:** every listed name already matches
+    `[a-zA-Z0-9_\-.]+`, so stripping left it intact and the gate could never be made to MISS.
+    Only false firing was reachable, which is what this asserts."""
     from tools import waf_count_eval as C
 
-    for bad in ("MyRule'--", "MyRule OR 1=1", "SizeRestrictions_BODY'"):
-        out = C._step_analyze_rule(bad)
-        assert "is not a rule name" in out, f"{bad!r} was not refused: {out[:120]}"
-    # The gate case specifically: the stripped form of this IS a permanent-Count rule, so a
-    # substituting sanitiser would have routed it into that branch under a name nobody typed.
-    assert "PERMANENT COUNT" not in C._step_analyze_rule("SizeRestrictions_BODY'")
     assert "PERMANENT COUNT" in C._step_analyze_rule("SizeRestrictions_BODY")
+    out = C.evaluate_count_rules._tool_func(step="analyze_rule", rule_name="SizeRestrictions_BODY'")
+    assert "PERMANENT COUNT" not in out
+    assert "is not a rule name" in out

@@ -109,6 +109,15 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
                 "I will not guess without data."
             )
 
+    # `rule_name` is optional for both steps, so an empty one is fine; a non-empty one reaches
+    # `_step_scan`'s literals at :526 and :527 and `_step_investigate`'s parameter, and neither
+    # guarded it.
+    if rule_name:
+        from tools.waf_query import rule_name_error
+        bad = rule_name_error(rule_name)
+        if bad:
+            return bad
+
     if step == "investigate":
         if not ip:
             return "Error: ip is required for step='investigate'. Ask the user which IP to check."
