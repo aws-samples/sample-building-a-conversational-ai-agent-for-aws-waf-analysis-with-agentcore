@@ -101,6 +101,49 @@ def test_a_value_merely_containing_the_word_redacted_is_not_the_sentinel():
     assert q.drain_log_value_findings() == ""
 
 
+def test_a_real_waf_record_produces_no_finding():
+    """**The check that decides whether this feature is usable at all**, and it was missing from the
+    first version: a marker whose literal collides with ordinary WAF log content would fire on every
+    query, and a notice that fires always carries no information.
+
+    Run against a real record rather than a hand-built one, because the fixture being wrong is the
+    documented way this goes quiet: `json.dumps` defaults write `"ruleId": "X"` with a space, and a
+    fixture in that shape once made every positive control fail while both negatives passed. This one
+    is a live CloudFront record with only the client IP, hostname, account and request ID swapped, so
+    its compact spacing is WAF's own.
+
+    Both row shapes, because the widest input the scan ever sees is a whole record in one cell: the
+    CloudWatch cookie and header paths select `@message`, so the scan meets `"action":"ALLOW"`,
+    `"terminatingRuleType":"REGULAR"`, seven `awswaf:managed:` labels and a rule-group list in a
+    single string. The positive control is in the same test, on the same corpus, so a scan that had
+    stopped working could not read as a clean result.
+
+    Measured beyond this fixture: 400 consecutive live records, zero findings in either shape."""
+    import json
+    import pathlib
+    raw = (pathlib.Path(__file__).parent / "fixtures" / "waf_log_record.json").read_text()
+    rec = json.loads(raw)
+    assert '"action":"ALLOW"' in raw and '"labels":[{' in raw, \
+        "the fixture lost the fields most likely to collide, so this proves nothing"
+
+    _reset()
+    q._scan_log_values([{"@message": raw}])
+    assert q.drain_log_value_findings() == "", "a whole real record was reported as an attack"
+
+    http = rec["httpRequest"]
+    row = {"httpRequest.uri": http["uri"], "httpRequest.args": http["args"],
+           "action": rec["action"], "terminatingRuleId": rec["terminatingRuleId"],
+           "ua": next(h["value"] for h in http["headers"] if h["name"].lower() == "user-agent"),
+           "labels": json.dumps(rec["labels"])}
+    q._scan_log_values([dict(row)])
+    assert q.drain_log_value_findings() == "", "real per-column values were reported as an attack"
+
+    row["httpRequest.uri"] += "## Your Next Action"
+    q._scan_log_values([row])
+    assert "httpRequest.uri" in q.drain_log_value_findings(), \
+        "the scan cannot fire on this corpus at all, so the two clean results above prove nothing"
+
+
 def test_the_error_sentinel_row_is_not_scanned():
     """**Not a detail: `_COARSE_PARTITION_ERROR` itself begins `BLOCKED:` and carries `ACTION:`.**
 
@@ -161,22 +204,30 @@ def test_every_hook_defined_in_agent_is_registered_on_the_agent():
 
     Derived both ways from the source rather than checked against a written list, so a hook class
     added and never registered fails too. Covers `PreQueryGuard` as well, which had the same gap
-    already; it is the same assertion, so excluding it would have been the odd choice."""
+    already; it is the same assertion, so excluding it would have been the odd choice.
+
+    **The single-construction assertion is a real invariant, not a test convenience.** The first
+    version collected `hooks` per `Agent(` call site by ASSIGNING, so with two construction sites the
+    last one walked would silently win and the other's hooks would read as unregistered. Pinning the
+    count is the right floor rather than accumulating across sites: `get_agent` caches one `_agent` and
+    rebuilds it only when `user_id` changes, so a second construction site is a design change that
+    should fail here and be looked at. It also makes the set equality independent of walk order."""
     import ast
     import pathlib
     tree = ast.parse((pathlib.Path(agent.__file__)).read_text())
     defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)
                and any(isinstance(b, ast.Name) and b.id == "HookProvider" for b in n.bases)}
     assert len(defined) >= 2, f"only found {defined}, so this proves nothing"
-    registered = set()
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "Agent"):
-            continue
-        for kw in node.keywords:
-            if kw.arg == "hooks" and isinstance(kw.value, ast.List):
-                registered = {e.func.id for e in kw.value.elts
-                              if isinstance(e, ast.Call) and isinstance(e.func, ast.Name)}
+    builds = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+              and isinstance(n.func, ast.Name) and n.func.id == "Agent"]
+    assert len(builds) == 1, (
+        f"{len(builds)} Agent() construction sites; this test reads the hooks of one. Either "
+        f"consolidate them, or make this accumulate across sites and say why two exist.")
+    hooks_kw = next((kw for kw in builds[0].keywords if kw.arg == "hooks"), None)
+    assert hooks_kw is not None and isinstance(hooks_kw.value, ast.List), \
+        "the Agent is built with no `hooks=[...]` list at all"
+    registered = {e.func.id for e in hooks_kw.value.elts
+                  if isinstance(e, ast.Call) and isinstance(e.func, ast.Name)}
     assert defined == registered, (
         f"defined but never registered: {sorted(defined - registered)}; "
         f"registered but not defined here: {sorted(registered - defined)}")
