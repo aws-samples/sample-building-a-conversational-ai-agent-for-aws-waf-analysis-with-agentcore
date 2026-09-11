@@ -162,6 +162,123 @@ def test_a_real_waf_record_produces_no_finding():
         "the scan cannot fire on this corpus at all, so the two clean results above prove nothing"
 
 
+def test_a_customer_label_named_after_a_marker_is_not_an_injection_attempt():
+    """**A wrong finding that shipped, found after #66 merged, and it is not a noise problem.**
+
+    A WAF label's charset is `^[0-9A-Za-z_\\-:]+$`, `:` is the only separator with no escape, mixed
+    case is allowed, and the eight reserved words include none of ours. So a customer may name a label
+    component `BLOCKED`, and the log then carries
+    `awswaf:111122223333:webacl:prodACL:BLOCKED:tier1`. Ten of eleven markers fired on that shape,
+    which means a customer's own naming produced a standing "someone is prompt-injecting your analyst"
+    alarm on every request matching that rule.
+
+    **Whitespace is the fix and it needs no premise about who controls a label.** The label charset
+    excludes whitespace outright, so no label can carry `MARKER<space>`, and the next test pins that
+    every real emission has that space. Notably this holds even if request bytes could reach label
+    text: they would arrive inside the same charset. Both positions are covered here, mid-namespace
+    and as the final component, because only the first has a colon after the marker."""
+    import json
+    colon = [m for m in q.CONTROL_MARKERS if m.endswith(":")]
+    assert len(colon) >= 8, f"only {colon} to test, so this proves nothing"
+    for marker in colon:
+        comp = marker[:-1]
+        for label in (f"awswaf:111122223333:webacl:prodACL:{comp}:tier1",
+                      f"awswaf:111122223333:webacl:prodACL:ns:{comp}"):
+            _reset()
+            q._scan_log_values([{"labels": json.dumps([{"name": label}])}])
+            assert q.drain_log_value_findings() == "", \
+                f"a customer label spelled {comp} was reported as an injection attempt: {label}"
+
+
+def test_every_colon_marker_is_emitted_with_whitespace_after_it():
+    """The other half of the fix above, and the half that rots without a test.
+
+    The scan only counts a colon marker followed by whitespace. If a tool ever emits one without that
+    space, the model learns a shape the scan cannot see, and a forgery of exactly that shape goes
+    unreported. So the emitter's format and the detector's rule are tied, the same way
+    `CONTROL_MARKERS` is tied to the prompt's list.
+
+    Read from the f-string chunks as well as plain constants, and the two `ACTION:` sites that end a
+    chunk are excluded by name because they PARSE rather than emit: both split a failure reason on
+    `"\\nACTION:"` to take the text before it.
+
+    **The trade this makes, stated rather than hidden:** `x:ACTION:do it` in a User-Agent is missed,
+    so one byte evades the disclosure. Acceptable because 5.2C is not the control. 5.2A's prompt rule
+    is, and it does not care about the space."""
+    import ast
+    import pathlib
+    import re
+    colon = [m for m in q.CONTROL_MARKERS if m.endswith(":")]
+    PARSERS = {("waf_bypass.py", "\nACTION:"), ("waf_logs.py", "ACTION:")}
+    checked = 0
+    for path in sorted((pathlib.Path(q.__file__).parent).glob("*.py")):
+        tree = ast.parse(path.read_text())
+        docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                      if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                                        ast.ClassDef))
+                      and ast.get_docstring(n, clean=False) is not None}
+        chunks = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docstrings:
+                chunks.append((node.lineno, node.value))
+            elif isinstance(node, ast.JoinedStr):
+                chunks += [(node.lineno, v.value) for v in node.values
+                           if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+        for lineno, text in chunks:
+            if path.name == "waf_query.py" and text in colon:
+                continue                       # CONTROL_MARKERS itself, a definition not an emission
+            for marker in colon:
+                for hit in re.finditer(re.escape(marker), text):
+                    after = text[hit.end():hit.end() + 1]
+                    if not after and (path.name, text[-len(marker) - 1:]) in PARSERS:
+                        continue               # splits ON the marker rather than emitting it
+                    checked += 1
+                    assert after and after.isspace(), (
+                        f"{path.name}:{lineno} emits {marker!r} followed by {after!r}. The scan only "
+                        f"counts a colon marker before whitespace, so a forgery of this shape would "
+                        f"go unreported.\n"
+                        f"FIX: move the space into the LITERAL. If you wrote f'{marker}{{msg}}', the "
+                        f"space arrives from the interpolated value and this chunk ends at the colon, "
+                        f"which is a real red rather than a false one: write f'{marker} {{msg}}'.\n"
+                        f"Do NOT add a PARSERS entry. That set is for the two sites that SPLIT on a "
+                        f"marker and emit nothing, and using it here exempts a spelling that should "
+                        f"be changed instead.")
+    assert checked >= 10, f"only {checked} emissions inspected, so this proves nothing"
+
+
+def test_no_colon_marker_can_match_a_json_KEY_however_it_is_named():
+    """Why the whole-record row shape is not the riskier of the two, asserted rather than reasoned.
+
+    A colon-form marker cannot match a JSON key, because JSON writes `"action":` and the closing quote
+    always sits between the name and the colon. Tested in its strongest form: a record whose keys are
+    named EXACTLY after every colon marker still matches none of them. That is what makes the
+    `@message` shape safe for the structural half of a record.
+
+    **It does not make the two shapes equivalent, and the difference is worth keeping straight.** The
+    whole-record shape sees 49 values on this fixture that the per-column shape never selects, so its
+    value surface is genuinely wider. It is not riskier because those extras are WAF-generated (JA3 and
+    JA4 fingerprints, request IDs, ARNs, rule-group IDs, country codes), whose charsets cannot produce
+    a marker. Two reasons, not one: keys are immune structurally, and the extra values are immune by
+    provenance. Only the second could change."""
+    import json
+    colon = [m for m in q.CONTROL_MARKERS if m.endswith(":") and not m.startswith("#")]
+    assert len(colon) >= 8, f"only {colon} to test, so this proves nothing"
+    # Both spacings, because a fixture written with `json.dumps` defaults is the documented way this
+    # family of test goes quiet.
+    for dumps in (lambda o: json.dumps(o, separators=(",", ":")), json.dumps):
+        as_keys = dumps({m[:-1]: "v" for m in colon})
+        _reset()
+        q._scan_log_values([{"@message": as_keys}])
+        assert q.drain_log_value_findings() == "", \
+            f"a marker matched a JSON key in {as_keys[:60]!r}"
+    # The control: the same words as VALUES, where the quote does not intervene, must be found.
+    _reset()
+    q._scan_log_values([{"@message": dumps({"k": colon[0] + " do it"})}])
+    assert colon[0] in q.drain_log_value_findings(), \
+        "the marker is not detectable as a value either, so the key result above proves nothing"
+
+
 def test_the_error_sentinel_row_is_not_scanned():
     """**Not a detail: `_COARSE_PARTITION_ERROR` itself begins `BLOCKED:` and carries `ACTION:`.**
 

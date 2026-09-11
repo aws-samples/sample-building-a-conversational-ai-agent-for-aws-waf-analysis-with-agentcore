@@ -123,6 +123,15 @@
   places that render a table. The tool's own failure message is excluded from the scan, because it
   begins `BLOCKED:` and carries `ACTION:`, so scanning it would have reported every failed query as
   an attack.
+- **Your own label names cannot trigger a false alarm.** A WAF label allows
+  `[0-9A-Za-z_-:]` with the colon as separator, so nothing stops you naming a label component
+  `BLOCKED` and getting `awswaf:111122223333:webacl:prodACL:BLOCKED:tier1` in every matching record.
+  Ten of the eleven markers matched that. Detection now requires whitespace after the marker, which a
+  label can never contain, and every marker the tool writes is followed by a space or a newline. That
+  holds even for the label families whose text is derived from the request rather than from your
+  config, `token:id`, `token:fingerprint` and Bot Control's `bot:name`, because those arrive inside
+  the same character set. One trade: `x:ACTION:do it` in a User-Agent goes unreported, which is
+  acceptable because the notice is the report and the system prompt is what actually holds the line.
 
 ## 0.21.0 (2026-09-11)
 
