@@ -237,7 +237,13 @@ def test_every_colon_marker_is_emitted_with_whitespace_after_it():
                     assert after and after.isspace(), (
                         f"{path.name}:{lineno} emits {marker!r} followed by {after!r}. The scan only "
                         f"counts a colon marker before whitespace, so a forgery of this shape would "
-                        f"go unreported. Add the space, or widen the scan and say why.")
+                        f"go unreported.\n"
+                        f"FIX: move the space into the LITERAL. If you wrote f'{marker}{{msg}}', the "
+                        f"space arrives from the interpolated value and this chunk ends at the colon, "
+                        f"which is a real red rather than a false one: write f'{marker} {{msg}}'.\n"
+                        f"Do NOT add a PARSERS entry. That set is for the two sites that SPLIT on a "
+                        f"marker and emit nothing, and using it here exempts a spelling that should "
+                        f"be changed instead.")
     assert checked >= 10, f"only {checked} emissions inspected, so this proves nothing"
 
 
