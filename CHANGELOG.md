@@ -12,7 +12,7 @@
 - **It reads which of your rules actually do injection detection, instead of guessing from their
   names.** A rule named `block-bad-stuff` that inspects for SQL injection is found; a rule named
   `sqli-allowlist` that does something else is not. Custom rules are identified by their WAF
-  statement type wherever it sits in the rule, including inside an AND, a NOT or a rate-based
+  statement type wherever it sits in the rule, including inside an AND, an OR or a rate-based
   rule's scope-down, which is how a tuned rule is written.
 - **"No injection rules configured" is reported as a finding.** If nothing in your WebACL inspects
   for injection, an attack would not be blocked and would not appear in your logs as a match, so
@@ -20,6 +20,11 @@
 - **It focuses the rule that actually blocked the most, and names the others that were also
   blocking.** Picking the first rule in configuration order meant investigating a rule with no
   activity and reporting four empty sections.
+- **A rule that allows traffic when it is NOT injection is not counted as injection detection.** An
+  allowlist written as "let partners through unless this looks like SQL injection" contains an
+  injection check with its meaning reversed, and counting it would report injection coverage you do
+  not have. A rule set to Count still counts, since a rule in shadow mode is one you would want to
+  look at.
 - **When no injection rule matched anything, it stops and says so** rather than running the rest of
   the investigation against nothing, and it shows what did block instead.
 - **It gives a classification and a recommendation, not tables to interpret**: a concentrated

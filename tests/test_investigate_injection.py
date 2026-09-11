@@ -56,7 +56,6 @@ def test_a_custom_rule_is_classified_by_its_statement_not_its_name():
 @pytest.mark.parametrize("wrapper,build", [
     ("AndStatement", lambda s: {"AndStatement": {"Statements": [BYTES, s]}}),
     ("OrStatement", lambda s: {"OrStatement": {"Statements": [s]}}),
-    ("NotStatement", lambda s: {"NotStatement": {"Statement": s}}),
     ("RateBasedStatement scope-down",
      lambda s: {"RateBasedStatement": {"Limit": 100, "ScopeDownStatement": s}}),
     ("nested two deep",
@@ -70,6 +69,95 @@ def test_a_nested_injection_statement_is_found(wrapper, build):
     the defect is one missing branch in the recursion and a single example finds that by luck."""
     found, _ = I._injection_rules([_rule("tuned", build(SQLI))])
     assert found == ["tuned"], f"{wrapper} hid the injection statement"
+
+
+def test_an_inverted_injection_statement_is_not_a_detector():
+    """**`NotStatement` is the one combinator that reverses the meaning, and descending into it
+    classified an allowlist as a detector.**
+
+    `Action: Allow, And[IPSet(partners), Not(SqliMatchStatement)]` means "let partners through when
+    this is NOT injection". Reading the statement type instead of the rule name does not fix this on
+    its own -- the rule genuinely contains an injection statement, with its meaning inverted -- so
+    this is the residue of the dangerous direction the module docstring names.
+
+    The consequence is a wrong statement about CONFIGURATION rather than about traffic: ranking by
+    blocks means an Allow rule can never be picked as the busiest, but if a WebACL's only classified
+    injection rule is a misclassified allowlist, the tool says "an injection rule is present and
+    blocked nothing" where the truth is "no injection detection is configured". Only the second is
+    actionable."""
+    inverted = {"AndStatement": {"Statements": [
+        {"IPSetReferenceStatement": {"ARN": "arn:aws:wafv2:::ipset/partners"}},
+        {"NotStatement": {"Statement": SQLI}}]}}
+    found, _ = I._injection_rules([
+        {"Name": "allow-trusted-partners", "Action": {"Allow": {}}, "Statement": inverted}])
+    assert found == [], "an inverted injection statement was classified as a detector"
+    assert not I._has_injection_statement({"NotStatement": {"Statement": SQLI}}), \
+        "a bare negated injection statement is not injection detection"
+
+
+def test_dropping_the_not_descent_still_finds_a_tuned_rule():
+    """The half that makes the fix above strictly better rather than a trade.
+
+    A tuned rule is written as injection detection AND a path exclusion, so the `Not` and the
+    injection statement are SIBLINGS. Verified before removing the descent: the True comes from the
+    sibling, not from descending."""
+    tuned = {"AndStatement": {"Statements": [
+        {"NotStatement": {"Statement": {"ByteMatchStatement": {"SearchString": "/upload"}}}},
+        SQLI]}}
+    found, _ = I._injection_rules([_rule("sqli-except-upload", tuned)])
+    assert found == ["sqli-except-upload"], found
+
+
+@pytest.mark.parametrize("action,is_detector", [
+    ({"Block": {}}, True),
+    ({"Count": {}}, True),
+    ({"Captcha": {}}, True),
+    ({"Challenge": {}}, True),
+    ({"Allow": {}}, False),
+])
+def test_an_allow_rule_is_never_a_detector_whatever_its_shape(action, is_detector):
+    """The independent second signal, swept over every action WAF allows.
+
+    Cheaper than reasoning about the tree and it holds even if a future combinator smuggles an
+    injection statement back into a negated position. Count stays a detector on purpose: a
+    Count-mode injection rule in shadow mode is exactly what you would investigate."""
+    found, _ = I._injection_rules([
+        {"Name": "r", "Action": action, "Statement": SQLI}])
+    assert bool(found) is is_detector, f"{action} classified as detector={bool(found)}"
+
+
+def test_the_busiest_injection_rule_is_chosen_by_count_not_by_row_order():
+    """**The more serious of the two live-found defects, which had a paragraph and no assertion.**
+
+    Step 1 originally took the first injection rule in WebACL config order, which on the live
+    account picked a rule that had blocked nothing while the SQLi set had the blocks: four sections
+    printed "0 results" and the assessment ran on no evidence.
+
+    The first fix ranked by taking the first surviving ROW, justified by "the primitive sorts by
+    hits descending" -- two implicit cross-module contracts. This fixture puts the busiest rule
+    SECOND in the table, so row order and count order disagree, which is the only arrangement that
+    tells the two apart. The code now reads the count and sorts locally, so the contract is gone
+    rather than asserted."""
+    table = ("[action=BLOCK] by rule, 60 min — 2 rows\n\n"
+             "| terminatingRuleId | hits |\n| --- | --- |\n"
+             "| QuietRule | 2 |\n| BusyRule | 97 |\n")
+    # Asserted on `_rank_by_blocks`, the function the tool actually calls. The first version
+    # asserted `_extract_pairs` and then sorted in the test body, which proves the test's own
+    # arithmetic and nothing about what the tool picks.
+    ranked = I._rank_by_blocks(table, ["QuietRule", "BusyRule"])
+    assert ranked == ["BusyRule", "QuietRule"], (
+        f"got {ranked}; ranking follows row order rather than the count, which is the defect that "
+        f"reached production")
+    # And a rule that is not an injection rule must not be ranked at all, however busy.
+    assert I._rank_by_blocks(table, ["QuietRule"]) == ["QuietRule"]
+
+
+def test_an_unparseable_count_ranks_last_rather_than_vanishing():
+    """A row whose count will not parse is kept at 0. Dropping it would take a rule that genuinely
+    blocked out of the running silently, which is worse than ranking it last."""
+    table = ("| terminatingRuleId | hits |\n| --- | --- |\n"
+             "| Weird | n/a |\n| Normal | 5 |\n")
+    assert I._extract_pairs(table, "terminatingRuleId") == [("Weird", 0), ("Normal", 5)]
 
 
 def test_a_rule_group_that_cannot_be_read_is_named_rather_than_dropped():

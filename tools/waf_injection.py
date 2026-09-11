@@ -65,10 +65,19 @@ CONFIDENCE = (
 def _has_injection_statement(stmt: dict) -> bool:
     """Whether a rule's statement tree contains injection detection.
 
-    Recursive for the same reason `_extract_transforms_from_statement` is: the statement can be
-    nested under `AndStatement`, `OrStatement`, `NotStatement` or a rate-based rule's scope-down,
-    and a top-level-only check would miss a rule that pairs SQLi detection with a path condition,
-    which is exactly how a tuned rule is written."""
+    Recursive because the statement can be nested under `AndStatement`, `OrStatement` or a
+    rate-based rule's scope-down, and a top-level-only check would miss a rule that pairs SQLi
+    detection with a path condition, which is exactly how a tuned rule is written.
+
+    **`NotStatement` is deliberately NOT descended into, and it was at first.** Every other
+    combinator preserves "this rule inspects for SQLi"; `Not` reverses it. Descending gave
+    `Action: Allow, And[IPSet(partners), Not(SqliMatchStatement)]` a True, which is an allowlist
+    classified as a detector -- the direction this module's docstring calls the dangerous one, and
+    the one reading statement types instead of names does NOT fix on its own.
+
+    **Dropping the descent costs nothing, verified rather than assumed.** The tuned case
+    `And[Not(uri /upload), SqliMatchStatement]` still returns True, because the injection statement
+    is a SIBLING of the `Not` rather than inside it. So this is strictly better, not a trade."""
     if not isinstance(stmt, dict):
         return False
     if any(key in stmt for key in _INJECTION_STATEMENTS):
@@ -77,8 +86,6 @@ def _has_injection_statement(stmt: dict) -> bool:
         if key in stmt:
             if any(_has_injection_statement(sub) for sub in stmt[key].get("Statements", [])):
                 return True
-    if "NotStatement" in stmt:
-        return _has_injection_statement(stmt["NotStatement"].get("Statement", {}))
     if "RateBasedStatement" in stmt:
         return _has_injection_statement(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))
     return False
@@ -99,6 +106,13 @@ def _injection_rules(rules: list) -> tuple[list, list]:
         if group:
             if any(g in group.get("Name", "") for g in _INJECTION_GROUPS):
                 found.append(name)
+            continue
+        # **An `Allow` rule is not a detector whatever its shape**, which is an independent second
+        # signal to the statement type. It catches the inverted allowlist even if some future
+        # combinator smuggles an injection statement back into a negated position, and it is
+        # cheaper than reasoning about the tree. Count, Captcha and Challenge all stay: a
+        # Count-mode injection rule in shadow mode is exactly what you would investigate.
+        if "Allow" in (rule.get("Action") or {}):
             continue
         if _has_injection_statement(stmt):
             found.append(name)
@@ -242,8 +256,14 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
     # evidence. Config order is not a ranking.
     if not rule_name:
         by_rule = _agg(group_by="rule", filter_by=json.dumps({"action": "BLOCK"}))
-        blockers = _extract_column(by_rule, "terminatingRuleId")
-        active = [r for r in blockers if r in set(targets)]
+        # **Sorted here rather than relying on the primitive's ORDER BY.** The first version took
+        # the first surviving row and justified it with "the primitive sorts by hits descending",
+        # which is two implicit cross-module contracts: `aggregate_logs` emitting `ORDER BY hits
+        # DESC`, and `_extract_column` preserving row order. Both hold today. A tie-break or an
+        # ordering change upstream would silently restore the ranked-by-config-order defect, whose
+        # symptom is a finished-looking report built on no evidence. Reading the count removes the
+        # contract instead of asserting it.
+        active = _rank_by_blocks(by_rule, targets)
         if not active:
             # **Stopping here is the answer, not a failure to find one.** Investigating a rule with
             # no activity produces four empty sections and an assessment with nothing behind it,
@@ -308,6 +328,34 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
               f"Next: call record_finding(title='Injection activity on {focus}', "
               f"severity='medium', detail='...') to keep this in the report."]
     return "\n".join(lines)
+
+
+def _rank_by_blocks(by_rule_table: str, wanted: list) -> list:
+    """The injection rules that actually blocked, busiest first.
+
+    A named function rather than three lines inline, so a test can assert the RANKING rather than
+    re-derive it. The first test of this asserted `_extract_pairs` and then sorted in the test body,
+    which proves the test's own arithmetic and nothing about what the tool picks -- the same
+    one-layer-off mistake as asserting a denominator's summation when the exclusion lives in which
+    metrics get requested."""
+    keep = set(wanted)
+    pairs = [p for p in _extract_pairs(by_rule_table, "terminatingRuleId") if p[0] in keep]
+    return [name for name, _ in sorted(pairs, key=lambda p: p[1], reverse=True)]
+
+
+def _extract_pairs(table: str, column: str) -> list:
+    """`[(value, hits)]` from an `aggregate_logs` count table, so the caller can rank locally.
+
+    A row whose count will not parse is kept with a count of 0 rather than dropped: losing a rule
+    that genuinely blocked would put it out of the running silently, which is worse than ranking it
+    last."""
+    out = []
+    for value, hits in zip(_extract_column(table, column), _extract_column(table, "hits")):
+        try:
+            out.append((value, int(hits)))
+        except (TypeError, ValueError):
+            out.append((value, 0))
+    return out
 
 
 def _extract_column(table: str, column: str) -> list:
