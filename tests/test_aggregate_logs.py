@@ -206,6 +206,15 @@ def test_no_filter_matches_the_raw_record_instead_of_a_field(key):
     carry a quote character, which is what puts the value inside a JSON key/value pair rather than
     loose in the record. `@message` in a PRELUDE is fine either way, since a `parse` has to read
     the raw record to produce a field at all."""
+    # **The floor, and the third rung of the same ladder this docstring narrates.** Version one was
+    # too wide, version two was too wide, version three is correctly scoped and had nothing under
+    # it: only `rule` reaches the assertions and the other eight return early, so the suite reported
+    # nine green while one parameter carried the whole test. Rewrite that one predicate to use a
+    # field accessor and the sweep passes nine times over an empty space, and the next unanchored
+    # filter lands unnoticed. Narrowing a search space needs a floor, exactly as widening one needs
+    # a scope.
+    assert any("@message" in f.cwl for f in AG._FILTERS.values()), \
+        "no filter compares against the raw record, so this sweep proves nothing"
     spec = AG._FILTERS[key]
     if "@message" not in spec.cwl:
         return
@@ -416,24 +425,61 @@ def test_a_ratio_with_no_numerator_is_refused_rather_than_answered():
     assert "needs filter_by" in out, out[:200]
 
 
-def test_the_rule_filter_names_all_four_places_a_match_is_recorded():
-    """The nested-COUNT trap, ROADMAP 2.6. A rule match lands in one of four places and a filter
-    built on fewer misses exactly the case a COUNT investigation is looking for.
+def test_the_rule_filter_reaches_every_place_a_match_is_recorded():
+    """The nested-COUNT trap, ROADMAP 2.6. A rule match lands in one of several places and a filter
+    built on fewer misses exactly the case a COUNT investigation is looking for. The existing
+    `rule_uri_prefix` template covers three, so this is the assertion that stops someone copying it.
 
-    The existing `rule_uri_prefix` template covers three of the four, so this is the assertion
-    that stops someone copying it. Verified against real data by
-    `verify-aggregate-queries.py`'s `nested` phase, which matches each branch with a rule only
-    that branch can find: 4 hits via `rulegrouplist[].nonterminatingmatchingrules[]`, 30136 via
-    `ratebasedrulelist`, 30136 via the top-level id. The fourth,
-    `rulegrouplist[].terminatingrule`, is NULL on every row of that window, so it is asserted
-    here and unexercised there."""
+    **The set is closed, which is what lets this be a complete claim rather than a growing list.**
+    Exactly four JSON keys in a WAF record are named `ruleId`: `nonTerminatingMatchingRules[]`,
+    `ruleGroupList[].terminatingRule`, `ruleGroupList[].nonTerminatingMatchingRules[]` and
+    `ruleGroupList[].excludedRules[]`. `rateBasedRuleList` uses `rateBasedRuleId` and
+    `rateBasedRuleName`, never `ruleId`, so it needs its own branch rather than being covered.
+    With the top-level `terminatingRuleId` that is six.
+
+    Which are exercised against real data, per `verify-aggregate-queries.py`: 4 hits via
+    `rulegrouplist[].nonterminatingmatchingrules[]`, 30136 via `ratebasedrulelist`, 30136 via the
+    top-level id. `rulegrouplist[].terminatingrule` is NULL on every row of that window and
+    `excludedrules` on every row this account has, so those two are asserted here and exercised
+    only against written records: the `excluded` phase does that with five controls, including the
+    two that matter, the camelCase key MISSING because the SerDe lowercases keys and a lowercased
+    rule name missing because it does not lowercase values."""
     _, athena = AG._build("uri", "count", {"rule": "R"}, 5, 25)
-    for path in ("terminatingruleid = 'R'",
-                 "any_match(nonterminatingmatchingrules",
-                 "rg.terminatingrule.ruleid = 'R'",
-                 "any_match(rg.nonterminatingmatchingrules",
-                 "rb.ratebasedrulename = 'R'"):
+    branches = ("terminatingruleid = 'R'",
+                "any_match(nonterminatingmatchingrules",
+                "rg.terminatingrule.ruleid = 'R'",
+                "any_match(rg.nonterminatingmatchingrules",
+                "strpos(rg.excludedrules, '\"ruleid\":\"R\"')",
+                "rb.ratebasedrulename = 'R'")
+    for path in branches:
         assert path in athena, f"the rule filter cannot match via {path}: {athena}"
+    # A count, because a claim written as a number can be tested and one written as prose cannot.
+    # A seventh OR appearing here means someone found another location, and the docstring above
+    # claims the set is closed, so it has to be re-derived rather than silently extended.
+    assert athena.count(" OR ") == len(branches) - 1, (
+        f"the rule filter has {athena.count(' OR ') + 1} branches, not {len(branches)}; if a new "
+        f"location was found, update the closed-set claim in this docstring: {athena}")
+
+
+def test_the_excluded_rules_branch_searches_the_key_the_serde_actually_writes():
+    """The one branch whose spelling is not the log's own, and it is the trap worth pinning.
+
+    `DDL_TEMPLATE` types this column `excludedrules:string`, so there is no struct to `any_match`
+    over, and the obvious reading is that closing the gap needs a DDL change plus the
+    table-recreate path. Measured otherwise: a string-typed column over a JSON array yields the
+    array's raw text, so `strpos` reaches it today.
+
+    But **the openx SerDe lowercases JSON keys**, so the column reads `"ruleid"` where the WAF log
+    wrote `"ruleId"`. Searching the log's own spelling, which is what every other branch here uses
+    and what anyone re-deriving this would write, matches nothing at all. Values keep their case,
+    so the rule name must NOT be lowercased."""
+    _, athena = AG._build("uri", "count", {"rule": "SizeRestrictions_BODY"}, 5, 25)
+    excluded = [clause for clause in athena.split(" OR ") if "excludedrules" in clause]
+    assert len(excluded) == 1, athena
+    clause = excluded[0]
+    assert '"ruleid":' in clause, f"the camelCase key matches nothing on this column: {clause}"
+    assert '"ruleId":' not in clause, f"the SerDe lowercases keys, so this matches nothing: {clause}"
+    assert "SizeRestrictions_BODY" in clause, "the rule name's case must be preserved"
 
 
 def test_the_label_filter_uses_no_wildcard_metacharacter():

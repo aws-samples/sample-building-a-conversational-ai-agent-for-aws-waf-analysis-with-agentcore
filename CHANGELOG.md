@@ -21,10 +21,13 @@
 - **Six group dimensions no template had**: referer, user-agent, JA4, HTTP method, rule type and
   label, plus time buckets at any width. Referer and JA4 are absent on some upstreams and the tool
   says which reason applies rather than returning an empty table.
-- **A rule filter that finds all four kinds of match.** A rule match is recorded in one of four
-  places in a WAF log record and the existing per-rule templates check three, so a rule counted
-  inside a managed rule group could read as "no traffic". Verified against real records: the
-  nested-Count path finds matches the old shape misses.
+- **A rule filter that finds every kind of match.** A rule match is recorded in one of six places in
+  a WAF log record and the existing per-rule templates check three, so a rule counted inside a
+  managed rule group could read as "no traffic". Verified against real records: the nested-Count
+  path finds matches the old shape misses.
+- **Filtering by rule now agrees between the two backends on rules excluded the old way.** If you
+  use the legacy `ExcludedRules` setting rather than `RuleActionOverrides`, a request where that
+  rule matched and was counted was found on CloudWatch and missed on Athena. Both find it now.
 - Unknown dimensions, metrics and filter keys are refused with the valid ones listed, and a filter
   value that could break out of a SQL literal is refused rather than escaped or rewritten.
 - **A label filter means the same thing on both backends.** Filtering by label on CloudWatch first

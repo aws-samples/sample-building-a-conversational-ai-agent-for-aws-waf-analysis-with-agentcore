@@ -191,18 +191,65 @@ class _Filter:
 # `FALSE OR NULL` drops it, which is right both times for a POSITIVE filter. The static-asset
 # exclusion needed its guard because it was a negation, where NULL drops a row that should have
 # been kept.
+#
+# **The `excludedrules` branch is a string search, and that is measured rather than a shortcut.**
+# `DDL_TEMPLATE` types this column `excludedrules:string` (see `waf_athena.py`), not as an array of
+# structs, so there is nothing to `any_match` over. The obvious conclusion is that closing this gap
+# needs a DDL change plus the table-recreate path, i.e. the same blocker that deferred ASN. It does
+# not: measured 2026-09-11 against a record written for the purpose, a string-typed column over a
+# JSON array yields **the array's raw JSON text**, so `strpos` reaches it today.
+#
+# **The key is lowercased and that is the whole trap.** The openx SerDe normalises JSON keys, so the
+# column reads
+# `[{"exclusiontype":"EXCLUDED_AS_COUNT","ruleid":"SizeRestrictions_BODY"}]`.
+# Searching for `"ruleId"`, the spelling the raw WAF log actually uses and the one every other
+# branch here is written in, matches NOTHING. Five controls: the lowercase key hits both excluded
+# rules, misses a rule that is not excluded, the camelCase key misses, and a lowercased rule NAME
+# misses, so values keep their case while keys do not.
+#
+# Why this branch is worth having at all: `excludedRules` is the LEGACY `ExcludedRules` mechanism,
+# and an entry there means the rule genuinely matched and was counted instead of blocked. So without
+# this, CloudWatch counts those matches (its raw-JSON search reaches them) and Athena silently does
+# not, with Athena under-reporting a real match. Modern `RuleActionOverrides` never populates it;
+# that match lands in `nonterminatingmatchingrules` with `action: COUNT`, which branch 2 already
+# catches.
+#
+# **Exercised against a written record, not against production traffic.** `excludedrules` is NULL on
+# every row this account has, so no real WAF record here can reach this branch. What IS verified on
+# real data is that adding it changes no existing count: `strpos(NULL, ...)` is NULL and `NULL > 0`
+# is NULL, so the OR chain is unaffected where the column is empty.
 _RULE_ATHENA = (
     "(terminatingruleid = '{v}'"
     " OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{v}')"
     " OR any_match(rulegrouplist, rg -> rg.terminatingrule.ruleid = '{v}')"
     " OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules,"
     " r -> r.ruleid = '{v}'))"
+    " OR any_match(rulegrouplist, rg -> strpos(rg.excludedrules, '\"ruleid\":\"{v}\"') > 0)"
     " OR any_match(ratebasedrulelist, rb -> rb.ratebasedrulename = '{v}'))"
 )
 # CloudWatch has no array accessor, so a raw-JSON substring reaches every nested path at once.
-# Broader than the Athena form rather than narrower: it can match a rule name appearing in some
-# other position in the record, which is the direction that over-reports rather than the one
-# that hides a match.
+#
+# **`"ruleId":` cannot be produced by anything but a key named exactly that**, because JSON puts the
+# opening quote immediately before a key's first character, so `ruleGroupId`, `terminatingRuleId`
+# and `rateBasedRuleId` cannot satisfy it. There are four such keys in a WAF record:
+# `nonTerminatingMatchingRules[]`, `ruleGroupList[].terminatingRule`,
+# `ruleGroupList[].nonTerminatingMatchingRules[]` and `ruleGroupList[].excludedRules[]`, all four of
+# which the Athena side now names. `rateBasedRuleList` uses `rateBasedRuleId`/`rateBasedRuleName`
+# and never `ruleId`, which is why the second clause here is a separate key rather than a duplicate.
+#
+# **Nor can a client produce it, measured 2026-09-11 rather than argued.** The worry is that this
+# pattern also matches client-controlled text, so a header or query string carrying
+# `"ruleId":"Log4JRCE"` would inflate that rule's apparent hits. A request was sent through the live
+# WAF with exactly that in both an `X-Probe` header and the query string. Both arrive
+# backslash-escaped in the log line, `\"ruleId\":\"...\"`, so the bare-quote pattern cannot reach
+# them: the anchored filter returned 0 while an unanchored control on the same records returned 3.
+# A JSON serializer has no choice here, since a literal quote inside a string value must be escaped
+# or the line stops being JSON.
+#
+# One belief this measurement corrected: `args` is NOT percent-encoded by WAF. The probe's
+# `raw="ruleId":"..."` parameter was logged with its literal quotes, escaped, while only the part
+# already percent-encoded by the client stayed encoded. So the escaping alone carries this, not any
+# encoding of the field.
 _RULE_CWL = ("(terminatingRuleId = '{v}' or @message like '\"ruleId\":\"{v}\"'"
              " or @message like '\"rateBasedRuleName\":\"{v}\"')")
 
