@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 (2026-09-11)
 
 ### Added: aggregate_logs, so a question no template covers still has an answer
 
