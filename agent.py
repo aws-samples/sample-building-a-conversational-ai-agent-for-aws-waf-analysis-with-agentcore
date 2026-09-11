@@ -15,6 +15,7 @@ from tools.waf_metrics import get_waf_metrics
 from tools.waf_overview import get_waf_overview
 from tools.waf_logs import run_logs_query, analyze_ip
 from tools.waf_aggregate import aggregate_logs
+from tools.waf_injection import investigate_injection
 from tools.query_limits import MAX_MINUTES
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
@@ -82,16 +83,10 @@ You are an AWS WAF Analysis Agent. You help security engineers investigate AWS W
 - "rule is enabled but didn't block this attack" / "why wasn't this SQLi/XSS blocked" / user pastes a specific payload that got through → NOT a bypass scan, and do NOT run detect_bypass. Use run_logs_query to confirm the payload's request was ALLOW'd and matched no injection rule, and confirm the rule is present and in Block mode. Then search_waf_knowledge for injection rule coverage limits and explain the gap and the fix based on what comes back. The fix differs for SQLi vs XSS — let the knowledge base drive it, don't assume.
 
 ## Injection Attack Investigation (BLOCK spike or user reports attack)
-Follow this sequence — do NOT skip steps:
-1. get_waf_overview(query_type='top_rules', minutes=60) → identify which rules are blocking most
-2. run_logs_query(query_type='rule_uri_prefix', rule_name='<top blocking rule>') → attack target paths
-3. run_logs_query(query_type='top_ua_by_action') → attacker UA characteristics
-4. run_logs_query(query_type='rule_block_top_ips', rule_name='<top blocking rule>') → top source IPs blocked by that rule
-5. Pick top 1-2 IPs from step 4 → analyze_ip(ip='...') → source profiling (country, JA4, labels)
-6. Classify and recommend:
-   - Many IPs + same JA4 → distributed bot attack, recommend Bot Control Targeted or rate-based
-   - Few IPs + high volume → concentrated attack, recommend IP block or rate-based
-   - Diverse IPs + diverse JA4 → distributed probing, current rules are working, keep monitoring
+
+Call investigate_injection(start_time='...'). It runs the whole sequence in code, so the source-IP profiling step cannot be skipped, and it returns a classification and a recommendation rather than tables to interpret. It also reads which of your rules actually do injection detection from the WebACL's statement types rather than guessing from rule names, and tells you when it finds none — which is a finding rather than a clean result.
+
+Do NOT hand-assemble this from get_waf_overview and run_logs_query. That was the old method and the reason it moved into code is that a step got skipped.
 
 ## Confidence Boundaries
 - WAF logs prove: request was received, which rule matched, what action was taken, and what labels were applied.
@@ -395,7 +390,7 @@ class PreQueryGuard(HookProvider):
 _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
-          aggregate_logs,
+          aggregate_logs, investigate_injection,
           lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
           patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,

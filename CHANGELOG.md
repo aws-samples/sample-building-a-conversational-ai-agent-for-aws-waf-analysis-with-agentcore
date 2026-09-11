@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added: investigate_injection, so the method is code rather than advice
+
+- **Injection was the one major investigation with no tool.** Its six steps lived in the agent's
+  instructions, which means the agent could skip one, reorder them, or stop once the first four
+  looked like an answer. The step most likely to be dropped was profiling the source IPs, because
+  by then you already have a table to read. `investigate_injection(start_time='...')` runs the
+  whole sequence in one call, so that step cannot be skipped.
+- **It reads which of your rules actually do injection detection, instead of guessing from their
+  names.** A rule named `block-bad-stuff` that inspects for SQL injection is found; a rule named
+  `sqli-allowlist` that does something else is not. Custom rules are identified by their WAF
+  statement type wherever it sits in the rule, including inside an AND, an OR or a rate-based
+  rule's scope-down, which is how a tuned rule is written.
+- **"No injection rules configured" is reported as a finding.** If nothing in your WebACL inspects
+  for injection, an attack would not be blocked and would not appear in your logs as a match, so
+  an empty result is the most important thing the tool can tell you.
+- **It focuses the rule that actually blocked the most, and names the others that were also
+  blocking.** Picking the first rule in configuration order meant investigating a rule with no
+  activity and reporting four empty sections.
+- **A rule that allows traffic when it is NOT injection is not counted as injection detection.** An
+  allowlist written as "let partners through unless this looks like SQL injection" contains an
+  injection check with its meaning reversed, and counting it would report injection coverage you do
+  not have. A rule set to Count still counts, since a rule in shadow mode is one you would want to
+  look at.
+- **When no injection rule matched anything, it stops and says so** rather than running the rest of
+  the investigation against nothing, and it shows what did block instead.
+- **It gives a classification and a recommendation, not tables to interpret**: a concentrated
+  attack, a distributed bot behind one TLS fingerprint, or untargeted probing your rules are
+  already handling. Where the fingerprint data is missing, which is always the case on API Gateway
+  and AppSync, it says the distinction cannot be made rather than guessing.
+- **It never says an exploit succeeded.** WAF logs show that a request arrived and which rule
+  matched it, not what your application did with it. The tool states that boundary every time and
+  names what evidence would settle the question: origin logs, response codes, application errors.
+- Ends by offering to record the finding, which the old instructions never did, so injection
+  findings were the ones that did not reach your report.
+
 ### Added: every rule's hit rate, in the table you already ask for
 
 - **"What percentage of my traffic does this rule actually match?" had no answer.** You could see a
