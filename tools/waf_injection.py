@@ -278,8 +278,9 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
                       "Log Filter is dropping BLOCK records before they reach the log destination.",
                       "", CONFIDENCE]
             return "\n".join(lines)
-        # `_extract_column` preserves row order and the primitive sorts by hits descending, so the
-        # first survivor is the busiest injection rule.
+        # `active` is already ordered busiest-first by `_rank_by_blocks`, which read the counts
+        # rather than trusting the table's row order, so `active[0]` below needs nothing from the
+        # primitive's ORDER BY.
         targets = active
         if len(active) > 1:
             others = ", ".join(active[1:])
