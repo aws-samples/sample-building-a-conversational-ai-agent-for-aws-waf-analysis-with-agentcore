@@ -79,11 +79,18 @@ class _Dim:
     them and `lbls` was defined twice in one query, the second time after it had already been
     read."""
 
-    def __init__(self, athena: str, cwl: str, cwl_pre: tuple = (), unnest: str = ""):
+    def __init__(self, athena: str, cwl: str, cwl_pre: tuple = (), unnest: str = "",
+                 redactable: tuple = ()):
         self.athena = athena
         self.cwl = cwl
         self.cwl_pre = tuple(cwl_pre)
         self.unnest = unnest
+        # Which `RedactedFields` entries would strip what this dimension reads. Inventory only:
+        # what to SAY when one fires is the disclosure, and that waits on the record shape.
+        # `SingleHeader` carries the header NAME because it redacts per-name, while `UriPath`,
+        # `Method` and `QueryString` are all-or-nothing, so "reads a header" cannot be matched
+        # against a real config.
+        self.redactable = tuple(redactable)
 
 
 def _header(name: str) -> str:
@@ -108,16 +115,20 @@ def _parse(name: str, into: str) -> str:
 # ever interpolated into a query.
 _GROUP_BY = {
     "clientIp": _Dim("httprequest.clientip", "httpRequest.clientIp"),
-    "uri": _Dim("httprequest.uri", "httpRequest.uri"),
+    "uri": _Dim("httprequest.uri", "httpRequest.uri", redactable=("UriPath",)),
     "country": _Dim("httprequest.country", "httpRequest.country"),
-    "method": _Dim("httprequest.httpmethod", "httpRequest.httpMethod"),
+    "method": _Dim("httprequest.httpmethod", "httpRequest.httpMethod",
+                       redactable=("Method",)),
     "action": _Dim("action", "action"),
     "rule": _Dim("terminatingruleid", "terminatingRuleId"),
     "ruletype": _Dim("terminatingruletype", "terminatingRuleType"),
     "ja4": _Dim("ja4fingerprint", "ja4Fingerprint"),
-    "host": _Dim(_header("host"), "host", (_parse("host", "host"),)),
-    "ua": _Dim(_header("user-agent"), "ua", (_parse("user-agent", "ua"),)),
-    "referer": _Dim(_header("referer"), "referer", (_parse("referer", "referer"),)),
+    "host": _Dim(_header("host"), "host", (_parse("host", "host"),),
+                     redactable=("SingleHeader:host",)),
+    "ua": _Dim(_header("user-agent"), "ua", (_parse("user-agent", "ua"),),
+                   redactable=("SingleHeader:user-agent",)),
+    "referer": _Dim(_header("referer"), "referer", (_parse("referer", "referer"),),
+                        redactable=("SingleHeader:referer",)),
     # The only dimension that changes the FROM clause. On CloudWatch this reads the FIRST label
     # per request and no more, the same limitation `ip_label_breakdown` documents, because the
     # raw JSON has to be parsed rather than unnested.
@@ -171,11 +182,17 @@ def _checked_rule(raw) -> tuple[str, str | None]:
 
 
 class _Filter:
-    def __init__(self, check, athena: str, cwl: str, cwl_pre: tuple = ()):
+    def __init__(self, check, athena: str, cwl: str, cwl_pre: tuple = (),
+                 redactable: tuple = ()):
         self.check = check
         self.athena = athena
         self.cwl = cwl
         self.cwl_pre = tuple(cwl_pre)
+        # **A redacted FILTER dimension is the case that stays invisible.** A group-by on a redacted
+        # field returns a placeholder value the reader can see; a filter on one matches nothing and
+        # returns zero rows with no placeholder anywhere in the result. So this half of the
+        # inventory is needed whatever the record shape turns out to be.
+        self.redactable = tuple(redactable)
 
 
 # **The rule filter names all four places a match can be recorded**, which is the nested-COUNT
@@ -266,7 +283,8 @@ _FILTERS = {
                        "httprequest.country = '{v}'", "httpRequest.country = '{v}'"),
     "method": _Filter(
         _checked(r"GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS", "an HTTP method"),
-        "httprequest.httpmethod = '{v}'", "httpRequest.httpMethod = '{v}'"),
+        "httprequest.httpmethod = '{v}'", "httpRequest.httpMethod = '{v}'",
+        redactable=("Method",)),
     "ruletype": _Filter(
         _checked(r"REGULAR|RATE_BASED|GROUP|MANAGED_RULE_GROUP",
                  "a rule type (REGULAR, RATE_BASED, GROUP, MANAGED_RULE_GROUP)"),
@@ -303,7 +321,7 @@ _FILTERS = {
     # satisfied by the string turning up in a URI or a referer.
     "host": _Filter(_checked(r"[0-9a-zA-Z.\-]+(:[0-9]+)?", "a hostname"),
                     f"{_header('host')} = '{{v}}'", "host = '{v}'",
-                    (_parse("host", "host"),)),
+                    (_parse("host", "host"),), redactable=("SingleHeader:host",)),
 }
 
 
