@@ -512,19 +512,89 @@ def test_every_step_taking_a_rule_name_refuses_one_that_would_break_out_of_a_lit
 
 def test_a_legitimate_rule_name_still_gets_through():
     """The other side, or the guard is just a wall. Managed rule-group sub-rule names carry dots
-    and hyphens, so those must pass; `investigate_block_fp` also takes no rule name at all."""
-    from tools.waf_query import rule_name_error
+    and hyphens, so those must pass; `investigate_block_fp` also takes no rule name at all.
+
+    **The tolerated-whitespace case is asserted together with what it returns, because splitting
+    those two is the defect below.** An earlier version asserted only that a padded name is
+    accepted, which pinned the accepting half while every consumer interpolated the padding
+    verbatim."""
+    from tools.waf_query import checked_rule_name
 
     for good in ("SizeRestrictions_BODY", "AWS-AWSManagedRulesCommonRuleSet",
                  "CrossSiteScripting_BODY", "my.rule.v2", "Rule-1_x"):
-        assert rule_name_error(good) is None, good
-    assert rule_name_error("  SizeRestrictions_BODY  ") is None, "edge whitespace must be tolerated"
+        assert checked_rule_name(good) == (good, None), good
+    assert checked_rule_name("  SizeRestrictions_BODY  ") == ("SizeRestrictions_BODY", None), \
+        "edge whitespace must be tolerated AND removed, not tolerated and passed on"
     for bad in ("", "   ", None):
-        assert rule_name_error(bad) is not None, repr(bad)
+        name, err = checked_rule_name(bad)
+        assert err is not None, repr(bad)
+        assert name == "", "a refused name must come back empty, never echoed back for use"
+
+
+@pytest.mark.parametrize("padded,clean", [("SizeRestrictions_BODY ", "SizeRestrictions_BODY"),
+                                          (" MyRule", "MyRule"),
+                                          ("\tMyRule\n", "MyRule")])
+def test_a_padded_rule_name_reaches_the_query_without_its_padding(padded, clean, webacl_selected,
+                                                                 monkeypatch):
+    """The pair to the assertion above, and the half that was missing.
+
+    `checked_rule_name` decided on a stripped copy and returned only a verdict, so a trailing space
+    passed the guard and `_step_check_clients` queried `r.ruleid = 'SizeRestrictions_BODY '` while
+    `_step_scan` queried `terminatingruleid = 'MyRule '`. Neither matches anything.
+
+    **The consequence lands in the direction that matters, which is why this is asserted on the
+    built query rather than on the return value.** `check_low_volume_clients` exists to produce an
+    FP signal, and "no low-volume clients" pushes the verdict toward confirmed attack and safe to
+    Block; a scan's empty result reads as a clean audit. A stray space turns a query that would
+    have found clients into a zero that nothing distinguishes from a real one.
+
+    Captured at `query_logs`, the one place both dialects pass through, so the assertion covers
+    the Athena literals and the CloudWatch filters in one place."""
+    from tools import waf_block_fp as F
+    from tools import waf_query as WQ
+
+    seen: list[str] = []
+
+    def capture(cwl, athena, *a, **k):
+        seen.extend([cwl, athena])
+        return []
+
+    # Patched in every module that binds the name, because both tools do
+    # `from tools.waf_query import query_logs` at import time. `WQ` is patched too so
+    # `sample_inspection_content`'s own calls are captured rather than reaching AWS.
+    for mod in (C, F, WQ):
+        monkeypatch.setattr(mod, "query_logs", capture)
+        monkeypatch.setattr(mod, "get_log_type", lambda: "cwl", raising=False)
+    monkeypatch.setattr(F, "_check_coverage_gaps", lambda *a, **k: [], raising=False)
+    monkeypatch.setattr(F, "get_client", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("no AWS in tests")), raising=False)
+
+    C.evaluate_count_rules._tool_func(step="check_low_volume_clients", rule_name=padded,
+                                      start_time="2026-09-10 00:00")
+    F.investigate_block_fp._tool_func(step="scan", start_time="2026-09-10 00:00",
+                                      rule_name=padded)
+
+    assert seen, "no query was built, so this proves nothing about what reaches one"
+    named = [q for q in seen if clean in q]
+    assert named, f"no query mentions {clean!r} at all: {seen[:1]}"
+    for q in named:
+        assert padded not in q, f"the padding reached the query: {q[:160]}"
+
+
+def test_an_all_whitespace_rule_name_is_refused_not_read_as_no_filter(webacl_selected):
+    """`investigate_block_fp` treats an empty `rule_name` as "audit every rule", so normalising
+    before the truthiness check would turn `"   "` into a silently WIDER scan. Refusing is the
+    house rule, and the widening is the substitution it exists to prevent: a one-rule audit the
+    user asked for coming back as an all-rule audit is a different answer, not a degraded one."""
+    from tools import waf_block_fp as F
+
+    out = F.investigate_block_fp._tool_func(step="scan", start_time="2026-09-10 00:00",
+                                           rule_name="   ")
+    assert "is not a rule name" in out, out[:160]
 
 
 def test_the_permanent_count_gate_reads_the_name_the_user_typed(webacl_selected):
-    """`_step_analyze_rule` compared a *rewritten* name against `PERMANENT_COUNT_RULES`, and the
+    r"""`_step_analyze_rule` compared a *rewritten* name against `PERMANENT_COUNT_RULES`, and the
     branch it guards returns "Keep as Count, do NOT switch to Block" plus a `record_finding` call.
 
     **The direction is bounded and worth stating:** every listed name already matches

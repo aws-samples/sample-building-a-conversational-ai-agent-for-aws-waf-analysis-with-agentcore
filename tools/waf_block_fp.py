@@ -111,10 +111,16 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
 
     # `rule_name` is optional for both steps, so an empty one is fine; a non-empty one reaches
     # `_step_scan`'s literals at :526 and :527 and `_step_investigate`'s parameter, and neither
-    # guarded it.
+    # guarded it. `checked_rule_name` returns the name as well as the verdict, so the steps below
+    # interpolate the one it decided on: a trailing space used to pass the guard and then query
+    # `terminatingruleid = 'MyRule '`, which matches nothing, and on a scan that empty result is
+    # indistinguishable from a clean audit.
+    #
+    # An all-whitespace name is refused rather than read as "no rule filter". Treating it as
+    # absent would silently widen the scan from one rule to every rule, which is a substitution.
     if rule_name:
-        from tools.waf_query import rule_name_error
-        bad = rule_name_error(rule_name)
+        from tools.waf_query import checked_rule_name
+        rule_name, bad = checked_rule_name(rule_name)
         if bad:
             return bad
 

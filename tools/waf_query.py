@@ -582,8 +582,12 @@ def run_concurrently(jobs: dict, budget: int = MAX_FANOUT_WAIT,
     return results, reasons
 
 
-def rule_name_error(rule_name: str) -> str | None:
-    """The refusal message for a rule name that must not reach a query, or None if it may.
+def checked_rule_name(rule_name: str) -> tuple[str, str | None]:
+    """The rule name to interpolate, plus the refusal message if there must not be one.
+
+    Returns `(name, None)` when it may reach a query, or `("", message)` when it may not. The
+    empty name on refusal means a caller that ignores the message interpolates nothing rather
+    than the input.
 
     **One definition because the precedent set had five members and disagreed.** `rule_name` is
     model-supplied and reaches single-quoted literals in both dialects. Before this,
@@ -598,17 +602,30 @@ def rule_name_error(rule_name: str) -> str | None:
     per-dialect escaping question rather than answering it twice, and a legitimate name loses
     nothing.
 
-    `.strip()` and nothing more, matching `waf_bypass.py:200`: edge whitespace is a paste artifact
-    carrying no information, while an interior character changes which rule is queried.
+    `.strip()` and nothing more: edge whitespace is a paste artifact carrying no information,
+    while an interior character changes which rule is queried.
+
+    **It returns the name because returning only a verdict is what broke.** The first version was
+    `rule_name_error(name) -> str | None`, which decided on `name.strip()` and threw the stripped
+    copy away, so each caller had to re-derive it and two of the three did not. A trailing space
+    passed the guard and queried `r.ruleid = 'SizeRestrictions_BODY '`, which matches nothing, and
+    on `check_low_volume_clients` an empty result is the FP signal that pushes the verdict toward
+    "confirmed attack, safe to Block" -- absence standing in for a reason, on a path whose whole
+    output is a verdict. `waf_bypass.py:203` gets this right by being local: it assigns
+    `safe_ja4 = ja4.strip()`, validates that, and uses that. Carrying the same pairing across
+    three call sites means handing both halves back, so the value that was decided on is the
+    value that gets used.
 
     Returns a message rather than raising, because every caller is a tool returning text to the
-    model, and ROADMAP 4.1 decision 3 makes this the precedent the new primitive copies.
+    model, and ROADMAP 4.1 decision 3 makes this the precedent the new primitive copies -- where
+    every `filter_by` value needs the same two halves.
     """
-    if not re.fullmatch(r"[a-zA-Z0-9_\-.]+", (rule_name or "").strip()):
-        return (f"Error: '{rule_name}' is not a rule name. Rule names are letters, digits, "
-                f"hyphens, underscores and dots. Copy one from get_waf_overview's output "
-                f"without editing it.")
-    return None
+    name = (rule_name or "").strip()
+    if not re.fullmatch(r"[a-zA-Z0-9_\-.]+", name):
+        return "", (f"Error: '{rule_name}' is not a rule name. Rule names are letters, digits, "
+                    f"hyphens, underscores and dots. Copy one from get_waf_overview's output "
+                    f"without editing it.")
+    return name, None
 
 
 def log_query_error(rows: list[dict] | None) -> str | None:
