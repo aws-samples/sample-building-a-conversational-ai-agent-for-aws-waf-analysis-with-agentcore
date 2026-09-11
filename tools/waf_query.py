@@ -676,6 +676,24 @@ def log_query_error(rows: list[dict] | None) -> str | None:
 # The two markers this module authors below are in the set on purpose. They are in the prompt's
 # engine-authored list, so a log value carrying `INJECTION_ATTEMPT:` is exactly the hole the list
 # opens, and including them costs nothing: the scan reads ROWS and never its own note.
+#
+# **Matched as a substring anywhere in the value, and do NOT anchor them.** Anchoring is the obvious
+# fix if the colon forms ever collide with real content, and it fails in both spellings. Anchored to
+# the value's start, one prefix byte defeats it, and an attacker owns the whole User-Agent. Anchored
+# to a LINE start it can never match at all, because 5.2B measured that no log value can carry a CR
+# or LF. The measurement that makes anchoring look safe is the same one that makes it useless: the
+# threat is the model reading a cell's contents as an instruction, not the marker holding a position.
+#
+# **What actually keeps this quiet on real traffic is the JSON quoting, not the case.** A WAF record
+# writes `"action":"ALLOW"`, so the byte before the colon is `"` and `ACTION:` cannot match however it
+# is cased; measured over 400 live records, case-insensitive matching also finds nothing. Case
+# sensitivity narrows the surface for CLIENT-supplied content, where `next:` or `hint:` in a URI are
+# plausible, so keep it, but do not credit it with the measured zero.
+#
+# **The corpus that zero came from has a known limit.** Those 400 records are fleet-generated traffic
+# with known payloads on one WebACL, not a sample of real-world diversity, so the rate on a
+# production WebACL carrying real users is not established. If the notice ever fires constantly, the
+# fix is per marker rather than a global rule, and `Next:` is the one to look at first.
 CONTROL_MARKERS = (
     "## Your Next Action", "## Confidence Rules", "## Directional Judgment",
     "ACTION:", "HINT:", "Next:", "STOPPED:", "BLOCKED:", "PARTIAL_DATA:",
