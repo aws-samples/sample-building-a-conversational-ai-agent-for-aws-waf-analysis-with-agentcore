@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added: every rule's hit rate, in the table you already ask for
+
+- **"What percentage of my traffic does this rule actually match?" had no answer.** You could see a
+  rule's blocked and counted totals, and separately the WebACL's total traffic, and were left to
+  divide. `get_waf_overview(query_type='top_rules')` now carries a `Hit rate` column: a rule's
+  matches as a share of evaluated requests, with the denominator printed beside the table so you
+  can check the arithmetic rather than trust it. It costs nothing extra, because both halves were
+  already being fetched.
+- **A rule that matched one request in 45,000 reads `<0.01%`, not `0.00%`.** Rounding a real match
+  down to a printed zero would make it indistinguishable from a rule that matched nothing.
+- **Counted requests are in the numerator and not the denominator, and the output says so.** A
+  counted request is non-terminal: it still ends in allowed or blocked, so it reaches the
+  denominator that way and adding it twice would understate every rate.
+- **A rule with no metric at all is left out rather than shown as 0%.** AWS WAF publishes nothing
+  for a rule that matched nothing, so on a real WebACL four of eleven configured rules had no
+  metric over 24 hours. Absence from the table means there was no data, never that the rule never
+  fires, and the agent is told the difference.
+- **The column is dropped, with the reason given, when the denominator is not exact.** If the
+  WebACL totals fall back to a metric search, that source can understate them, so no rate is shown
+  rather than a rate that might be wrong. The per-rule counts are unaffected either way.
+- Per-endpoint hit rate is a different question with a different denominator and comes from
+  `aggregate_logs(group_by="uri", metric="ratio")`, because CloudWatch has no per-URL dimension.
+  That one is log-based, so a Log Filter can distort it, and the agent now says so before quoting
+  it.
+
 ## 0.21.0 (2026-09-11)
 
 ### Added: aggregate_logs, so a question no template covers still has an answer

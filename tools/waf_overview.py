@@ -177,6 +177,12 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope, region=region)
     last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=period, scope=scope, region=region)
 
+    # **Whether the denominator is exact is now load-bearing, so it is tracked.** ROADMAP 4.2 puts
+    # a hit rate in this table, and the rate's denominator is this Rule=ALL total. The `except:
+    # pass` below falls back to the SEARCH-derived ALL, which is subject to the same 14-day index
+    # expiry this MetricStat call exists to avoid, so a rate computed on it could be wrong with
+    # nothing saying so. The column is omitted rather than guessed when this stays False.
+    denom_exact = False
     # Get Rule=ALL totals via MetricStat (immune to 14-day SEARCH index expiry)
     _dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
     if scope == "REGIONAL" and region:
@@ -214,8 +220,32 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
                 ms_all["captcha"] = vals
         # Override SEARCH-derived ALL with MetricStat ALL (always accurate)
         this_week["ALL"] = ms_all
+        denom_exact = True
     except Exception:
         pass  # Fall back to SEARCH-derived ALL
+
+    # **The verified hit-rate denominator, ROADMAP 4.2.** The four mutually exclusive terminal
+    # outcomes at Rule=ALL, and only those. `PassedRequests` is a per-rule-group metric that reads
+    # 0 here and double-counts a request already in `AllowedRequests`; `CountedRequests` is
+    # non-terminal, so a counted request also ends in Allowed or Blocked and adding it inflates the
+    # denominator. Both exclusions were verified live, see the roadmap.
+    _all = this_week.get("ALL", {})
+    denom = (sum(_all.get("allowed", [])) + sum(_all.get("blocked", []))
+             + sum(_all.get("challenge", [])) + sum(_all.get("captcha", [])))
+
+    def _rate(matched: int) -> str:
+        """A rule's share of evaluated requests, or why there is no share.
+
+        **`<0.01%` rather than `0.00%` for a small nonzero rate.** Rounding a real match down to a
+        printed zero is the same defect as every other false zero in this project: the output a
+        genuine zero would produce. Measured on the live WebACL, the IP-reputation list ran at
+        10/45515, which is 0.022%, and a rule an order of magnitude quieter would print 0.00%."""
+        if not denom:
+            return "-"
+        pct = matched * 100 / denom
+        if 0 < pct < 0.01:
+            return "<0.01%"
+        return f"{pct:.2f}%"
 
     rows = []
     for rule, data in this_week.items():
@@ -232,14 +262,21 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
         lw = last_week.get(rule, {})
         lw_mit = sum(lw.get("blocked", [])) + sum(lw.get("challenge", [])) + sum(lw.get("captcha", []))
         wow = f"{mitigated/lw_mit:.1f}x" if lw_mit > 0 else "new"
-        rows.append((mitigated, rule, blocked, challenged, captcha, counted, wow))
+        # A rule takes ONE action per request, so its four buckets are disjoint and summing them
+        # is the rule's match count. `counted` belongs in the numerator even though it is excluded
+        # from the denominator: a counted request was still evaluated, and it reaches the
+        # denominator through whichever terminal action it ended in.
+        rows.append((mitigated, rule, blocked, challenged, captcha, counted, wow,
+                     _rate(mitigated + counted)))
 
     rows.sort(reverse=True)
     lines = [f"Top Rules (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
-    lines.append(f"{'Rule':<40} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Counted':>8} {'Change':>7}")
-    lines.append("-" * 85)
-    for _, rule, b, ch, cap, cnt, wow in rows[:15]:
-        lines.append(f"{rule:<40} {b:>8,} {ch:>10,} {cap:>8,} {cnt:>8,} {wow:>7}")
+    _hdr = f"{'Rule':<40} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Counted':>8} {'Change':>7}"
+    lines.append(_hdr + (f" {'Hit rate':>9}" if denom_exact else ""))
+    lines.append("-" * (95 if denom_exact else 85))
+    for _, rule, b, ch, cap, cnt, wow, rate in rows[:15]:
+        row = f"{rule:<40} {b:>8,} {ch:>10,} {cap:>8,} {cnt:>8,} {wow:>7}"
+        lines.append(row + (f" {rate:>9}" if denom_exact else ""))
 
     # Totals
     all_data = this_week.get("ALL", {})
@@ -251,8 +288,20 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     if tot_b + tot_ch + tot_cap + tot_a == 0 and not rows:
         return f"No metrics data for {webacl_name} in this time window (start_time + {_fmt_window(minutes)}). Verify the WebACL name and time range."
 
-    lines.append("-" * 85)
+    lines.append("-" * (95 if denom_exact else 85))
     lines.append(f"Total: mitigated {tot_b + tot_ch + tot_cap:,} (blocked {tot_b:,} + challenge {tot_ch:,} + captcha {tot_cap:,}) | allowed {tot_a:,}")
+    # The denominator is printed so the rate can be checked rather than taken on faith, and its
+    # absence is given a REASON rather than leaving a column quietly missing.
+    if denom_exact:
+        lines.append(f"Hit rate = a rule's matches (blocked + challenge + captcha + counted) "
+                     f"as a share of {denom:,} evaluated requests. Counted requests are in the "
+                     f"numerator but not the denominator: a counted request is still evaluated "
+                     f"and reaches the denominator through the action that terminated it.")
+    else:
+        lines.append("Hit rate omitted: the Rule=ALL totals came from the metric SEARCH fallback "
+                     "rather than a direct query, and that source is subject to a 14-day index "
+                     "expiry, so the denominator may be understated. The per-rule counts above "
+                     "are unaffected.")
 
     # Gap detection: warn if visible rules don't account for most mitigated traffic
     total_mitigated = tot_b + tot_ch + tot_cap
