@@ -38,6 +38,30 @@
   failed to run produces the same zero, so absorbing failures here would turn a broken query
   into evidence against your IP. Nothing about the verdict changed; only its latency.
 
+### Fixed: a rule name is validated before it reaches a query
+
+- **Two steps interpolated the rule name into their queries with no check at all.**
+  `evaluate_count_rules(step="check_low_volume_clients")` put it into six Athena literals and
+  three CloudWatch filters, and `investigate_block_fp(step="scan")` into two more. The same value
+  was handled five ways across the code: one site escaped it for CloudWatch, two doubled the
+  quote for Athena, one substituted characters out of it, and these two did nothing. There is now
+  one validator, and it refuses rather than escapes. AWS allows letters, digits, hyphens,
+  underscores and dots in a rule name, so a real name loses nothing and the per-dialect escaping
+  question goes away instead of getting answered twice.
+- **A rule name with a trailing space used to reach the query with the space still on it.** The
+  validator trimmed a copy to decide on and then threw that copy away, so `SizeRestrictions_BODY `
+  passed and queried `r.ruleid = 'SizeRestrictions_BODY '`, which matches nothing.
+  `check_low_volume_clients` exists to find false-positive evidence, and finding no clients is
+  what pushes a rule toward "safe to switch to Block", so one stray space could turn that
+  verdict. The validator now hands back the name it decided on.
+- **The permanent-Count gate read a rewritten name.** `analyze_rule` stripped disallowed
+  characters out of the name and compared the result against the must-stay-Count list, so a
+  rewrite could change whether the gate fires rather than only what the header prints. Every name
+  on that list is already spelled with allowed characters, so the gate could only fire when it
+  should not have; it could never miss one.
+- An all-whitespace `rule_name` is refused instead of read as "no rule filter", which would have
+  widened a one-rule audit to every rule without saying so.
+
 ## 0.20.0 (2026-09-10)
 
 ### Changed: a bypass scan runs its six queries at once

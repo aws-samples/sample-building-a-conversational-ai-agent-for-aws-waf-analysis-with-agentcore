@@ -92,23 +92,32 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
         return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
                 "or call list_webacls() to see available WebACLs.")
 
+    # Normalised and validated at the dispatch so every step is covered by one check, and so the
+    # steps below interpolate the name this decided on rather than re-deriving it.
+    # `_step_check_clients` interpolated it into six Athena literals and three CWL filters with no
+    # guard at all.
+    #
+    # **`checked_rule_name` is the only thing that normalises, deliberately.** The first fix also
+    # stripped `rule_name` here, which made the returned name's assignment dead: the perturbation
+    # dropping it stayed green, because the padding was already gone. Two mechanisms where one
+    # belongs, and the redundant one is the weaker duplicate this file has been bitten by twice.
+    # `init` needs no normalisation of its own either -- it takes a comma-separated list, which
+    # the guard would refuse, and `_step_init` strips each part when it splits.
+    from tools.waf_query import checked_rule_name
+
     if step == "init":
         return _step_init(rule_name=rule_name)
     elif step == "analyze_rule":
         if not rule_name:
             return "Error: rule_name is required for step='analyze_rule'."
-        # Validated at the dispatch so every step is covered by one check. `_step_check_clients`
-        # interpolated this into six Athena literals and three CWL filters with no guard at all.
-        from tools.waf_query import rule_name_error
-        bad = rule_name_error(rule_name)
+        rule_name, bad = checked_rule_name(rule_name)
         if bad:
             return bad
         return _step_analyze_rule(rule_name)
     elif step == "check_low_volume_clients":
         if not rule_name or not start_time:
             return "Error: rule_name and start_time are required for step='check_low_volume_clients'."
-        from tools.waf_query import rule_name_error
-        bad = rule_name_error(rule_name)
+        rule_name, bad = checked_rule_name(rule_name)
         if bad:
             return bad
         return _step_check_clients(rule_name, start_time, duration_minutes)
@@ -251,21 +260,15 @@ def _step_init(rule_name: str = "") -> str:
 
 
 def _step_analyze_rule(rule_name: str) -> str:
-    """Step 4-5: Find peak hour for this rule, then get client distribution."""
-    import re as _re
-    # Refuse, do not substitute, matching the JA4 fix in `waf_bypass.py:204`. Stripping the
-    # characters that do not belong left a VALID rule name meaning something else, and here that
-    # is worse than an echo: the stripped name is compared against PERMANENT_COUNT_RULES two lines
-    # down, so a rewrite can change whether the permanent-Count GATE fires. AWS restricts rule
-    # names to letters, digits, hyphen and underscore, so a legitimate one loses nothing; the dot
-    # is kept because managed rule-group sub-rule names carry it.
-    #
-    # No upstream validator here, unlike `analyze_ip`, where `ipaddress.ip_address` already parses
-    # the input and the equivalent substitution was dead code.
-    # Validated at the dispatch in `evaluate_count_rules`, which is the only caller, so this
-    # only normalises. A second copy of the check here would be the weaker-duplicate mistake
-    # that `analyze_ip`'s dead `re.sub` was.
-    rule_name = rule_name.strip()
+    """Step 4-5: Find peak hour for this rule, then get client distribution.
+
+    `rule_name` arrives normalised and validated from `evaluate_count_rules`, the only caller, so
+    nothing here touches it. This used to run `re.sub` over it and then compare the rewritten
+    result against `PERMANENT_COUNT_RULES` two lines down, which could change whether the
+    permanent-Count GATE fires rather than only what the header echoes. It then briefly kept a
+    `.strip()` of its own, which was the weaker-duplicate mistake `analyze_ip`'s dead `re.sub`
+    was: a second normalisation implies the value arrives untrusted and sends the next reader
+    hunting for a check that already happened."""
     # Step 0 gate: check if this rule should never leave Count
     if rule_name in PERMANENT_COUNT_RULES:
         return (
