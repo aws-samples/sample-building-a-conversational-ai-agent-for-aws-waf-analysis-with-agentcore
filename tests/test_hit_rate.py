@@ -199,16 +199,32 @@ def test_no_new_log_query_path_was_added_beside_the_primitive():
 
     Phrased as "no new path" rather than "4.2 calls aggregate_logs", because a test demanding a
     call would push toward a wrapper existing only to satisfy it, which is the manufactured
-    consumer 4.1 decision 4 rejected."""
+    consumer 4.1 decision 4 rejected.
+
+    **Both halves carry a floor, for the reason the anchoring sweep in `test_aggregate_logs.py`
+    needed one.** Each half is an absence claim, and `for fn in ast.walk(tree)` is satisfied by a
+    module with no functions while the comprehension below is satisfied by an empty `TEMPLATES`. A
+    narrowed search space needs a floor exactly as a widened one needs a scope, and named subjects
+    rather than counts, since a count passes on the wrong set."""
     tree = ast.parse((TOOLS / "waf_overview.py").read_text())
+    functions = {fn.name for fn in ast.walk(tree)
+                 if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    assert {"_top_rules", "get_waf_overview"} <= functions, sorted(functions)
     for fn in ast.walk(tree):
         if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             assert not _calls_in_own_scope(fn, "query_logs"), (
                 f"waf_overview.{fn.name} queries logs. The rule-level hit rate is metrics-only on "
                 f"purpose: free, unaffected by a Log Filter, and 14 days deep.")
     from tools.waf_logs import TEMPLATES
+    assert {"top_blocked_ips", "ip_cross_query"} <= set(TEMPLATES), sorted(TEMPLATES)
+    # Every template carries a non-empty `athena`, verified over all 37, so the sweep sees the whole
+    # set rather than defaulting past part of it.
+    missing_athena = [k for k, v in TEMPLATES.items() if not v.get("athena")]
+    assert not missing_athena, (
+        f"these templates have no Athena variant, so the ratio sweep below cannot see them: "
+        f"{missing_athena}")
     ratio_like = [k for k, v in TEMPLATES.items()
-                  if "count_if" in v.get("athena", "") or "hit_rate" in v.get("athena", "")]
+                  if "count_if" in v["athena"] or "hit_rate" in v["athena"]]
     assert not ratio_like, (
         f"a ratio was hand-written as a template instead of routing through "
         f"aggregate_logs(metric='ratio'): {ratio_like}")
@@ -241,3 +257,23 @@ def test_the_prompt_says_a_missing_rule_is_not_a_zero():
     prompt = agent._build_system_prompt(9)
     section = prompt.split("## Hit rate: two levels")[1].split("\n## ")[0]
     assert "no data" in section and "never fires" in section, section
+
+
+def test_the_quoted_measurement_matches_the_one_the_tests_pin():
+    """One measured figure, quoted in one place, and this is why.
+
+    `_rate`'s docstring first said `10/45515` while every assertion here says `45513`. **Both were
+    real measurements** -- two live runs minutes apart, with `allowed` moving by two -- so neither
+    was a mistake and the pair still disagreed. That is the defect class this project has spent the
+    most machinery on: a numeric claim in prose that the code contradicts, arrived at without anyone
+    writing anything false.
+
+    The fix is not "be careful", it is that the test owns the number and the docstring has to match
+    it."""
+    src = (TOOLS / "waf_overview.py").read_text()
+    quoted = set(re.findall(r"10/(\d{5})", src))
+    assert quoted, "the measurement is no longer quoted, so nothing pins the denominator"
+    denom = str(sum(TOTALS.values()))
+    assert quoted == {denom}, (
+        f"waf_overview quotes 10/{sorted(quoted)} while the tests pin {denom}. Both may have been "
+        f"measured; they still have to agree.")

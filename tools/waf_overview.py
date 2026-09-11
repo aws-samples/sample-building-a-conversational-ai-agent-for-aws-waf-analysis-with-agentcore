@@ -239,7 +239,12 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
         **`<0.01%` rather than `0.00%` for a small nonzero rate.** Rounding a real match down to a
         printed zero is the same defect as every other false zero in this project: the output a
         genuine zero would produce. Measured on the live WebACL, the IP-reputation list ran at
-        10/45515, which is 0.022%, and a rule an order of magnitude quieter would print 0.00%."""
+        10/45513, which is 0.022%, and a rule an order of magnitude quieter would print 0.00%.
+
+        The denominator here is the one `tests/test_hit_rate.py` pins, so the two agree. This said
+        45515 first, which was also a real measurement: the two live runs were minutes apart and
+        `allowed` moved by two. Both numbers were true and one of them drifted anyway, which is why
+        the figure is quoted once and the test owns it."""
         if not denom:
             return "-"
         pct = matched * 100 / denom
