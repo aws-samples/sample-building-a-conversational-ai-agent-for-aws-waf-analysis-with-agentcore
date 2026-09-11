@@ -52,12 +52,14 @@ RENDERERS = {"_render_patrol_html_v2", "_render_html", "_render_investigation"}
 LOG_CALLS = {"query_logs", "_safe_query", "_run_query", "_run_q", "_run_log_query",
              "aggregate_logs", "_poll_log_query"}
 
-# `generate_weekly_report` holds both, and it is the one exception, declared with its reason rather
-# than excluded silently: its three `_poll_log_query` results are consumed as a row count, two
-# timestamps and four `int(float(...))` totals, so no attacker-controlled string reaches the
-# template. Traced by hand 2026-09-11. If it grows a fourth call site this list is the wrong place
-# to fix it; re-trace instead.
+# `generate_weekly_report` holds both, and it is the one exception. **Its substance is asserted below
+# rather than argued here**, because "traced by hand" has no trigger: the exemption is per function,
+# so a fourth `_poll_log_query` whose result is consumed as a string would pass silently while the
+# comment told a reader to re-trace and nothing made that happen.
 DECLARED = {"report.py:generate_weekly_report"}
+# The number of raw-Insights call sites the hand trace covered. A fourth one has to be traced, and
+# this is what makes that happen rather than a comment asking for it.
+DECLARED_POLL_SITES = 3
 
 
 def _builds_html(fn) -> bool:
@@ -179,3 +181,150 @@ def test_review_deep_escapes_what_it_renders():
                  and "escape(" not in ln]
     assert not unescaped, (
         f"these render the source line into HTML without escaping it: {unescaped}")
+
+
+# --- the declared exemption's substance, asserted rather than argued -----------
+
+
+def _generate_weekly_report():
+    tree = ast.parse((TOOLS / "report.py").read_text())
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name == "generate_weekly_report":
+            return fn
+    raise AssertionError("generate_weekly_report is gone; the DECLARED exemption is stale")
+
+
+def test_the_hand_traced_call_sites_are_pinned_by_count():
+    """**The trigger the comment did not have.** The exemption covers three `_poll_log_query` sites,
+    traced by hand: a row count, two `first`/`last` timestamps, and four `int(float(...))` totals. A
+    fourth site is not covered by that trace, and without this the exemption would absorb it.
+
+    A count is the right assertion here for the same reason it is on the rule-filter branches and
+    the redactable templates: the claim is about a set whose size is the thing that was verified."""
+    fn = _generate_weekly_report()
+    sites = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Name) and n.func.id == "_poll_log_query"]
+    assert len(sites) == DECLARED_POLL_SITES, (
+        f"generate_weekly_report now has {len(sites)} raw-Insights call sites, not "
+        f"{DECLARED_POLL_SITES}. That path bypasses query_logs, so nothing else in the repo guards "
+        f"it. RE-TRACE what the new result is consumed as: if any of it reaches the HTML template "
+        f"as free text, it is attacker-controlled and must be escaped at the interpolation.")
+
+
+# Calls that make a value un-markup-able. A number cannot carry a tag, so a tainted value bound
+# through one of these is safe to interpolate; anything else reaching HTML is free text.
+NUMERIC = {"int", "float", "len", "round", "abs", "sum"}
+
+
+def _is_numeric(value) -> bool:
+    """Whether this binding expression can only produce a number.
+
+    Both branches of an `IfExp` have to qualify, which is the shape all four ddos totals use:
+    `int(float(r.get(...))) if r else 0`."""
+    if isinstance(value, ast.IfExp):
+        return _is_numeric(value.body) and _is_numeric(value.orelse)
+    if isinstance(value, ast.Constant):
+        return isinstance(value.value, (int, float)) and not isinstance(value.value, bool)
+    if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+        return value.func.id in NUMERIC
+    return False
+
+
+def _tainted_names(fn) -> tuple[set, set]:
+    """`(names carrying a _poll_log_query result, the subset that can only be numeric)`.
+
+    A small fixpoint rather than a name list, because the interesting case is a value read off the
+    result one step later, which is exactly how all three current sites consume theirs.
+
+    **The numeric split is not a loosening, it is the actual property.** The first version asserted
+    that no tainted name reaches an HTML interpolation at all, and six do: four ddos totals, a row
+    count and `int(event_cnt['cnt'])`. Every one is coerced to an integer, and an integer cannot
+    carry markup. Asserting the stricter thing would have been a false claim about the code."""
+    tainted, changed = set(), True
+    while changed:
+        changed = False
+        for node in ast.walk(fn):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            if value is None:
+                continue
+            refs = {n.func.id for n in ast.walk(value)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            names = {n.id for n in ast.walk(value) if isinstance(n, ast.Name)}
+            if "_poll_log_query" not in refs and not (names & tainted):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                for n in ast.walk(t):
+                    if isinstance(n, ast.Name) and n.id not in tainted:
+                        tainted.add(n.id)
+                        changed = True
+    # A name is numeric only if EVERY binding of it is, since one free-text branch is enough.
+    numeric = set()
+    for name in tainted:
+        binds = [n.value for n in ast.walk(fn)
+                 if isinstance(n, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == name for t in n.targets)]
+        if binds and all(_is_numeric(b) for b in binds):
+            numeric.add(name)
+    return tainted, numeric
+
+
+def test_no_raw_insights_value_reaches_an_html_interpolation():
+    """**The checkable version of the exemption**, replacing a provenance argument that was not.
+
+    "It comes from `@timestamp` so it cannot carry attacker content" cannot be checked; "nothing
+    interpolates it into HTML" can. Reviewer's finding: `ddos_event_first` and `ddos_event_last` are
+    assigned at `:554-555`, initialised at `:460-461` and read NOWHERE, which is a stronger property
+    than provenance. Verified alongside it that the module contains no `locals()`, `vars()` or
+    `.format(**`, so a name cannot reach a template dynamically.
+
+    Those two are therefore dead code. Pre-existing, and left alone rather than removed."""
+    fn = _generate_weekly_report()
+    tainted, numeric = _tainted_names(fn)
+    assert tainted, "no name traced from _poll_log_query, so this proves nothing"
+    assert numeric, "no tainted name classified numeric, so the split is not working"
+    # **The floor is on the CLASSIFIER, not on the interpolated set.** Pinning which names reach
+    # HTML says nothing about whether the numeric split is honest: a classifier returning True for
+    # everything empties `leaked` and the assertion below passes by construction. These four are
+    # bound from `.get("first")` / `.get("last")`, so they are tainted and are NOT numbers, which is
+    # exactly what a permissive classifier would get wrong. Found by the perturbation reporting
+    # HOLLOW.
+    string_valued = {"event_first", "event_last", "ddos_event_first", "ddos_event_last"}
+    assert string_valued <= tainted, sorted(string_valued - tainted)
+    assert not (string_valued & numeric), (
+        f"the numeric classifier accepted a string-valued name: "
+        f"{sorted(string_valued & numeric)}. It is excusing free text.")
+    interpolated = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        literal = "".join(v.value for v in node.values
+                          if isinstance(v, ast.Constant) and isinstance(v.value, str))
+        if not any(m in literal for m in HTML_MARKERS):
+            continue
+        for part in node.values:
+            if isinstance(part, ast.FormattedValue):
+                interpolated |= {n.id for n in ast.walk(part) if isinstance(n, ast.Name)}
+    leaked = (tainted & interpolated) - numeric
+    assert not leaked, (
+        f"these carry a raw-Insights result into an HTML interpolation as free text: "
+        f"{sorted(leaked)}. That path bypasses query_logs, so nothing else guards it: escape at "
+        f"the interpolation, or coerce to a number if that is what it is.")
+    # The floor. If the numeric classifier ever passed everything, the assertion above would be
+    # satisfied by construction, so what it excuses is pinned.
+    assert (tainted & interpolated) == {
+        "ddos_high", "ddos_low", "ddos_medium", "ddos_total", "num_events",
+        "total_during_event"}, sorted(tainted & interpolated)
+
+
+def test_no_dynamic_name_can_reach_a_template():
+    """The escape hatch that would defeat the check above. `locals()`, `vars()` or `.format(**d)`
+    put a value into a template without any name appearing at the interpolation, so the taint walk
+    would find nothing to object to."""
+    src = (TOOLS / "report.py").read_text()
+    for escape in ("locals()", "vars()", ".format(**"):
+        assert escape not in src, (
+            f"report.py uses {escape}, so a value can reach a template without being named at the "
+            f"interpolation and the taint check above no longer covers it")
