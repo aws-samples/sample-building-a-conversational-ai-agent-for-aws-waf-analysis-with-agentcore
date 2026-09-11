@@ -349,10 +349,26 @@ PRIVACY_MASK_HINT = (
     "This is a deliberate safeguard, not a limitation."
 )
 
-# Hint when a location yielded no content. Absence is ambiguous: the field may
-# genuinely be empty, OR the user configured AWS WAF logging RedactedFields to
-# strip it (shows as REDACTED / drops from the log). The agent must surface this
-# so a "no data" result is never mistaken for "no attack / no false positive".
+# Hint when a location yielded no content. Absence is ambiguous: the field may genuinely be empty,
+# or oversize, or the header may not have been sent at all.
+#
+# **"drops from the log" stood here and is false.** Logging redaction keeps the field key, the header
+# name and the headers-array length, and replaces the VALUE with the literal string `REDACTED`. An
+# empty header logs as `""`, so the sentinel is trivially distinguishable from genuine emptiness.
+# Redaction therefore does not produce absence at all.
+#
+# **Which means the hint below is aimed at the wrong symptom for its own redaction clause**, and
+# that half is left standing on purpose rather than reworded here: what to tell the user about
+# redaction is the disclosure, and it is being designed under ROADMAP 6.13. Rewording it now would
+# settle that design by accident. The false CLAIM in this comment is removed now because a comment
+# costs nothing to correct and misleads the next reader for free.
+#
+# Two facts for whoever writes it. Redaction fires **per record**, only when the rule that matched
+# that specific request used the same `FieldToMatch` that was configured, so a result set carries
+# real values beside `REDACTED` ones rather than being uniformly affected. And the console
+# walkthrough says redacted fields appear as `xxx`, which is stale WAF Classic copy: every WAFv2 API
+# and CLI source says `REDACTED`. Matching `xxx` would be a false-positive generator, because `xxx`
+# is a plausible real value and `REDACTED` cannot occur naturally.
 REDACTION_POSSIBLE_HINT = (
     "No content was found at this location. This may be because the field was "
     "empty, OR because you configured AWS WAF logging RedactedFields to redact "
