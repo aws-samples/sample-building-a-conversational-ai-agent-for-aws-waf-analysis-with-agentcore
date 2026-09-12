@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Fixed: the frontend distribution cached the one file that must never be cached
+
+Found by the maintainer opening the redeployed app in a real browser, which is the first check in this
+sequence that neither a stack status nor a test could have stood in for.
+
+- **One cache behaviour on `Managed-CachingOptimized` covered `index.html` as well as the hashed
+  assets.** DefaultTTL 86400, and `aws s3 sync` sends no `Cache-Control`. `index.html` is the only
+  filename Vite keeps stable between builds, so a cached copy keeps asking for the previous build's
+  asset hashes. Measured on that first visit: `Age: 3916`.
+- **It is now split on the only thing that distinguishes the files**, whether the name changes when the
+  contents do. `index.html` and the client-side-routing fallback go through `Managed-CachingDisabled`;
+  `/assets/*` keeps `Managed-CachingOptimized`, because a content hash exists precisely so a file can
+  be cached forever. A first attempt put everything on CachingDisabled, which also stopped the bundle
+  being cached and disabled request collapsing, so concurrent visitors each caused a separate S3 GET.
+- **The default behaviour has to be a MinTTL-zero policy, and a header cannot substitute.** A policy
+  whose MinTTL is above zero caches for at least that long even when the origin sends `no-cache` or
+  `no-store`, and CachingOptimized's MinTTL is 1.
+- **`ErrorCachingMinTTL` is now 0 on both custom error responses.** Defining that block at all brings a
+  default of 300 seconds, measured at 300 live. Error caching is asymmetric: for 404, 410, 414 and 501
+  CloudFront honours the origin's no-store, and for everything else **including 403** it ignores it. S3
+  behind Origin Access Control answers a missing key with 403, so a request for an asset that is gone
+  was answered with `index.html`, status 200, cached at the edge for five minutes, and the browser
+  parses HTML as JavaScript.
+- **The upload is two passes**, `immutable` for the hashed assets and `no-cache` for `index.html`, with
+  deliberately no `--delete`: the previous build's assets are what a browser still holding the old
+  `index.html` asks for, so removing them turns a stale tab into a broken one. No `/*` invalidation is
+  needed either.
+- **The frontend stack takes an optional custom domain**, `DomainName` plus `AcmCertificateArn`, both
+  required together. Without them the template behaves exactly as before. This exists because an alias
+  attached by hand does not survive: CloudFormation owns the whole `DistributionConfig` and CloudFront
+  has no partial update, so any later `deploy` removes what the template does not declare. That
+  happened during this change and the custom domain was down for a few minutes.
+- **An agent invocation failure now reports where it went and what came back.** It gave only a status
+  code, which cost hours of server-side investigation for a 404 whose origin was never established,
+  because nothing had recorded the URL.
+
 ### Fixed: thirteen documentation defects, found by deploying this project from scratch
 
 A clean agent deployed the whole thing reading only `AGENTS.md` and the documents it links, with no

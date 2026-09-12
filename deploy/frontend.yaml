@@ -1,6 +1,39 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: WAF Analyst — Frontend (CloudFront + S3 + WAF). Deploy in us-east-1.
 
+Parameters:
+  # These exist because attaching a custom domain by hand is not survivable. CloudFormation owns the
+  # whole DistributionConfig, so an alias and certificate added outside the template are REMOVED by
+  # the next `cloudformation deploy` on this stack, with no warning and nothing in the changeset that
+  # reads like "your domain will stop working". That happened on 2026-09-12 during an unrelated cache
+  # policy change. `detect-stack-drift` reports the distribution MODIFIED beforehand, which is the
+  # only signal, and it only helps if you think to look.
+  #
+  # **These parameters remove the drift, not every way to lose the domain.** `aws cloudformation
+  # deploy` sends UsePreviousValue for every parameter you do not override, and the console's Update
+  # wizard pre-fills from the current stack, so both are safe. Calling `update-stack` or
+  # `create-change-set` directly is not: an omitted parameter falls back to the template default,
+  # which here is the empty string, and the alias goes away again. That is a legitimate update rather
+  # than drift, so `detect-stack-drift` will not warn you either. Use `deploy`.
+  DomainName:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional alternate domain name, for example waf.example.com. Leave empty to use the
+      CloudFront domain. Requires AcmCertificateArn, and a Route53 (or other) record pointing at
+      the distribution.
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional ACM certificate ARN covering DomainName. Must be issued in us-east-1, which is where
+      CloudFront reads certificates from regardless of where the rest of your stack lives.
+
+Conditions:
+  HasCustomDomain: !And
+    - !Not [!Equals [!Ref DomainName, ""]]
+    - !Not [!Equals [!Ref AcmCertificateArn, ""]]
+
 Resources:
   # --- AWS WAF for Frontend ---
   FrontendWebACL:
@@ -111,6 +144,13 @@ Resources:
       DistributionConfig:
         Enabled: true
         DefaultRootObject: index.html
+        Aliases: !If [HasCustomDomain, [!Ref DomainName], !Ref "AWS::NoValue"]
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - !Ref "AWS::NoValue"
         WebACLId: !GetAtt FrontendWebACL.Arn
         Origins:
           - Id: S3Origin
@@ -118,18 +158,54 @@ Resources:
             OriginAccessControlId: !Ref CloudFrontOAC
             S3OriginConfig:
               OriginAccessIdentity: ''
+        # Two behaviours, split on the one thing that distinguishes the files: whether the name
+        # changes when the contents do.
+        #
+        # `index.html` is the only filename Vite keeps stable across builds, so a cached copy keeps
+        # asking for the previous build's asset hashes. It must never be cached. Everything under
+        # /assets/ carries a content hash, so it can be cached forever and a new build simply has a
+        # new name.
+        #
+        # **The default behaviour has to be a MinTTL-0 policy, and a header cannot substitute.** A
+        # cache policy whose MinTTL is above zero caches for at least that long "even if the
+        # Cache-Control: no-cache, no-store, or private directives are present in the origin
+        # headers". Managed-CachingOptimized has MinTTL 1, so serving index.html through it would
+        # override `no-cache` on the object. Managed-CachingDisabled is all zeros.
+        #
+        # This shipped as a single behaviour on Managed-CachingOptimized, DefaultTTL 86400, with no
+        # Cache-Control on the objects. Measured on the first real browser visit after a redeploy:
+        # `Age: 3916` on index.html.
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad   # Managed-CachingDisabled, MinTTL 0
           Compress: true
+        CacheBehaviors:
+          - PathPattern: /assets/*
+            TargetOriginId: S3Origin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
+            Compress: true
+        # 403 is mapped because S3 behind Origin Access Control answers a missing key with
+        # AccessDenied, not NotFound. Mapping only 404 leaves every client-side deep link failing on
+        # an unhandled 403.
+        #
+        # **`ErrorCachingMinTTL: 0` is the part that is easy to miss.** Defining this block at all
+        # brings a default of 300 seconds, and the caching of error responses is asymmetric: for 404,
+        # 410, 414 and 501 CloudFront honours `no-store`/`no-cache` from the origin, and for every
+        # other status **including 403** it ignores them and caches for ErrorCachingMinTTL anyway. So
+        # a request for a missing asset would be answered with index.html, status 200, cached at the
+        # edge for five minutes, with no header able to prevent it. The browser then parses HTML as
+        # JavaScript. Measured at 300 on the live distribution before this change.
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
             ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
           - ErrorCode: 404
             ResponseCode: 200
             ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
 
 Outputs:
   CloudFrontDomain:
