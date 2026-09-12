@@ -148,10 +148,19 @@ def test_the_backfill_floor_still_describes_reality(headings, tags):
 
 
 def test_the_four_version_strings_agree(headings):
-    """The three legs a developer can get wrong by hand: `pyproject.toml`,
-    `frontend/package.json` and the CHANGELOG heading. The heading matters most, because
-    `frontend/vite.config.js` regexes the first `## X.Y.Z` into `__APP_VERSION__`, so a
-    mismatch ships a UI labelled with the previous release.
+    """The four legs a developer can get wrong by hand: `pyproject.toml`,
+    `frontend/package.json`, `deploy/image-build.yaml`'s `ReleaseTag` default and the
+    CHANGELOG heading. The heading matters most, because `frontend/vite.config.js` regexes
+    the first `## X.Y.Z` into `__APP_VERSION__`, so a mismatch ships a UI labelled with the
+    previous release.
+
+    **`ReleaseTag` is the odd one, because it names a release that must already EXIST.** The
+    remote build downloads `…/archive/refs/tags/<ReleaseTag>.tar.gz`, so between the version
+    bump and the tag the default points at a release nobody has published. That window is
+    minutes wide, it is the same window this file's other assertions are red in, and its
+    failure is loud: the build gets a 404 and the stack rolls back naming the phase. Tracking
+    the version being cut is still the right choice, because the alternative is a default one
+    release behind forever, which is wrong for every user rather than for a few minutes.
 
     **`uv.lock` is deliberately absent from this comparison, and the reason is not that its
     failure is hard to synthesize. It is that the assertion could not fail.** `uv run` rewrites
@@ -164,10 +173,15 @@ def test_the_four_version_strings_agree(headings):
     pyproject = re.search(r'^version = "(.+?)"', (ROOT / "pyproject.toml").read_text(), re.M)
     package = re.search(r'^  "version": "(.+?)"',
                         (ROOT / "frontend/package.json").read_text(), re.M)
-    assert pyproject and package, "a version string could not be located at all"
-    assert {pyproject.group(1), package.group(1)} == {newest}, {
+    # Scoped to the ReleaseTag block, because the template has three `Default:` lines and
+    # matching the first one that happens to look like a version would drift silently.
+    template = re.search(r"^  ReleaseTag:\n(?:    .*\n)*?    Default: v(\d+\.\d+\.\d+)$",
+                         (ROOT / "deploy/image-build.yaml").read_text(), re.M)
+    assert pyproject and package and template, "a version string could not be located at all"
+    assert {pyproject.group(1), package.group(1), template.group(1)} == {newest}, {
         "CHANGELOG": newest, "pyproject.toml": pyproject.group(1),
-        "frontend/package.json": package.group(1)}
+        "frontend/package.json": package.group(1),
+        "deploy/image-build.yaml ReleaseTag": template.group(1)}
 
 
 def test_the_committed_lockfile_is_not_stale(tags):

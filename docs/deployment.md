@@ -21,7 +21,7 @@ WAF Analyst deploys as up to four CloudFormation stacks:
 ## Prerequisites
 
 1. **AWS CLI v2** configured with admin-level permissions
-2. **Docker Desktop** (includes buildx for cross-platform builds). [Install Docker Desktop](https://docs.docker.com/get-docker/). Alternative: [finch](https://github.com/runfinch/finch) — see [appendix](#alternative-using-finch).
+2. **Docker Desktop** (includes buildx for cross-platform builds). [Install Docker Desktop](https://docs.docker.com/get-docker/). Alternatives: [finch](https://github.com/runfinch/finch), see [appendix](#alternative-using-finch); or no container tool at all, see [Build in AWS](#alternative-build-in-aws-no-docker-required).
 3. **Node.js 18+** (for building the frontend)
 4. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
 
@@ -98,6 +98,35 @@ docker buildx build --platform linux/arm64 \
 
 > **Troubleshooting**: Build typically takes 1-2 minutes. If it hangs longer than 5 minutes, check network connectivity (the build downloads Python packages from PyPI). You can add `--no-cache` to force a clean build. If you don't have Docker Desktop, see [Alternative: Using finch](#alternative-using-finch) at the end of this guide.
 
+### Alternative: Build in AWS (no Docker required)
+
+If you have no container tool, or you are on Windows x86 where an ARM64 build runs under emulation, build the image in your own account instead. `deploy/image-build.yaml` creates the ECR repository, creates a CodeBuild project on native Graviton hardware, downloads a published release of this project and pushes the image. The stack does not reach `CREATE_COMPLETE` until the image is in ECR.
+
+Deploy it from the CloudFormation console if you would rather not use a shell at all: upload the template, set `ReleaseTag`, and read `ImageUri` from the Outputs tab. The two commands below are the same thing from the CLI, written without shell variables so they run in PowerShell as well. Substitute your region.
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/image-build.yaml \
+  --stack-name waf-agent-image \
+  --region ap-northeast-1 \
+  --parameter-overrides ReleaseTag=v0.22.0 \
+  --capabilities CAPABILITY_IAM
+
+aws cloudformation describe-stacks \
+  --stack-name waf-agent-image \
+  --region ap-northeast-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='ImageUri'].OutputValue" \
+  --output text
+```
+
+`ReleaseTag` is the only parameter you normally set: the release to build, exactly as it appears on the [Releases page](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/releases). To move to a newer release later, update this stack with the new tag, then update the backend stack with the new `ImageUri`. Re-running with a tag that is already in ECR skips the build instead of failing.
+
+> **Important**: This builds a published release, not your working tree. CodeBuild never sees your local files, so if you have changed the code, use the Docker or finch path.
+
+> **Troubleshooting**: Building v0.22.0 in ap-northeast-1 took about 2 minutes end to end, and about 20 seconds when the tag was already in ECR. If the build fails, the stack rolls back and the failure reason names the CodeBuild phase and the log group, which is `/aws/codebuild/<stack-name>-image-build`. The stack creates the ECR repository itself, so if you already created `waf-agent` by hand, delete it first or pass a different `EcrRepositoryName`. The template needs a region with CodeBuild `ARM_CONTAINER` compute; every region listed above has it.
+
+> **Note**: The remaining steps in this guide use bash syntax (`export`, `$VAR`), which does not run in PowerShell. On Windows, deploy the stacks from the CloudFormation console, or substitute literal values for the variables.
+
 ## Step 2: Deploy Backend
 
 ```bash
@@ -108,6 +137,8 @@ aws cloudformation deploy \
   --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
   --capabilities CAPABILITY_NAMED_IAM
 ```
+
+> **Important**: `CREATE_COMPLETE` here does not mean the agent can answer. CloudFormation waits for the runtime to report `READY`, and `READY` only means the runtime was created and the image reference resolved. Measured on 2026-09-12: a runtime pointed at an image that exits immediately, listens on no port and has no `/ping` still reached `READY`, and the stack still succeeded. The first real evidence is Step 8, when you ask the agent something. If it returns 504 there, see [Container fails to start](#container-fails-to-start-failed-status).
 
 ### Custom Model (optional)
 
@@ -315,6 +346,8 @@ aws bedrock-agentcore-control get-agent-runtime \
 If `FAILED`, check `failureReason` in the response.
 
 ### Container fails to start (FAILED status)
+
+None of these show up while the stack is deploying: the runtime reports `READY` and the stack succeeds regardless. You find out when you invoke the agent.
 
 Common causes:
 - **Wrong architecture**: Image must be ARM64 (`--platform linux/arm64`)

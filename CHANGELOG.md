@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### Added: build the container image on AWS, so a machine with no container tool can deploy
+
+- **`deploy/image-build.yaml` builds the ARM64 image on CodeBuild and pushes it to your own ECR.** The
+  documented path needs Docker or finch, and on x86 both cross-build ARM64 through QEMU, which a
+  locked-down Windows laptop may not permit at all. CodeBuild's `ARM_CONTAINER` compute is native
+  Graviton, so a plain `docker build` yields `linux/arm64` with no emulation. Confirmed by reading
+  `architecture` out of the pushed image's own config blob rather than trusting the build log.
+  ([#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8),
+  first half.)
+- **It is one stack, and that was measured rather than assumed.** AgentCore checks that the container
+  image exists when the runtime is created, not when the change set is validated, so a build step can
+  sit in the same stack as the resources that consume its output. No AWS documentation states this
+  either way; three stacks and a known-good control settled it. Building v0.22.0 in ap-northeast-1 took
+  about 2 minutes end to end.
+- **`ReleaseTag` is the upgrade mechanism.** Update the stack with a newer tag and the image is rebuilt,
+  about 90 seconds. Leave it alone and nothing rebuilds, because CloudFormation re-runs the build only
+  when that parameter changes. A tag already in ECR is skipped in about 20 seconds instead of failing
+  against the immutable repository.
+- **A failed build fails the stack in about 2 minutes and names the phase that broke.** The usual way
+  this shape breaks is a build helper that dies before answering CloudFormation, which leaves the stack
+  waiting a full hour and then reporting nothing to read. Every path answers, including the one where
+  the helper runs out of time.
+- **It builds a published release, not your working tree**, so contributors keep using Docker or finch.
+  Note also that the rest of `docs/deployment.md` is bash: on Windows, deploy the stacks from the
+  CloudFormation console or substitute literal values, because removing the container requirement does
+  not on its own make the guide runnable there.
+
+### Changed: `CREATE_COMPLETE` on the backend stack does not mean the agent works, and the guide says so now
+
+- **The runtime's own status looks like a health gate and is not one.** CloudFormation waits for the
+  runtime to report `READY` before finishing the stack, which is easy to read as proof the container came
+  up. A runtime pointed at an image that exits immediately, listens on no port and has no `/ping` reached
+  `READY` anyway, and its stack succeeded with no failure reason. Measured 2026-09-12. Step 2 now says
+  where the first real evidence is, which is the first time you ask the agent something.
+- **The "Container fails to start (FAILED status)" troubleshooting entry promised a signal you never
+  see.** Wrong architecture, wrong port and a missing `/ping` are all real causes, and none of them shows
+  up while the stack is deploying. The entry now says that outright instead of implying you would notice.
+
 ## 0.22.0 (2026-09-12)
 
 ### Added: investigate_injection, so the method is code rather than advice
