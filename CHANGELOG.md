@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added: CI runs the test suite, which it never did before
+
+Every green check on every pull request in this repository came from GitHub's hosted CodeQL default
+setup. There was no `.github` directory, so no workflow ever ran `pytest`. Both dependabot bumps and
+the one external contribution were merged with a green tick and the suite never executed; a dependency
+bump that broke a tool would have merged clean.
+
+- **The workflow needs full history and tags**, because the release guard reads `git tag -l 'v*'` and
+  asserts the result is non-empty on the grounds that an empty fixture makes every assertion below it
+  vacuous. A shallow clone has no tags, so the guard would fail for reasons unrelated to the change.
+- **It fetches `origin/main` explicitly.** The guard exempts the newest CHANGELOG heading while the code
+  is unshipped and decides that with `merge-base --is-ancestor`, failing closed when no such ref
+  resolves. On a `pull_request` event there is no `origin/main`, so every release PR would have gone
+  red for a heading that legitimately has no tag yet. That test's own comment predicted this the moment
+  pytest reached CI.
+- **No AWS credentials, deliberately.** Nothing in the suite touches AWS, and the scripts that do drive
+  the real account live in `design/`, which is gitignored. A test that starts needing credentials has
+  stopped being a unit test.
+- **The perturbation scripts do not run here**, for the same reason, and the job says so rather than
+  leaving a reader to assume the coverage is wider than it is.
+
 ### Fixed: a log query could answer about one WebACL using another's logs, and said nothing
 
 Reported by the maintainer after a real investigation, from the agent's own account of the errors it
