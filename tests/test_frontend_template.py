@@ -7,14 +7,16 @@
 across builds, so a cached copy keeps asking for the previous build's asset hashes. Measured on the
 first real browser visit after a redeploy: `Age: 3916`.
 
-**The first fix was too blunt, and the tests written with it locked the bluntness in.** Putting
-everything on `CachingDisabled` also stopped the content-hashed assets being cached, which is the
-entire point of hashing them, and it disables request collapsing so concurrent visitors each cause a
-separate S3 GET. Two of the three assertions then actively blocked the correct design: one forbade
-`CachingOptimized` anywhere in the file, and one forbade a second cache behaviour. The right shape
-splits on path, so the checks have to be per path too.
+**There is exactly one cache behaviour, and that is a design decision rather than a correctness
+property.** One MinTTL-0 policy over every path keeps `index.html` fresh unconditionally, with no
+second behaviour whose pattern has to be right. The cost is accepted: the content-hashed bundle is not
+cached at the edge and request collapsing is off, so concurrent first visitors each cause an S3 GET,
+which is worth little on a single-tenant deployment. Browser caching is untouched, because CloudFront
+forwards the object's `Cache-Control`, which is what the two-pass upload sets. So the assertion below
+pins a choice, and saying that is better than dressing it up: putting `/assets/*` back on
+`CachingOptimized` is the better caching answer, and it needs its own assertion here.
 
-**Why the default behaviour must be a MinTTL-0 policy, rather than relying on a header.** A cache
+**Why that one behaviour must be a MinTTL-0 policy, rather than relying on a header.** A cache
 policy with MinTTL above zero caches for at least that long "even if the Cache-Control: no-cache,
 no-store, or private directives are present in the origin headers". `CachingOptimized` has MinTTL 1.
 So serving `index.html` through it would override the object's `no-cache` and no upload flag could
@@ -49,10 +51,9 @@ def _block(key, indent=8):
     return match.group(1)
 
 
-def test_html_is_served_by_a_policy_that_cannot_cache():
-    """The default behaviour catches `index.html` and the SPA fallback. Asserted as an id because the
-    template can only carry an id, and asserted as *not* the optimized one because that is the value
-    it shipped with and the one a reasonable person would put back."""
+def test_every_request_is_served_by_a_policy_that_cannot_cache():
+    """Asserted as an id because the template can only carry an id, and asserted as *not* the optimized
+    one because that is the value it shipped with and the one a reasonable person would put back."""
     default = _block("DefaultCacheBehavior")
     assert CACHING_DISABLED in default, (
         "the default cache behaviour is not Managed-CachingDisabled. Any MinTTL above zero caches "
@@ -60,17 +61,25 @@ def test_html_is_served_by_a_policy_that_cannot_cache():
     assert CACHING_OPTIMIZED not in default, "CachingOptimized on the default behaviour caches HTML"
 
 
-def test_hashed_assets_are_cached_and_only_they_are():
-    """The other half. Content-hashed names exist so they can be cached forever; leaving them on the
-    disabled policy means every page load crosses CloudFront to S3 and request collapsing is off."""
-    behaviours = _block("CacheBehaviors")
-    assert "PathPattern: /assets/*" in behaviours, (
-        "no /assets/* behaviour, so the hashed bundle is served by whatever the default is")
-    assert CACHING_OPTIMIZED in behaviours
-    # One extra behaviour only. A second path pattern would need its own assertion here rather than
-    # silently inheriting this one's.
-    assert behaviours.count("PathPattern:") == 1, (
-        "more than one extra cache behaviour; add an assertion for each path pattern")
+def test_there_is_only_one_cache_behaviour():
+    """The path-coverage half. Without it the test above proves only that the *default* behaviour
+    cannot cache, and any path routed elsewhere is unexamined.
+
+    **Both halves are needed and they fail differently.** The template must declare no
+    `CacheBehaviors` key, and no `PathPattern` key: the first catches the block being added back, the
+    second catches a pattern smuggled in under a parent this test does not name.
+
+    **Matched as YAML keys, not as substrings.** `"CacheBehaviors" not in TEMPLATE` was the first
+    version, and it fails the moment a comment in that file so much as mentions the word, which the
+    comment explaining this very decision does. A check that goes red on prose about itself is a
+    false-positive generator sitting inside the one test whose value is a trustworthy signal."""
+    assert not re.search(r"^\s*CacheBehaviors:", TEMPLATE, re.M), (
+        "deploy/frontend.yaml declares extra cache behaviours again. That is allowed, but each new "
+        "path needs its own cache-policy assertion here, since the check above only reads the "
+        "default behaviour and would stay green while a path was served from a cache.")
+    assert not re.search(r"^\s*PathPattern:", TEMPLATE, re.M), (
+        "a PathPattern appears in the template, so some behaviour other than the default is routing "
+        "requests")
 
 
 def test_both_error_responses_disable_error_caching():

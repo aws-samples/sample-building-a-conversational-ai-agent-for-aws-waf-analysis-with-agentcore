@@ -30,7 +30,7 @@
 
 **一个会话就是一个 microVM：空闲 15 分钟，最长 8 小时。** 中间停超过空闲上限，再回来就是一个新会话。跨会话的连续性来自存下来的历史和记忆，不来自容器 —— 所以 agent 想清楚了但没写下来的东西，就没了。
 
-**你能停掉一个运行时会话，但没法列出有哪些会话。** `StopRuntimeSession` 要 `runtimeSessionId` 和 `agentRuntimeArn`，而两个 AgentCore API 里没有任何操作能返回某个 runtime 当前活着的会话 id。`ListSessions` 是有的，但它是记忆作用域：必填参数是 `memoryId` 和 `actorId`。2026-09-12 对着 AWS CLI 自带的服务模型核实过（`awscli/botocore/data/bedrock-agentcore*/`，控制面 147 个操作、数据面 65 个）。所以卡住的会话只能等它自己过期，找不出来也停不掉。
+**你能停掉一个运行时会话，但没法列出有哪些会话。** `StopRuntimeSession` 要 `runtimeSessionId` 和 `agentRuntimeArn`，而两个 AgentCore API 里没有任何操作能返回某个 runtime 当前活着的会话 id。`ListSessions` 是有的，但它是记忆作用域：必填参数是 `memoryId` 和 `actorId`。2026-09-12 对着 botocore 自带的服务模型核实过，两个 API 一共 218 个操作全查了，而且 [`tests/test_limitations_hold.py`](../tests/test_limitations_hold.py) 每次跑测试都会重查一遍。这份清单里只有这一条会自己变红：AWS 哪天真加了这个操作，测试就红。所以卡住的会话只能等它自己过期，找不出来也停不掉。
 
 **读超时很短的公司代理会把流式回答中途切断。** 60 秒是常见的默认值。这个产品没有办法把它改长，而那时服务端通常还在继续产出答案。
 

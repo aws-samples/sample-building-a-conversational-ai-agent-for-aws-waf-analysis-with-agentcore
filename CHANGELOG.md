@@ -54,8 +54,64 @@ bump that broke a tool would have merged clean.
 - **No AWS credentials, deliberately.** Nothing in the suite touches AWS, and the scripts that do drive
   the real account live in `design/`, which is gitignored. A test that starts needing credentials has
   stopped being a unit test.
-- **The perturbation scripts do not run here**, for the same reason, and the job says so rather than
-  leaving a reader to assume the coverage is wider than it is.
+- **The perturbation scripts did not run here either**, because they were gitignored. They are in the
+  repository now, in `tests/perturbations/`, and have their own workflow; see the entry below.
+
+### Added: the perturbation scripts are in the repository, and four of them had stopped proving anything
+
+The suite has 873 passing assertions. Nothing proved any of them can fail, because the scripts that
+check exactly that lived in a gitignored directory and ran only on the maintainer's laptop. They are
+now `tests/perturbations/`, 20 scripts, with `README.md` explaining what a verdict
+means.
+
+- **Four of the 19 had drifted into proving nothing**, which is what happens to a check nobody runs.
+  One anchor had matched nothing since a second tool name joined a registration line in `agent.py`. One
+  dedented a line whose successor was still inside a `with`, so `tools/waf_query.py` stopped parsing
+  and red said nothing about the lock the case was aimed at. One quoted `v0.22.0`, and cutting
+  `v0.23.0` killed all three of its cases. One perturbed `test_redactable_inventory.py`, replaced
+  months earlier by `test_redacted_filter.py`; with its anchors dead it printed `ok ... no tests ran in
+  0.00s`, because pytest exits non-zero for a target it cannot find and the script read only the exit
+  code. That script is deleted rather than repaired, since its successor covers the same properties.
+- **One shared harness instead of 19 copies of the loop.** Four scripts had no anchor-count check and
+  13 had no reachability probe, so which guards ran depended on which script you were in.
+  `_harness.py` has eight, and its docstring says what went wrong without each. A perturbed line that
+  never executes, a run where no test executed, a file that stopped parsing, and an assertion failure
+  are now four different verdicts rather than one non-zero exit code.
+- **`PYTHONDONTWRITEBYTECODE` and a `__pycache__` sweep on every write.** CPython invalidates a `.pyc`
+  on mtime and size together, so an edit of the same length written and reverted inside one second
+  leaves bytecode compiled from the perturbed source. The restored tree then fails while `git diff` is
+  empty.
+- **The cheap half runs on every push.** `tests/test_perturbation_harness.py` unit-tests each guard
+  against an injected runner, then statically re-checks that every case still anchors to code that
+  exists and still name tests that exist, in under a second. Both drifted target names were found that
+  way; the six-minute sweep only reported a red baseline. The sweep is `perturbations.yml`, on pull
+  every pull request, with no paths filter. The static check catches an anchor that stopped matching and
+  cannot catch one that still matches while the perturbation no longer changes behaviour, which happened
+  to two cases here, and neither change touched `tests/perturbations/`. A schedule would fire but is the
+  wrong mechanism: nothing in the sweep rots with time, so a nightly run reports the failure later than
+  the commit that caused it.
+- One of that file's own new assertions was hollow, and its own perturbation caught it: it checked that
+  the runner sets `PYTHONDONTWRITEBYTECODE`, while running inside a pytest the harness had already
+  started with that variable set, so `dict(os.environ)` satisfied it. Clearing the variable first makes
+  the code under test the only possible source.
+
+### Fixed: docs/limitations.md's one self-checking entry only ran on one machine
+
+The claim that no AgentCore API lists a runtime's sessions is the only entry there whose truth can flip
+with no file in this repository changing, and its test globbed
+`/usr/local/aws-cli/awscli/botocore/data/...` and skipped when it found nothing. In CI it skipped:
+`796 passed, 1 skipped`.
+
+Deriving the directory from `botocore.__file__` does not fix it, which is worth writing down. The
+installed package ships `service-2.json.gz` and the AWS CLI bundle ships it uncompressed, so that glob
+finds zero models and skips exactly as silently. Reading through botocore's own loader handles both,
+needs no credentials or network, and leaves no skip branch.
+
+The assertion is also stronger now. It was a name pattern requiring `Runtime` and `Session` in the
+operation name, which a future `ListAgentSessions` would walk past; it now refuses any `List*Session*`
+operation that takes a runtime identifier, and pins the required inputs of `StopRuntimeSession` and
+`ListSessions` because the entry states both verbatim. Read across 218 operations rather than 147: the
+CLI bundle on the maintainer's machine was six operations behind the pinned botocore.
 
 ### Fixed: a log query could answer about one WebACL using another's logs, and said nothing
 
@@ -89,11 +145,15 @@ sequence that neither a stack status nor a test could have stood in for.
   assets.** DefaultTTL 86400, and `aws s3 sync` sends no `Cache-Control`. `index.html` is the only
   filename Vite keeps stable between builds, so a cached copy keeps asking for the previous build's
   asset hashes. Measured on that first visit: `Age: 3916`.
-- **It is now split on the only thing that distinguishes the files**, whether the name changes when the
-  contents do. `index.html` and the client-side-routing fallback go through `Managed-CachingDisabled`;
-  `/assets/*` keeps `Managed-CachingOptimized`, because a content hash exists precisely so a file can
-  be cached forever. A first attempt put everything on CachingDisabled, which also stopped the bundle
-  being cached and disabled request collapsing, so concurrent visitors each caused a separate S3 GET.
+- **Everything now goes through `Managed-CachingDisabled` on a single cache behaviour.** One MinTTL-0
+  policy over every path keeps `index.html` fresh unconditionally, with no second behaviour whose path
+  pattern has to be right. This briefly shipped split on path, with `/assets/*` on
+  `Managed-CachingOptimized`, which is the better caching answer and is what to go back to if the edge
+  cache is ever worth its own assertion in the test.
+- **The cost of that, stated so nobody removes it as dead weight.** The content-hashed bundle is no
+  longer cached at the edge and request collapsing is off, so concurrent first visitors each cause an
+  S3 GET. Browser caching is untouched: CloudFront still forwards the object's `Cache-Control:
+  max-age=31536000, immutable`, which the two-pass upload sets.
 - **The default behaviour has to be a MinTTL-zero policy, and a header cannot substitute.** A policy
   whose MinTTL is above zero caches for at least that long even when the origin sends `no-cache` or
   `no-store`, and CachingOptimized's MinTTL is 1.

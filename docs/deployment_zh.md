@@ -314,8 +314,9 @@ grep -q "<第 2 步的 AgentRuntimeArn>" dist/assets/*.js && echo "bundle OK"
 # 分两趟上传，因为两类文件要的缓存正好相反。assets/ 下面的名字里都带内容哈希，可以永久缓存；
 # index.html 是唯一一个两次构建之间名字不变的，缓存下来那份会一直去加载上一次构建的 asset 哈希。
 #
-# 这两个头不是可选的。index.html 在 CloudFront 那边走 CachingDisabled，但那只管住 CloudFront：
-# 源头不发头，浏览器会启发式缓存它，于是继续跑手里已经有的那个构建。而如果那个构建对应的后端
+# 这两个头不是可选的，而且现在只剩它们在管缓存。CloudFront 每条路径都走 CachingDisabled，
+# 边缘什么都不缓存；源头不发头，浏览器就会启发式缓存 index.html，于是继续跑手里已经有的那个
+# 构建。而如果那个构建对应的后端
 # 已经被替换掉，它不是安静地跑旧版本，是坏的，而且报错来自恰好最先失败的那个调用。
 aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1 \
   --exclude index.html --cache-control 'public, max-age=31536000, immutable'
