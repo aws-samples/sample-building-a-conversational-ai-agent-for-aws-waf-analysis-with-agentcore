@@ -126,7 +126,15 @@ def test_no_prerequisite_item_presents_a_container_tool_as_required(doc, heading
 # rather than the wording. **Only put a token here if its presence anywhere in the file implies the
 # fact.** `READY` failed that bar: it occurs twice in each guide, so a whole-file check for it stays
 # green after the caveat is deleted. That is the test below instead.
-PARITY = ["image-build.yaml", "ReleaseTag", "ARM_CONTAINER"]
+PARITY = [
+    "image-build.yaml", "ReleaseTag", "ARM_CONTAINER",
+    # Added after a from-scratch deploy found each of these documented in one language only, or in
+    # neither. `empty_bucket` and `waf-agent-image` are Cleanup, which was wrong three ways;
+    # `SessionsTableArn` was hand-built from parts while the stack already outputs it; `Bearer` is the
+    # headless invoke contract, which lived nowhere in docs/ and had to be reverse-engineered from
+    # `frontend/src/agent.js`; `aws-waf-logs-` is why the frontend WebACL has no logging on purpose.
+    "empty_bucket", "waf-agent-image", "SessionsTableArn", "Bearer", "aws-waf-logs-",
+]
 
 
 @pytest.mark.parametrize("marker", PARITY)

@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: MIT-0
 #
 # Sync KB documents to S3 and trigger ingestion.
-# Usage: ./deploy/sync-kb.sh [stack-name] [docs-dir]
+# Usage: ./deploy/sync-kb.sh [stack-name] [docs-dir] [region]
 
 set -euo pipefail
 
 STACK="${1:-waf-agent-kb}"
 DOCS_DIR="${2:-./kb-docs}"
-REGION="${AWS_REGION:-ap-northeast-1}"
+# Third argument first, because the deployment guide has you `export REGION`, not
+# AWS_REGION. A shell with AWS_REGION pointing somewhere else would otherwise read the
+# stack outputs from the wrong region and fail with a confusing "stack does not exist".
+REGION="${3:-${AWS_REGION:-${REGION:-ap-northeast-1}}}"
 PROFILE="${AWS_PROFILE:-}"
 
 PROFILE_ARG=""
