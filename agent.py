@@ -3,8 +3,10 @@
 """WAF Analysis Agent — FastAPI + AG-UI + Strands."""
 
 import base64
+import hashlib
 import json as _json_mod
 import os
+import re
 import time
 from strands import Agent
 from strands.models import BedrockModel
@@ -457,6 +459,30 @@ def _get_model():
 
 _agent_user_id = ""
 
+# Measured against the live API on 2026-09-12, because no AWS page states it. An actorId must match
+# `[a-zA-Z0-9][a-zA-Z0-9-_/]*(?::[a-zA-Z0-9-_/]+)*[a-zA-Z0-9-_/]*` and a namespace the same with `*`
+# allowed, both capped at 255 characters. Neither accepts `@` or `.`.
+_MEMORY_ID_DISALLOWED = re.compile(r"[^a-zA-Z0-9_/-]")
+
+
+def _memory_safe_id(user_id: str) -> str:
+    """Turn a JWT-derived user id into something AgentCore Memory will accept.
+
+    **This existed as a bug from v0.13.0 to v0.22.0.** `_get_user_id_from_jwt` returns an email, so
+    `actor_id` and all three namespaces were built from `chencch@amazon.com`, every memory call was
+    rejected with a `ValidationException` on the charset, and the bare `except` below swallowed it. The
+    deployed agent reported memory as configured and wrote nothing: `list_memory_records`,
+    `retrieve_memory_records` and `list_actors` all returned empty after four months and six sessions.
+
+    **The hash suffix is load-bearing, not decoration.** Substituting characters alone maps `a.b@c` and
+    `a_b@c` onto one string, and this id keys the per-user memory namespace, so a collision is exactly
+    the cross-user leak `get_agent` recreates the agent to prevent. Truncation is why the hash goes
+    last: two long addresses sharing a 48-character prefix would otherwise collide too.
+    """
+    readable = _MEMORY_ID_DISALLOWED.sub("_", user_id).lstrip("_-/")[:48]
+    digest = hashlib.sha256(user_id.encode()).hexdigest()[:12]
+    return f"{readable}-{digest}" if readable else f"u-{digest}"
+
 
 def get_agent(session_id: str = "", user_id: str = "") -> Agent:
     """Get or create Agent. Recreates if user_id changes (prevents cross-user memory leak)."""
@@ -470,19 +496,26 @@ def get_agent(session_id: str = "", user_id: str = "") -> Agent:
             from bedrock_agentcore.memory.integrations.strands.config import AgentCoreMemoryConfig, RetrievalConfig
             from bedrock_agentcore.memory.integrations.strands.session_manager import AgentCoreMemorySessionManager
 
+            # Not `user_id`: that is an email and the service rejects it. `save_message` still uses the
+            # raw id, because DynamoDB accepts it and existing rows are keyed by it.
+            actor = _memory_safe_id(user_id)
             config = AgentCoreMemoryConfig(
                 memory_id=MEMORY_ID,
                 session_id=session_id,
-                actor_id=user_id,
+                actor_id=actor,
                 retrieval_config={
-                    f"/facts/{user_id}/": RetrievalConfig(top_k=5, relevance_score=0.5),
-                    f"/preferences/{user_id}/": RetrievalConfig(top_k=3, relevance_score=0.7),
-                    f"/summaries/{user_id}/": RetrievalConfig(top_k=3, relevance_score=0.5),
+                    f"/facts/{actor}/": RetrievalConfig(top_k=5, relevance_score=0.5),
+                    f"/preferences/{actor}/": RetrievalConfig(top_k=3, relevance_score=0.7),
+                    f"/summaries/{actor}/": RetrievalConfig(top_k=3, relevance_score=0.5),
                 }
             )
             session_manager = AgentCoreMemorySessionManager(config, region_name=MODEL_REGION)
-        except Exception:
-            pass
+        except Exception as exc:                          # noqa: BLE001
+            # Say so. `session_manager = None` otherwise means both "no memory configured" and "memory
+            # setup raised", and that single absence standing for two reasons is what hid a dead
+            # feature across nine releases. The agent still runs without memory, so this is a warning
+            # rather than a raise, but it has to reach the runtime log.
+            print(f"WARNING: memory disabled, setup failed: {type(exc).__name__}: {exc}")
 
     _agent = Agent(model=_get_model(), system_prompt=_build_system_prompt(), tools=_TOOLS,
                    hooks=[PreQueryGuard(), LogValueDisclosure()], session_manager=session_manager)

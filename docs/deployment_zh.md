@@ -21,7 +21,7 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 ## 前置条件
 
 1. **AWS CLI v2**，配置了管理员权限
-2. **Docker Desktop**（含 buildx，用于构建容器镜像）。[安装 Docker Desktop](https://docs.docker.com/get-docker/)。替代方案：[finch](https://github.com/runfinch/finch)——见[附录](#替代方案使用-finch)。
+2. **容器工具，可选。** 装了 [Docker Desktop](https://docs.docker.com/get-docker/)（含 buildx）或 [finch](https://github.com/runfinch/finch)（见[附录](#替代方案使用-finch)），镜像就在你本机构建。两个都没有，就[在 AWS 上构建](#在-aws-上构建不需要-docker)。不要为了部署专门去装一个。
 3. **Node.js 18+**（构建前端）
 4. 已开启 AWS WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
 
@@ -87,6 +87,35 @@ docker buildx build --platform linux/arm64 \
 
 > **排查**：构建通常需要 1-2 分钟。如果超过 5 分钟没有反应，检查网络连接（构建过程需要从 PyPI 下载 Python 包）。可以加 `--no-cache` 强制全新构建。如果没有 Docker Desktop，参见本文末尾的[替代方案：使用 finch](#替代方案使用-finch)。
 
+### 在 AWS 上构建（不需要 Docker）
+
+一台容器工具都没装的机器，或者 Windows x86（本机构建 ARM64 得过一层模拟），可以把构建放到自己的账号里做。`deploy/image-build.yaml` 会建好 ECR 仓库，建一个跑在原生 Graviton 上的 CodeBuild 项目，下载本项目某个已发布的 release，把镜像推上去。镜像没进 ECR，这个栈就不会走到 `CREATE_COMPLETE`。
+
+不想碰命令行，就在 CloudFormation 控制台上传模板，填一个 `ReleaseTag`，然后从 Outputs 页读 `ImageUri`。下面两条命令做的是同一件事，里面没有 shell 变量，PowerShell 里也能直接粘，区域自己替。
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/image-build.yaml \
+  --stack-name waf-agent-image \
+  --region ap-northeast-1 \
+  --parameter-overrides ReleaseTag=v0.22.0 \
+  --capabilities CAPABILITY_IAM
+
+aws cloudformation describe-stacks \
+  --stack-name waf-agent-image \
+  --region ap-northeast-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='ImageUri'].OutputValue" \
+  --output text
+```
+
+平时只需要设 `ReleaseTag` 这一个参数，值就照 [Releases 页面](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/releases)上写的填。以后想换到新版本，用新 tag 更新这个栈，再拿新的 `ImageUri` 去更新后端栈。tag 已经在 ECR 里了，构建会跳过，不会报错。
+
+> **重要**：这里构建的是已发布的 release，不是你本地的工作区。CodeBuild 看不到你机器上的文件，所以改过代码就走 Docker 或 finch 那条路。
+
+> **排查**：在 ap-northeast-1 构建 v0.22.0，整个栈大约 2 分钟；tag 已经在 ECR 里的话约 20 秒。构建失败栈会回滚，失败原因里会点出是哪个 CodeBuild 阶段，以及日志组 `/aws/codebuild/<栈名>-image-build`。ECR 仓库是这个栈自己建的，所以手工建过 `waf-agent` 仓库的话，先删掉它，或者换一个 `EcrRepositoryName`。区域要支持 CodeBuild 的 `ARM_CONTAINER`，上面列的区域都支持。
+
+> **提示**：本指南后面的命令都是 bash 写法（`export`、`$VAR`），PowerShell 里跑不了。Windows 上要么从 CloudFormation 控制台部署，要么把变量换成实际值。
+
 ## 第 2 步：部署后端
 
 ```bash
@@ -97,6 +126,8 @@ aws cloudformation deploy \
   --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
   --capabilities CAPABILITY_NAMED_IAM
 ```
+
+> **重要**：这里的 `CREATE_COMPLETE` 不代表 agent 能应答。CloudFormation 会等 runtime 报 `READY` 才收尾，而 `READY` 只说明 runtime 建好了、镜像引用能解析。2026-09-12 实测：把 runtime 指向一个启动就退出、不监听任何端口、也没有 `/ping` 的镜像，它照样报 `READY`，栈照样成功。第一次真正的证据是第 8 步，你问它一句话的时候。那一步返回 504，看[容器启动失败](#容器启动失败failed-状态)。
 
 ### 自定义模型（可选）
 
@@ -301,6 +332,8 @@ aws bedrock-agentcore-control get-agent-runtime \
 如果是 `FAILED`，查看响应中的 `failureReason`。
 
 ### 容器启动失败（FAILED 状态）
+
+下面这些在部署过程中一个都不会显现：runtime 会报 `READY`，栈会成功。你是在调用 agent 的时候才发现。
 
 常见原因：
 - **架构错误**：镜像必须是 ARM64（`--platform linux/arm64`）

@@ -40,6 +40,48 @@
   see.** Wrong architecture, wrong port and a missing `/ping` are all real causes, and none of them shows
   up while the stack is deploying. The entry now says that outright instead of implying you would notice.
 
+### Fixed: cross-session memory has never stored anything, in any release since 0.13.0
+
+- **Every memory call was rejected on the identifier charset, and the error was swallowed.** The agent
+  derives `actor_id` and its three retrieval namespaces from the JWT's `email` claim. AgentCore requires
+  an actorId to match `[a-zA-Z0-9][a-zA-Z0-9-_/]*…` and a namespace the same with `*` allowed, and
+  neither accepts `@` or `.`, so every call raised a `ValidationException` inside a bare `except` that
+  set the session manager to `None`. If you deployed with `MEMORY_ID` set, the agent reported nothing
+  wrong and remembered nothing across sessions.
+- **Measured, not deduced.** On a memory resource four months old with six sessions recorded in
+  DynamoDB, `list_memory_records`, `retrieve_memory_records` and `list_actors` all returned empty, and
+  the live API rejects the raw email while accepting the sanitised form. The two patterns and the
+  255-character cap are not in any AWS document.
+- **The identifier is now sanitised, with a hash suffix rather than only character substitution.**
+  Substitution alone maps `a.b@c.com` and `a@b.c.com` onto one id, and that id keys the per-user memory
+  namespace, so a collision would be the cross-user leak the agent recreates itself to avoid.
+- **A memory setup failure now says so in the runtime log.** `session_manager = None` previously meant
+  both "no memory configured" and "memory setup raised", and one absence standing for two reasons is why
+  this survived nine releases rather than being noticed on the first deploy.
+- Existing DynamoDB message history is untouched: it is keyed by the raw email, DynamoDB accepts that,
+  and only the memory boundary changed.
+
+### Fixed: the entry files still demanded Docker, and the Chinese guide never mentioned the alternative
+
+- **`README.md` and `AGENTS.md` listed Docker as a flat prerequisite hours after the CodeBuild path
+  shipped.** That matters more than it looks. The README's recommended path is to point your coding
+  agent at `AGENTS.md` and let it deploy, and an agent reads a prerequisite list as a specification: it
+  would install Docker, or stop and report it missing. A container tool is now marked optional in both,
+  with the alternative named where the requirement used to be.
+- **`docs/deployment_zh.md` had none of it.** The English guide gained the remote-build section and its
+  Chinese twin did not, so a Chinese-reading user had no route to the path built for them and nothing
+  said so. Both guides now carry the section, the `CREATE_COMPLETE` caveat and the troubleshooting
+  clause.
+- **The Project Structure block listed three of the five templates in `deploy/`.** `image-build.yaml`
+  and `sessions-api.yaml` were missing from both READMEs, and that block is what an agent reads as a
+  map of the repository.
+- **One roadmap row promised different things in the two languages.** The hourly-partition item read
+  2026-09-10 in English and blank in Chinese, and that file states a date means shipped and verified
+  against a real environment.
+- Fifteen assertions now hold these, including that every file in `deploy/` appears in both structure
+  blocks, that every document explaining deployment names the CodeBuild template, and that the two
+  roadmaps agree on every date cell.
+
 ## 0.22.0 (2026-09-12)
 
 ### Added: investigate_injection, so the method is code rather than advice

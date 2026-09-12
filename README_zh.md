@@ -29,11 +29,13 @@
 ### 前置条件
 
 - 已配置 AWS WAF 并开启日志的 AWS 账号
-- [Docker](https://docs.docker.com/get-docker/)（需要 buildx，用于构建 ARM64 镜像）
 - AWS CLI v2
 - Node.js 18+（用于构建前端）
+- 容器工具**可以没有**。装了 [Docker](https://docs.docker.com/get-docker/)（带 buildx）或
+  [finch](https://github.com/runfinch/finch)，镜像就在你本机构建；都没装，`deploy/image-build.yaml`
+  会把构建放到 AWS CodeBuild 上跑。Windows x86 也建议走这条，本机构建 ARM64 得过一层模拟。
 
-部署是几个 CloudFormation 栈加一次容器构建。二选一：
+部署是几个 CloudFormation 栈，加一次容器构建；这次构建在本机跑，也可以放到 CodeBuild 上。二选一：
 
 **方式一 —— 让你的 AI agent 帮你装（推荐）。** 把你的编码/运维 agent（Claude Code、Cursor 等）指向
 [AGENTS.md](AGENTS.md)，直接对话即可：
@@ -176,7 +178,10 @@ VITE_BRAND_NAME=我的公司 WAF Analyst
 ├── deploy/
 │   ├── backend.yaml      # CloudFormation: Cognito + AgentCore + IAM
 │   ├── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
-│   └── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
+│   ├── image-build.yaml  # CloudFormation: 在 CodeBuild 上构建 ARM64 镜像，本机不用装 Docker
+│   ├── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
+│   ├── sessions-api.yaml # CloudFormation: API Gateway + Lambda（会话历史）
+│   └── sync-kb.sh        # 把 kb-docs/ 传到 S3 并触发摄取
 ├── frontend/             # React SPA（Vite + AG-UI 流式客户端）
 ├── Dockerfile            # ARM64 容器
 └── docs/

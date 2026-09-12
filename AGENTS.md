@@ -36,8 +36,10 @@ Collect from the user first:
 - **AWS profile / credentials** — verify `aws sts get-caller-identity` points at the intended account.
 - **Which optional stacks** they want (session history? knowledge base?).
 - **Model** — default is region-appropriate Claude; only override if they insist (see principle #5).
-- **Prerequisites present:** AWS CLI v2, Docker w/ buildx (or finch), Node.js 18+, and the target
-  WebACL(s) already have **WAF logging enabled** — without logging the agent can only read metrics.
+- **Prerequisites present:** AWS CLI v2, Node.js 18+, and the target WebACL(s) already have **WAF
+  logging enabled** — without logging the agent can only read metrics. A container tool (Docker with
+  buildx, or finch) is **optional**: if they have neither, Step 1 builds the image on CodeBuild instead.
+  Do not tell them to install one before checking, and do not ask which they prefer if they have both.
 
 ## The procedure
 

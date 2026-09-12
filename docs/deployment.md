@@ -21,7 +21,7 @@ WAF Analyst deploys as up to four CloudFormation stacks:
 ## Prerequisites
 
 1. **AWS CLI v2** configured with admin-level permissions
-2. **Docker Desktop** (includes buildx for cross-platform builds). [Install Docker Desktop](https://docs.docker.com/get-docker/). Alternatives: [finch](https://github.com/runfinch/finch), see [appendix](#alternative-using-finch); or no container tool at all, see [Build in AWS](#alternative-build-in-aws-no-docker-required).
+2. **A container tool, optional.** [Docker Desktop](https://docs.docker.com/get-docker/) with buildx, or [finch](https://github.com/runfinch/finch) (see [appendix](#alternative-using-finch)), builds the image on your own machine. With neither, [build in AWS](#alternative-build-in-aws-no-docker-required) instead. Do not install one just to deploy.
 3. **Node.js 18+** (for building the frontend)
 4. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
 

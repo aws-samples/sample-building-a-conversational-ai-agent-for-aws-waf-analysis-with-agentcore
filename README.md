@@ -29,11 +29,15 @@ See [docs/capabilities.md](docs/capabilities.md) for full details and example qu
 ### Prerequisites
 
 - AWS account with AWS WAF configured and logging enabled
-- [Docker](https://docs.docker.com/get-docker/) with buildx (for ARM64 images)
 - AWS CLI v2 configured with appropriate permissions
 - Node.js 18+ (for building the frontend)
+- A container tool is **optional**. [Docker](https://docs.docker.com/get-docker/) with buildx or
+  [finch](https://github.com/runfinch/finch) builds the ARM64 image on your own machine. With neither,
+  `deploy/image-build.yaml` builds it on AWS CodeBuild instead, which is also the answer on Windows x86,
+  where a local ARM64 build runs under emulation.
 
-Deployment is a few CloudFormation stacks plus a container build. Pick one of two paths:
+Deployment is a few CloudFormation stacks, plus a container build that runs either on your machine or on
+CodeBuild. Pick one of two paths:
 
 **Option 1 — Let your AI agent drive it (recommended).** Point your coding/ops agent (Claude Code,
 Cursor, etc.) at [AGENTS.md](AGENTS.md) and just talk to it:
@@ -180,7 +184,10 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 ├── deploy/
 │   ├── backend.yaml      # CloudFormation: Cognito + AgentCore + IAM
 │   ├── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
-│   └── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
+│   ├── image-build.yaml  # CloudFormation: builds the ARM64 image on CodeBuild, no local Docker
+│   ├── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
+│   ├── sessions-api.yaml # CloudFormation: API Gateway + Lambda (session history)
+│   └── sync-kb.sh        # Uploads kb-docs/ to S3 and starts ingestion
 ├── frontend/             # React SPA (Vite + AG-UI streaming client)
 ├── Dockerfile            # ARM64 container for AgentCore
 └── docs/
