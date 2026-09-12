@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 (2026-09-12)
 
 ### Added: investigate_injection, so the method is code rather than advice
 
