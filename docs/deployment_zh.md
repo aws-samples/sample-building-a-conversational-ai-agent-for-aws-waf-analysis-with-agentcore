@@ -56,6 +56,16 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 
 可通过环境变量 `WAF_AGENT_MODEL_ID` 覆盖。
 
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WAF_AGENT_MODEL_ID` | 按区域（见上） | Bedrock 模型 ID |
+| `WAF_AGENT_MODEL_REGION` | 栈所在区域 | 调用 Bedrock 模型的区域 |
+| `WAF_AGENT_TIMEZONE_OFFSET` | `0`（UTC） | 用户没指定日期时，解析日期用的时区偏移（小时）。UTC+8 填 `8` |
+
+前两个是**栈参数**：第 2 步把 `ModelId` 和 `ModelRegion` 传给 `deploy/backend.yaml` 就行，不用改文件。`WAF_AGENT_TIMEZONE_OFFSET` **不是**参数，要改就得在部署前动 `deploy/backend.yaml` 里的 `EnvironmentVariables` 段。团队按本地时间读日期的话记得设：后端在 ap-northeast-1、这个值留 `0`，它会把「昨天」按 UTC 算。
+
 ## 第 1 步：构建并推送容器镜像
 
 Agent 以容器形式运行在 AWS 上。此步骤将 Agent 代码打包为容器镜像，并上传到 Amazon ECR（您 AWS 账户中的私有容器仓库）。
@@ -98,7 +108,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.22.0 \
+  --parameter-overrides ReleaseTag=v0.23.0 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -108,11 +118,11 @@ aws cloudformation describe-stacks \
   --output text
 ```
 
-平时只需要设 `ReleaseTag` 这一个参数，值就照 [Releases 页面](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/releases)上写的填。以后想换到新版本，用新 tag 更新这个栈，再拿新的 `ImageUri` 去更新后端栈。tag 已经在 ECR 里了，构建会跳过，不会报错。
+平时只需要设 `ReleaseTag` 这一个参数。**它的默认值就是当前这份代码切版时的那个 release，所以直接用默认值是对的，不用去查**；有测试盯着它跟 CHANGELOG 一致。只有要钉住某个更老或更新的版本时才传别的值，版本号在 [Releases 页面](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/releases)上。以后想换到新版本，用新 tag 更新这个栈，再拿新的 `ImageUri` 去更新后端栈。tag 已经在 ECR 里了，构建会跳过，不会报错。
 
 > **重要**：这里构建的是已发布的 release，不是你本地的工作区。CodeBuild 看不到你机器上的文件，所以改过代码就走 Docker 或 finch 那条路。
 
-> **排查**：在 ap-northeast-1 构建 v0.22.0，整个栈大约 2 分钟；tag 已经在 ECR 里的话约 20 秒。构建失败栈会回滚，失败原因里会点出是哪个 CodeBuild 阶段，以及日志组 `/aws/codebuild/<栈名>-image-build`。ECR 仓库是这个栈自己建的，所以手工建过 `waf-agent` 仓库的话，先删掉它，或者换一个 `EcrRepositoryName`。区域要支持 CodeBuild 的 `ARM_CONTAINER`，上面列的区域都支持。
+> **排查**：在 ap-northeast-1 实测，整个栈大约 2 分钟；tag 已经在 ECR 里的话约 20 秒。构建失败栈会回滚，失败原因里会点出是哪个 CodeBuild 阶段，以及日志组 `/aws/codebuild/<栈名>-image-build`。ECR 仓库是这个栈自己建的，所以手工建过 `waf-agent` 仓库的话，先删掉它，或者换一个 `EcrRepositoryName`。区域要支持 CodeBuild 的 `ARM_CONTAINER`，上面列的区域都支持。
 
 > **提示**：本指南后面的命令都是 bash 写法（`export`、`$VAR`），PowerShell 里跑不了。Windows 上要么从 CloudFormation 控制台部署，要么把变量换成实际值。
 
@@ -197,6 +207,7 @@ aws cloudformation describe-stacks --stack-name waf-agent --region $REGION \
 - `AgentRuntimeArn`
 - `AgentEndpoint`
 - `SessionsTableName`
+- `SessionsTableArn`
 
 ## 第 3 步：部署会话 API（可选，推荐）
 
@@ -206,7 +217,7 @@ aws cloudformation deploy \
   --stack-name waf-agent-sessions \
   --region $REGION \
   --parameter-overrides \
-    SessionsTableArn=arn:aws:dynamodb:$REGION:$ACCOUNT_ID:table/<SessionsTableName> \
+    SessionsTableArn=<第 2 步的 SessionsTableArn> \
     SessionsTableName=<第 2 步的 SessionsTableName> \
     CognitoUserPoolId=<第 2 步的 UserPoolId> \
     CognitoClientId=<第 2 步的 UserPoolClientId> \
@@ -235,6 +246,8 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
+> **提示**：这个栈自己的 WebACL 没有配日志，是故意的，不是漏了。前置条件第 4 条说的是你想**被分析**的那些 WebACL，也就是挡在你业务前面的那些。给 SPA 自己的入口开日志，等于为每一次静态资源请求付 CloudWatch 摄取费，而且它告诉不了你任何关于你业务流量的事。真想开的话，在 us-east-1 加一个名字以 `aws-waf-logs-` 开头的 `AWS::Logs::LogGroup`，再加一个指向 `FrontendWebACL` 的 `AWS::WAFv2::LoggingConfiguration`。
+
 ## 第 5 步：部署知识库（可选，推荐）
 
 为 Agent 添加 AWS WAF 最佳实践检索能力。不需要可跳过。
@@ -250,7 +263,7 @@ aws cloudformation deploy \
 等待 `CREATE_COMPLETE`，然后上传文档并触发索引：
 
 ```bash
-./deploy/sync-kb.sh waf-agent-kb ./kb-docs
+./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION
 ```
 
 最后，重新部署后端以传入 KB ID：
@@ -279,7 +292,8 @@ aws cloudformation deploy \
 ```bash
 cd frontend
 
-# 用第 2、3 步的输出填写 .env
+# 用第 2、3 步的输出填写 .env。直接覆盖，不要去改：上一次部署留下的 .env 照样能构建成功，
+# 但产出的前端指向一个已经不存在的 runtime。SPA 读的全部变量见 .env.example，包括可选的那些。
 cat > .env << EOF
 VITE_USER_POOL_ID=<第 2 步的 UserPoolId>
 VITE_CLIENT_ID=<第 2 步的 UserPoolClientId>
@@ -293,9 +307,15 @@ EOF
 npm install
 npm run build
 
+# 上传前先确认打出来的包里真的是新 runtime。.env 陈旧的失败方式是静默的：
+# 构建成功，应用连的是上一次部署。
+grep -q "<第 2 步的 AgentRuntimeArn>" dist/assets/*.js && echo "bundle OK"
+
 # 上传到 S3
 aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1
 ```
+
+> **提示**：如果 lockfile 里的版本号落后于 `package.json`，`npm install` 会把它改回来。新克隆的仓库上这是正常的，那个改动可以直接丢掉。
 
 ## 第 7 步：创建用户
 
@@ -312,6 +332,41 @@ aws cognito-idp admin-create-user \
 ## 第 8 步：访问
 
 浏览器打开 `https://<第 4 步的 CloudFrontDomain>`，用邮箱和临时密码登录。
+
+问它 `what version are you running?` 和 `List all WebACLs`。这两句里有一句答出来，部署才算验证过：栈走到 `CREATE_COMPLETE`、runtime 报 `READY`，这两件事对一个根本不能应答的镜像也一样会发生。
+
+### 不用浏览器怎么验证
+
+用脚本或 agent 来跑的话，可以直接调 runtime。它用的是 Cognito JWT authorizer，所以 SigV4 和 `aws bedrock-agentcore invoke-agent-runtime` 都不适用；不带凭证的请求会返回 `403 {"message":"OAuth authorization failed: Failed to parse token"}`。
+
+```
+POST https://bedrock-agentcore.<REGION>.amazonaws.com/runtimes/<URL 编码后的 AgentRuntimeArn>/invocations
+Authorization: Bearer <Cognito IdToken>
+Content-Type: application/json
+X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: <33 个字符以上>
+
+{"prompt": "what version are you running?"}
+```
+
+响应是 `text/event-stream`。上面这个 body 是简写形式；前端发的是 AG-UI 的 `RunAgentInput` 对象（`threadId`、`runId`、`messages`、`forwardedProps.userTimezoneOffset`），两种这个端点都收。
+
+app client 只开了 SRP 和 refresh token，没有管理员密码流，所以没有任何 CLI 命令能签发 `IdToken`。两个办法：
+
+- 用前端登录一次，把浏览器存下来的 `IdToken` 复制出来。
+- 用前端本来就有的依赖，在 Node 里跑一次 SRP：
+
+```bash
+cd frontend && npm install   # amazon-cognito-identity-js 随它一起装上
+node --input-type=module -e '
+import {CognitoUserPool, CognitoUser, AuthenticationDetails} from "amazon-cognito-identity-js";
+const Pool = new CognitoUserPool({UserPoolId: process.env.POOL, ClientId: process.env.CLIENT});
+new CognitoUser({Username: process.env.EMAIL, Pool}).authenticateUser(
+  new AuthenticationDetails({Username: process.env.EMAIL, Password: process.env.PASSWORD}),
+  {onSuccess: s => console.log(s.getIdToken().getJwtToken()), onFailure: e => {throw e}});
+'
+```
+
+> **重要**：`IdToken` 有效期一小时，拿到它就等于拿到 agent 的全部权限。别写进一个比这次检查活得更久的文件，也别贴到任何共享的地方。
 
 ## 故障排查
 
@@ -411,10 +466,22 @@ aws cloudformation deploy \
 ```bash
 REGION=ap-northeast-1  # 与部署时使用的区域一致
 
+# 两个桶都开了版本控制，所以 `aws s3 rm --recursive` 清不掉：不带 VersionId 的删除
+# 只会再加一个删除标记，CloudFormation 照样拒绝删桶。要显式删掉历史版本和删除标记。
+empty_bucket() {
+  for KEY in Versions DeleteMarkers; do
+    OBJ=$(aws s3api list-object-versions --bucket "$1" --region "$2" \
+      --query "{Objects: ${KEY}[].{Key:Key,VersionId:VersionId}}" --output json)
+    case "$OBJ" in
+      *'"Key"'*) aws s3api delete-objects --bucket "$1" --region "$2" --delete "$OBJ" > /dev/null;;
+    esac
+  done
+}
+
 # 1. 清空前端 S3 桶（CFN 无法删除非空桶）
 BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
-aws s3 rm s3://$BUCKET --recursive
+empty_bucket "$BUCKET" us-east-1
 
 # 2. 删除前端栈（CloudFront 删除需要 5-10 分钟）
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
@@ -422,18 +489,35 @@ aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east
 # 3. 删除会话 API 栈（如已部署）
 aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
 
-# 4. 删除知识库栈（如已部署）— 先清空文档桶
+# 4. 删除知识库栈（如已部署）。先手工删掉 Bedrock 的 data source 和 knowledge base。
+#    kb.yaml 用 !Sub 拼这两个 ARN，CloudFormation 因此没有指向向量索引的依赖边，
+#    可能在 Bedrock 还在清理时就把索引删了，data source 变 DELETE_UNSUCCESSFUL，整栈失败。
+KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text 2>/dev/null)
+if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ]; then
+  for DS in $(aws bedrock-agent list-data-sources --knowledge-base-id "$KB_ID" --region $REGION \
+      --query 'dataSourceSummaries[].dataSourceId' --output text); do
+    aws bedrock-agent delete-data-source --knowledge-base-id "$KB_ID" --data-source-id "$DS" --region $REGION
+  done
+  aws bedrock-agent delete-knowledge-base --knowledge-base-id "$KB_ID" --region $REGION
+fi
 KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
-[ -n "$KB_BUCKET" ] && aws s3 rm s3://$KB_BUCKET --recursive
+[ -n "$KB_BUCKET" ] && empty_bucket "$KB_BUCKET" $REGION
 aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
 
 # 5. 删除后端栈（包含 AgentCore Runtime + Memory；Cognito 仅在自动创建时删除）
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 6. 删除 ECR 仓库
-aws ecr delete-repository --repository-name waf-agent --region $REGION --force
+# 6. 走过 CodeBuild 那条路的话，删掉那个栈。ECR 仓库归它所有，删栈时会自己清空，
+#    所以**不要**手工删仓库：那会把栈搞坏，还会留下 CodeBuild 项目、两个 IAM 角色和一个 Lambda。
+aws cloudformation delete-stack --stack-name waf-agent-image --region $REGION
+
+# 7. 如果是在本机构建的，仓库才由你自己删
+# aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
+
+> **提示**：删掉 runtime 不会删掉它的日志。你部署过的每一个 runtime 都会留下一个 `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` 日志组，那是 agent 行为的唯一记录。要删就明确地删，不然就都留着；上面的步骤一个都不会碰它们。
 
 ## 使用须知
 

@@ -37,9 +37,19 @@ Collect from the user first:
 - **Which optional stacks** they want (session history? knowledge base?).
 - **Model** — default is region-appropriate Claude; only override if they insist (see principle #5).
 - **Prerequisites present:** AWS CLI v2, Node.js 18+, and the target WebACL(s) already have **WAF
-  logging enabled** — without logging the agent can only read metrics. A container tool (Docker with
-  buildx, or finch) is **optional**: if they have neither, Step 1 builds the image on CodeBuild instead.
-  Do not tell them to install one before checking, and do not ask which they prefer if they have both.
+  logging enabled** — without logging the agent can only read metrics.
+- **A container tool is optional, and test for it with `docker info` / `finch info`, not `which`.**
+  `which docker` succeeds on any machine that ever installed Docker Desktop while the daemon is not
+  running, so it answers the wrong question. Then pick by what you are deploying, and do not ask:
+  - **Nothing works, or the working tree matches a published release** → Step 1's CodeBuild path.
+    It builds a published release on native Graviton, tags the image with the release, and needs no
+    local tooling.
+  - **They have local changes they want deployed** → only a local build can do that, because CodeBuild
+    downloads a release tarball and never sees their files. If they also have no working container
+    tool, say that plainly: their changes cannot be deployed until they have one.
+
+  The two paths produce different artefacts, so say which one you took and why. A local build ships the
+  working tree tagged by commit; CodeBuild ships a release tagged by release.
 
 ## The procedure
 
@@ -53,9 +63,8 @@ Working method for every stack:
    frontend `.env` consume them. Echo them back to the user as a record.
 
 Dependency flow (why the order matters — this is the part to keep in your head):
-- **Image → backend.** Backend needs the ECR image URI. → Steps 1–2. If the user has no container
-  tool, or is on Windows x86, Step 1 has a CloudFormation path that builds on CodeBuild instead
-  (`deploy/image-build.yaml`, builds a published release rather than the working tree).
+- **Image → backend.** Backend needs the ECR image URI. → Steps 1–2. Which of the two build paths you
+  take was decided above, under prerequisites.
 - **backend → sessions.** Sessions API needs backend's DynamoDB table ARN/name + Cognito ids. → Step 3.
 - **backend + kb → backend again.** The KB stack is independent, but wiring it in **requires a second
   backend deploy** with `KnowledgeBaseId` (that's what sets the env var + `bedrock:Retrieve` IAM).
@@ -66,7 +75,10 @@ Dependency flow (why the order matters — this is the part to keep in your head
 - **Cognito user** last, so the user can log in. → Step 7.
 
 Then verify (Step 8 + the doc's runtime status check): open the CloudFront URL, sign in, send
-`List all WebACLs`, then `what version are you running?` — it should report the commit you built.
+`List all WebACLs`, then `what version are you running?` — it reports the release tag on the
+CodeBuild path and the commit hash on a local build. If you cannot open a browser, the doc's Step 8
+has a headless invoke you can run instead; **`CREATE_COMPLETE` and a `READY` runtime are not
+verification**, because both happen for an image that cannot serve a request.
 
 ## Critical principles (internalize these — they cause the most failures)
 
@@ -108,7 +120,10 @@ First classify the failure — the fix lives in different places:
 **Behavior vs. roadmap.** The docs above describe how the *deployed* build behaves. What is
 *planned but not yet shipped* lives in [`docs/roadmap.md`](docs/roadmap.md). Check the version you
 deployed (the `what version are you running?` step) against the CHANGELOG before assuming a
-roadmap item is live. Hourly log-detail queries are the worked example of why: they were declined
+roadmap item is live. **What that step reports depends on which build path you took.** The CodeBuild
+path reports the release tag, so the CHANGELOG section with the same number tells you exactly what is
+in it. A local build reports a commit hash instead, which maps to no heading, so with that path you
+have to check what the commit predates. Hourly log-detail queries are the worked example of why: they were declined
 for most of this project's life and now run, so a build from before that change still declines them
 and the CHANGELOG is how you tell. Don't tell a user a roadmap item is present when their build
 predates it.

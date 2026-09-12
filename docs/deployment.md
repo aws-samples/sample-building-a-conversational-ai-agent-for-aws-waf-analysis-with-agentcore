@@ -64,7 +64,7 @@ Override via environment variable `WAF_AGENT_MODEL_ID` if needed.
 | `WAF_AGENT_MODEL_REGION` | Stack region | Region for Bedrock model invocation |
 | `WAF_AGENT_TIMEZONE_OFFSET` | `0` (UTC) | Fallback timezone offset (hours) for date parsing when user doesn't specify. Set to `8` for UTC+8 (China/Singapore/etc.) |
 
-These are set in the Dockerfile or CloudFormation template. To override, add to `deploy/backend.yaml` Environment section.
+The first two are **stack parameters**: pass `ModelId` and `ModelRegion` to `deploy/backend.yaml` in Step 2, no file editing. `WAF_AGENT_TIMEZONE_OFFSET` is **not** a parameter, so changing it means editing the `EnvironmentVariables` block in `deploy/backend.yaml` before you deploy. Set it if your team reads dates in local time: a backend in ap-northeast-1 with the default `0` will interpret "yesterday" as UTC.
 
 ## Step 1: Build and Push Container Image
 
@@ -109,7 +109,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.22.0 \
+  --parameter-overrides ReleaseTag=v0.23.0 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -119,11 +119,11 @@ aws cloudformation describe-stacks \
   --output text
 ```
 
-`ReleaseTag` is the only parameter you normally set: the release to build, exactly as it appears on the [Releases page](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/releases). To move to a newer release later, update this stack with the new tag, then update the backend stack with the new `ImageUri`. Re-running with a tag that is already in ECR skips the build instead of failing.
+`ReleaseTag` is the only parameter you normally set. **Its default is the release this checkout was cut at, so taking the default is correct and needs no lookup**; a test keeps it in step with the CHANGELOG. Pass a different value only to pin an older or newer release, which you can read off the [Releases page](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/releases). To move to a newer release later, update this stack with the new tag, then update the backend stack with the new `ImageUri`. Re-running with a tag that is already in ECR skips the build instead of failing.
 
 > **Important**: This builds a published release, not your working tree. CodeBuild never sees your local files, so if you have changed the code, use the Docker or finch path.
 
-> **Troubleshooting**: Building v0.22.0 in ap-northeast-1 took about 2 minutes end to end, and about 20 seconds when the tag was already in ECR. If the build fails, the stack rolls back and the failure reason names the CodeBuild phase and the log group, which is `/aws/codebuild/<stack-name>-image-build`. The stack creates the ECR repository itself, so if you already created `waf-agent` by hand, delete it first or pass a different `EcrRepositoryName`. The template needs a region with CodeBuild `ARM_CONTAINER` compute; every region listed above has it.
+> **Troubleshooting**: Measured in ap-northeast-1, the whole stack takes about 2 minutes end to end, and about 20 seconds when the tag is already in ECR. If the build fails, the stack rolls back and the failure reason names the CodeBuild phase and the log group, which is `/aws/codebuild/<stack-name>-image-build`. The stack creates the ECR repository itself, so if you already created `waf-agent` by hand, delete it first or pass a different `EcrRepositoryName`. The template needs a region with CodeBuild `ARM_CONTAINER` compute; every region listed above has it.
 
 > **Note**: The remaining steps in this guide use bash syntax (`export`, `$VAR`), which does not run in PowerShell. On Windows, deploy the stacks from the CloudFormation console, or substitute literal values for the variables.
 
@@ -208,6 +208,7 @@ Save these values — you'll need them for the frontend:
 - `AgentRuntimeArn`
 - `AgentEndpoint`
 - `SessionsTableName`
+- `SessionsTableArn`
 
 ## Step 3: Deploy Sessions API (optional, recommended)
 
@@ -217,7 +218,7 @@ aws cloudformation deploy \
   --stack-name waf-agent-sessions \
   --region $REGION \
   --parameter-overrides \
-    SessionsTableArn=arn:aws:dynamodb:$REGION:$ACCOUNT_ID:table/<SessionsTableName> \
+    SessionsTableArn=<SessionsTableArn from Step 2> \
     SessionsTableName=<SessionsTableName from Step 2> \
     CognitoUserPoolId=<UserPoolId from Step 2> \
     CognitoClientId=<UserPoolClientId from Step 2> \
@@ -246,6 +247,8 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
+> **Note**: this stack's own WebACL has no logging configuration, and that is deliberate rather than an omission. Prerequisite 4 is about the WebACLs you want *analysed*, which are the ones in front of your workload. Logging the SPA's own front door would bill CloudWatch ingestion for every asset request and tell you nothing about your traffic. If you do want it, add an `AWS::Logs::LogGroup` in us-east-1 whose name starts with `aws-waf-logs-` plus an `AWS::WAFv2::LoggingConfiguration` pointing at `FrontendWebACL`.
+
 ## Step 5: Deploy Knowledge Base (optional, recommended)
 
 Adds AWS WAF best practices retrieval to the agent. Skip this if you don't need KB-powered recommendations.
@@ -261,7 +264,7 @@ aws cloudformation deploy \
 Wait for `CREATE_COMPLETE`, then upload documents and trigger ingestion:
 
 ```bash
-./deploy/sync-kb.sh waf-agent-kb ./kb-docs
+./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION
 ```
 
 Finally, redeploy the backend with the KB ID:
@@ -290,7 +293,9 @@ aws cloudformation deploy \
 ```bash
 cd frontend
 
-# Create .env from stack outputs
+# Create .env from stack outputs. Overwrite it rather than editing: a leftover .env from an
+# earlier deployment builds cleanly and ships a frontend pointed at a runtime that no longer
+# exists. See .env.example for every variable the SPA reads, including the optional ones.
 cat > .env << EOF
 VITE_USER_POOL_ID=<UserPoolId from Step 2>
 VITE_CLIENT_ID=<UserPoolClientId from Step 2>
@@ -307,9 +312,15 @@ EOF
 npm install
 npm run build
 
+# Confirm the bundle really carries the new runtime before uploading. A stale .env fails
+# silently: the build succeeds and the app talks to the previous deployment.
+grep -q "<AgentRuntimeArn from Step 2>" dist/assets/*.js && echo "bundle OK"
+
 # Upload to S3
 aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1
 ```
+
+> **Note**: `npm install` rewrites `package-lock.json` if the lockfile's version lags `package.json`. That is expected on a fresh clone and the change is safe to discard.
 
 ## Step 7: Create a User
 
@@ -326,6 +337,41 @@ aws cognito-idp admin-create-user \
 ## Step 8: Access
 
 Open `https://<CloudFrontDomain from Step 4>` in your browser. Sign in with the email and temporary password (you'll be prompted to set a new password on first login).
+
+Ask it `what version are you running?` and `List all WebACLs`. Until one of those returns an answer you have not verified the deployment: the stack reaching `CREATE_COMPLETE` and the runtime reporting `READY` both happen for an image that cannot serve a request.
+
+### Verifying without a browser
+
+If you are driving this from a script or an agent, you can call the runtime directly. The runtime uses a Cognito JWT authorizer, so SigV4 and `aws bedrock-agentcore invoke-agent-runtime` do not apply; an unauthenticated request returns `403 {"message":"OAuth authorization failed: Failed to parse token"}`.
+
+```
+POST https://bedrock-agentcore.<REGION>.amazonaws.com/runtimes/<url-encoded AgentRuntimeArn>/invocations
+Authorization: Bearer <Cognito IdToken>
+Content-Type: application/json
+X-Amzn-Bedrock-AgentCore-Runtime-Session-Id: <33 characters or more>
+
+{"prompt": "what version are you running?"}
+```
+
+The response is `text/event-stream`. The body above is the short form; the frontend sends an AG-UI `RunAgentInput` object instead (`threadId`, `runId`, `messages`, `forwardedProps.userTimezoneOffset`), and the endpoint accepts either.
+
+The app client allows SRP and refresh-token auth only, with no admin-password flow, so there is no CLI command that mints an `IdToken`. Two ways to get one:
+
+- Sign in through the frontend once and copy the `IdToken` your browser stored.
+- Run SRP from Node using the dependency the frontend already has:
+
+```bash
+cd frontend && npm install   # amazon-cognito-identity-js comes with it
+node --input-type=module -e '
+import {CognitoUserPool, CognitoUser, AuthenticationDetails} from "amazon-cognito-identity-js";
+const Pool = new CognitoUserPool({UserPoolId: process.env.POOL, ClientId: process.env.CLIENT});
+new CognitoUser({Username: process.env.EMAIL, Pool}).authenticateUser(
+  new AuthenticationDetails({Username: process.env.EMAIL, Password: process.env.PASSWORD}),
+  {onSuccess: s => console.log(s.getIdToken().getJwtToken()), onFailure: e => {throw e}});
+' 
+```
+
+> **Important**: An `IdToken` lasts an hour and grants full access to the agent. Do not write it into a file that outlives the check, and do not paste it anywhere shared.
 
 ## Troubleshooting
 
@@ -425,10 +471,23 @@ aws cloudformation deploy \
 ```bash
 REGION=ap-northeast-1  # Same region used during deployment
 
+# Both buckets have versioning enabled, so `aws s3 rm --recursive` does NOT empty them:
+# a delete without a VersionId only adds another delete marker, and CloudFormation still
+# refuses to delete the bucket. Remove versions and delete markers explicitly.
+empty_bucket() {
+  for KEY in Versions DeleteMarkers; do
+    OBJ=$(aws s3api list-object-versions --bucket "$1" --region "$2" \
+      --query "{Objects: ${KEY}[].{Key:Key,VersionId:VersionId}}" --output json)
+    case "$OBJ" in
+      *'"Key"'*) aws s3api delete-objects --bucket "$1" --region "$2" --delete "$OBJ" > /dev/null;;
+    esac
+  done
+}
+
 # 1. Empty the frontend S3 bucket (CFN cannot delete non-empty buckets)
 BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
-aws s3 rm s3://$BUCKET --recursive
+empty_bucket "$BUCKET" us-east-1
 
 # 2. Delete frontend stack (CloudFront deletion takes 5-10 minutes)
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
@@ -436,18 +495,37 @@ aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east
 # 3. Delete sessions API stack (if deployed)
 aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
 
-# 4. Delete KB stack (if deployed) — empty docs bucket first
+# 4. Delete KB stack (if deployed). Delete the Bedrock data source and knowledge base
+#    FIRST. kb.yaml builds their ARNs with !Sub, so CloudFormation has no dependency
+#    edge to the vector index and can delete it while Bedrock is still cleaning up,
+#    which leaves the data source DELETE_UNSUCCESSFUL and fails the whole stack.
+KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text 2>/dev/null)
+if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ]; then
+  for DS in $(aws bedrock-agent list-data-sources --knowledge-base-id "$KB_ID" --region $REGION \
+      --query 'dataSourceSummaries[].dataSourceId' --output text); do
+    aws bedrock-agent delete-data-source --knowledge-base-id "$KB_ID" --data-source-id "$DS" --region $REGION
+  done
+  aws bedrock-agent delete-knowledge-base --knowledge-base-id "$KB_ID" --region $REGION
+fi
 KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
-[ -n "$KB_BUCKET" ] && aws s3 rm s3://$KB_BUCKET --recursive
+[ -n "$KB_BUCKET" ] && empty_bucket "$KB_BUCKET" $REGION
 aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
 
 # 5. Delete backend stack (includes AgentCore Runtime + Memory; Cognito only if auto-created)
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 6. Delete ECR repository
-aws ecr delete-repository --repository-name waf-agent --region $REGION --force
+# 6. If you used the CodeBuild path, delete that stack. It OWNS the ECR repository and
+#    empties it on delete, so do NOT delete the repository by hand: that breaks the stack
+#    and leaves the CodeBuild project, two IAM roles and a Lambda behind.
+aws cloudformation delete-stack --stack-name waf-agent-image --region $REGION
+
+# 7. If you built locally instead, the repository is yours to delete
+# aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
+
+> **Note**: Deleting the runtime does not delete its logs. One `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` log group survives per runtime you ever deployed, and they are the only record of how the agent behaved. Delete them deliberately or not at all; nothing above touches them.
 
 ## Usage Notes
 
