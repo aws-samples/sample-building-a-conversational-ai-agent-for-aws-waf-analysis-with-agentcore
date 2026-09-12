@@ -93,7 +93,7 @@ _OPAQUE_TOKEN = re.compile(r"[A-Za-z0-9._~/=+-]{8,}")
 # WAF label on every request that arrives without a token. So the `labels` column was masked to
 # `<redacted len=27>` in `run_logs_query` and `aggregate_logs(group_by="label")`, destroying the
 # analysis those queries exist for. Found 2026-09-12 while extending this masker's coverage under
-# ROADMAP 5.5; it predates that work.
+# ROADMAP 5.7; it predates that work.
 #
 # A credential name preceded by a colon is a namespace segment, which generalises past WAF labels.
 # The lookbehind is `:` and NOT `\w`, checked over 22 shapes: excluding a word char would also stop
@@ -824,7 +824,7 @@ def _scan_log_values(rows: list[dict] | None) -> list[dict] | None:
             _value_findings["redacted"] |= redacted
     # **Masking runs AFTER the scan, and that order is load-bearing for both scanners.** A forged
     # marker inside a cookie, and AWS's own `REDACTED` in a sensitive-named column, are both replaced
-    # by `<redacted len=N>`; scanning afterwards would see neither. ROADMAP 5.5 moved this call here
+    # by `<redacted len=N>`; scanning afterwards would see neither. ROADMAP 5.7 moved this call here
     # from two of its six consumers, so every `query_logs` caller is covered rather than the two that
     # remembered. `waf_patrol` has its own Athena path and stays outside this funnel.
     if redact_row_fields(rows):
