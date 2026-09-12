@@ -70,23 +70,54 @@ def test_every_document_that_explains_deployment_names_the_codebuild_path(doc):
         f"{doc} never mentions image-build.yaml, so its readers cannot find the no-Docker path"
 
 
-@pytest.mark.parametrize("readme,marker", [("README.md", "**optional**"),
-                                           ("README_zh.md", "**可以没有**")])
-def test_the_container_tool_is_not_presented_as_required(readme, marker):
-    """Scoped to the prerequisite list, because Docker is mentioned elsewhere for people who do have
-    it, and those mentions are correct. What must not happen is a bare bullet, since an agent reads
-    this list as a specification and will either install Docker or refuse."""
-    heading = "### Prerequisites" if readme == "README.md" else "### 前置条件"
-    text = _read(readme)
-    # Only the contiguous bullet run. Widening this to the paragraphs below would let the word
-    # "optional" in following prose satisfy an assertion about the list itself.
-    bullets = re.search(rf"^{re.escape(heading)}\n\n((?:- .*\n|  .*\n)+)", text, re.M)
-    assert bullets, f"the {heading!r} bullet list moved; this test proves nothing"
-    prerequisites = bullets.group(1)
-    assert "Docker" in prerequisites, "Docker left the prerequisite list; retarget this test"
-    assert marker in prerequisites, (
-        f"{readme} lists a container tool without marking it optional, so an agent following this "
-        f"list will treat it as required")
+PREREQUISITE_LISTS = [
+    ("README.md", "### Prerequisites", r"optional"),
+    ("README_zh.md", "### 前置条件", r"可选|可以没有"),
+    ("docs/deployment.md", "## Prerequisites", r"optional"),
+    ("docs/deployment_zh.md", "## 前置条件", r"可选|可以没有"),
+]
+
+
+def _list_items(text, heading):
+    """Split a prerequisite list into items. Both bullet and numbered forms, because the READMEs use
+    one and the guides the other, and continuation lines belong to the item above them."""
+    block = re.search(rf"^{re.escape(heading)}\n\n((?:(?:- |\d+\. |  |\t).*\n|\n(?=(?:- |\d+\. )))+)",
+                      text, re.M)
+    assert block, f"the {heading!r} list moved; this test proves nothing"
+    items, current = [], None
+    for line in block.group(1).splitlines():
+        if re.match(r"^(?:- |\d+\. )", line):
+            if current is not None:
+                items.append(current)
+            current = line
+        elif current is not None:
+            current += " " + line.strip()
+    if current is not None:
+        items.append(current)
+    assert items, f"no list items parsed under {heading!r}"
+    return items
+
+
+@pytest.mark.parametrize("doc,heading,marker", PREREQUISITE_LISTS)
+def test_no_prerequisite_item_presents_a_container_tool_as_required(doc, heading, marker):
+    """**Judged per item, and the whole-block version of this was hollow.** The first draft asked
+    whether the word "optional" appeared anywhere in the list. Adding back the original bare
+    `- [Docker](…) with buildx` bullet while leaving the optional one in place kept every assertion
+    green, so the list said "you need Docker" and "a container tool is optional" at once and the test
+    written to prevent exactly that reported success.
+
+    Every item that names a container tool must carry the marker itself. Scoped to the prerequisite
+    list, because the mentions further down are for people who do have one and are correct.
+
+    All four documents, not two. `AGENTS.md` sends the agent to `docs/deployment.md` for the numbered
+    steps, so an agent landing there reads item 2 as a requirement no matter how the README reads."""
+    items = _list_items(_read(doc), heading)
+    naming_a_tool = [i for i in items if "Docker" in i or "finch" in i]
+    assert naming_a_tool, f"{doc} no longer names a container tool here; retarget this test"
+    bare = [i for i in naming_a_tool if not re.search(marker, i, re.I)]
+    assert not bare, (
+        f"{doc} has {len(bare)} prerequisite item(s) naming a container tool without marking it "
+        f"optional, so an agent reading this list as a specification will install it or stop: {bare}")
 
 
 # --- the twins say the same things ----------------------------------------------
