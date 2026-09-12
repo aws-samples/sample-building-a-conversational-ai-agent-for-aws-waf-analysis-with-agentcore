@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0 (2026-09-12)
 
 ### Added: build the container image on AWS, so a machine with no container tool can deploy
 
