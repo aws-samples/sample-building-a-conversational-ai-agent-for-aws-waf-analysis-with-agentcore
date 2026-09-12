@@ -155,15 +155,28 @@
 - Five query paths can hit this, and two of the four redactable locations cannot: nothing filters on a
   URI path or a query string, they are only grouped by or displayed.
 
-### Fixed: your WAF labels were masked as if they were credentials
+### Fixed: `ip_labels` reported a verified AWS bot as an IP that Bot Control never flagged
 
-- **`awswaf:managed:token:absent` is a label, not a session token, and the privacy masker could not
-  tell.** It treated the colon in a label namespace as an assignment, so any value containing
-  `token:` looked like `token=secret`. That label is attached to every request arriving without a WAF
-  token, which is most of them, so `run_logs_query`'s label queries and
-  `aggregate_logs(group_by="label")` were returning `<redacted len=27>` in place of the label. The
-  analysis those queries exist for was being hidden from you. A credential name preceded by a colon
-  is now read as a namespace segment.
+**Present in every release from 0.13.0 through 0.21.0**, nine of them, introduced 2026-06-07. If you
+have been using label queries to decide whether an IP is legitimate, re-check any conclusion you drew
+from them.
+
+- **The privacy masker read `awswaf:managed:token:absent` as a session token.** It treated the colon
+  in a label namespace as an assignment, so any value containing `token:` looked like `token=secret`.
+  That label is attached to every request arriving without a WAF token, which is most of them.
+- **On `ip_labels` the whole label set went with it, and the tool then drew the wrong conclusion.**
+  That query returns every label for an IP in one value, so one `token:` label masked all of them.
+  The interpretation step read the masked value and reported `ℹ️ No managed rule labels detected —
+  Bot Control/AMR did not flag this IP` for an IP whose real labels say
+  `✅ Bot Control: VERIFIED bot (legitimate, should be allowed)`. A masked label set and a genuinely
+  unlabelled IP produced the same sentence, so nothing on screen distinguished them. The agent's own
+  guidance treats `bot:verified` as ground truth for deciding whether to recommend blocking an IP,
+  which is exactly the decision this fed.
+- **On `ip_label_breakdown` and `aggregate_logs(group_by="label")` the loss was narrower.** Those
+  return one label per row, so only the `token:absent` / `token:accepted` / `token:rejected` rows read
+  `<redacted len=N>`. Token status was unreadable; `bot:verified` and the Anti-DDoS labels came
+  through.
+- A credential name preceded by a colon is now read as a namespace segment, so a label is left alone.
 - **The check still catches a credential buried inside a longer name.** `PHPSESSID=…` and
   `JSESSIONID=…` are real cookie names with `sess` in the middle of them, so the fix keys on the
   colon specifically rather than on any character before the name. Checked over 22 values, eleven that
