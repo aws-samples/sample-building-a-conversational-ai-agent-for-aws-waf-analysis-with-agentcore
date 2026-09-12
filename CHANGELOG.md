@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added: docs/limitations.md, in both languages
+
+What the agent cannot do, or cannot do without a cost worth knowing about. Fourteen entries, so a user
+can tell a limit from a bug before opening an issue.
+
+- **The file carries its own rule about going stale, because this kind of list rots in the worst
+  direction.** An entry that has since been fixed is worse than no list: you read "it cannot do X", stop
+  trying X, and never find out. So every entry either points at the code that makes it true or carries
+  the date it was measured, and an entry that stops being true gets deleted rather than reworded.
+- Highlights: a WAF log proves a request arrived and which rule matched, never what your application did
+  with it; match details exist for SQLi and XSS only, so most rule types cannot tell you which part of a
+  request matched; CloudWatch metrics carry three dimensions, so anything per-URI or per-IP costs a log
+  query; an active WAF log filter makes every log-derived count low by an amount only your configuration
+  knows; JA4 fingerprints are absent on API Gateway and AppSync, so one client behind many IPs cannot be
+  distinguished from many clients there.
+- **You can stop a runtime session but nothing will list them.** Verified against the service models the
+  AWS CLI ships: no operation enumerates a runtime's sessions, `ListSessions` is memory-scoped, and
+  `StopRuntimeSession` needs an id you have no way to obtain.
+- Deployment state is deliberately absent, because it would expire on the next deploy and nobody would
+  think to come back and fix it.
+
 ### Changed: the roadmap's deployment section now describes what shipped, and #8 is closed
 
 - **The row promising one-click deploy via a CodePipeline pipeline is gone**, replaced by the two things
