@@ -1,0 +1,54 @@
+# The repository's first committed workflow. Until now every green check on every pull request came
+# from GitHub's hosted CodeQL default setup, so a contributor's PR was marked passing with the test
+# suite never having run. Both dependabot bumps and the one external contribution merged that way.
+#
+# Third-party actions are pinned by commit SHA rather than tag. A tag is mutable, and this is a public
+# repository whose CI has write access to nothing but still runs on code from forks.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Tags and full history are not optional. `tests/test_release_metadata.py` reads `git tag -l
+          # 'v*'` and asserts the result is non-empty, on the grounds that a fixture returning nothing
+          # would make every assertion below it vacuous. A shallow clone has no tags, so the whole
+          # release guard would fail for a reason that has nothing to do with the change under test.
+          fetch-depth: 0
+
+      # The release guard exempts the newest CHANGELOG heading while the code is unshipped, and it
+      # decides that with `merge-base --is-ancestor HEAD <remote>/main`. It fails CLOSED: when no such
+      # ref resolves it assumes shipped and applies the assertion, which on a release branch means a
+      # red run for a heading that legitimately has no tag yet. `actions/checkout` leaves no
+      # `origin/main` on a pull_request event, so fetch it. The test's own comment predicted this
+      # becoming a standing false alarm the moment pytest ran in CI.
+      - name: Make origin/main resolvable for the release guard
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: true
+
+      # No AWS credentials, deliberately. Nothing in the suite touches AWS: the tests that describe
+      # measured AWS behaviour assert against recorded values and source structure, and the scripts
+      # that do drive the real account live in `design/`, which is gitignored and therefore absent
+      # here. If a test ever needs credentials, that is the signal it has stopped being a unit test.
+      - name: Run tests
+        run: uv run --extra dev python -m pytest -q
+
+      # The perturbation scripts are the check on whether the assertions above can fail at all, and
+      # they cannot run here: they live in `design/`, gitignored, so they are not in this checkout.
+      # Naming the gap rather than leaving a reader to assume CI covers it.
+      - name: Note what this job does not cover
+        if: always()
+        run: echo "Perturbation scripts live in design/ (gitignored) and are not run here."
