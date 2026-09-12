@@ -5,9 +5,11 @@ English | [中文](roadmap_zh.md)
 What we plan to support or fix from here. Already-shipped work is in the
 [CHANGELOG](../CHANGELOG.md), not here.
 
-A date on the right means the item has shipped and been verified against a real environment. An empty
-cell means it has not, and carries no promise about when it will. Within a group, items are listed
-roughly in the order we intend to work on them, and that order can change.
+A date on the right means the item has shipped **and** been verified against a real environment. An
+empty cell means one of those two is missing, so it covers both "not built yet" and "built, not yet
+verified" without distinguishing them. We would rather under-claim than date something we have only
+seen pass a test. Either way an empty cell carries no promise about when it will change. Within a
+group, items are listed roughly in the order we intend to work on them, and that order can change.
 
 ## Log querying and partitioning
 
