@@ -59,7 +59,8 @@ See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the tr
 
 | | |
 |---|---|
-| One-click deploy: commit, build, and deploy straight from the GitHub repo via a CodePipeline pipeline ([#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)) | |
+| Build the container image on AWS, so no container tool is needed on your own machine ([#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)) | 2026-09-12 |
+| Move a deployment to a newer release by updating one stack parameter | 2026-09-12 |
 
 ## Documentation
 

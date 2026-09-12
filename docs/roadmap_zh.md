@@ -56,7 +56,8 @@
 
 | | |
 |---|---|
-| 一键部署：通过 CodePipeline 直接从 GitHub 仓库提交、构建、部署（[#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)）| |
+| 在 AWS 上构建容器镜像，本机不需要任何容器工具（[#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)）| 2026-09-12 |
+| 改一个栈参数就切到新版本 | 2026-09-12 |
 
 ## 文档
 
