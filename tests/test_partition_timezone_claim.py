@@ -65,13 +65,17 @@ def test_each_file_still_says_the_true_thing(rel, corrected):
 # `design/` records superseded reasoning on purpose, which is exactly where a falsified claim
 # belongs. This file is excluded because it quotes every banned phrase in order to ban them.
 #
-# **The exclusion is THIS FILE, not all of `tests/`, and the difference is the stated reason.**
-# The justification only ever covered one file, and it is the only file under `tests/` containing
-# a banned phrase, so narrowing it passes today and stops the next test file from carrying the
-# claim in a docstring. Same shape as excluding the registration site rather than the whole
-# module, which is the mistake that let the `log_query_error` sweep pass.
+# **The exclusion is TWO NAMED FILES, not all of `tests/`, and the difference is the stated
+# reason.** Same shape as excluding the registration site rather than the whole module, which is
+# the mistake that let the `log_query_error` sweep pass. The second file is the perturbation
+# script that puts each false claim back and requires this sweep to catch it, so it has to carry
+# the claim verbatim: a script cannot restore a defect it is not allowed to name. It arrived in
+# the tree when the perturbation scripts moved out of gitignored `design/`, which turned all
+# three claims red at once, and the earlier note here that this was "the only file under
+# `tests/`" stopped being true at that moment.
 EXCLUDED_PREFIXES = ("design/", ".venv/")
-EXCLUDED_FILES = ("tests/test_partition_timezone_claim.py",)
+EXCLUDED_FILES = ("tests/test_partition_timezone_claim.py",
+                  "tests/perturbations/perturb-timezone-claim.py")
 
 
 def _excluded(rel: str) -> bool:

@@ -1,0 +1,58 @@
+# The slow half of the failure-capability check: break each property the suite claims to hold and
+# require a named test to notice. `tests/perturbations/README.md` explains what a verdict means.
+#
+# **Every pull request, and neither a paths filter nor a schedule, which is a correction of two earlier
+# versions of this file.** `tests/test_perturbation_harness.py` runs in `tests.yml` and catches an
+# anchor that has stopped matching. What it cannot catch is an anchor that still matches while the
+# perturbation no longer changes behaviour, and that happened twice in one day: a case added a routing
+# line for a tool that did not exist and `investigate_injection` then shipped, so the line pointed at
+# something real; another removed a tool's only prompt mention after the tool gained a second one.
+#
+# Both were ordinary product changes touching neither `tests/perturbations/` nor the harness, so a paths
+# filter on this job would never have fired. A schedule does fire, and it was the first answer here, but
+# it is the wrong mechanism: nothing in this sweep rots with time. The scripts import only the standard
+# library and read files in the repository, so no dependency, service or clock can change their result.
+# What changes it is a commit. A nightly run therefore reports the failure later than the pull request
+# that caused it and attributes it to nobody.
+#
+# Six minutes on a pull request was the objection, and it does not hold against `pytest` taking eleven
+# seconds beside it: the point of this job is the expensive question, and the cheap one already has an
+# answer in the other workflow.
+#
+# Third-party actions pinned by commit SHA: a tag is mutable and this repository is public.
+name: perturbations
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The scripts run the real suite, which includes the release guard reading `git tag -l 'v*'`.
+          fetch-depth: 0
+
+      - name: Make origin/main resolvable for the release guard
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: true
+
+      # Serial, and the runner enforces it. Each script edits shared source files and puts them back,
+      # so two at once perturb each other's baseline and both report nonsense.
+      - name: Sweep
+        run: uv run --extra dev python tests/perturbations/run-all.py
+
+      # A script that restores wrongly leaves a mutated tree, and the run above would have reported
+      # that. This is the independent read: if anything is dirty here, the restore is the suspect.
+      - name: The tree must be unchanged
+        if: always()
+        run: git diff --exit-code

@@ -320,8 +320,9 @@ grep -q "<AgentRuntimeArn from Step 2>" dist/assets/*.js && echo "bundle OK"
 # assets/ carries a content hash, so it can be cached forever; index.html is the one filename that
 # stays the same across builds, so a cached copy keeps loading the previous build's asset hashes.
 #
-# The headers are not optional. CloudFront is on CachingDisabled for index.html, but that only
-# stops CloudFront: without a header the browser caches it heuristically and keeps running the
+# The headers are not optional, and they are the only caching left. CloudFront is on
+# CachingDisabled for every path, so nothing is cached at the edge; without a header the browser
+# caches index.html heuristically and keeps running the
 # build it already has. If that build's backend was replaced, it does not run quietly out of date,
 # it breaks, and it reports the failure from whichever call happens to fail first.
 aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1 \

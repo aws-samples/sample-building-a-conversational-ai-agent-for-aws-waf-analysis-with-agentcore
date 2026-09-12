@@ -158,34 +158,37 @@ Resources:
             OriginAccessControlId: !Ref CloudFrontOAC
             S3OriginConfig:
               OriginAccessIdentity: ''
-        # Two behaviours, split on the one thing that distinguishes the files: whether the name
-        # changes when the contents do.
+        # **One behaviour, nothing cached at the edge. Deliberate, and the trade is stated below so
+        # it is not mistaken for an oversight.**
         #
-        # `index.html` is the only filename Vite keeps stable across builds, so a cached copy keeps
-        # asking for the previous build's asset hashes. It must never be cached. Everything under
-        # /assets/ carries a content hash, so it can be cached forever and a new build simply has a
-        # new name.
+        # A MinTTL-0 policy is the only thing that keeps `index.html` fresh, and a header cannot
+        # substitute: a cache policy whose MinTTL is above zero caches for at least that long "even
+        # if the Cache-Control: no-cache, no-store, or private directives are present in the origin
+        # headers", and Managed-CachingOptimized has MinTTL 1. `index.html` is the only filename Vite
+        # keeps stable across builds, so a cached copy keeps asking for the previous build's asset
+        # hashes; measured on the first real browser visit after a redeploy, `Age: 3916`. Applying
+        # that one policy to every path makes it unconditional, with no second behaviour whose
+        # pattern has to be right.
         #
-        # **The default behaviour has to be a MinTTL-0 policy, and a header cannot substitute.** A
-        # cache policy whose MinTTL is above zero caches for at least that long "even if the
-        # Cache-Control: no-cache, no-store, or private directives are present in the origin
-        # headers". Managed-CachingOptimized has MinTTL 1, so serving index.html through it would
-        # override `no-cache` on the object. Managed-CachingDisabled is all zeros.
+        # **What it costs.** The content-hashed bundle under /assets/ is not cached at the edge and
+        # request collapsing is off, so concurrent first visitors each cause an S3 GET. That is worth
+        # little on a single-tenant deployment and would matter on a busy one.
         #
-        # This shipped as a single behaviour on Managed-CachingOptimized, DefaultTTL 86400, with no
-        # Cache-Control on the objects. Measured on the first real browser visit after a redeploy:
-        # `Age: 3916` on index.html.
+        # **Browser caching survives this, and it survives only because of the upload.** CloudFront
+        # forwards whatever `Cache-Control` the object carries, and the deployment guide sets
+        # `max-age=31536000, immutable` on the hashed assets in a second `aws s3 sync` pass. So the
+        # claim above is conditional: collapse those two passes back into one and nothing caches the
+        # bundle anywhere, edge or browser, on every request. `test_frontend_template.py` asserts both
+        # passes with their opposite headers, which is the only thing keeping this true.
+        #
+        # Putting /assets/* back on Managed-CachingOptimized is the better caching answer and needs
+        # its own assertion in `tests/test_frontend_template.py`, which currently requires exactly
+        # one behaviour.
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad   # Managed-CachingDisabled, MinTTL 0
           Compress: true
-        CacheBehaviors:
-          - PathPattern: /assets/*
-            TargetOriginId: S3Origin
-            ViewerProtocolPolicy: redirect-to-https
-            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # Managed-CachingOptimized
-            Compress: true
         # 403 is mapped because S3 behind Origin Access Control answers a missing key with
         # AccessDenied, not NotFound. Mapping only 404 leaves every client-side deep link failing on
         # an unhandled 403.

@@ -43,12 +43,11 @@ jobs:
       # measured AWS behaviour assert against recorded values and source structure, and the scripts
       # that do drive the real account live in `design/`, which is gitignored and therefore absent
       # here. If a test ever needs credentials, that is the signal it has stopped being a unit test.
+      #
+      # This includes `tests/test_perturbation_harness.py`, which holds the guards every perturbation
+      # script depends on and re-checks, statically, that every case still anchors to code that
+      # exists and still names a test that exists. Anchor drift is silent and four scripts had drifted
+      # into proving nothing; that check finds it here in milliseconds instead of in a six-minute
+      # sweep nobody runs. The sweep itself is `perturbations.yml`.
       - name: Run tests
         run: uv run --extra dev python -m pytest -q
-
-      # The perturbation scripts are the check on whether the assertions above can fail at all, and
-      # they cannot run here: they live in `design/`, gitignored, so they are not in this checkout.
-      # Naming the gap rather than leaving a reader to assume CI covers it.
-      - name: Note what this job does not cover
-        if: always()
-        run: echo "Perturbation scripts live in design/ (gitignored) and are not run here."

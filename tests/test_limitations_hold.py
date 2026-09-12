@@ -86,29 +86,49 @@ def test_no_runtime_session_listing_api_has_appeared():
     """The one entry with a date rather than a code citation, and the only one whose truth can flip
     without any file in this repository changing: AWS could add the operation tomorrow.
 
-    Read from the service models the AWS CLI ships, which is why this is checkable at all. Skipped
-    rather than failed when they are absent, because a missing CLI installation is not evidence about
-    the API, and asserting on it would make the test pass or fail for the wrong reason."""
-    import glob
-    import json
+    **Read through botocore's own loader, which is what makes this run anywhere.** The first version
+    globbed `/usr/local/aws-cli/awscli/botocore/data/...` and skipped when it found nothing, so the
+    one limitation that can go stale on its own was checked on one laptop and nowhere else. Deriving
+    the directory from `botocore.__file__` does not fix it either: the installed package ships
+    `service-2.json.gz` while the CLI bundle ships it uncompressed, so that glob finds zero models
+    and skips exactly as silently. The loader handles both and needs no credentials or network.
 
-    models = glob.glob("/usr/local/aws-cli/awscli/botocore/data/bedrock-agentcore*/*/service-2.json")
-    if not models:
-        pytest.skip("AWS CLI service models not present, so nothing here is evidence about the API")
+    So there is no skip branch. botocore arrives with boto3, which the agent cannot run without.
+    """
+    import botocore.session
 
-    operations = set()
-    for path in models:
-        operations |= set(json.load(open(path))["operations"])
-    assert operations, "parsed no operations, so this assertion could not fail"
+    session = botocore.session.get_session()
+    required = {}
+    for service in ("bedrock-agentcore-control", "bedrock-agentcore"):
+        model = session.get_service_model(service)
+        for name in model.operation_names:
+            shape = model.operation_model(name).input_shape
+            required[name] = set(shape.required_members) if shape else set()
+    assert len(required) > 150, (
+        f"only {len(required)} operations across both AgentCore APIs, which is too few to be the "
+        f"real models. An absence claim over a search space that collapsed passes perfectly.")
 
-    # The claim is narrow on purpose: something that enumerates a RUNTIME's sessions. `ListSessions`
-    # exists and is memory-scoped, which is exactly the confusion the entry exists to prevent.
-    enumerators = {op for op in operations
-                   if op.startswith("List") and "Runtime" in op and "Session" in op}
+    # **Matched on the required inputs, not only on the spelling.** An operation that enumerates a
+    # runtime's sessions has to take a runtime identifier, whatever it ends up being called, and
+    # `ListAgentSessions` would slip past a name pattern looking for "Runtime". The six `List*Session*`
+    # operations that do exist each take an identifier for the thing whose sessions they list:
+    # `browserIdentifier`, `codeInterpreterIdentifier`, `paymentManagerArn`, or a memory and an actor.
+    runtime_ids = {"agentRuntimeArn", "agentRuntimeId", "runtimeIdentifier"}
+    enumerators = {name: sorted(required[name]) for name in required
+                   if name.startswith("List") and "Session" in name
+                   and ("Runtime" in name or runtime_ids & required[name])}
     assert not enumerators, (
-        f"{sorted(enumerators)} now exists, so the limitation in docs/limitations.md is stale. Delete "
-        f"the entry, and check whether the stuck-session advice elsewhere should change too.")
-    assert "StopRuntimeSession" in operations, "the entry claims this exists; it no longer does"
+        f"{enumerators} now exists, so the limitation in docs/limitations.md is stale. Delete the "
+        f"entry, and check whether the stuck-session advice elsewhere should change too.")
+
+    # The entry states both of these verbatim, so both are pinned. The pair is the whole point: one
+    # operation exists and cannot be used without an id, the other hands out ids for something else.
+    assert required.get("StopRuntimeSession") == {"agentRuntimeArn", "runtimeSessionId"}, (
+        f"the entry says StopRuntimeSession takes those two; it now takes "
+        f"{sorted(required.get('StopRuntimeSession', ()))}")
+    assert required.get("ListSessions") == {"actorId", "memoryId"}, (
+        f"the entry says ListSessions is memory-scoped; its required inputs are now "
+        f"{sorted(required.get('ListSessions', ()))}")
 
 
 def test_both_languages_carry_the_same_entries():
