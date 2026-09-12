@@ -147,6 +147,8 @@ TEMPLATES = {
         "query": "filter @message like '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", action, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND lower(h.name) = 'host' AND h.value = '{host}' GROUP BY httprequest.clientip, action ORDER BY hits DESC LIMIT {LIMIT}",
         "params": ["host"],
+        # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
+        "redactable_filter": ["SingleHeader:host"],
         "description": "Top IPs for a specific host/domain — identify per-domain attackers in multi-domain WebACLs",
     },
     "top_blocked_ips": {
@@ -291,12 +293,16 @@ TEMPLATES = {
         "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
+        # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
+        "redactable_filter": ["SingleHeader:host"],
         "description": "Top URIs for a specific host",
     },
     "host_method_distribution": {
         "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.httpmethod ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
+        # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
+        "redactable_filter": ["SingleHeader:host"],
         "description": "HTTP method distribution for a host",
     },
 }
@@ -451,6 +457,10 @@ def run_logs_query(
         return f"Unknown query_type '{query_type}'. Available: {available}"
 
     template = TEMPLATES[query_type]
+    from tools.waf_query import note_redacted_filter  # lazy: circular at module level
+    # ROADMAP 6.13's filter half, before the param-validation early returns so a missing param and a
+    # redacted predicate are independent outcomes rather than the first hiding the second.
+    note_redacted_filter(template.get("redactable_filter", ()))
 
     # Validate required params
     params = {"limit": min(limit, MAX_RESULTS)}

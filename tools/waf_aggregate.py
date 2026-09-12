@@ -171,11 +171,21 @@ def _checked_rule(raw) -> tuple[str, str | None]:
 
 
 class _Filter:
-    def __init__(self, check, athena: str, cwl: str, cwl_pre: tuple = ()):
+    def __init__(self, check, athena: str, cwl: str, cwl_pre: tuple = (),
+                 redactable_filter: tuple = ()):
         self.check = check
         self.athena = athena
         self.cwl = cwl
         self.cwl_pre = tuple(cwl_pre)
+        # ROADMAP 6.13's filter half: the `RedactedFields` entries that would strip what this
+        # PREDICATE reads. Named for the role, not the field, because the display half is covered
+        # data-side by the `REDACTED` sentinel scan at `query_logs` and does not belong here. #62
+        # declared "reads this field" and mixed both roles inside one entry, which is why it was
+        # closed rather than trimmed.
+        #
+        # A filter is the case that leaves no trace: the predicate cannot match a redacted value, so
+        # those records are absent and no sentinel appears anywhere in the result.
+        self.redactable_filter = tuple(redactable_filter)
 
 
 # **The rule filter names all four places a match can be recorded**, which is the nested-COUNT
@@ -266,7 +276,8 @@ _FILTERS = {
                        "httprequest.country = '{v}'", "httpRequest.country = '{v}'"),
     "method": _Filter(
         _checked(r"GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS", "an HTTP method"),
-        "httprequest.httpmethod = '{v}'", "httpRequest.httpMethod = '{v}'"),
+        "httprequest.httpmethod = '{v}'", "httpRequest.httpMethod = '{v}'",
+        redactable_filter=("Method",)),
     "ruletype": _Filter(
         _checked(r"REGULAR|RATE_BASED|GROUP|MANAGED_RULE_GROUP",
                  "a rule type (REGULAR, RATE_BASED, GROUP, MANAGED_RULE_GROUP)"),
@@ -303,7 +314,8 @@ _FILTERS = {
     # satisfied by the string turning up in a URI or a referer.
     "host": _Filter(_checked(r"[0-9a-zA-Z.\-]+(:[0-9]+)?", "a hostname"),
                     f"{_header('host')} = '{{v}}'", "host = '{v}'",
-                    (_parse("host", "host"),)),
+                    (_parse("host", "host"),),
+                    redactable_filter=("SingleHeader:host",)),
 }
 
 
@@ -369,6 +381,11 @@ def _build(group_by: str, metric: str, filters: dict, bucket_minutes: int,
     a_preds, cwl_preds = [], []
     for key, value in sorted(filters.items()):
         spec = _FILTERS[key]
+        from tools.waf_query import note_redacted_filter  # lazy: circular at module level
+        # ROADMAP 6.13's filter half. Recorded here, where the predicate is actually built, rather
+        # than at the render sites: the zero-row branch returns before either of them, and a filter
+        # on a redacted field is a fourth cause of zero rows that the message there does not offer.
+        note_redacted_filter(spec.redactable_filter)
         a_preds.append(spec.athena.replace("{v}", value))
         cwl_preds.append(spec.cwl.replace("{v}", value))
         # Deduplicated per STAGE, which is what makes `_LABELS_ARRAY` shareable between the label

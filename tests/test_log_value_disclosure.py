@@ -34,8 +34,28 @@ from tools import waf_query as q
 
 
 def _reset():
-    q._value_findings["forged"].clear()
-    q._value_findings["redacted"].clear()
+    """Every bucket, derived from the accumulator rather than named.
+
+    Naming them was the same staleness the drain's lock assertion had, one line away, and it fails
+    WORSE here: a stale assertion is red and loud, while a fixture that misses a bucket carries the
+    previous test's finding into the next one and makes it pass or fail for an unrelated reason with
+    nothing to show why. `test_the_reset_fixture_clears_every_bucket` keeps this honest."""
+    for bucket in q._value_findings.values():
+        bucket.clear()
+
+
+def test_the_reset_fixture_clears_every_bucket():
+    """The fixture every other test here depends on, made a checked property rather than a habit.
+
+    A bucket `_reset` misses leaks a finding across tests silently, so this is the one assertion in
+    the file whose subject is the file itself. Populates every bucket first, because a reset asserted
+    against an already-empty accumulator cannot fail."""
+    for bucket in q._value_findings.values():
+        bucket.add(("sentinel", "value"))
+    assert all(q._value_findings.values()), "nothing was populated, so this proves nothing"
+    _reset()
+    leaked = sorted(k for k, v in q._value_findings.items() if v)
+    assert not leaked, f"_reset left these buckets populated: {leaked}"
 
 
 # --- the set the whole mechanism keys off -------------------------------------
@@ -406,8 +426,16 @@ def test_the_drain_reads_and_clears_under_one_lock():
     withs = [n for n in ast.walk(fn) if isinstance(n, ast.With)]
     assert len(withs) == 1, f"expected one `with` in the drain, found {len(withs)}"
     guarded = ast.dump(withs[0])
-    assert guarded.count("'clear'") == 2, \
-        "a .clear() moved outside the lock, so a write between the read and the clear is lost"
+    # Derived from the accumulator's own keys rather than pinned at a number, so adding a bucket
+    # cannot pass by leaving its clear outside the lock. Pinning 2 went stale the first time a third
+    # bucket arrived, which is the shape this file keeps warning about.
+    buckets = sorted(q._value_findings)
+    assert len(buckets) >= 2, f"only {buckets}, so this proves nothing"
+    assert guarded.count("'clear'") == len(buckets), (
+        f"{guarded.count(chr(39) + 'clear' + chr(39))} clears under the lock for {len(buckets)} "
+        f"buckets {buckets}: one moved out, so a write between the read and the clear is lost")
+    for bucket in buckets:
+        assert f"'{bucket}'" in guarded, f"the {bucket!r} bucket is not read under the lock"
     assert "'sorted'" in guarded, "the read moved outside the lock"
 
 

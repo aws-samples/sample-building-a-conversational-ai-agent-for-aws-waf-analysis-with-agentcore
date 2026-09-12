@@ -95,6 +95,17 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     lines.append("\n## Logging Configuration")
     log_dest = None
     log_filter = None
+    # Initialised before the try, like the two above: the WAFNonexistentItemException path skips
+    # every assignment inside it, and `set_webacl_context` below reads all three.
+    #
+    # **This default is not fail-open, and the reason is the EXCEPT's narrowness rather than the
+    # default itself.** `()` means "no redaction configured", which would be a dangerous thing to
+    # assume after a failed read. It is safe because the only caught exception is
+    # `WAFNonexistentItemException`, i.e. logging is not enabled at all, and with no delivery
+    # destination there is genuinely nothing to redact. `AccessDenied` and throttling propagate
+    # instead of being silently read as "no redaction". Widening that `except` is what would turn
+    # this line into a fail-open default.
+    redacted = ()
     try:
         log_resp = client.get_logging_configuration(ResourceArn=webacl["ARN"])
         log_config = log_resp["LoggingConfiguration"]
@@ -122,6 +133,12 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
                 lines.append(f"    Filter: {joiner.join(cond_strs)} → {behavior}")
             lines.append("    ⚠️  Log queries may return incomplete results! Actions not matching KEEP filters are not logged.")
             lines.append("    Note: COUNT = custom rule Count or rule group override to Count; EXCLUDED_AS_COUNT = individual rule override within a managed rule group.")
+        redacted = _normalize_redacted(log_config.get("RedactedFields", []))
+        if redacted:
+            lines.append(f"\n  ⚠️  RedactedFields configured: {', '.join(redacted)}")
+            lines.append("    Values at these locations are written to the log as the literal "
+                         "REDACTED, per record, only where the matching rule inspected that same "
+                         "field. A FILTER on one of them silently drops those records.")
     except client.exceptions.WAFNonexistentItemException:
         lines.append("  ⚠️  Logging NOT enabled for this WebACL")
 
@@ -134,6 +151,7 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         log_destination=log_dest,
         log_filter_active=bool(log_filter),
         log_filter_default=log_filter.get("DefaultBehavior") if log_filter else None,
+        redacted_fields=redacted,
     )
 
     # Detect capabilities from rules
@@ -275,6 +293,40 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
         lines.append("- Are there native apps/APIs on the same domain? (Challenge doesn't work for non-browser)")
 
     return "\n".join(lines)
+
+
+def _normalize_redacted(entries: list) -> tuple:
+    """`RedactedFields` as the vocabulary the `redactable_filter` declarations use. ROADMAP 6.13.
+
+    AWS accepts exactly four `FieldToMatch` types for logging redaction: `UriPath`, `QueryString`,
+    `SingleHeader` and `Method`. Only `SingleHeader` carries a name, because header redaction is per
+    name while the other three are all-or-nothing, so a config redacting `authorization` says nothing
+    about a query that reads `cookie`.
+
+    Header names are lowercased, since HTTP header names are case-insensitive and a config may spell
+    one `Host`, `host` or `HOST` while a declaration is written one way. Comparing raw would silently
+    miss, which is the direction that matters: a missed match means no warning about an undercount.
+
+    Unknown keys are skipped rather than guessed at, so `tests/` pins the accepted set against this
+    function rather than against a comment.
+
+    **What that test cannot catch, said plainly so the next reader does not over-trust it.** It holds
+    this function against the four-entry list and nothing more. If AWS accepts a FIFTH redaction type,
+    a query filtering on it goes unwarned and nothing in this repository notices: there is no schema to
+    diff against and the failure is silence. The check is against drift between the function and the
+    list, not against drift between the list and AWS."""
+    out = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        for kind in ("UriPath", "QueryString", "Method"):
+            if kind in entry:
+                out.append(kind)
+        header = entry.get("SingleHeader") or {}
+        name = (header.get("Name") or "").strip().lower()
+        if name:
+            out.append(f"SingleHeader:{name}")
+    return tuple(dict.fromkeys(out))          # de-duplicated, order preserved
 
 
 def _extract_action(rule: dict) -> str:
