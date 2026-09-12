@@ -92,3 +92,26 @@ def test_the_zero_result_hints_do_not_claim_to_be_exhaustive():
     assert "_provenance(" in following, (
         "the hints are printed without saying what was queried, which is what sent a maintainer "
         "looking at action filters and time windows for a wrong-WebACL answer")
+
+
+def test_the_prompt_tells_the_model_to_read_the_source_line():
+    """**The two halves are bound here on purpose.** The tool discloses which WebACL it used; only the
+    model can tell whether that is the one the user asked about, because the tool never receives the
+    question. So the disclosure is worthless without an instruction that consumes it, and an
+    instruction is worthless if the disclosure gets renamed. Asserted from both sides so neither can
+    drift alone.
+
+    The prompt bullet this replaces read "After WebACL is selected: ALWAYS call get_waf_config",
+    which is satisfied once and stays satisfied. Nothing covered a user naming a different WebACL
+    halfway through a conversation, which is exactly what happened."""
+    prompt = pathlib.Path(waf_logs.__file__).parents[1].joinpath("agent.py").read_text()
+    # Cut the prompt out of the file so a mention of SOURCE in unrelated Python cannot satisfy this.
+    start = prompt.index("## Behavior")
+    behaviour = prompt[start:prompt.index("\n## ", start + 10)]
+    assert "SOURCE:" in behaviour, (
+        "the prompt does not mention the SOURCE line, so nothing instructs the model to compare the "
+        "WebACL a result came from against the one the user asked about")
+    assert "not a one-time setup step" in behaviour, (
+        "the instruction to re-call get_waf_config mid-conversation is gone; the original wording was "
+        "satisfiable once and that is how a question about one WebACL got answered from another")
+    assert "SOURCE:" in waf_logs._provenance(), "the emitter no longer produces the marker"

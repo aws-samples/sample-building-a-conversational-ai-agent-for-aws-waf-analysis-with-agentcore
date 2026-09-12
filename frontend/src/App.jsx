@@ -53,7 +53,17 @@ function ReportDownload({ sessionId, type = 'roi' }) {
         },
         body: JSON.stringify({ prompt }),
       });
-      if (!res.ok) { setError(`HTTP ${res.status}`); return; }
+      if (!res.ok) {
+        // Same detail as invokeAgent: this is the runtime invocation, and a bare status sent a
+        // maintainer looking at the wrong layer for hours. The URL carries the runtime ARN, which
+        // is the part that goes stale when a deployment is replaced.
+        const detail = await res.text().catch(() => '');
+        const url = `${config.agentEndpoint}/runtimes/${arn}/invocations`;
+        console.error('[report] invocation failed', { status: res.status, url, detail });
+        setError(`HTTP ${res.status} ${res.statusText} from ${url}` +
+                 (detail ? ` — ${detail.slice(0, 300)}` : ''));
+        return;
+      }
       const text = await res.text();
       let content = '';
       for (const line of text.split('\n')) {
