@@ -105,8 +105,13 @@ def test_the_call_site_derives_every_identifier_from_the_sanitised_value(monkeyp
     left the whole suite green, and the namespaces were half of the original bug. So this asserts on
     what the call site actually hands the service, not on what a function returns.
 
-    The load-bearing pair is `raw not in ...`: it fails on a reverted interpolation whatever the
-    sanitiser does, and it does not depend on knowing the sanitiser's output format."""
+    **The strong assertion is the full-equality one, not `raw not in ...`.** Corrected after a
+    perturbation that derived the namespaces differently (`actor.upper()`) rather than reverting them:
+    `raw not in namespace` still held, and what failed was
+    `sorted(retrieval_config) == [the three expected keys]`. So the equality decides "every namespace is
+    derived from the same sanitised value" and `raw not in` is a format-independent backstop for the one
+    case equality could miss, a sanitiser that changes shape and takes the assertion's own expectation
+    with it. Both do work; write the backstop, keep the equality."""
     captured = {}
 
     class _Config:
