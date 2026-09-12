@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Changed: the roadmap's deployment section now describes what shipped, and #8 is closed
+
+- **The row promising one-click deploy via a CodePipeline pipeline is gone**, replaced by the two things
+  that actually shipped: building the image on AWS so no container tool is needed, and moving a
+  deployment to a newer release by updating one stack parameter. Both dated, which that file defines as
+  verified against a real environment; both were exercised end to end on a from-scratch deployment.
+- **Automatic updates are deliberately not provided.** For a user who has no relationship with whoever
+  publishes this, choosing your own version is safer than following along automatically. Pinning a
+  version is the property that makes someone else's code safely consumable, and a pipeline that pulls
+  and runs new commits in your account weakens it. Building your own fork with your own pipeline is
+  still yours to do; a source connection needs a one-time console authorisation, so that path was never
+  going to be one click either.
+
 ### Added: CI runs the test suite, which it never did before
 
 Every green check on every pull request in this repository came from GitHub's hosted CodeQL default
