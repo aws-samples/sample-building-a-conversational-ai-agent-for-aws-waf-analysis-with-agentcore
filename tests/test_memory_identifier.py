@@ -31,12 +31,17 @@ NAMESPACE = re.compile(r"^[a-zA-Z0-9/*][A-Za-z0-9_/*-]*$")
 MAX_LENGTH = 255
 
 # Everything `_get_user_id_from_jwt` can return: an email claim, a Cognito `sub` when email is absent,
-# and the empty string when the header is missing or unparseable.
+# and the empty string when the header is missing or unparseable. The last two exist because without
+# them `lstrip("_-/")` in the sanitiser was unguarded: none of the others produces a leading illegal
+# character, so deleting that call left every assertion here green. A local-part may legally begin with
+# a dot in a quoted form, and the degenerate `@a.b` covers an empty local-part.
 REAL_IDS = [
     "chencch@amazon.com",
     "first.last+tag@example.co.uk",
     "8f4c1d2e-3b7a-4f91-9c2d-1e5a7b3c9d40",
     "UPPER.Case@Example.COM",
+    ".foo@bar.com",
+    "@a.b",
     "",
 ]
 
@@ -92,6 +97,53 @@ def test_long_addresses_sharing_a_prefix_do_not_collide():
     first, second = agent._memory_safe_id(f"{stem}1@x.com"), agent._memory_safe_id(f"{stem}2@x.com")
     assert first != second
     assert len(first) <= MAX_LENGTH
+
+
+def test_the_call_site_derives_every_identifier_from_the_sanitised_value(monkeypatch):
+    """**`get_agent` is where the decision happens, and everything above only tests the helper.** With
+    the helper covered but the call site not, changing one namespace back to `f"/facts/{user_id}/"`
+    left the whole suite green, and the namespaces were half of the original bug. So this asserts on
+    what the call site actually hands the service, not on what a function returns.
+
+    The load-bearing pair is `raw not in ...`: it fails on a reverted interpolation whatever the
+    sanitiser does, and it does not depend on knowing the sanitiser's output format."""
+    captured = {}
+
+    class _Config:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "bedrock_agentcore.memory.integrations.strands.config.AgentCoreMemoryConfig", _Config)
+    monkeypatch.setattr(
+        "bedrock_agentcore.memory.integrations.strands.session_manager.AgentCoreMemorySessionManager",
+        lambda config, region_name=None: "manager")
+    monkeypatch.setattr(agent, "MEMORY_ID", "mem-abc123")
+    monkeypatch.setattr(agent, "_agent", None)
+    monkeypatch.setattr(agent, "_agent_user_id", "")
+    monkeypatch.setattr(agent, "Agent", lambda **kwargs: kwargs)
+
+    raw = "chencch@amazon.com"
+    built = agent.get_agent(session_id="s-1", user_id=raw)
+    assert built["session_manager"] == "manager", (
+        "memory setup did not complete, so nothing below was reached")
+
+    expected = agent._memory_safe_id(raw)
+    assert captured["actor_id"] == expected
+    assert ACTOR_ID.match(captured["actor_id"])
+    assert raw not in captured["actor_id"]
+
+    assert sorted(captured["retrieval_config"]) == [
+        f"/facts/{expected}/", f"/preferences/{expected}/", f"/summaries/{expected}/"], (
+        "a namespace is no longer derived from the sanitised id")
+    for namespace in captured["retrieval_config"]:
+        assert NAMESPACE.match(namespace), namespace
+        assert raw not in namespace, f"{namespace} still carries the raw user id"
+
+    # And the session id is passed through untouched, which is correct: AgentCore's sessionId pattern
+    # is stricter than the actorId one, and the frontend already produces UUIDs. Asserted so that
+    # "sanitise everything" does not get applied here by reflex, changing the memory session key.
+    assert captured["session_id"] == "s-1"
 
 
 def test_memory_setup_failure_is_reported_rather_than_swallowed(monkeypatch, capsys):
