@@ -54,8 +54,19 @@ export async function* invokeAgent(prompt, token, sessionId, interruptResponses 
   });
 
   if (!response.ok) {
-    const err = new Error(`Agent error: ${response.status}`);
+    // Include where the request went and what came back. The status alone sent a maintainer through
+    // several hours of server-side investigation for a 404 whose origin was never identified,
+    // because nothing recorded which URL had produced it. The runtime ARN is the part that goes
+    // stale when a deployment is replaced, so it is the part worth reading first.
+    const detail = await response.text().catch(() => '');
+    const err = new Error(
+      `Agent error: ${response.status} ${response.statusText} from ${url}` +
+      (detail ? ` — ${detail.slice(0, 300)}` : '')
+    );
     err.status = response.status;
+    err.url = url;
+    err.detail = detail;
+    console.error('[agent] invocation failed', { status: response.status, url, detail });
     throw err;
   }
 

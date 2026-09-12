@@ -316,9 +316,22 @@ npm run build
 # silently: the build succeeds and the app talks to the previous deployment.
 grep -q "<AgentRuntimeArn from Step 2>" dist/assets/*.js && echo "bundle OK"
 
-# Upload to S3
-aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1
+# Upload in two passes, because the two kinds of file want opposite caching. Everything under
+# assets/ carries a content hash, so it can be cached forever; index.html is the one filename that
+# stays the same across builds, so a cached copy keeps loading the previous build's asset hashes.
+#
+# The headers are not optional. CloudFront is on CachingDisabled for index.html, but that only
+# stops CloudFront: without a header the browser caches it heuristically and keeps running the
+# build it already has. If that build's backend was replaced, it does not run quietly out of date,
+# it breaks, and it reports the failure from whichever call happens to fail first.
+aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1 \
+  --exclude index.html --cache-control 'public, max-age=31536000, immutable'
+
+aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1 \
+  --exclude '*' --include index.html --cache-control 'no-cache'
 ```
+
+> **Note**: no `--delete`, on purpose. Leaving the previous build's hashed assets in place is what lets a browser still holding the old `index.html` fetch the bundle it is asking for. Deleting them turns a stale tab into a broken one. For the same reason you do not need a `/*` invalidation after a deploy: the hashed names are new, and `index.html` is not cached at the edge.
 
 > **Note**: `npm install` rewrites `package-lock.json` if the lockfile's version lags `package.json`. That is expected on a fresh clone and the change is safe to discard.
 

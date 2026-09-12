@@ -151,7 +151,15 @@ Resources:
                 Effect: Allow
                 Action:
                   - glue:GetTable
+                  - glue:GetTables
                   - glue:GetDatabase
+                  # GetDatabases, plural, is the one behind "list every database". Without it the
+                  # Athena table search silently narrows to waf_analysis_tmp and default and says
+                  # so in a note nobody reads, so a table the user created in their own database is
+                  # never found. Reported from a real investigation on 2026-09-12. The action is
+                  # `glue:GetDatabases`; there is no `glue:ListDatabases`, which is the name it is
+                  # easy to reach for.
+                  - glue:GetDatabases
                   - glue:CreateTable
                   - glue:DeleteTable
                   - glue:CreateDatabase

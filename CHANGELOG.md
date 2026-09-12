@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### Fixed: a log query could answer about one WebACL using another's logs, and said nothing
+
+Reported by the maintainer after a real investigation, from the agent's own account of the errors it
+had hit.
+
+- **The logging destination comes from session state, never from the question.** `run_logs_query`
+  reads whatever `get_waf_config` was last called with, so a question about WebACL A is answered from
+  WebACL B's logs whenever the context holds B. It happened: a question about a WebACL logging to
+  CloudWatch Logs was answered through Athena from one logging to Firehose. The runtime log records
+  `dest=arn:aws:firehose:…:deliverystream/aws-waf-logs-kinesis-s3`.
+- **The answer was "0 results" followed by three candidate causes, and the real one was not among
+  them**: wrong action filter, wrong time window, no matching traffic. Every result now carries a
+  `SOURCE:` line naming the WebACL it answered from and the engine that implies, plus what to do if
+  that is not the WebACL you meant.
+- **On every result, not only the empty one.** Zero rows was luck. Had the other WebACL held matching
+  traffic in that window, rows would have come back and been read as the answer, and the branch that
+  prints those hints would never have run. The dangerous outcome is rows.
+- **The execution role was missing `glue:GetDatabases`**, so the Athena table search silently narrowed
+  to `waf_analysis_tmp` and `default`, and a table you created in your own database would never be
+  found. Measured with a throwaway role: the shipped action set denies the call with `not authorized
+  to perform: glue:GetDatabases`. The action is `GetDatabases`, plural; there is no
+  `glue:ListDatabases`. `glue:GetTables` is added for the same reason, since the search paginates it.
+
+### Fixed: the frontend distribution cached the one file that must never be cached
+
+Found by the maintainer opening the redeployed app in a real browser, which is the first check in this
+sequence that neither a stack status nor a test could have stood in for.
+
+- **One cache behaviour on `Managed-CachingOptimized` covered `index.html` as well as the hashed
+  assets.** DefaultTTL 86400, and `aws s3 sync` sends no `Cache-Control`. `index.html` is the only
+  filename Vite keeps stable between builds, so a cached copy keeps asking for the previous build's
+  asset hashes. Measured on that first visit: `Age: 3916`.
+- **It is now split on the only thing that distinguishes the files**, whether the name changes when the
+  contents do. `index.html` and the client-side-routing fallback go through `Managed-CachingDisabled`;
+  `/assets/*` keeps `Managed-CachingOptimized`, because a content hash exists precisely so a file can
+  be cached forever. A first attempt put everything on CachingDisabled, which also stopped the bundle
+  being cached and disabled request collapsing, so concurrent visitors each caused a separate S3 GET.
+- **The default behaviour has to be a MinTTL-zero policy, and a header cannot substitute.** A policy
+  whose MinTTL is above zero caches for at least that long even when the origin sends `no-cache` or
+  `no-store`, and CachingOptimized's MinTTL is 1.
+- **`ErrorCachingMinTTL` is now 0 on both custom error responses.** Defining that block at all brings a
+  default of 300 seconds, measured at 300 live. Error caching is asymmetric: for 404, 410, 414 and 501
+  CloudFront honours the origin's no-store, and for everything else **including 403** it ignores it. S3
+  behind Origin Access Control answers a missing key with 403, so a request for an asset that is gone
+  was answered with `index.html`, status 200, cached at the edge for five minutes, and the browser
+  parses HTML as JavaScript.
+- **The upload is two passes**, `immutable` for the hashed assets and `no-cache` for `index.html`, with
+  deliberately no `--delete`: the previous build's assets are what a browser still holding the old
+  `index.html` asks for, so removing them turns a stale tab into a broken one. No `/*` invalidation is
+  needed either.
+- **The frontend stack takes an optional custom domain**, `DomainName` plus `AcmCertificateArn`, both
+  required together. Without them the template behaves exactly as before. This exists because an alias
+  attached by hand does not survive: CloudFormation owns the whole `DistributionConfig` and CloudFront
+  has no partial update, so any later `deploy` removes what the template does not declare. That
+  happened during this change and the custom domain was down for a few minutes.
+- **An agent invocation failure now reports where it went and what came back.** It gave only a status
+  code, which cost hours of server-side investigation for a 404 whose origin was never established,
+  because nothing had recorded the URL.
+
 ### Fixed: thirteen documentation defects, found by deploying this project from scratch
 
 A clean agent deployed the whole thing reading only `AGENTS.md` and the documents it links, with no

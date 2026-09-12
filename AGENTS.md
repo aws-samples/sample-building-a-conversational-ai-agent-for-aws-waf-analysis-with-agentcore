@@ -91,9 +91,18 @@ verification**, because both happen for an image that cannot serve a request.
    running stale code after a "redeploy". A unique tag forces the pull. The `deploy/image-build.yaml`
    path tags with the release tag instead, which is unique per release and immutable, so it satisfies
    this for the same reason.
-4. **CloudFormation forgets parameters between deploys.** Every `deploy` must re-pass **all**
-   non-default parameters you used before, or they silently reset to defaults. Bites hardest on the
-   KB redeploy: re-pass `ModelId` / `ExistingUserPoolId` / `MemoryId` etc. alongside `KnowledgeBaseId`.
+4. **Whether CloudFormation forgets a parameter depends on which command you use, so use
+   `deploy`.** Corrected 2026-09-12 after measuring it: `aws cloudformation deploy` sends
+   `UsePreviousValue` for every parameter you do not override, so omitting one keeps its current
+   value, and the console's Update wizard pre-fills from the stack. Calling `update-stack` or
+   `create-change-set` directly is the dangerous path: an omitted parameter falls back to the
+   template default. An earlier version of this principle described that behaviour as universal,
+   which sent people re-passing parameters unnecessarily and, worse, offered a wrong explanation for
+   failures that had another cause. **One exception that still bites:** a parameter introduced in the
+   same deploy that first adds it has no previous value, so it takes the default. That is why the
+   guard on the frontend stack's custom domain is "only use `deploy`" rather than the parameters
+   themselves, and losing it that way is a legitimate update rather than drift, so
+   `detect-stack-drift` will not warn you.
 5. **Use a Claude model, not GPT-family.** This is a defensive tool but every prompt is full of
    "SQLi / XSS / bypass / payload". GPT-family models on Bedrock can hit upstream cyber-safety filters
    and **fail silently** — the UI just looks idle. Default Claude Sonnet 4.6 / Opus avoid this. If the

@@ -311,9 +311,20 @@ npm run build
 # 构建成功，应用连的是上一次部署。
 grep -q "<第 2 步的 AgentRuntimeArn>" dist/assets/*.js && echo "bundle OK"
 
-# 上传到 S3
-aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1
+# 分两趟上传，因为两类文件要的缓存正好相反。assets/ 下面的名字里都带内容哈希，可以永久缓存；
+# index.html 是唯一一个两次构建之间名字不变的，缓存下来那份会一直去加载上一次构建的 asset 哈希。
+#
+# 这两个头不是可选的。index.html 在 CloudFront 那边走 CachingDisabled，但那只管住 CloudFront：
+# 源头不发头，浏览器会启发式缓存它，于是继续跑手里已经有的那个构建。而如果那个构建对应的后端
+# 已经被替换掉，它不是安静地跑旧版本，是坏的，而且报错来自恰好最先失败的那个调用。
+aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1 \
+  --exclude index.html --cache-control 'public, max-age=31536000, immutable'
+
+aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1 \
+  --exclude '*' --include index.html --cache-control 'no-cache'
 ```
+
+> **提示**：故意不加 `--delete`。把上一次构建那些带哈希的资源留着，是为了让手里还拿着旧 `index.html` 的浏览器仍然能取到它要的那个 bundle。删掉就等于把一个过期的标签页变成一个坏掉的标签页。同理，部署后也不需要做 `/*` 失效：带哈希的名字本来就是新的，而 `index.html` 在边缘根本不缓存。
 
 > **提示**：如果 lockfile 里的版本号落后于 `package.json`，`npm install` 会把它改回来。新克隆的仓库上这是正常的，那个改动可以直接丢掉。
 
