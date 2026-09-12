@@ -109,7 +109,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.22.0 \
+  --parameter-overrides ReleaseTag=v0.23.0 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -123,7 +123,7 @@ aws cloudformation describe-stacks \
 
 > **Important**: This builds a published release, not your working tree. CodeBuild never sees your local files, so if you have changed the code, use the Docker or finch path.
 
-> **Troubleshooting**: Building v0.22.0 in ap-northeast-1 took about 2 minutes end to end, and about 20 seconds when the tag was already in ECR. If the build fails, the stack rolls back and the failure reason names the CodeBuild phase and the log group, which is `/aws/codebuild/<stack-name>-image-build`. The stack creates the ECR repository itself, so if you already created `waf-agent` by hand, delete it first or pass a different `EcrRepositoryName`. The template needs a region with CodeBuild `ARM_CONTAINER` compute; every region listed above has it.
+> **Troubleshooting**: Measured in ap-northeast-1, the whole stack takes about 2 minutes end to end, and about 20 seconds when the tag is already in ECR. If the build fails, the stack rolls back and the failure reason names the CodeBuild phase and the log group, which is `/aws/codebuild/<stack-name>-image-build`. The stack creates the ECR repository itself, so if you already created `waf-agent` by hand, delete it first or pass a different `EcrRepositoryName`. The template needs a region with CodeBuild `ARM_CONTAINER` compute; every region listed above has it.
 
 > **Note**: The remaining steps in this guide use bash syntax (`export`, `$VAR`), which does not run in PowerShell. On Windows, deploy the stacks from the CloudFormation console, or substitute literal values for the variables.
 
@@ -425,10 +425,23 @@ aws cloudformation deploy \
 ```bash
 REGION=ap-northeast-1  # Same region used during deployment
 
+# Both buckets have versioning enabled, so `aws s3 rm --recursive` does NOT empty them:
+# a delete without a VersionId only adds another delete marker, and CloudFormation still
+# refuses to delete the bucket. Remove versions and delete markers explicitly.
+empty_bucket() {
+  for KEY in Versions DeleteMarkers; do
+    OBJ=$(aws s3api list-object-versions --bucket "$1" --region "$2" \
+      --query "{Objects: ${KEY}[].{Key:Key,VersionId:VersionId}}" --output json)
+    case "$OBJ" in
+      *'"Key"'*) aws s3api delete-objects --bucket "$1" --region "$2" --delete "$OBJ" > /dev/null;;
+    esac
+  done
+}
+
 # 1. Empty the frontend S3 bucket (CFN cannot delete non-empty buckets)
 BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
-aws s3 rm s3://$BUCKET --recursive
+empty_bucket "$BUCKET" us-east-1
 
 # 2. Delete frontend stack (CloudFront deletion takes 5-10 minutes)
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
@@ -436,18 +449,37 @@ aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east
 # 3. Delete sessions API stack (if deployed)
 aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
 
-# 4. Delete KB stack (if deployed) — empty docs bucket first
+# 4. Delete KB stack (if deployed). Delete the Bedrock data source and knowledge base
+#    FIRST. kb.yaml builds their ARNs with !Sub, so CloudFormation has no dependency
+#    edge to the vector index and can delete it while Bedrock is still cleaning up,
+#    which leaves the data source DELETE_UNSUCCESSFUL and fails the whole stack.
+KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text 2>/dev/null)
+if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ]; then
+  for DS in $(aws bedrock-agent list-data-sources --knowledge-base-id "$KB_ID" --region $REGION \
+      --query 'dataSourceSummaries[].dataSourceId' --output text); do
+    aws bedrock-agent delete-data-source --knowledge-base-id "$KB_ID" --data-source-id "$DS" --region $REGION
+  done
+  aws bedrock-agent delete-knowledge-base --knowledge-base-id "$KB_ID" --region $REGION
+fi
 KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
-[ -n "$KB_BUCKET" ] && aws s3 rm s3://$KB_BUCKET --recursive
+[ -n "$KB_BUCKET" ] && empty_bucket "$KB_BUCKET" $REGION
 aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
 
 # 5. Delete backend stack (includes AgentCore Runtime + Memory; Cognito only if auto-created)
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 6. Delete ECR repository
-aws ecr delete-repository --repository-name waf-agent --region $REGION --force
+# 6. If you used the CodeBuild path, delete that stack. It OWNS the ECR repository and
+#    empties it on delete, so do NOT delete the repository by hand: that breaks the stack
+#    and leaves the CodeBuild project, two IAM roles and a Lambda behind.
+aws cloudformation delete-stack --stack-name waf-agent-image --region $REGION
+
+# 7. If you built locally instead, the repository is yours to delete
+# aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
+
+> **Note**: Deleting the runtime does not delete its logs. One `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` log group survives per runtime you ever deployed, and they are the only record of how the agent behaved. Delete them deliberately or not at all; nothing above touches them.
 
 ## Usage Notes
 

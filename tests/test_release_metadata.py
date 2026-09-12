@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""A release is a CHANGELOG heading, a tag and four agreeing version strings.
+"""A release is a CHANGELOG heading, a tag and six agreeing version strings.
 
 Every one of those has drifted at least once. `v0.14.0` tagged a lockfile that still said
 0.13.0, because `uv.lock` was hand-edited instead of regenerated. Five releases shipped with
@@ -8,13 +8,17 @@ the deployed container four releases behind. And the CHANGELOG heading is not do
 `frontend/vite.config.js` regexes the first `## X.Y.Z` into `__APP_VERSION__` at build time,
 so writing that heading *is* the frontend version bump.
 
-**Deliberately not a sweep of the docs for version numbers.** That was the first idea and it
-has nothing to catch: the pattern `\\d+\\.\\d+\\.\\d+` over `docs/`, `AGENTS.md` and
-`README*.md` matches fourteen IP-address fragments (`203.0.113`, `54.254.254` and friends) and
-zero version strings. A check whose first run produces an allowlist chore rather than a
-finding is not worth having.
+**Still not a sweep of the docs for version numbers, and that distinction has now been tested both
+ways.** A bare `\\d+\\.\\d+\\.\\d+` over `docs/`, `AGENTS.md` and `README*.md` matches fourteen
+IP-address fragments (`203.0.113`, `54.254.254` and friends) and zero version strings, so it produces
+an allowlist chore rather than a finding. But a *narrow* doc pattern is a different thing: `ReleaseTag=vX`
+appears once per deployment guide and names the release a reader will actually deploy. Cutting 0.23.0
+left both guides saying `v0.22.0`, so anyone copying the documented command deployed a release behind,
+and the guard missed it because it only knew the template's default. Narrow enough to have exactly one
+match per file is the line between the two ideas.
 """
 
+import json
 import pathlib
 import re
 import subprocess
@@ -147,7 +151,41 @@ def test_the_backfill_floor_still_describes_reality(headings, tags):
         f"tagged despite being below the floor, so lower it: {sorted(below & set(tags), key=_v)}"
 
 
-def test_the_four_version_strings_agree(headings):
+# Every place a release number is written by hand, with a pattern narrow enough that it cannot
+# match a neighbouring value. Adding a row is the whole cost of adding a seventh place.
+#
+# **Two of these were added after a cut falsified them within the hour.** Bumping to 0.23.0 left
+# `ReleaseTag=v0.22.0` in both deployment guides, so anyone copying the documented command deployed a
+# release behind, and the guard did not notice because it only knew the template's default. A
+# from-scratch deploy driven by the documentation is what surfaced it.
+#
+# `frontend/package-lock.json` had said 0.12.0 for eleven releases. `npm install` rewrites it, so
+# every reader following the documented frontend build got a dirty working tree and no explanation.
+def _rx(pattern):
+    return lambda text: re.findall(pattern, text, re.M)
+
+
+def _lockfile_versions(text):
+    """Parsed, not matched. A lockfile carries a `"version"` for every dependency, so any regex loose
+    enough to find both of the project's own would also collect several hundred others."""
+    data = json.loads(text)
+    return [data["version"], data["packages"][""]["version"]]
+
+
+VERSION_STRINGS = [
+    ("pyproject.toml", "pyproject.toml", _rx(r'^version = "(\d+\.\d+\.\d+)"')),
+    ("frontend/package.json", "frontend/package.json", _rx(r'^  "version": "(\d+\.\d+\.\d+)"')),
+    ("frontend/package-lock.json", "frontend/package-lock.json", _lockfile_versions),
+    # Scoped to the ReleaseTag block: the template has three `Default:` lines, and matching the first
+    # that happens to look like a version would drift silently.
+    ("deploy/image-build.yaml ReleaseTag", "deploy/image-build.yaml",
+     _rx(r"^  ReleaseTag:\n(?:    .*\n)*?    Default: v(\d+\.\d+\.\d+)$")),
+    ("docs/deployment.md example", "docs/deployment.md", _rx(r"ReleaseTag=v(\d+\.\d+\.\d+)")),
+    ("docs/deployment_zh.md example", "docs/deployment_zh.md", _rx(r"ReleaseTag=v(\d+\.\d+\.\d+)")),
+]
+
+
+def test_every_hand_written_version_string_agrees(headings):
     """The four legs a developer can get wrong by hand: `pyproject.toml`,
     `frontend/package.json`, `deploy/image-build.yaml`'s `ReleaseTag` default and the
     CHANGELOG heading. The heading matters most, because `frontend/vite.config.js` regexes
@@ -170,18 +208,14 @@ def test_the_four_version_strings_agree(headings):
     reader should not go looking for a cleverer perturbation, because there is nothing to
     catch. The check with teeth is the test below."""
     newest = headings[0]
-    pyproject = re.search(r'^version = "(.+?)"', (ROOT / "pyproject.toml").read_text(), re.M)
-    package = re.search(r'^  "version": "(.+?)"',
-                        (ROOT / "frontend/package.json").read_text(), re.M)
-    # Scoped to the ReleaseTag block, because the template has three `Default:` lines and
-    # matching the first one that happens to look like a version would drift silently.
-    template = re.search(r"^  ReleaseTag:\n(?:    .*\n)*?    Default: v(\d+\.\d+\.\d+)$",
-                         (ROOT / "deploy/image-build.yaml").read_text(), re.M)
-    assert pyproject and package and template, "a version string could not be located at all"
-    assert {pyproject.group(1), package.group(1), template.group(1)} == {newest}, {
-        "CHANGELOG": newest, "pyproject.toml": pyproject.group(1),
-        "frontend/package.json": package.group(1),
-        "deploy/image-build.yaml ReleaseTag": template.group(1)}
+    found = {}
+    for label, path, extract in VERSION_STRINGS:
+        matches = extract((ROOT / path).read_text())
+        assert matches, f"{label}: no version string matched in {path}, so this test proves nothing"
+        found[label] = set(matches)
+
+    wrong = {label: sorted(values) for label, values in found.items() if values != {newest}}
+    assert not wrong, {"CHANGELOG": newest, **wrong}
 
 
 def test_the_committed_lockfile_is_not_stale(tags):

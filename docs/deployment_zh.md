@@ -98,7 +98,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.22.0 \
+  --parameter-overrides ReleaseTag=v0.23.0 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -112,7 +112,7 @@ aws cloudformation describe-stacks \
 
 > **重要**：这里构建的是已发布的 release，不是你本地的工作区。CodeBuild 看不到你机器上的文件，所以改过代码就走 Docker 或 finch 那条路。
 
-> **排查**：在 ap-northeast-1 构建 v0.22.0，整个栈大约 2 分钟；tag 已经在 ECR 里的话约 20 秒。构建失败栈会回滚，失败原因里会点出是哪个 CodeBuild 阶段，以及日志组 `/aws/codebuild/<栈名>-image-build`。ECR 仓库是这个栈自己建的，所以手工建过 `waf-agent` 仓库的话，先删掉它，或者换一个 `EcrRepositoryName`。区域要支持 CodeBuild 的 `ARM_CONTAINER`，上面列的区域都支持。
+> **排查**：在 ap-northeast-1 实测，整个栈大约 2 分钟；tag 已经在 ECR 里的话约 20 秒。构建失败栈会回滚，失败原因里会点出是哪个 CodeBuild 阶段，以及日志组 `/aws/codebuild/<栈名>-image-build`。ECR 仓库是这个栈自己建的，所以手工建过 `waf-agent` 仓库的话，先删掉它，或者换一个 `EcrRepositoryName`。区域要支持 CodeBuild 的 `ARM_CONTAINER`，上面列的区域都支持。
 
 > **提示**：本指南后面的命令都是 bash 写法（`export`、`$VAR`），PowerShell 里跑不了。Windows 上要么从 CloudFormation 控制台部署，要么把变量换成实际值。
 
@@ -411,10 +411,22 @@ aws cloudformation deploy \
 ```bash
 REGION=ap-northeast-1  # 与部署时使用的区域一致
 
+# 两个桶都开了版本控制，所以 `aws s3 rm --recursive` 清不掉：不带 VersionId 的删除
+# 只会再加一个删除标记，CloudFormation 照样拒绝删桶。要显式删掉历史版本和删除标记。
+empty_bucket() {
+  for KEY in Versions DeleteMarkers; do
+    OBJ=$(aws s3api list-object-versions --bucket "$1" --region "$2" \
+      --query "{Objects: ${KEY}[].{Key:Key,VersionId:VersionId}}" --output json)
+    case "$OBJ" in
+      *'"Key"'*) aws s3api delete-objects --bucket "$1" --region "$2" --delete "$OBJ" > /dev/null;;
+    esac
+  done
+}
+
 # 1. 清空前端 S3 桶（CFN 无法删除非空桶）
 BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-east-1 \
   --query "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" --output text)
-aws s3 rm s3://$BUCKET --recursive
+empty_bucket "$BUCKET" us-east-1
 
 # 2. 删除前端栈（CloudFront 删除需要 5-10 分钟）
 aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east-1
@@ -422,18 +434,35 @@ aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east
 # 3. 删除会话 API 栈（如已部署）
 aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
 
-# 4. 删除知识库栈（如已部署）— 先清空文档桶
+# 4. 删除知识库栈（如已部署）。先手工删掉 Bedrock 的 data source 和 knowledge base。
+#    kb.yaml 用 !Sub 拼这两个 ARN，CloudFormation 因此没有指向向量索引的依赖边，
+#    可能在 Bedrock 还在清理时就把索引删了，data source 变 DELETE_UNSUCCESSFUL，整栈失败。
+KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text 2>/dev/null)
+if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ]; then
+  for DS in $(aws bedrock-agent list-data-sources --knowledge-base-id "$KB_ID" --region $REGION \
+      --query 'dataSourceSummaries[].dataSourceId' --output text); do
+    aws bedrock-agent delete-data-source --knowledge-base-id "$KB_ID" --data-source-id "$DS" --region $REGION
+  done
+  aws bedrock-agent delete-knowledge-base --knowledge-base-id "$KB_ID" --region $REGION
+fi
 KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
-[ -n "$KB_BUCKET" ] && aws s3 rm s3://$KB_BUCKET --recursive
+[ -n "$KB_BUCKET" ] && empty_bucket "$KB_BUCKET" $REGION
 aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
 
 # 5. 删除后端栈（包含 AgentCore Runtime + Memory；Cognito 仅在自动创建时删除）
 aws cloudformation delete-stack --stack-name waf-agent --region $REGION
 
-# 6. 删除 ECR 仓库
-aws ecr delete-repository --repository-name waf-agent --region $REGION --force
+# 6. 走过 CodeBuild 那条路的话，删掉那个栈。ECR 仓库归它所有，删栈时会自己清空，
+#    所以**不要**手工删仓库：那会把栈搞坏，还会留下 CodeBuild 项目、两个 IAM 角色和一个 Lambda。
+aws cloudformation delete-stack --stack-name waf-agent-image --region $REGION
+
+# 7. 如果是在本机构建的，仓库才由你自己删
+# aws ecr delete-repository --repository-name waf-agent --region $REGION --force
 ```
+
+> **提示**：删掉 runtime 不会删掉它的日志。你部署过的每一个 runtime 都会留下一个 `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT` 日志组，那是 agent 行为的唯一记录。要删就明确地删，不然就都留着；上面的步骤一个都不会碰它们。
 
 ## 使用须知
 
