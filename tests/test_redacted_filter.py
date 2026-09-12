@@ -101,6 +101,30 @@ def test_the_config_read_survives_logging_being_disabled():
         "`redacted` is only assigned inside the try, so a WebACL with logging off would raise here"
 
 
+def test_the_default_is_safe_only_because_the_except_is_narrow():
+    """`redacted = ()` means "no redaction configured", which after a FAILED read would be fail-open.
+
+    It is safe for a reason that lives in the `except` rather than in the default: the only caught
+    exception is `WAFNonexistentItemException`, meaning logging is not enabled at all, and with no
+    delivery destination there is genuinely nothing to redact. `AccessDenied` and throttling propagate.
+    Widening that clause to `Exception` would silently turn a permissions problem into "your config
+    redacts nothing", so the narrowness is the load-bearing part and is asserted rather than described.
+    """
+    import ast
+    import inspect
+    import textwrap
+    fn = ast.parse(textwrap.dedent(inspect.getsource(waf_config.get_waf_config))).body[0]
+    handlers = [h for n in ast.walk(fn) if isinstance(n, ast.Try) for h in n.handlers]
+    assert handlers, "no except clause found, so this proves nothing"
+    caught = set()
+    for h in handlers:
+        assert h.type is not None, "a bare `except` would read any failure as no redaction"
+        caught.add(ast.unparse(h.type))
+    assert caught == {"client.exceptions.WAFNonexistentItemException"}, (
+        f"get_waf_config catches {sorted(caught)}. Anything wider makes `redacted = ()` fail-open: a "
+        f"permissions or throttling failure would be reported as a config that redacts nothing.")
+
+
 # --- the declarations, both directions --------------------------------------
 
 def test_every_filter_that_reads_a_redactable_field_declares_it():

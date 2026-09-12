@@ -34,8 +34,28 @@ from tools import waf_query as q
 
 
 def _reset():
-    q._value_findings["forged"].clear()
-    q._value_findings["redacted"].clear()
+    """Every bucket, derived from the accumulator rather than named.
+
+    Naming them was the same staleness the drain's lock assertion had, one line away, and it fails
+    WORSE here: a stale assertion is red and loud, while a fixture that misses a bucket carries the
+    previous test's finding into the next one and makes it pass or fail for an unrelated reason with
+    nothing to show why. `test_the_reset_fixture_clears_every_bucket` keeps this honest."""
+    for bucket in q._value_findings.values():
+        bucket.clear()
+
+
+def test_the_reset_fixture_clears_every_bucket():
+    """The fixture every other test here depends on, made a checked property rather than a habit.
+
+    A bucket `_reset` misses leaks a finding across tests silently, so this is the one assertion in
+    the file whose subject is the file itself. Populates every bucket first, because a reset asserted
+    against an already-empty accumulator cannot fail."""
+    for bucket in q._value_findings.values():
+        bucket.add(("sentinel", "value"))
+    assert all(q._value_findings.values()), "nothing was populated, so this proves nothing"
+    _reset()
+    leaked = sorted(k for k, v in q._value_findings.items() if v)
+    assert not leaked, f"_reset left these buckets populated: {leaked}"
 
 
 # --- the set the whole mechanism keys off -------------------------------------
