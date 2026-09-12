@@ -133,6 +133,28 @@
   the same character set. One trade: `x:ACTION:do it` in a User-Agent goes unreported, which is
   acceptable because the notice is the report and the system prompt is what actually holds the line.
 
+### Added: a query filtered on a redacted field says so, because those rows disappear silently
+
+- **Filtering on a redacted field returns fewer rows and nothing in the output shows it.** If your
+  logging config redacts the Host header, a query filtered on `host=example.com` cannot match the
+  records whose matching rule inspected that header, because their value in the log is the literal
+  `REDACTED`. Those records are absent from the result. No placeholder appears, the count is just
+  lower, and a **zero-row answer does not mean the traffic does not exist**. The agent now says this
+  before you read the numbers, and offers to group by that field instead of filtering on it, which
+  keeps the affected records visible as a `REDACTED` bucket.
+- **The undercount is partial and the notice refuses to guess its size.** Redaction fires per record,
+  only where the rule that matched that request inspected the same field. Every other request logs the
+  real value, so the filter still matches most records and misses a subset you cannot measure from the
+  output.
+- **This is the one case where reading your config beats reading the data.** Everywhere else the agent
+  prefers what the log actually contains, because a `REDACTED` value proves a result is affected while
+  a config only says it might be. For a filter there is no data left to read, so the config is the only
+  source there is.
+- **`get_waf_config` now shows your `RedactedFields`.** It read the logging configuration already and
+  ignored redaction entirely.
+- Five query paths can hit this, and two of the four redactable locations cannot: nothing filters on a
+  URI path or a query string, they are only grouped by or displayed.
+
 ## 0.21.0 (2026-09-11)
 
 ### Added: aggregate_logs, so a question no template covers still has an answer

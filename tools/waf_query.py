@@ -715,7 +715,7 @@ CONTROL_MARKERS = (
     "## Your Next Action", "## Confidence Rules", "## Directional Judgment",
     "ACTION:", "HINT:", "Next:", "STOPPED:", "BLOCKED:", "PARTIAL_DATA:",
     "MISSING_SECTIONS:", "WHY_EACH_ONE_IS_EMPTY:",
-    "INJECTION_ATTEMPT:", "REDACTION_DETECTED:",
+    "INJECTION_ATTEMPT:", "REDACTION_DETECTED:", "REDACTED_FILTER:",
 )
 
 _HEADING_MARKERS = tuple(m for m in CONTROL_MARKERS if not m.endswith(":"))
@@ -749,7 +749,7 @@ _AWS_REDACTED_IN_JSON = '"value":"REDACTED"'
 # `tests/test_log_value_disclosure.py` asserts the drain's atomicity STRUCTURALLY. Nothing here
 # claims a behavioural test proves the lock; that would be a passing test with no signal in it.
 _value_findings_lock = threading.Lock()
-_value_findings: dict[str, set] = {"forged": set(), "redacted": set()}
+_value_findings: dict[str, set] = {"forged": set(), "redacted": set(), "filtered": set()}
 
 
 def _scan_log_values(rows: list[dict] | None) -> list[dict] | None:
@@ -809,8 +809,10 @@ def drain_log_value_findings() -> str:
     with _value_findings_lock:
         forged = sorted(_value_findings["forged"])
         redacted = sorted(_value_findings["redacted"])
+        filtered = sorted(_value_findings["filtered"])
         _value_findings["forged"].clear()
         _value_findings["redacted"].clear()
+        _value_findings["filtered"].clear()
     notes = []
     if forged:
         where = "; ".join(f"`{col}` contains `{marker}`" for col, marker in forged)
@@ -832,7 +834,56 @@ def drain_log_value_findings() -> str:
             f"beside redacted ones in the same result. Finding this proves this result is affected; "
             f"not finding it proves only that no record in this window was redacted, never that "
             f"redaction is unconfigured.")
+    if filtered:
+        where = ", ".join(f"`{f}`" for f in filtered)
+        notes.append(
+            f"REDACTED_FILTER: this query FILTERS on {where}, which your AWS WAF logging "
+            f"RedactedFields config redacts. Records whose matching rule inspected that same field "
+            f"carry the literal REDACTED there, so the predicate cannot match them and they are "
+            f"ABSENT from this result. An undercount, partial because redaction fires per record, and "
+            f"its size cannot be recovered from the output: no REDACTED value appears anywhere and "
+            f"the row count is simply lower. **A zero-row result here does NOT mean no such traffic.** "
+            f"Say the result is incomplete for this reason before drawing any conclusion from the "
+            f"counts, and offer to group BY that field instead of filtering on it, which keeps the "
+            f"affected records visible as a REDACTED bucket.")
     return "\n\n".join(notes)
+
+
+def note_redacted_filter(declared: tuple | list) -> None:
+    """Record that a query FILTERS on a field the WebACL's logging config redacts. ROADMAP 6.13.
+
+    `declared` is a query's `redactable_filter`: the redaction entries that would strip what its
+    PREDICATES read, never what it groups by or displays.
+
+    **Recorded rather than returned, and delivered by the same hook as the other two notices**, which
+    is what makes it reach the ZERO-ROW path. That path is where this matters most and where a
+    returned string gets dropped: `waf_logs.py:568` and `waf_aggregate`'s equivalent return early with
+    a "0 results" message offering three causes, and a filter on a redacted field is a fourth that
+    produces exactly that symptom. Appending at each render branch would mean remembering every
+    branch; there are two per module and the early one is the one that matters.
+
+    Also worth correcting a line in 6.13 written for the display half: "redaction does not produce
+    zero rows" is true when you GROUP BY a redacted field, since the records come back under a
+    `REDACTED` bucket. It is false when you FILTER on one, which can empty the result outright.
+
+    **This is the one place config beats data, and the inversion is the whole point.** 6.13's display
+    half reads the values, because a `REDACTED` in a row proves the result is affected and a config
+    read only says it might be. A filter has no data to read: the predicate matches nothing for those
+    records and they leave the result entirely, so `REDACTED` never appears and the row count is just
+    lower. Nothing in the output can reveal it. So config-side is not a weaker corroboration here, it
+    is the only source there is.
+
+    **The undercount is PARTIAL, and saying otherwise would be worse than saying nothing.** Redaction
+    fires per record, only where the rule that matched that request inspected the same `FieldToMatch`.
+    Every other disposition logs the real value, so a filter on a redacted header still matches most
+    records and silently misses the subset whose matching rule read that header. The size of the miss
+    is not derivable from the result, which is exactly why the wording refuses to quantify it.
+    """
+    from tools.session_state import get_redacted_fields
+    hit = {d for d in (declared or []) if d in get_redacted_fields()}
+    if hit:
+        with _value_findings_lock:
+            _value_findings["filtered"] |= hit
 
 
 def get_log_type() -> str:

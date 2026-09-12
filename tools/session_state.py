@@ -7,7 +7,8 @@ _state: dict = {}
 
 
 def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destination: str | None = None,
-                       log_filter_active: bool = False, log_filter_default: str | None = None):
+                       log_filter_active: bool = False, log_filter_default: str | None = None,
+                       redacted_fields: tuple = ()):
     """Store current WebACL context."""
     _state["webacl_name"] = name
     _state["webacl_arn"] = arn
@@ -17,6 +18,10 @@ def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destina
     _state["log_destination"] = log_destination
     _state["log_filter_active"] = log_filter_active
     _state["log_filter_default"] = log_filter_default
+    # ROADMAP 6.13's filter half. Normalised at the read so nothing downstream normalises again;
+    # `()` and not None because `RedactedFields` is ABSENT from GetLoggingConfiguration when
+    # unconfigured rather than present-and-empty, and a caller must not have to tell those apart.
+    _state["redacted_fields"] = tuple(redacted_fields)
     _state["findings"] = []
 
     # The resolved-table state (waf_athena._athena_state) is keyed to the previous
@@ -125,6 +130,16 @@ def get_host_profiles() -> dict:
 def add_finding(finding: dict):
     """Append a finding to the session."""
     _state.setdefault("findings", []).append(finding)
+
+
+def get_redacted_fields() -> tuple:
+    """The WebACL's logging RedactedFields, normalised, or `()` when none are configured.
+
+    Vocabulary matches the `redactable_filter` declarations exactly: `Method`, `UriPath`,
+    `QueryString`, `SingleHeader:<lowercased name>`. Header names are lowercased here because HTTP
+    header names are case-insensitive while a config may spell one any way at all, so comparing raw
+    would miss `Host` against a declaration written `host`."""
+    return _state.get("redacted_fields", ())
 
 
 def get_findings() -> list:

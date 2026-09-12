@@ -406,8 +406,16 @@ def test_the_drain_reads_and_clears_under_one_lock():
     withs = [n for n in ast.walk(fn) if isinstance(n, ast.With)]
     assert len(withs) == 1, f"expected one `with` in the drain, found {len(withs)}"
     guarded = ast.dump(withs[0])
-    assert guarded.count("'clear'") == 2, \
-        "a .clear() moved outside the lock, so a write between the read and the clear is lost"
+    # Derived from the accumulator's own keys rather than pinned at a number, so adding a bucket
+    # cannot pass by leaving its clear outside the lock. Pinning 2 went stale the first time a third
+    # bucket arrived, which is the shape this file keeps warning about.
+    buckets = sorted(q._value_findings)
+    assert len(buckets) >= 2, f"only {buckets}, so this proves nothing"
+    assert guarded.count("'clear'") == len(buckets), (
+        f"{guarded.count(chr(39) + 'clear' + chr(39))} clears under the lock for {len(buckets)} "
+        f"buckets {buckets}: one moved out, so a write between the read and the clear is lost")
+    for bucket in buckets:
+        assert f"'{bucket}'" in guarded, f"the {bucket!r} bucket is not read under the lock"
     assert "'sorted'" in guarded, "the read moved outside the lock"
 
 
