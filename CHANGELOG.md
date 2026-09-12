@@ -155,6 +155,29 @@
 - Five query paths can hit this, and two of the four redactable locations cannot: nothing filters on a
   URI path or a query string, they are only grouped by or displayed.
 
+### Fixed: your WAF labels were masked as if they were credentials
+
+- **`awswaf:managed:token:absent` is a label, not a session token, and the privacy masker could not
+  tell.** It treated the colon in a label namespace as an assignment, so any value containing
+  `token:` looked like `token=secret`. That label is attached to every request arriving without a WAF
+  token, which is most of them, so `run_logs_query`'s label queries and
+  `aggregate_logs(group_by="label")` were returning `<redacted len=27>` in place of the label. The
+  analysis those queries exist for was being hidden from you. A credential name preceded by a colon
+  is now read as a namespace segment.
+- **The check still catches a credential buried inside a longer name.** `PHPSESSID=…` and
+  `JSESSIONID=…` are real cookie names with `sess` in the middle of them, so the fix keys on the
+  colon specifically rather than on any character before the name. Checked over 22 values, eleven that
+  must mask and eleven that must not.
+- **Secret masking now runs for every log query rather than two of them.** The value-level check
+  exists so that a query selecting a secret into an innocuously-named column is still covered, and it
+  ran on two of the six query paths. It now runs in the shared query layer, so `detect_bypass`,
+  `investigate_block_fp`, `check_challenge_compatibility` and `evaluate_count_rules` are covered too,
+  and a new query path cannot miss it. The notice explaining that masking is deliberate moved with it.
+- **The raw log record is excluded, because masking it destroys the record.** One internal column
+  holds an entire log entry as text, and any request carrying a session cookie made the whole entry
+  look sensitive. Masking it there would have silently emptied match details and header analysis. No
+  query displays that column, so nothing is exposed by leaving it alone.
+
 ## 0.21.0 (2026-09-11)
 
 ### Added: aggregate_logs, so a question no template covers still has an answer
