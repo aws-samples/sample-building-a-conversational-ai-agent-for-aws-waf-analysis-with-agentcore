@@ -574,8 +574,6 @@ def run_logs_query(
 
     # Format as table (results is list[dict] from unified query layer)
     # Mask sensitive field values (cookie/authorization/token/...) before display.
-    from tools.waf_query import redact_row_fields, PRIVACY_MASK_HINT
-    _masked = redact_row_fields(results)
     # Use row with most keys for column headers (some rows may lack group-by field)
     columns = [k for k in max(results[:MAX_RESULTS], key=lambda r: len(r)).keys() if not k.startswith("@ptr")]
     lines = [
@@ -586,9 +584,6 @@ def run_logs_query(
     for row in results[:MAX_RESULTS]:
         values = [str(row.get(col, "")) for col in columns]
         lines.append("| " + " | ".join(values) + " |")
-
-    if _masked:
-        lines.append(f"\nHINT: {PRIVACY_MASK_HINT}")
 
     # Name the table this ran against, and why any candidate was passed over. On
     # the Athena backend the agent picks the table itself, so without this the user

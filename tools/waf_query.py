@@ -87,8 +87,19 @@ _ALWAYS_MASK_TOKENS = {"password", "passwd", "pwd", "pass", "secret", "secrets",
 # so it stays visible even when carried in a sensitive-named parameter.
 _OPAQUE_TOKEN = re.compile(r"[A-Za-z0-9._~/=+-]{8,}")
 # Value-level fallback: an embedded credential assignment in any column.
+#
+# **`(?<!:)` is the fix for a live false positive, not a micro-optimisation.** Without it, the
+# `[=:]` branch reads a namespace SEPARATOR as an assignment, and `awswaf:managed:token:absent` is a
+# WAF label on every request that arrives without a token. So the `labels` column was masked to
+# `<redacted len=27>` in `run_logs_query` and `aggregate_logs(group_by="label")`, destroying the
+# analysis those queries exist for. Found 2026-09-12 while extending this masker's coverage under
+# ROADMAP 5.5; it predates that work.
+#
+# A credential name preceded by a colon is a namespace segment, which generalises past WAF labels.
+# The lookbehind is `:` and NOT `\w`, checked over 22 shapes: excluding a word char would also stop
+# `PHPSESSID=xyz` and `JSESSIONID=abc` matching, since `sess` there sits inside a longer cookie name.
 _VALUE_SENSITIVE = re.compile(
-    r"(?i)((session|sess|auth|token|secret|csrf|xsrf|password|passwd|sid|apikey|"
+    r"(?i)((?<!:)(session|sess|auth|token|secret|csrf|xsrf|password|passwd|sid|apikey|"
     r"api[-_]?key|access[-_]?token|bearer)\w*\s*[=:]\s*\S)|^(bearer|basic)\s+\S")
 
 
@@ -208,6 +219,20 @@ def _headers_from_message(message: str) -> list:
         return []
 
 
+# `@message` is the WHOLE raw log record in one cell, and masking it destroys the record rather than
+# a value: `_VALUE_SENSITIVE` matches any request carrying a `sessionid=` cookie, so the cell becomes
+# `<redacted len=3241>` and every downstream `json.loads` fails inside a bare `except` — match details
+# and headers vanish with nothing said. Verified against the real-record fixture plus a session cookie.
+#
+# Excluding it costs no privacy, because **no `run_logs_query` template selects `@message` for
+# display**. All four `fields @message` queries are parsers, and each masks what it extracts:
+# `sample_inspection_content` runs `_redact` on the cookie and header content, and `waf_block_fp`'s
+# match detail is content the analyst is meant to read. This exclusion is what makes the call safe to
+# move into `query_logs`, which is the difference between covering every consumer and covering the
+# ones someone remembered.
+_NEVER_MASK_COLUMNS = frozenset({"@message"})
+
+
 def redact_row_fields(rows: list) -> bool:
     """Mask sensitive VALUES in query-result rows in place. Masks a cell when
     its column NAME is sensitive (cookie/authorization/token/...), OR — as a
@@ -221,6 +246,8 @@ def redact_row_fields(rows: list) -> bool:
             continue
         for key, val in list(row.items()):
             if not isinstance(val, str) or not val:
+                continue
+            if key in _NEVER_MASK_COLUMNS:
                 continue
             if _name_is_sensitive(key) or _VALUE_SENSITIVE.search(val):
                 row[key] = _mask_value(val)
@@ -749,7 +776,8 @@ _AWS_REDACTED_IN_JSON = '"value":"REDACTED"'
 # `tests/test_log_value_disclosure.py` asserts the drain's atomicity STRUCTURALLY. Nothing here
 # claims a behavioural test proves the lock; that would be a passing test with no signal in it.
 _value_findings_lock = threading.Lock()
-_value_findings: dict[str, set] = {"forged": set(), "redacted": set(), "filtered": set()}
+_value_findings: dict[str, set] = {"forged": set(), "redacted": set(), "filtered": set(),
+                                  "masked": set()}
 
 
 def _scan_log_values(rows: list[dict] | None) -> list[dict] | None:
@@ -780,6 +808,14 @@ def _scan_log_values(rows: list[dict] | None) -> list[dict] | None:
         with _value_findings_lock:
             _value_findings["forged"] |= forged
             _value_findings["redacted"] |= redacted
+    # **Masking runs AFTER the scan, and that order is load-bearing for both scanners.** A forged
+    # marker inside a cookie, and AWS's own `REDACTED` in a sensitive-named column, are both replaced
+    # by `<redacted len=N>`; scanning afterwards would see neither. ROADMAP 5.5 moved this call here
+    # from two of its six consumers, so every `query_logs` caller is covered rather than the two that
+    # remembered. `waf_patrol` has its own Athena path and stays outside this funnel.
+    if redact_row_fields(rows):
+        with _value_findings_lock:
+            _value_findings["masked"].add("row")
     return rows
 
 
@@ -810,9 +846,11 @@ def drain_log_value_findings() -> str:
         forged = sorted(_value_findings["forged"])
         redacted = sorted(_value_findings["redacted"])
         filtered = sorted(_value_findings["filtered"])
+        masked = bool(_value_findings["masked"])
         _value_findings["forged"].clear()
         _value_findings["redacted"].clear()
         _value_findings["filtered"].clear()
+        _value_findings["masked"].clear()
     notes = []
     if forged:
         where = "; ".join(f"`{col}` contains `{marker}`" for col, marker in forged)
@@ -846,6 +884,8 @@ def drain_log_value_findings() -> str:
             f"Say the result is incomplete for this reason before drawing any conclusion from the "
             f"counts, and offer to group BY that field instead of filtering on it, which keeps the "
             f"affected records visible as a REDACTED bucket.")
+    if masked:
+        notes.append(f"HINT: {PRIVACY_MASK_HINT}")
     return "\n\n".join(notes)
 
 

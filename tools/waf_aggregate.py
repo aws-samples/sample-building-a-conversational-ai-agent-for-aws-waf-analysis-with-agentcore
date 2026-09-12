@@ -515,8 +515,7 @@ def aggregate_logs(
     Returns:
         A results table, or the reason there is none.
     """
-    from tools.waf_query import (check_coarse_partition_block, log_query_error, query_logs,
-                                redact_row_fields, PRIVACY_MASK_HINT)
+    from tools.waf_query import check_coarse_partition_block, log_query_error, query_logs
     from tools.waf_logs import _parse_start_time, _table_block
 
     if group_by not in _GROUP_BY:
@@ -580,7 +579,6 @@ def aggregate_logs(
                     "search_waf_knowledge for field availability.")
         return msg + _table_block()
 
-    masked = redact_row_fields(rows)
     columns = [k for k in max(rows[:MAX_RESULTS], key=lambda r: len(r)).keys()
                if not k.startswith("@ptr")]
     lines = [f"{described} — {len(rows)} rows\n",
@@ -588,8 +586,6 @@ def aggregate_logs(
              "| " + " | ".join(["---"] * len(columns)) + " |"]
     for row in rows[:MAX_RESULTS]:
         lines.append("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |")
-    if masked:
-        lines.append(f"\nHINT: {PRIVACY_MASK_HINT}")
     if metric == "percentile":
         lines.append(
             f"\nHINT: these are per-{bucket_minutes}-minute request counts per {group_by}. A "
