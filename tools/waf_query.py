@@ -781,10 +781,24 @@ _value_findings: dict[str, set] = {"forged": set(), "redacted": set(), "filtered
 
 
 def _scan_log_values(rows: list[dict] | None) -> list[dict] | None:
-    """Record what a log VALUE carries that must not be read as the engine's own words.
+    """Scan every log value for what must not be read as the engine's own words, THEN mask secrets.
 
-    Returns `rows` untouched. This never alters a value: the value is the evidence, and 5.3a's third
-    meaning applies to content that is perfectly intact.
+    Two jobs, and the name only says the first, so both are stated here. It returns the same list
+    object, scans it, and then delegates to `redact_row_fields`, which rewrites sensitive cells in
+    place. **Do not read this as leaving values alone and add masking downstream**: masking already
+    happened here, for every `query_logs` consumer, and a second pass is the weak-duplicate shape this
+    repo has removed twice.
+
+    **The order is deliberate and has no behavioural signature if it inverts.** Scanning must come
+    first, because masking replaces a value with `<redacted len=N>`: a forged control marker inside a
+    cookie, and AWS's own `REDACTED` in a sensitive-named column, would both be gone before the scan
+    saw them, and a scan that finds neither looks exactly like a clean scan. `tests/` asserts the
+    order on source positions for that reason.
+
+    **What the SCAN never does is alter a value**, which is the part 5.3a's third meaning depends on:
+    a marker is reported by naming its column, never by rewriting or wrapping the content, because the
+    content is the evidence. Masking is a separate, deliberate rewrite of secrets, and it announces
+    itself through the hint the drain appends.
 
     **The `_error` row is skipped, and that is not a detail.** It is tool-authored, and
     `_COARSE_PARTITION_ERROR` itself begins `BLOCKED:` and carries `ACTION:`, so scanning it would
