@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: thirteen documentation defects, found by deploying this project from scratch
+
+A clean agent deployed the whole thing reading only `AGENTS.md` and the documents it links, with no
+knowledge of the work that produced them. It succeeded, and it came back with thirteen places where
+the documentation was wrong, silent, or contradicted itself.
+
+- **The container-tool check told you to look but not how.** `which docker` succeeds on any machine
+  that ever installed Docker Desktop, daemon or no daemon. On the validation machine `docker info`
+  failed and `finch info` succeeded, so the documented test would have chosen a local working-tree
+  build over the published release and nothing would have flagged it. The check is now `docker info`
+  and `finch info`, with a tiebreaker that needs no question: local changes require a local build,
+  everything else takes CodeBuild.
+- **There was no way to verify a deployment without a browser, and the invoke contract was
+  documented nowhere.** It had to be reverse-engineered from `frontend/src/agent.js`, which no
+  document references. Both guides now give the request shape, both accepted body forms, the two ways
+  to obtain an `IdToken`, and the warning that a token is an hour of unrestricted access to your agent.
+- **Cleanup was wrong in three ways** and would have failed halfway. It emptied two versioned buckets
+  with `aws s3 rm --recursive`, which only adds delete markers; it had no step for the image-build
+  stack; and it told you to delete an ECR repository that stack now owns. It also deleted the knowledge
+  base stack without removing the Bedrock data source first, which races Bedrock's own cleanup.
+- **`deploy/sync-kb.sh` read `AWS_REGION`** while Step 1 has you export `REGION`, so a shell with
+  `AWS_REGION` set elsewhere read stack outputs from the wrong region. It now takes the region as a
+  third argument.
+- **Two version strings were stale**, one of them within the hour: cutting 0.23.0 left both guides
+  telling you to deploy `v0.22.0`, and `frontend/package-lock.json` had said 0.12.0 for eleven
+  releases, so the documented `npm install` dirtied every reader's working tree.
+- **Smaller, each real**: Step 2's save-list omitted an ARN that Step 3 then rebuilt from parts; the
+  environment-variable table presented a template edit as a deploy parameter; nothing warned that a
+  leftover `frontend/.env` builds cleanly and ships a frontend aimed at a runtime that no longer
+  exists, so there is now a check on the built bundle; the frontend WebACL's missing log configuration
+  is documented as deliberate; and `AGENTS.md` claimed the version check reports a commit, which
+  stopped being true for one of the two build paths.
+
 ## 0.23.0 (2026-09-12)
 
 ### Added: build the container image on AWS, so a machine with no container tool can deploy
