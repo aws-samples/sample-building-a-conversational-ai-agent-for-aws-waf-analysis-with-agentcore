@@ -68,4 +68,4 @@ See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the tr
 
 | | |
 |---|---|
-| A published list of known limitations | |
+| A published list of known limitations | 2026-09-12 |
