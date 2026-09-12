@@ -51,7 +51,9 @@ Working method for every stack:
    frontend `.env` consume them. Echo them back to the user as a record.
 
 Dependency flow (why the order matters — this is the part to keep in your head):
-- **Image → backend.** Backend needs the ECR image URI. → Steps 1–2.
+- **Image → backend.** Backend needs the ECR image URI. → Steps 1–2. If the user has no container
+  tool, or is on Windows x86, Step 1 has a CloudFormation path that builds on CodeBuild instead
+  (`deploy/image-build.yaml`, builds a published release rather than the working tree).
 - **backend → sessions.** Sessions API needs backend's DynamoDB table ARN/name + Cognito ids. → Step 3.
 - **backend + kb → backend again.** The KB stack is independent, but wiring it in **requires a second
   backend deploy** with `KnowledgeBaseId` (that's what sets the env var + `bedrock:Retrieve` IAM).
@@ -72,7 +74,9 @@ Then verify (Step 8 + the doc's runtime status check): open the CloudFront URL, 
    WebACLs only exist in us-east-1. AWS constraint, not a preference.
 3. **Never tag the image `:latest` — use the git commit hash.** AgentCore only pulls a new image when
    CloudFormation sees the `AgentContainerUri` value *change*. Reusing `:latest` → the runtime keeps
-   running stale code after a "redeploy". A unique tag forces the pull.
+   running stale code after a "redeploy". A unique tag forces the pull. The `deploy/image-build.yaml`
+   path tags with the release tag instead, which is unique per release and immutable, so it satisfies
+   this for the same reason.
 4. **CloudFormation forgets parameters between deploys.** Every `deploy` must re-pass **all**
    non-default parameters you used before, or they silently reset to defaults. Bites hardest on the
    KB redeploy: re-pass `ModelId` / `ExistingUserPoolId` / `MemoryId` etc. alongside `KnowledgeBaseId`.

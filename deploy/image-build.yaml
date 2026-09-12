@@ -1,0 +1,300 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  Builds the WAF Analyst agent container image on AWS, so you need no container
+  tooling on your own machine. CodeBuild runs on native Graviton hardware, downloads a
+  published release of this project, builds an ARM64 image and pushes it to ECR in your
+  account. Deploy this before deploy/backend.yaml and pass the ImageUri output to it.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: What to build
+        Parameters:
+          - ReleaseTag
+          - SourceRepository
+      - Label:
+          default: Where to put it
+        Parameters:
+          - EcrRepositoryName
+    ParameterLabels:
+      ReleaseTag:
+        default: Release tag to build (for example v0.22.0)
+
+Parameters:
+  ReleaseTag:
+    Type: String
+    Default: v0.22.0
+    AllowedPattern: "v[0-9]+\\.[0-9]+\\.[0-9]+"
+    Description: >-
+      The published release to build, exactly as it appears on the Releases page. To move
+      to a newer release later, update this stack with the new tag: that rebuilds the image
+      and changes the ImageUri output. Leaving it unchanged rebuilds nothing.
+
+  SourceRepository:
+    Type: String
+    Default: aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore
+    AllowedPattern: "[A-Za-z0-9._-]+/[A-Za-z0-9._-]+"
+    Description: >-
+      owner/repo to download the release from. Change this only if you are building a fork.
+      The download is an anonymous HTTPS GET, so no credentials or source connection are needed.
+
+  EcrRepositoryName:
+    Type: String
+    Default: waf-agent
+    AllowedPattern: "[a-z0-9]+(?:[._-][a-z0-9]+)*"
+    Description: The ECR repository to create and push to.
+
+Resources:
+  # Tags are immutable because the Runtime resolves a tag when it is created and never
+  # revisits it, so a tag whose contents can change would leave the runtime serving an
+  # old image with every signal reporting success.
+  ImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref EcrRepositoryName
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EmptyOnDelete: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"Keep the 10 most recent images",
+          "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},
+          "action":{"type":"expire"}}]}
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BuildAndPush
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # AWS's minimal push set. No pull actions: a push never downloads layer
+              # bytes. BatchGetImage and DescribeImages are reads of the manifest, used to
+              # skip a build whose tag is already present.
+              - Sid: PushToOneRepository
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:BatchGetImage
+                  - ecr:DescribeImages
+                Resource: !GetAtt ImageRepository.Arn
+              # Cannot be scoped below the registry: one login covers every repository.
+              - Sid: AuthenticateToRegistry
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${AWS::StackName}*
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}-image-build
+      Description: !Sub Builds an ARM64 image of ${SourceRepository} and pushes it to ECR
+      ServiceRole: !GetAtt BuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      TimeoutInMinutes: 30
+      Environment:
+        # Native Graviton, which is the entire point: no QEMU, no --platform, no buildx.
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/amazonlinux-aarch64-standard:3.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: IMAGE_URI
+            Value: !Sub ${ImageRepository.RepositoryUri}:${ReleaseTag}
+          - Name: RELEASE_TAG
+            Value: !Ref ReleaseTag
+          - Name: SOURCE_REPOSITORY
+            Value: !Ref SourceRepository
+          - Name: REPOSITORY_NAME
+            Value: !Ref EcrRepositoryName
+      Source:
+        # NO_SOURCE forces the buildspec inline, and Location is omitted: AWS's own
+        # NO_SOURCE example omits it, despite the generic property text asking for it.
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            pre_build:
+              commands:
+                - |
+                  if aws ecr describe-images --repository-name "$REPOSITORY_NAME" \
+                       --image-ids "imageTag=$RELEASE_TAG" >/dev/null 2>&1; then
+                    echo "$IMAGE_URI already exists; nothing to build."
+                    echo skip > /tmp/skip
+                    exit 0
+                  fi
+                - aws ecr get-login-password | docker login --username AWS --password-stdin "${IMAGE_URI%%/*}"
+            build:
+              commands:
+                # --strip-components avoids depending on the archive's top-level directory
+                # name, which GitHub derives from the tag with the leading v removed.
+                - |
+                  test -f /tmp/skip && exit 0
+                  set -e
+                  curl -fsSL -o /tmp/source.tar.gz \
+                    "https://github.com/$SOURCE_REPOSITORY/archive/refs/tags/$RELEASE_TAG.tar.gz"
+                  mkdir /tmp/source
+                  tar xzf /tmp/source.tar.gz -C /tmp/source --strip-components=1
+                  cd /tmp/source
+                  docker build \
+                    --build-arg "BUILD_COMMIT=$RELEASE_TAG" \
+                    --build-arg "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                    -t "$IMAGE_URI" .
+                  docker push "$IMAGE_URI"
+
+  BuildRunnerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: RunTheBuild
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
+
+  BuildRunner:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Runtime: python3.13
+      Role: !GetAtt BuildRunnerRole.Arn
+      Timeout: 900
+      Code:
+        # Every path sends a response. A handler that raises, or that is killed at its own
+        # timeout, leaves CloudFormation waiting a full hour and then failing with nothing
+        # to read, so the deadline below stops polling while there is still time to answer.
+        ZipFile: |
+          import json
+          import time
+          import urllib.request
+
+          import boto3
+
+          TERMINAL = {"SUCCEEDED", "FAILED", "FAULT", "STOPPED", "TIMED_OUT"}
+          RESPOND_MARGIN_MS = 30_000
+
+
+          def respond(event, context, status, reason, physical_id):
+              body = json.dumps({
+                  "Status": status,
+                  "Reason": reason[:1000],
+                  "PhysicalResourceId": physical_id,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": {},
+              }).encode()
+              request = urllib.request.Request(
+                  event["ResponseURL"], data=body, method="PUT",
+                  headers={"content-type": "", "content-length": str(len(body))})
+              try:
+                  urllib.request.urlopen(request)
+              except Exception as exc:                       # noqa: BLE001
+                  # Nothing left to do but log it. Raising here would hang the stack a
+                  # second time, for the same reason it would have hung the first.
+                  print(f"failed to send {status} response: {exc}")
+
+
+          def run_build(project, context):
+              codebuild = boto3.client("codebuild")
+              build_id = codebuild.start_build(projectName=project)["build"]["id"]
+              print(f"started {build_id}")
+              while context.get_remaining_time_in_millis() > RESPOND_MARGIN_MS:
+                  time.sleep(15)
+                  build = codebuild.batch_get_builds(ids=[build_id])["builds"][0]
+                  status = build["buildStatus"]
+                  if status in TERMINAL:
+                      if status == "SUCCEEDED":
+                          return
+                      # Not currentPhase: at a terminal status that is always COMPLETED,
+                      # which reads like phase information and carries none.
+                      failed = [p["phaseType"] for p in build.get("phases", [])
+                                if p.get("phaseStatus") not in (None, "SUCCEEDED")]
+                      raise RuntimeError(
+                          f"build {build_id} ended {status}"
+                          + (f" in {', '.join(failed)}" if failed else "")
+                          + f"; read the log at /aws/codebuild/{project}")
+              raise RuntimeError(
+                  f"build {build_id} was still running when this function ran out of time. "
+                  f"It may yet succeed: check CodeBuild, and if the image reached ECR, "
+                  f"retry the stack operation.")
+
+
+          def handler(event, context):
+              # Constant for the life of the stack, so changing ReleaseTag is an update to
+              # this resource rather than a replacement of it.
+              physical_id = event["ResourceProperties"]["ProjectName"]
+              try:
+                  if event["RequestType"] == "Delete":
+                      # Nothing to undo: the image belongs to the repository, which the
+                      # stack deletes on its own. Also reached when this function's own
+                      # code changes, and for an invented id after an abandoned create.
+                      respond(event, context, "SUCCESS", "nothing to delete", physical_id)
+                      return
+                  run_build(physical_id, context)
+                  respond(event, context, "SUCCESS", "image pushed", physical_id)
+              except Exception as exc:                       # noqa: BLE001
+                  respond(event, context, "FAILED", str(exc), physical_id)
+
+  # DependsOn is not needed for ordering: the ProjectName property below already makes
+  # this resource depend on the project. It is here to say the build must not start
+  # before the repository it pushes to exists.
+  Image:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: ImageRepository
+    Properties:
+      ServiceToken: !GetAtt BuildRunner.Arn
+      ProjectName: !Ref BuildProject
+      # Not read by the handler. Present so that changing the tag changes this resource's
+      # properties, which is the only thing that makes CloudFormation re-invoke it.
+      ReleaseTag: !Ref ReleaseTag
+
+Outputs:
+  ImageUri:
+    Description: Pass this to the backend stack as AgentContainerUri
+    Value: !Sub ${ImageRepository.RepositoryUri}:${ReleaseTag}
+  RepositoryUri:
+    Value: !GetAtt ImageRepository.RepositoryUri
+  BuildProjectName:
+    Description: Where to read the build log if this stack fails
+    Value: !Ref BuildProject
