@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""ROADMAP 5.5: the mask fallback covered two of six consumers, and extending it exposed two bugs.
+"""ROADMAP 5.7: the mask fallback covered two of six consumers, and extending it exposed two bugs.
 
 `redact_row_fields`' `_VALUE_SENSITIVE` fallback says in its own docstring that it exists so "a future
 template that selects a secret into an innocuously-named column is still covered". It ran from two
@@ -15,7 +15,7 @@ one. Both are fixed here, and both are the reason this is a change rather than a
 1. **`awswaf:managed:token:absent` was masked.** `[=:]` read a namespace separator as an assignment,
    so the `labels` column became `<redacted len=27>` in `run_logs_query` and
    `aggregate_logs(group_by="label")` for every request arriving without a token, which is most of
-   them. Pre-existing on main, not introduced by 5.5.
+   them. Pre-existing on main, not introduced by 5.7.
 2. **`@message` would have been masked**, and it is the whole record in one cell. Any request with a
    `sessionid=` cookie trips the fallback, the cell becomes `<redacted len=3241>`, and both parsers
    `json.loads` it inside a bare `except`. Match details and headers would vanish silently.
@@ -75,6 +75,42 @@ def test_ordinary_values_are_still_left_alone():
         assert q.redact_row_fields([row]) is False, f"an ordinary value was masked: {value!r}"
 
 
+def test_a_bare_short_form_label_is_still_masked_which_is_the_known_boundary():
+    """**A recorded boundary, not a defect, and recorded so the next reader does not rediscover it.**
+
+    `(?<!:)` keys on a credential name being PRECEDED by a colon. It says nothing about one sitting at
+    the START of a value, so the short form `token:fingerprint:abc123` still masks. Every label that
+    reaches the masker today carries the `awswaf:managed:` prefix, so the guard fires on the real
+    thing; and `waf_overview`'s metric-label path never touches the masker at all, which the next
+    assertion pins.
+
+    **What would give this a live path:** a template selecting a label's short form as its own column,
+    which is plausible because the agent's own instructions discuss labels that way (`bot:verified`,
+    `token:absent`). If that arrives, this test is the note saying the fix is not the lookbehind but
+    matching the label's structure. Asserted in its current direction rather than aspirationally, so
+    it stays true and stays visible."""
+    row = {"label": "token:fingerprint:abc123def"}
+    assert q.redact_row_fields([row]) is True, (
+        "the short form no longer masks. If a template now selects it, this boundary has a live path "
+        "and the note above is the starting point rather than a curiosity.")
+    # The prefixed form, which is what every real label carries, is unaffected.
+    assert q.redact_row_fields([{"label": "awswaf:managed:token:fingerprint:abc123def"}]) is False
+
+
+def test_the_metrics_label_path_does_not_reach_the_masker():
+    """Half of why the boundary above has no live path. `waf_overview` reads labels from CloudWatch
+    metrics, not from log rows, so it never calls `query_logs` or the masker.
+
+    Structural and derived, because the claim is about absence: a future `query_logs` call in that
+    module would put metric labels through the masker and give the boundary a path."""
+    import pathlib as _p
+    src = (_p.Path(q.__file__).parent / "waf_overview.py").read_text()
+    for reaching in ("query_logs", "redact_row_fields", "_scan_log_values"):
+        assert reaching not in src, (
+            f"waf_overview now reaches {reaching}, so its labels pass through the masker and the "
+            f"short-form boundary above becomes reachable")
+
+
 # --- bug 2: @message is the record, not a value -----------------------------
 
 def test_the_raw_record_column_is_never_masked():
@@ -109,14 +145,14 @@ def test_no_display_template_selects_the_excluded_column():
         f"there or drop it from the SELECT.")
 
 
-# --- 5.5 itself: every consumer, and the order that makes it work -----------
+# --- 5.7 itself: every consumer, and the order that makes it work -----------
 
 def test_masking_happens_inside_the_funnel_so_no_consumer_can_forget():
-    """The point of 5.5. Two of six consumers called the masker; now none of them does and the funnel
+    """The point of 5.7. Two of six consumers called the masker; now none of them does and the funnel
     does it for all of them.
 
     Structural, because a behavioural test would only cover the consumers someone remembered, which
-    is exactly the state 5.5 replaces."""
+    is exactly the state 5.7 replaces."""
     import pathlib as _p
     tools = _p.Path(q.__file__).parent
     callers = sorted(f.name for f in tools.glob("*.py")
