@@ -363,6 +363,31 @@ def _parse_start_time(value: str) -> int | None:
     return None
 
 
+def _provenance(explicit_log_group: str = "") -> str:
+    """Which WebACL's logs answered this, and through which engine.
+
+    **The destination comes from session state, never from the question.** So a question about
+    WebACL A is answered from WebACL B's logs whenever `get_waf_config` was last called for B, with
+    no error and nothing in the output to say so. Measured 2026-09-12 on a real investigation: a
+    question about a WebACL logging to CloudWatch was answered from one logging to Firehose, via
+    Athena, `dest=arn:aws:firehose:...:deliverystream/aws-waf-logs-kinesis-s3`. It returned 0 rows
+    and the zero-result hint offered three causes, none of them this one.
+
+    **On every path, not only the empty one.** Zero rows was luck. Had the other WebACL held
+    matching traffic in that window, rows would have come back and been read as the answer, and the
+    zero-result hint that carries `_table_block` would never have run. The dangerous case is rows.
+    """
+    from tools.session_state import get_webacl_name
+    if explicit_log_group:
+        return (f"\nSOURCE: log group {explicit_log_group}, passed explicitly, so the session's "
+                f"WebACL context was not consulted.")
+    from tools.waf_query import get_log_type
+    engine = {"cwl": "CloudWatch Logs", "s3": "Athena over S3"}.get(get_log_type(), "no destination")
+    return (f"\nSOURCE: WebACL {get_webacl_name() or '(none set)'} via {engine}. That is the WebACL "
+            f"from the last get_waf_config call, not from your question. If it is not the one you "
+            f"asked about, call get_waf_config(webacl_name='...') and run this again.")
+
+
 def _table_block() -> str:
     """The `TABLE:` block for Athena results, or "" on the CWL backend.
 
@@ -569,6 +594,7 @@ def run_logs_query(
         # All three reasons above are wrong when the table cannot address the window,
         # and this is the path where the user has nothing else to go on. The resolution
         # block names the table and, on a mixed bucket, the history it cannot reach.
+        msg += _provenance(log_group)
         msg += _table_block()
         return msg
 
@@ -589,6 +615,7 @@ def run_logs_query(
     # the Athena backend the agent picks the table itself, so without this the user
     # has no way to tell a query of their own table from a query of one the agent
     # built next to it.
+    lines.append(_provenance(log_group))
     block = _table_block()
     if block:
         lines.append(block)

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Fixed: a log query could answer about one WebACL using another's logs, and said nothing
+
+Reported by the maintainer after a real investigation, from the agent's own account of the errors it
+had hit.
+
+- **The logging destination comes from session state, never from the question.** `run_logs_query`
+  reads whatever `get_waf_config` was last called with, so a question about WebACL A is answered from
+  WebACL B's logs whenever the context holds B. It happened: a question about a WebACL logging to
+  CloudWatch Logs was answered through Athena from one logging to Firehose. The runtime log records
+  `dest=arn:aws:firehose:…:deliverystream/aws-waf-logs-kinesis-s3`.
+- **The answer was "0 results" followed by three candidate causes, and the real one was not among
+  them**: wrong action filter, wrong time window, no matching traffic. Every result now carries a
+  `SOURCE:` line naming the WebACL it answered from and the engine that implies, plus what to do if
+  that is not the WebACL you meant.
+- **On every result, not only the empty one.** Zero rows was luck. Had the other WebACL held matching
+  traffic in that window, rows would have come back and been read as the answer, and the branch that
+  prints those hints would never have run. The dangerous outcome is rows.
+- **The execution role was missing `glue:GetDatabases`**, so the Athena table search silently narrowed
+  to `waf_analysis_tmp` and `default`, and a table you created in your own database would never be
+  found. Measured with a throwaway role: the shipped action set denies the call with `not authorized
+  to perform: glue:GetDatabases`. The action is `GetDatabases`, plural; there is no
+  `glue:ListDatabases`. `glue:GetTables` is added for the same reason, since the search paginates it.
+
 ### Fixed: the frontend distribution cached the one file that must never be cached
 
 Found by the maintainer opening the redeployed app in a real browser, which is the first check in this
