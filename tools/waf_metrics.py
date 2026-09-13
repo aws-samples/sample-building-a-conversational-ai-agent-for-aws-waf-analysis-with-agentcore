@@ -158,6 +158,14 @@ def get_waf_metrics(
 # reassuring answer is the one a broken query produces. CloudWatch metrics are the only witness
 # that no partition layout, engine difference, logging filter or query timeout can touch. That is
 # an accuracy property; it happens to also be free, and the accuracy is the reason.
+#
+# **The invariant, and it covers the reads and not only the returns: a diagnostic's own failure is
+# never a message about the thing it diagnoses.** Written this wide because the narrow version, "every
+# refusal path returns silence with the reason on stderr", was satisfied while a `get_web_acl` call
+# added to resolve a dimension propagated its exception out and took an answer the tool had already
+# produced. That read was outside a rule about return values and inside this one. So anything a
+# diagnostic does, including the calls it makes to decide what to say, either yields silence with a
+# stderr line or does not belong here.
 
 # CloudWatch metric retention, in days, per resolution. Measured 2026-09-13: asking for a
 # resolution that is no longer retained returns `StatusCode: Complete` with an empty `Values` and

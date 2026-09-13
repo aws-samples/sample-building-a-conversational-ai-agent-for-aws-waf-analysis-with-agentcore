@@ -18,7 +18,7 @@ CASES = [
         "_safe_query swallows to [] again, i.e. the shipped behaviour",
         "tools/waf_bypass.py",
         "    try:\n"
-        "        rows = query_logs(cwl, athena, start, end, limit)\n"
+        "        rows = query_logs(cwl, athena, start, end, limit, notes=notes, label=label)\n"
         "    except Exception as e:\n"
         "        return _record(f\"{type(e).__name__}: {e}\")\n"
         "    reason = log_query_error(rows)\n"

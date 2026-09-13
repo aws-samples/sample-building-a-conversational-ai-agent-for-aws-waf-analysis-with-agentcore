@@ -126,9 +126,10 @@ CASES = [
         # entry did and then called the sweep hollow for not failing.
         "a second, unguarded query_logs call site in a funneled module",
         "tools/waf_logs.py",
-        '        _failures: dict[str, str] = {}\n'
+        '        _notes: dict[str, int] = {}\n'
         '        results = _safe_query(query, athena_query, start_epoch, end_epoch,\n'
-        '                              limit=params["limit"], failures=_failures, label="query")',
+        '                              limit=params["limit"], failures=_failures, label="query",\n'
+        '                              notes=_notes)',
         '        from tools.waf_query import query_logs\n'
         '        _failures: dict[str, str] = {}\n'
         '        results = query_logs(query, athena_query, start_epoch, end_epoch,\n'

@@ -497,8 +497,24 @@ def _shift_time_fields(rows: list[dict] | None, tz_seconds: int) -> list[dict] |
     return rows
 
 
-def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25) -> list[dict] | None:
+def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: int, limit: int = 25,
+               *, notes: dict | None = None, label: str = "") -> list[dict] | None:
     """Execute a log query, routing to CWL or Athena based on log destination.
+
+    **Every engine is asked for `limit + 1` rows and at most `limit` are returned, so truncation is
+    exactly `len(raw) > limit`.** One rule, both engines, aggregating and not, no statistics and no
+    second query. `GetQueryResults` has no truncation flag: measured 2026-09-13, `statistics` returns
+    `recordsMatched`, `recordsScanned`, `estimatedRecordsSkipped`, `bytesScanned`,
+    `estimatedBytesSkipped` and `logGroupsScanned`, and nothing else. `recordsMatched` counts input
+    events, so for an aggregating query it is not comparable to a count of output groups at all, and
+    an earlier design built on a `resultCount` field that does not exist.
+
+    **The extra row is safe to ask for because the API limit truncates after the sort.** Measured on
+    the same date: `stats count(*) as cnt by clientIp | sort cnt desc` at api limit 3 returned exactly
+    the first three rows of the same query at api limit 500, same order and same counts. Had it
+    truncated before sorting, N+1 would have returned the wrong rows and the missing disclosure would
+    have been the lesser problem. That is not documented anywhere, which is why it was measured before
+    this was built rather than after.
 
     Args:
         query_cwl: CloudWatch Logs Insights query string.
@@ -506,7 +522,11 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
                       {START_MS} and {END_MS} for timestamp range in milliseconds).
         start_epoch: Start time (epoch seconds).
         end_epoch: End time (epoch seconds).
-        limit: Max results.
+        limit: Max results the caller wants back.
+        notes: Optional dict, written as `notes[label] = limit` when rows were cut off. Rides beside
+            the `failures` dict the callers already thread, so a renderer looks in one place for both
+            and cannot surface one while forgetting the other.
+        label: The section this query belongs to, the same string used for `failures`.
 
     Returns:
         List of dicts (field→value), or None if no logging configured.
@@ -517,7 +537,8 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
 
     if ":log-group:" in dest:
         log_group = dest.split(":log-group:")[-1].rstrip(":*")
-        rows = _run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit)
+        rows = _trim(_run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit + 1),
+                     limit, notes, label)
         # CWL Insights returns bin()/@timestamp fields in UTC. Shift the known
         # time-valued columns to the session timezone so CWL output matches the
         # Athena output (which is offset in-SQL) and the metrics overview.
@@ -535,7 +556,11 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         sql = query_athena.replace("{TABLE}", table)
         sql = sql.replace("{START_MS}", str(start_epoch * 1000))
         sql = sql.replace("{END_MS}", str(end_epoch * 1000))
-        sql = sql.replace("{LIMIT}", str(limit))
+        # `{LIMIT}` only. A template that hardcodes `LIMIT n` cannot be asked for one more row, so
+        # its truncation goes undetected: absence of a note has never meant "complete" here, so this
+        # is a coverage gap rather than a signal pointing the wrong way. Closing it is ROADMAP 7.7's
+        # third item, which unifies the three limit-writing forms onto this parameter.
+        sql = sql.replace("{LIMIT}", str(limit + 1))
         # Timezone: WAF log `timestamp` is epoch millis (UTC). Templates that
         # DISPLAY a wall-clock time add {TZ_OFFSET_SECONDS} inside from_unixtime()
         # so the returned string is in the user's session timezone — consistent
@@ -568,7 +593,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
             if wn and re.fullmatch(r"[A-Za-z0-9_-]+", wn):
                 partition_clause += f" AND webaclid LIKE '%/{wn}/%'"
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
-        return _scan_log_values(_run_athena(sql))
+        return _scan_log_values(_trim(_run_athena(sql), limit, notes, label))
     raise RuntimeError(f"Unsupported log destination format: {dest}")
 
 
@@ -669,6 +694,47 @@ def checked_rule_name(rule_name: str) -> tuple[str, str | None]:
                     f"hyphens, underscores and dots. Copy one from get_waf_overview's output "
                     f"without editing it.")
     return name, None
+
+
+def _trim(rows: list[dict] | None, limit: int, notes: dict | None, label: str) -> list[dict] | None:
+    """Cut the extra row back off, and record that it was there.
+
+    **The `_error` row survives this.** A failed query comes back as a single `[{"_error": ...}]` row,
+    and one row is never more than a limit of at least one, so a failure cannot be read as truncation
+    and cannot be trimmed away. That is why the check is `>` against the caller's limit rather than
+    anything about the row contents.
+    """
+    if not rows or len(rows) <= limit:
+        return rows
+    if notes is not None:
+        notes[label] = limit
+    return rows[:limit]
+
+
+def truncation_summary(notes: dict, failures: dict | None = None) -> str:
+    """One line naming every section of this answer whose rows were cut off, or "".
+
+    **One summary per tool output rather than a note inside each section, and that is a completeness
+    decision rather than a stylistic one.** Per-section placement means eighteen render sites in two
+    files, several of them written `if not rows:` so the table lives in the `else`, and every site
+    needing a judgement about whether it shows a list or a single value. Getting one wrong leaves a
+    truncated table with no note beside sections that have one, which reads as "this one is complete".
+    A single line at the end covers every section the query layer recorded, including the ones that ask
+    for a single row: `country` asks for one on purpose, and naming it here says the IP had more than
+    one country, which is worth knowing and is not a defect report.
+
+    Sections that failed are excluded, because a failure is the larger fact and `_empty_reason` already
+    states it in place. "Showing 25, there are more" on a query that did not run reads as a successful
+    partial answer.
+    """
+    cut = sorted((label, limit) for label, limit in notes.items()
+                 if not (failures and label in failures))
+    if not cut:
+        return ""
+    listed = ", ".join(f"{label} ({limit})" for label, limit in cut)
+    return (f"\n⚠️  **Cut off at the row limit, so these are not the whole set**: {listed}. Each is the "
+            f"top N by that query's own ordering. Do not total them, do not call the list complete, and "
+            f"say so if you use them. To see the rest, narrow the window or ask about one value.")
 
 
 def log_query_error(rows: list[dict] | None) -> str | None:

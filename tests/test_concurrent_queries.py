@@ -157,7 +157,7 @@ def test_the_scan_issues_its_six_queries_concurrently(monkeypatch, offline):
     gate = threading.Barrier(5, timeout=10)
     arrivals = itertools.count()
 
-    def fake_query_logs(cwl, athena, start, end, limit=25):
+    def fake_query_logs(cwl, athena, start, end, limit=25, **kw):
         # `next` on a count is atomic in CPython, so exactly five threads take the barrier.
         if next(arrivals) < 5:
             gate.wait()
@@ -238,7 +238,7 @@ ONLY_IN = {
 
 
 def _fake_block_query(fail_marker=None):
-    def run(cwl, athena, start, end, limit=25):
+    def run(cwl, athena, start, end, limit=25, **kw):
         if fail_marker and fail_marker in f"{cwl}\n{athena}":
             return [{"_error": "CloudWatch Logs Insights did not finish within 120 seconds."}]
         return [dict(BLOCK_ROW)]
@@ -277,7 +277,7 @@ def test_each_markers_string_identifies_exactly_one_query(monkeypatch):
     assert set(jobs) == set(ONLY_IN), (set(jobs), set(ONLY_IN))
     # Re-run each job with a recording query layer to get its text back.
     texts = {}
-    def capture(cwl, athena, start, end, limit=25):
+    def capture(cwl, athena, start, end, limit=25, **kw):
         texts[len(texts)] = f"{cwl}\n{athena}"
         return [dict(BLOCK_ROW)]
     monkeypatch.setattr(F, "query_logs", capture)
@@ -319,7 +319,7 @@ def test_the_investigation_runs_its_five_queries_concurrently(monkeypatch):
     gate = threading.Barrier(5, timeout=10)
     arrivals = itertools.count()
 
-    def run(cwl, athena, start, end, limit=25):
+    def run(cwl, athena, start, end, limit=25, **kw):
         if next(arrivals) < 5:
             gate.wait()
         return [dict(BLOCK_ROW)]
@@ -357,7 +357,7 @@ def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
         # What the ordering claim is actually about is the wave, not the tail.
         return "other"
 
-    def run(cwl, athena, start, end, limit=25):
+    def run(cwl, athena, start, end, limit=25, **kw):
         kind = classify(cwl, athena)
         if kind in ONLY_IN and next(arrivals) < 5:
             gate.wait()

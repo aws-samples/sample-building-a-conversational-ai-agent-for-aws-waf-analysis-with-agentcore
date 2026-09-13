@@ -19,7 +19,8 @@ MAX_RESULTS = 25
 
 
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 25, *,
-                failures: dict | None = None, label: str = "") -> list[dict]:
+                failures: dict | None = None, label: str = "",
+                notes: dict | None = None) -> list[dict]:
     """The one place this module reaches the query layer. Never raises.
 
     ROADMAP 4.6 found `analyze_ip` calling `query_logs` at seven sites and checking none of
@@ -42,7 +43,7 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 25, *,
         return []
 
     try:
-        rows = query_logs(cwl, athena, start, end, limit)
+        rows = query_logs(cwl, athena, start, end, limit, notes=notes, label=label)
     except Exception as e:
         return _record(f"{type(e).__name__}: {e}")
     reason = log_query_error(rows)
@@ -578,8 +579,10 @@ def run_logs_query(
             return coarse_err
         _log(f"routing via unified layer: log_type={log_type} start={start_epoch} end={end_epoch}")
         _failures: dict[str, str] = {}
+        _notes: dict[str, int] = {}
         results = _safe_query(query, athena_query, start_epoch, end_epoch,
-                              limit=params["limit"], failures=_failures, label="query")
+                              limit=params["limit"], failures=_failures, label="query",
+                              notes=_notes)
         if _failures:
             _log(f"query_logs failed: {_failures['query']}")
             return _failures["query"]
@@ -625,6 +628,10 @@ def run_logs_query(
     if interpretation:
         lines.append("\n" + interpretation)
 
+        from tools.waf_query import truncation_summary
+        _cut = truncation_summary(_notes, _failures)
+        if _cut:
+            lines.append(_cut)
     return "\n".join(lines)
 
 
@@ -911,6 +918,9 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # report, so a failure has to cost its own section rather than the whole answer or,
     # worse, arrive as a statement about the traffic.
     failures: dict[str, str] = {}
+    # Which sections were cut off at their limit, keyed the same way as `failures` so a
+    # renderer looks in one place for both and cannot surface one while forgetting the other.
+    notes: dict[str, int] = {}
 
     # Phase 1: Diversity check (NAT detection)
     div_cwl = (
@@ -925,7 +935,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" AND httprequest.clientip = '{safe_ip}'"
     )
     diversity = _safe_query(div_cwl, div_athena, start_epoch, end_epoch, limit=1,
-                            failures=failures, label="diversity")
+                            failures=failures, label="diversity", notes=notes)
     # The `try` this replaces caught `RuntimeError` from a `query_logs` that was never
     # guarded, so it only ever fired on an Athena raise and turned it into a bare string.
     # `_safe_query` handles both spellings, which leaves one thing to decide here: whether
@@ -965,7 +975,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
             f" ORDER BY cnt DESC LIMIT 20"
         )
         ua_rows = _safe_query(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20,
-                              failures=failures, label="user_agents")
+                              failures=failures, label="user_agents", notes=notes)
         if not ua_rows or _is_nat_traffic(ua_rows):
             lines = [
                 f"## {ip} — NAT/Shared IP (skipped)",
@@ -1031,13 +1041,13 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     # Run queries (sequential via unified layer — each is fast with IP filter)
     cross = _safe_query(cross_cwl, cross_athena, start_epoch, end_epoch, limit=15,
-                        failures=failures, label="actions")
+                        failures=failures, label="actions", notes=notes)
     rate = _safe_query(rate_cwl, rate_athena, start_epoch, end_epoch, limit=1,
-                       failures=failures, label="request_rate")
+                       failures=failures, label="request_rate", notes=notes)
     ja4 = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5,
-                      failures=failures, label="ja4")
+                      failures=failures, label="ja4", notes=notes)
     uri_div = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1,
-                          failures=failures, label="uri_diversity")
+                          failures=failures, label="uri_diversity", notes=notes)
 
     # Query strings this IP sent — the content that triggers QUERYARGUMENTS rules
     # (XSS/SQLi/LFI payloads show up here). Sensitive params are redacted below.
@@ -1052,7 +1062,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
     )
     query_strings = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8,
-                                failures=failures, label="query_strings")
+                                failures=failures, label="query_strings", notes=notes)
 
     # Format output
     lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]
@@ -1153,4 +1163,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                  "lookup_ja4(fingerprints='<comma-separated fingerprints>')")
     if is_log_filter_active():
         lines.append("\n⚠️  Log Filter active — this analysis only covers logged actions. Some requests may be filtered out.")
+    from tools.waf_query import truncation_summary
+    _cut = truncation_summary(notes, failures)
+    if _cut:
+        lines.append(_cut)
     return "\n".join(lines)

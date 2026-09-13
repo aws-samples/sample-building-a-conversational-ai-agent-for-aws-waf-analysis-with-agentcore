@@ -44,7 +44,7 @@ def fake_query_logs(markers=(), how="raise", empty_markers=()):
     nothing else empty, "this section's reason" and "any reason" give the same answer
     everywhere, so a lookup that ignores the label passes. A section that is *legitimately*
     empty next to one that failed is the only input that tells them apart."""
-    def run(cwl, athena, start, end, limit=25):
+    def run(cwl, athena, start, end, limit=25, **kw):
         text = f"{cwl}\n{athena}"
         if any(m in text for m in markers):
             if how == "raise":
@@ -297,7 +297,7 @@ def test_a_failed_label_query_refuses_the_verdict(monkeypatch, how):
 def test_the_verdict_still_fires_when_the_label_query_succeeds(monkeypatch):
     """The mirror. Without it the assertion above is satisfied by a tool that never
     reaches a verdict at all, which would pass while saying nothing."""
-    def run(cwl, athena, start, end, limit=25):
+    def run(cwl, athena, start, end, limit=25, **kw):
         row = dict(ROW)
         if "labels" in f"{cwl}\n{athena}":
             row["Labels"] = "awswaf:managed:aws:bot-control:signal:known_bot_data_center"
@@ -369,7 +369,7 @@ def test_the_scan_issues_no_per_candidate_drill_down(monkeypatch, offline):
     "the loop is gone" is a claim about behaviour and the loop's absence from the source is not
     the same statement."""
     seen = []
-    def counting(cwl, athena, start, end, limit=25):
+    def counting(cwl, athena, start, end, limit=25, **kw):
         seen.append(athena or cwl)
         return [dict(ROW)]
     monkeypatch.setattr(B, "query_logs", counting)
@@ -396,7 +396,7 @@ def test_the_scan_names_the_step_that_gets_the_ips(monkeypatch, offline):
 
 def test_the_drill_down_step_runs_exactly_one_query(monkeypatch):
     seen = []
-    def counting(cwl, athena, start, end, limit=25):
+    def counting(cwl, athena, start, end, limit=25, **kw):
         seen.append(athena)
         return [{"httpRequest.clientIp": "198.51.100.7", "hits": "42"}]
     monkeypatch.setattr(B, "query_logs", counting)
@@ -437,7 +437,7 @@ def test_a_wellformed_fingerprint_reaches_the_query_intact(monkeypatch, good):
     the trap the first draft of this test fell into: with the check removed, the extracted text
     was EMPTY and `[0-9A-Za-z_]*` matched it, so the assertion passed with the fix deleted."""
     seen = []
-    def counting(cwl, athena, start, end, limit=25):
+    def counting(cwl, athena, start, end, limit=25, **kw):
         seen.append(athena)
         return []
     monkeypatch.setattr(B, "query_logs", counting)
