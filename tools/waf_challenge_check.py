@@ -76,6 +76,13 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
         msg = f"No {action} requests found in this time window."
         if is_log_filter_active():
             msg += f"\n⚠️  Log Filter is active — {action} logs may be filtered out."
+        # ROADMAP 7.7. The witness whose subject is this question is `ChallengeRequests` or
+        # `CaptchaRequests` on the WebACL, not a per-rule series: the question names an action, not
+        # a rule. Recorded upstream of every log-side failure, so it separates "nothing was
+        # challenged" from "the log query did not see what was challenged". The log-filter line
+        # above is a hypothesis; this turns it into a fact or leaves it alone.
+        from tools.waf_metrics import missed_action_warning
+        msg += missed_action_warning(get_webacl_name(), action, start_epoch, end_epoch, log_rows=0)
         return msg
 
     # Token failure-reason breakdown for the same action/window. Why a real user
