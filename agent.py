@@ -360,10 +360,37 @@ def _get_version() -> str:
 
 
 def _build_system_prompt(tz_offset: float | None = None) -> str:
-    """Build system prompt with current date and timezone injected."""
-    from datetime import datetime, timezone
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    tz_str = f"UTC{tz_offset:+g}" if tz_offset is not None else "UTC (not set by user)"
+    """Build system prompt with current date and timezone injected.
+
+    **`now` is rendered in the session timezone, and it used to be rendered in UTC on the line above
+    the one that computed the offset.** Same function, same parameter, one line used it and one did
+    not. The prompt says "Session timezone: UTC+8 — All times from the user are in this timezone.
+    Pass them to tools as-is, NEVER convert to UTC", and then told the model the current time in UTC,
+    so the one instruction that consumes `now` ("last 6 hours → start_time = now - 6h in session
+    timezone") had no correct input.
+
+    Measured on the deployed agent 2026-09-13, session timezone UTC+8, `now` 05:52 UTC. The model
+    passed `start_time=2026-09-12T23:52`, which is the UTC number. `_parse_start_time` reads a string
+    with no offset as session-local, so the log query ran over 15:52-21:52 UTC while the question was
+    about 23:52-05:52 UTC. In the same answer `get_waf_overview` was called with an empty
+    `start_time` and computed the right window itself, so one reply carried two windows eight hours
+    apart. It looked self-consistent because both happened to hold three blocks from one IP.
+
+    **The offset suffix is the part that matters more than the conversion.** A local time labelled
+    `UTC` is worse than a UTC time labelled `UTC`: the model copies the label through and neither the
+    user nor the output can tell. So the label is built from the same value as the time.
+
+    Nothing else here changes. `_parse_start_time` still reads an offset-less string as session-local,
+    and the partition timezone that decides which S3 hour directories get scanned is a third,
+    unrelated timezone owned by `waf_athena`. This bug happened before any of that ran.
+    """
+    from datetime import datetime, timedelta, timezone
+    if tz_offset is None:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        tz_str = "UTC (not set by user)"
+    else:
+        tz_str = f"UTC{tz_offset:+g}"
+        now = datetime.now(timezone(timedelta(hours=tz_offset))).strftime(f"%Y-%m-%d %H:%M ({tz_str})")
     version = _get_version()
     return (f"Current date/time: {now}\nSession timezone: {tz_str} — All times from the user are in this timezone. Pass them to tools as-is, NEVER convert to UTC.\nAgent version: {version}\n\n"
             # The window cap is rendered from the constant the tools enforce, so the
