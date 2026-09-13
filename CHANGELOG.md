@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.1 (2026-09-13)
 
 ### Fixed: the prompt told the model the session timezone and then gave it the time in UTC
 
