@@ -39,7 +39,16 @@ def rule(name, metric_name=None, enabled=True):
 
 
 RULES = [rule("AWS-AWSManagedRulesSQLiRuleSet"), rule("rate-limit"),
-         rule("odd-name", metric_name="oddMetric"), rule("no-metrics", enabled=False)]
+         rule("odd-name", metric_name="oddMetric"), rule("no-metrics", enabled=False),
+         # A managed rule group with one sub-rule overridden to Count. `CategoryHttpLibrary` is
+         # named here and publishes a `Rule` dimension; `TGT_TokenAbsent` publishes one too and is
+         # deliberately absent, which is the live shape on the measurement account.
+         {"Name": "AWS-AWSManagedRulesBotControlRuleSet",
+          "VisibilityConfig": {"MetricName": "AWS-AWSManagedRulesBotControlRuleSet",
+                               "CloudWatchMetricsEnabled": True},
+          "Statement": {"ManagedRuleGroupStatement": {
+              "RuleActionOverrides": [{"Name": "CategoryHttpLibrary",
+                                       "ActionToUse": {"Count": {}}}]}}}]
 
 
 class FakeCw:
@@ -99,20 +108,54 @@ def test_a_window_beyond_every_retention_is_refused_without_querying(cw):
 # --- the membership check, at the line that issues the query ----------------
 
 
-def test_a_rule_name_that_is_not_configured_is_refused_rather_than_answered_zero(cw):
-    """The guard the measurement demands. A `MetricStat` for `AWS-AWSManagedRulesSQLiRuleSetX` returns
-    exactly what a real rule with no traffic returns, so the response can never tell them apart and
-    the name's provenance is the only defence. Measured 2026-09-13 on the live account.
+@pytest.mark.parametrize("name,expected_dimension,expected_state", [
+    ("rate-limit", "rate-limit", "top-level"),
+    ("odd-name", "oddMetric", "top-level"),
+    ("CategoryHttpLibrary", "CategoryHttpLibrary", "override"),
+    ("no-metrics", "no-metrics", "metrics-off"),
+    ("SQLiRuleSetX", "SQLiRuleSetX", "unknown"),
+])
+def test_the_dimension_and_the_state_come_from_the_configuration(name, expected_dimension,
+                                                                 expected_state):
+    """Four states, and the `override` one is invisible behaviourally: a managed sub-rule's dimension
+    value IS its own name, so mistaking an override for an unknown changes the state and not the
+    query. That is why the state is asserted and not only the dimension."""
+    assert M.resolve_rule_dimension(name, RULES) == (expected_dimension, expected_state)
 
-    The reason lists the configured rules, because the likely cause is not a typo but one WebACL's
-    rule name used against another: `rate-limit` exists on `shield-sample-webacl` and the equivalent
-    on `response-id-on-page` is `rate-limit-blanket`."""
+
+def test_a_name_the_configuration_does_not_know_is_queried_rather_than_refused(cw):
+    """**The guard that was here refused this case, and refusing cost a real signal.** Measured on the
+    live account 2026-09-13: `TGT_TokenAbsent` publishes `CountedRequests` 33,932 for 2026-09-08 on
+    `shield-sample-webacl` while appearing in no `Rules[].Name` and in no `RuleActionOverrides`. A
+    managed rule group publishes metrics for its internal rules and the config carries only the
+    overridden ones, so the configuration is not a complete list of the names that publish a `Rule`
+    dimension. `SEARCH` finds it, but SEARCH's 14-day discovery window means absent there does not
+    mean invalid either, so no source separates a misspelling from a rule that published nothing.
+
+    The refusal prevented nothing, which is the other half: the only consumer speaks when the count
+    is above zero, and a misspelling returns zero. See the two tests below for both directions."""
     start, end = _window()
     count, reason = M.rule_blocked_per_metrics("acl", "SQLiRuleSetX", RULES, start, end)
-    assert count is None
-    assert "not a rule on acl" in reason
-    assert "rate-limit" in reason, "the reason has to say what the configured names are"
-    assert not cw.requests, "a name that failed the check must not reach CloudWatch"
+    assert (count, reason) == (122, ""), "an unknown name must still be asked about"
+    assert cw.requests, "the query has to be issued"
+
+
+def test_a_misspelled_name_stays_silent_because_its_count_is_zero(monkeypatch):
+    """Why the refusal was unnecessary. A name that does not exist answers zero, and the warning only
+    speaks above zero, so the wrong name produces silence rather than a false claim."""
+    fake = FakeCw([])
+    monkeypatch.setattr(M, "get_client", lambda *a, **k: fake)
+    S.set_webacl_context("acl", "arn:x", "CLOUDFRONT", "us-east-1")
+    start, end = _window()
+    assert M.missed_data_warning("acl", "SQLiRuleSetX", RULES, start, end, log_rows=0) == ""
+
+
+def test_a_real_sub_rule_the_config_does_not_list_still_warns(cw):
+    """The signal the refusal threw away, in the shape the live account produced it."""
+    start, end = _window()
+    out = M.missed_data_warning("acl", "TGT_TokenAbsent", RULES, start, end, log_rows=0,
+                               metric_name="CountedRequests")
+    assert "missed data" in out and "122" in out, out
 
 
 def test_a_rule_with_metrics_switched_off_is_refused_rather_than_answered_zero(cw):
@@ -179,9 +222,14 @@ def test_a_partial_gap_is_not_reported_yet_and_the_reason_is_a_dependency(cw):
 
 def test_a_metric_that_could_not_answer_never_becomes_a_claim_about_the_logs(cw):
     """Every refusal path must reach the report as silence. Turning "I could not check" into "your
-    query missed data" is the same defect class in the opposite direction."""
+    query missed data" is the same defect class in the opposite direction.
+
+    The subject is a rule with `CloudWatchMetricsEnabled: false`, which is a genuine "cannot answer".
+    An earlier version used an unconfigured name, which stopped being a refusal once the measurement
+    showed the configuration is not a complete list of the names that publish a metric."""
     start, end = _window()
-    assert M.missed_data_warning("acl", "SQLiRuleSetX", RULES, start, end, log_rows=0) == ""
+    assert M.missed_data_warning("acl", "no-metrics", RULES, start, end, log_rows=0) == ""
+    assert not cw.requests, "a rule that publishes nothing must not be queried"
 
 
 def test_a_zero_metric_beside_zero_log_rows_says_nothing(monkeypatch):
@@ -193,6 +241,87 @@ def test_a_zero_metric_beside_zero_log_rows_says_nothing(monkeypatch):
     S.set_webacl_context("acl", "arn:x", "CLOUDFRONT", "us-east-1")
     start, end = _window()
     assert M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=0) == ""
+
+
+# --- the action subject, where the witness is the WebACL aggregate ----------
+
+
+def test_an_action_question_is_compared_at_the_webacl_aggregate(cw):
+    """**`Rule=ALL`, and this is the case that falsifies "per rule, never at the WebACL" as a general
+    rule.** That discipline is right for an injection question, which names a rule. Here the question
+    names an action, and `ChallengeRequests` is published per WebACL, so the aggregate is the series
+    whose subject matches. The rule is that the witness's subject must match the question, and one
+    special case had been written up as a universal."""
+    start, end = _window()
+    count, reason = M.webacl_action_total("acl", "ChallengeRequests", start, end)
+    assert (count, reason) == (122, "")
+    dims = {d["Name"]: d["Value"]
+            for d in cw.requests[0]["MetricDataQueries"][0]["MetricStat"]["Metric"]["Dimensions"]}
+    assert dims == {"WebACL": "acl", "Rule": "ALL"}, dims
+
+
+@pytest.mark.parametrize("action,metric", [("CHALLENGE", "ChallengeRequests"),
+                                           ("CAPTCHA", "CaptchaRequests")])
+def test_each_action_is_checked_against_its_own_metric(cw, action, metric):
+    """Both actions, because with one of them the mapping cannot be shown to be right: swapping the
+    two would still name a real metric and still return a number."""
+    start, end = _window()
+    out = M.missed_action_warning("acl", action, start, end, log_rows=0)
+    assert metric in out, out
+    assert cw.requests[0]["MetricDataQueries"][0]["MetricStat"]["Metric"]["MetricName"] == metric
+
+
+def test_an_action_with_no_metric_of_its_own_is_skipped(cw):
+    """BLOCK and ALLOW reach this function only by mistake, and answering them against a challenge
+    metric would be a claim about traffic drawn from the wrong series. Silence, and no query."""
+    start, end = _window()
+    assert M.missed_action_warning("acl", "BLOCK", start, end, log_rows=0) == ""
+    assert not cw.requests
+
+
+def test_a_cross_check_that_cannot_run_does_not_cost_the_answer_it_annotates(monkeypatch):
+    """**The property the whole design rests on, and the one I broke.** The cross-check annotates an
+    answer the tool has already produced, so nothing in it may take that answer away. Resolving the
+    metric dimension needs the WebACL, which is two more wafv2 calls in a branch that previously
+    touched no AWS, and they fail on their own for credentials, throttling or a missing
+    `wafv2:GetWebACL`.
+
+    CI found it, not review: `test_a_padded_rule_name_reaches_the_query_without_its_padding` drives
+    this branch with no credentials, and the unguarded read turned a passing test into
+    `NoCredentialsError`. Locally it passed, because this machine has credentials, which is the whole
+    reason that test failing was worth more than my reading of the diff."""
+    from tools import waf_count_eval as C
+    from tools import waf_query as WQ
+
+    def boom(*a, **k):
+        raise RuntimeError("wafv2 is unreachable")
+
+    monkeypatch.setattr(C, "_get_webacl_rules", boom)
+    monkeypatch.setattr(C, "query_logs", lambda *a, **k: [])
+    monkeypatch.setattr(WQ, "query_logs", lambda *a, **k: [])
+    monkeypatch.setattr(C, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(C, "get_webacl_name", lambda: "acl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: "")
+    S.set_webacl_context("acl", "arn:x", "CLOUDFRONT", "us-east-1")
+    S.set_user_timezone(0.0)
+
+    out = C._step_check_clients("SomeRule", "2026-09-08T12:00", 60)
+    assert "Client Distribution: SomeRule" in out, out
+    assert "no results" in out, "the answer the tool already had must survive"
+    assert "missed data" not in out, "a cross-check that could not run must not claim anything"
+
+
+def test_the_challenge_tool_reaches_the_cross_check_from_its_no_results_branch():
+    """The wiring. Read structurally, because the behavioural path needs a live WebACL and log
+    backend; the sentence it appends is covered by the tests above."""
+    import inspect
+
+    from tools import waf_challenge_check as C
+
+    src = inspect.getsource(C)
+    assert "missed_action_warning" in src, "the no-results branch does not cross-check the action"
+    assert re.search(r"missed_action_warning\(get_webacl_name\(\), action,", src), (
+        "the cross-check must be asked about the action the tool actually queried")
 
 
 def test_the_injection_tool_reaches_the_cross_check_from_its_no_activity_branch():

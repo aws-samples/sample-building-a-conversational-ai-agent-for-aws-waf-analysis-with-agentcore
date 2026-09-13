@@ -205,24 +205,85 @@ def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, star
     equal for all 20 rules on the measurement account, which is exactly why assuming it would never
     be caught here. Reading the metric name removes the assumption instead of testing it.
     """
-    match = next((r for r in rules if r.get("Name") == rule_name), None)
-    if match is None:
-        names = ", ".join(sorted(r.get("Name", "?") for r in rules)) or "none"
-        return None, (f"'{rule_name}' is not a rule on {webacl_name}, so no metric was queried: a "
-                      f"CloudWatch query for a name that does not exist answers zero rather than "
-                      f"failing. Configured rules: {names}")
-    visibility = match.get("VisibilityConfig") or {}
-    if not visibility.get("CloudWatchMetricsEnabled", True):
+    dimension, in_config = resolve_rule_dimension(rule_name, rules)
+    if in_config == "metrics-off":
         return None, (f"'{rule_name}' has CloudWatchMetricsEnabled false, so it publishes no "
                       f"metric at all and its absence here means nothing")
+    return _metric_sum(webacl_name, dimension, metric_name, start_epoch, end_epoch)
 
+
+def resolve_rule_dimension(rule_name: str, rules: list):
+    """The CloudWatch `Rule` dimension value for a rule name, and whether the config knew it.
+
+    Returns `(dimension_value, state)` where state is `"top-level"`, `"override"`, `"metrics-off"`
+    or `"unknown"`.
+
+    **When a caller must read `state`, stated here so the field carries its own condition rather than
+    waiting for someone to guess what it is for: if you are going to treat a returned zero as
+    evidence of anything, you must require `"top-level"` or `"override"` and refuse otherwise.** On
+    `"unknown"` a zero is uninformative, because a misspelled name and a rule that published nothing
+    produce the identical response. A caller that only acts on a count above zero may ignore `state`
+    entirely, which is why `missed_data_warning` does. There is no such zero-as-evidence caller today;
+    the field exists so that adding one is a decision instead of an oversight.
+
+    **The WebACL configuration is not a complete list of the names that publish a `Rule`
+    dimension, and that is measured rather than assumed.** On `shield-sample-webacl`,
+    `TGT_TokenAbsent` publishes `CountedRequests` 33,932 for 2026-09-08 while appearing in no
+    `Rules[].Name` and in no `RuleActionOverrides`: a managed rule group publishes metrics for its
+    internal rules, and only the overridden ones are written into the config. A `SEARCH` over
+    `{AWS/WAFV2,Rule,WebACL}` does find it, but SEARCH's 14-day discovery window means absent
+    there does not mean invalid either. So no available source can separate "this name is
+    misspelled" from "this rule published nothing".
+
+    **Which is why `"unknown"` queries anyway instead of refusing.** An earlier version refused,
+    and it refused `TGT_TokenAbsent`: the guard cost a real 33,932-match signal and prevented
+    nothing, because the only consumer speaks when the count is above zero, where a misspelling
+    yields zero and stays silent. The state is returned rather than dropped so a future caller that
+    wants to treat a zero as evidence can demand `"top-level"` or `"override"` and get the refusal
+    this path should not have.
+    """
+    match = next((r for r in rules if r.get("Name") == rule_name), None)
+    if match is not None:
+        visibility = match.get("VisibilityConfig") or {}
+        if not visibility.get("CloudWatchMetricsEnabled", True):
+            return rule_name, "metrics-off"
+        return visibility.get("MetricName") or rule_name, "top-level"
+    for r in rules:
+        overrides = (r.get("Statement", {}).get("ManagedRuleGroupStatement", {})
+                     .get("RuleActionOverrides", []))
+        if any(o.get("Name") == rule_name for o in overrides):
+            return rule_name, "override"
+    return rule_name, "unknown"
+
+
+def webacl_action_total(webacl_name: str, metric_name: str, start_epoch: int, end_epoch: int):
+    """The same question asked of the whole WebACL, for a tool whose subject is an action.
+
+    `check_challenge_compatibility` asks "were there any CHALLENGE requests", which names no rule,
+    and `ChallengeRequests` / `CaptchaRequests` on `Rule=ALL` is a witness with exactly that
+    subject. **No membership check here, and its absence is not an oversight**: `ALL` is an
+    aggregate the service publishes rather than a name a caller can misspell, so the failure mode
+    that guard exists for cannot occur. The retention guard still applies and lives in
+    `_metric_sum`.
+    """
+    return _metric_sum(webacl_name, "ALL", metric_name, start_epoch, end_epoch)
+
+
+def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_epoch: int,
+                end_epoch: int):
+    """One `MetricStat` over one window. `(sum, "")`, or `(None, reason)`. Never raises.
+
+    The retention guard sits here rather than in each caller, because a period no longer retained
+    returns `StatusCode: Complete` with an empty `Values`, so a caller that skipped it would get a
+    confident zero and never know.
+    """
     period = _period_for_window(start_epoch)
     if period is None:
-        return None, (f"the window starts more than 455 days ago, beyond every CloudWatch metric "
-                      f"resolution, so there is no metric to compare against")
+        return None, ("the window starts more than 455 days ago, beyond every CloudWatch metric "
+                      "resolution, so there is no metric to compare against")
 
     dimensions = [{"Name": "WebACL", "Value": webacl_name},
-                  {"Name": "Rule", "Value": visibility.get("MetricName") or rule_name}]
+                  {"Name": "Rule", "Value": rule_dimension}]
     scope = get_scope()
     region = resolve_region(scope)
     if region is None:
@@ -267,15 +328,42 @@ def missed_data_warning(webacl_name: str, rule_name: str, rules: list, start_epo
         return ""
     count, reason = rule_blocked_per_metrics(webacl_name, rule_name, rules, start_epoch, end_epoch,
                                              metric_name)
+    return _missed_data_sentence(count, reason, f"rule '{rule_name}'", webacl_name, metric_name)
+
+
+def missed_action_warning(webacl_name: str, action: str, start_epoch: int, end_epoch: int,
+                          log_rows: int) -> str:
+    """The same sentence for a tool whose subject is an action rather than a rule.
+
+    `check_challenge_compatibility` asks whether any CHALLENGE or CAPTCHA request exists, so the
+    witness is `ChallengeRequests` or `CaptchaRequests` on the whole WebACL. The zero-only limit and
+    the silence-on-refusal rule are the shared ones; see `missed_data_warning`.
+    """
+    if log_rows != 0:
+        return ""
+    metric_name = {"CHALLENGE": "ChallengeRequests", "CAPTCHA": "CaptchaRequests"}.get(action)
+    if metric_name is None:
+        return ""
+    count, reason = webacl_action_total(webacl_name, metric_name, start_epoch, end_epoch)
+    return _missed_data_sentence(count, reason, f"action {action}", webacl_name, metric_name)
+
+
+def _missed_data_sentence(count, reason: str, subject: str, webacl_name: str,
+                          metric_name: str) -> str:
+    """One wording for both entry points, so the two cannot drift into different confidence.
+
+    A refusal returns "" with the reason on stderr. **A metric that could not answer must never
+    become a claim about the logs**, which is this file's own defect class pointed the other way.
+    """
     if count is None:
-        print(f"[waf_metrics] no metric cross-check for {rule_name}: {reason}",
+        print(f"[waf_metrics] no metric cross-check for {subject}: {reason}",
               file=sys.stderr, flush=True)
         return ""
     if count <= 0:
         return ""
     return (f"\n⚠️  **The log query missed data.** CloudWatch reports {count:,} "
-            f"{metric_name} for rule '{rule_name}' on {webacl_name} in this window, and the log "
-            f"query returned no rows for it. The rule did fire; the logs this answer is built on do "
+            f"{metric_name} for {subject} on {webacl_name} in this window, and the log "
+            f"query returned no rows for it. It did fire; the logs this answer is built on do "
             f"not show it. Do NOT report this window as quiet. Likely causes: a Log Filter dropping "
             f"the action before it reaches the log destination, a partition or timezone mismatch on "
             f"the log table, or a query that failed silently upstream. Say this to the user and "

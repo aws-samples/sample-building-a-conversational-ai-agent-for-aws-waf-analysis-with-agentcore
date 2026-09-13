@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """COUNT-to-BLOCK evaluation workflow tool — guided skill for LLM."""
 
+import sys
 import time
 from strands import tool
 from tools.aws_session import get_client
@@ -463,6 +464,34 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     else:
         lines.append("  (no results)")
 
+    # ROADMAP 7.7. `bottom` and `top` are the same COUNT matches ordered two ways, so both empty
+    # means the logs report no COUNT match for this rule in this window. `CountedRequests` for the
+    # same rule is recorded upstream of every log-side failure, and it is the one witness whose
+    # subject is this question. **This is the tool whose output the user executes against
+    # production**, by switching the rule from Count to Block, so a zero here that is really a
+    # missed query is the most expensive absence on the list.
+    if not bottom and not top:
+        from tools.waf_metrics import missed_data_warning
+        scope = get_scope() or "CLOUDFRONT"
+        # **The cross-check is additive, so nothing in it may break the answer it annotates.**
+        # Resolving the metric dimension needs the WebACL, which is two more wafv2 calls in a branch
+        # that previously touched no AWS at all, and they can fail on their own: no credentials,
+        # throttling, a missing `wafv2:GetWebACL`. Found by CI rather than by review, where
+        # `test_a_padded_rule_name_reaches_the_query_without_its_padding` drives this branch with no
+        # credentials and the unguarded read turned a passing test into `NoCredentialsError`. That
+        # test failing was the cheap version of a user losing a working answer.
+        try:
+            rules = _get_webacl_rules(resolve_region(scope), scope)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"[waf_count_eval] no metric cross-check for {rule_name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            rules = None
+        if rules is not None:
+            warning = missed_data_warning(get_webacl_name(), rule_name, rules, start_epoch,
+                                          end_epoch, log_rows=0, metric_name="CountedRequests")
+            if warning:
+                lines.append(warning)
+
     # Triggering content at the rule's inspection location. AWS WAF does not
     # record matchedData for most managed rules, but the rule name tells us
     # which request component it inspected — surface that component so the
@@ -533,8 +562,15 @@ def _get_rule_type_prior(rule_name: str) -> str:
     return "No specific prior available for this rule. Log analysis recommended before switching."
 
 
-def _get_all_count_rules(waf_region: str, scope: str) -> list[str]:
-    """Get all rule IDs that are in COUNT mode from the WebACL config."""
+def _get_webacl_rules(waf_region: str, scope: str) -> list[dict]:
+    """The current WebACL's `Rules` list, or `[]` when it cannot be read.
+
+    Extracted from `_get_all_count_rules` rather than written beside it, because the metric
+    cross-check needs the same list for a different reason: it reads each rule's
+    `VisibilityConfig` to get the metric name and to refuse a rule that publishes nothing. Two
+    readers of one WebACL in one file is the duplication this repository keeps paying for, so
+    there is one.
+    """
     webacl_name = get_webacl_name()
     if not webacl_name:
         return []
@@ -546,8 +582,12 @@ def _get_all_count_rules(waf_region: str, scope: str) -> list[str]:
         return []
 
     resp = waf.get_web_acl(Name=webacl_name, Scope=scope, Id=match["Id"])
-    webacl = resp["WebACL"]
-    rules = webacl.get("Rules", [])
+    return resp["WebACL"].get("Rules", [])
+
+
+def _get_all_count_rules(waf_region: str, scope: str) -> list[str]:
+    """Get all rule IDs that are in COUNT mode from the WebACL config."""
+    rules = _get_webacl_rules(waf_region, scope)
 
     count_rules = []
     for r in rules:
