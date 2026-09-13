@@ -83,7 +83,7 @@ skips the probe and says so in a comment.
 ## What CI runs
 
 On every push, `tests/test_perturbation_harness.py` unit-tests the harness guards and statically
-re-checks that all 307 cases still anchor to code that exists and still name tests that exist. It
+re-checks that all 308 cases still anchor to code that exists and still name tests that exist. It
 takes under a second, and anchor drift is silent, so that is where drift gets caught.
 
 The sweep itself is `.github/workflows/perturbations.yml`, on every pull request, and it installs the

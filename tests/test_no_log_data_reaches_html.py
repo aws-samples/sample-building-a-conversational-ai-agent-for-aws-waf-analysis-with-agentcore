@@ -3,11 +3,15 @@
 """ROADMAP 5.3: assert the path does not exist, rather than defend a path that does.
 
 **The item was written as "html.escape the patrol HTML interpolations", and looking for the live XSS
-did not find one.** `waf_review_deep._render_html` escapes every line. `waf_patrol`'s log-derived
-strings go into the TEXT summary, not into `_render_patrol_html_v2`, whose interpolations are counts,
-localized labels, severities and rule names. So an escaping pass would be a mechanism in front of a
-signal, and it would rot the moment someone adds a URI column to the patrol report, which is the
-natural next enrichment.
+did not find one.** `waf_review_deep._render_html` escapes every line. `_render_patrol_html_v2`
+interpolates counts, localized labels, severities and rule names. So an escaping pass would be a
+mechanism in front of a signal, and it would rot the moment someone adds a URI column to the patrol
+report, which is the natural next enrichment.
+
+**What this file used to say, and the correction is the reason its last four tests exist.** It said the
+patrol's log-derived strings "go into the TEXT summary, not into `_render_patrol_html_v2`", which
+conflated what the renderer RECEIVES with what it READS. They do go to the text summary, and they are
+also inside the renderer's argument: see the paragraph before the pinned key set below.
 
 What is built instead is the property that fails when log-derived data reaches an HTML generator,
 which is the same shape as the routes-through test: assert the path is absent rather than harden a
@@ -426,8 +430,25 @@ def test_the_attacker_controlled_rows_are_already_inside_the_renderers_argument(
         cells = {n.value for n in ast.walk(fn)
                  if isinstance(n, ast.Constant) and n.value in ("ips", "uris", "content")}
         assert cells == {"ips", "uris", "content"}, f"{producer} now builds cells {sorted(cells)}"
-    assert "rules_table" in _constant_keys(_renderer()), (
+
+    # **The middle link, and asserting the two ends alone left it as prose.** The row appended to
+    # `rules_table` has to be the same object the renderer iterates, or `log_detail` could sit beside
+    # `rules_table` rather than inside it and both assertions above would still hold.
+    rows = [{k.value for k in node.args[0].keys if isinstance(k, ast.Constant)}
+            for node in ast.walk(ast.parse(patrol))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "append" and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "rules_table" and node.args
+            and isinstance(node.args[0], ast.Dict)]
+    assert len(rows) == 1, f"expected one rules_table row shape, found {len(rows)}: {rows}"
+    keys = _constant_keys(_renderer())
+    assert "rules_table" in keys, (
         "the renderer no longer reads rules_table, so log_detail is not inside anything it touches")
+    assert "log_detail" in rows[0], f"the rules_table row no longer carries log_detail: {sorted(rows[0])}"
+    # Deliberately NOT also asserting that the renderer reads one of that row's own keys. It would
+    # look like a third link and add nothing: the claim is that log_detail is inside the argument, not
+    # that the rows get read, and dropping the Top Rules chart is the one change that would falsify
+    # either version, which the `rules_table` assertion above already catches.
 
 
 def test_the_patrol_renderer_reads_no_log_derived_key():

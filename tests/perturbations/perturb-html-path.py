@@ -89,6 +89,12 @@ CASES = [
      '"log_details_out_of_band": log_details.get(rule_name, {})',
      [f"{T}::test_the_attacker_controlled_rows_are_already_inside_the_renderers_argument"]),
 
+    ("a second rules_table row shape, so which row the renderer iterates is no longer decided",
+     "tools/waf_patrol.py", "    rules_table.sort(key=lambda x: x[\"total\"], reverse=True)",
+     "    rules_table.append({\"name\": \"synthetic\", \"total\": 0})\n"
+     "    rules_table.sort(key=lambda x: x[\"total\"], reverse=True)",
+     [f"{T}::test_the_attacker_controlled_rows_are_already_inside_the_renderers_argument"]),
+
     ("a log-derived name that is also a translated label, so the subtraction hides it",
      "tools/waf_patrol.py", '        "title": "Security Patrol Report",',
      '        "title": "Security Patrol Report",\n        "uris": "URIs",',

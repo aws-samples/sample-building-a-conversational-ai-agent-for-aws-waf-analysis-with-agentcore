@@ -74,7 +74,7 @@ deferral is someone adding a URI column to the patrol report, and nothing was wa
   file type with no form is refused rather than quietly left unprobed. A probe run that died before any
   assertion is now reported as well: for a `.py` file `ast.parse` caught that, for a `.js` file nothing
   did, and red read as reachable either way.
-- 22 scripts and 307 cases, with `perturb-frontend-sanitizer.py` and `perturb-frontend-render.py` at 14
+- 22 scripts and 308 cases, with `perturb-frontend-sanitizer.py` and `perturb-frontend-render.py` at 14
   cases each. `perturbations.yml` installs the frontend dependencies for the second of those.
 
 ### Added: docs/limitations.md, in both languages
