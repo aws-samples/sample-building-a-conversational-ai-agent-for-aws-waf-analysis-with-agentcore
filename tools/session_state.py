@@ -167,7 +167,16 @@ _provenance_lock = threading.Lock()
 
 
 def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
-    """Record which engine answered and over which window. Called once per query, merged per tool call.
+    """Record which engine was asked and over which window. Once per query ATTEMPT, merged per tool call.
+
+    **`queries` counts attempts, not queries that ran, and that follows from where this is called.** It
+    runs as the first statement of each engine branch, before `_ensure_athena_table`, before the
+    coarse-partition refusal and before the `range_problem` refusal, so `Athena over S3 · 1 query` beside
+    zero executed queries is a reachable state: the coarse-partition case is pre-checked at all nine tool
+    entry points and this is only a backstop there, but a table that fails to build and an unprojectable
+    range have no such pre-check. That is the intended side. **A query that dies in table resolution
+    still discloses the window it asked about**, which is exactly when a user needs to know what was
+    asked, and it is the same reason the record is written on entry rather than on completion.
 
     `queries` counts them because one tool call issues up to fifteen, and a user reading "CloudWatch,
     12:37 to 18:37" deserves to know whether that describes one query or fifteen. The window is stored

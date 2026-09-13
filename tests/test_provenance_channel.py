@@ -181,7 +181,6 @@ def test_the_athena_record_lands_before_table_resolution_can_block(monkeypatch):
     import threading
 
     S._state.pop("provenance", None)
-    monkeypatch.setattr(S, "_state", S._state)
     held = threading.Event()
     entered = threading.Event()
 
