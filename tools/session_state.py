@@ -198,7 +198,6 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
         p["start"] = min(start_epoch, p["start"]) if "start" in p else start_epoch
         p["end"] = max(end_epoch, p["end"]) if "end" in p else end_epoch
         p["queries"] = p.get("queries", 0) + 1
-    return
 
 
 def take_query_provenance() -> dict:

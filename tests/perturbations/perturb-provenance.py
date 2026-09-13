@@ -66,6 +66,13 @@ CASES = [
      [(S, "    with _provenance_lock:\n        p = _state.setdefault(\"provenance\", {})",
        "    if True:\n        p = _state.setdefault(\"provenance\", {})")],
      [f"{T}::test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window"], True),
+
+    # The position of the Athena record. Moved back below `_ensure_athena_table`, a fan-out job stuck in
+    # table resolution when the batch times out writes into the NEXT tool call's record.
+    ("the Athena record moved back below table resolution",
+     [(Q, '        note_query_provenance("Athena over S3", start_epoch, end_epoch)\n        table = _ensure_athena_table(dest)',
+       '        table = _ensure_athena_table(dest)\n        note_query_provenance("Athena over S3", start_epoch, end_epoch)')],
+     [f"{T}::test_the_athena_record_lands_before_table_resolution_can_block"], True),
 ]
 
 sys.exit(sweep(CASES))

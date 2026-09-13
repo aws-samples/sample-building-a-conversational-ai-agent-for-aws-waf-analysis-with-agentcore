@@ -139,8 +139,11 @@ def test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window():
 
     def work(offset):
         for i in range(PER):
-            # Every thread walks its own window outward, so the true union is the widest pair and a
-            # lost min or max is visible in the result rather than only in the count.
+            # Every thread walks its own window outward so a lost `min` or `max` can show in the result
+            # too. **The count assertion is the one that carries this test**, measured over twenty runs
+            # against a lock-free version: the count caught it 20 times out of 20 and the window
+            # assertion 4 times out of 20. The window pair stays because it is a real property and it
+            # costs nothing; it is not what makes the perturbation reliable.
             S.note_query_provenance("E", 10_000 - offset - i, 10_000 + offset + i)
 
     threads = [threading.Thread(target=work, args=(t,)) for t in range(THREADS)]
@@ -157,3 +160,54 @@ def test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window():
     widest = 10_000 - (THREADS - 1) - (PER - 1)
     assert p["start"] == widest, f"window narrowed to {p['start']} from {widest}"
     assert p["end"] == 20_000 - widest
+
+
+def test_the_athena_record_lands_before_table_resolution_can_block(monkeypatch):
+    """**The record has to exist before anything that can block, or it lands in the next tool call.**
+
+    What decides that is the distance from entering `query_logs` to the record, not the distance from the
+    record to the engine call. Recorded after `_ensure_athena_table`, that distance was 48 lines, and on a
+    cold session that call walks S3, enumerates Glue and runs a CREATE through `_wait_query`, whose
+    deadline is `MAX_POLL` 120 s, the same number as `MAX_FANOUT_WAIT`. One slow CREATE can consume the
+    whole batch budget, so a fan-out job can still be inside table resolution when the batch gives up. The
+    tool returns, the record is drained, and the job then writes into the next tool call's record, where
+    `setdefault` merges it and `engine` goes to the last writer.
+
+    Reproduced before the fix: a tool that ran only CloudWatch queries over one hour showed
+    `Athena over S3`, a 195-hour window and an inflated count.
+
+    This holds the resolver open on an `Event` and asserts the record is already there, which is the only
+    shape that distinguishes "written on entry" from "written eventually"."""
+    import threading
+
+    S._state.pop("provenance", None)
+    monkeypatch.setattr(S, "_state", S._state)
+    held = threading.Event()
+    entered = threading.Event()
+
+    def blocking_resolve(dest):
+        entered.set()
+        held.wait(5)
+        return "db.t"
+
+    monkeypatch.setattr(Q, "_ensure_athena_table", blocking_resolve)
+    monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:s3:::bucket")
+    monkeypatch.setattr(Q, "_run_athena", lambda sql: [])
+    monkeypatch.setattr(Q, "_scan_log_values", lambda rows: rows)
+    from tools import waf_athena
+    monkeypatch.setattr(waf_athena, "_athena_state", {}, raising=False)
+    monkeypatch.setattr(waf_athena, "partition_predicate", lambda a, b: ("", None))
+
+    worker = threading.Thread(
+        target=lambda: Q.query_logs("filter x", "SELECT a FROM {TABLE} LIMIT {LIMIT}", 1000, 5000, 5))
+    worker.start()
+    try:
+        assert entered.wait(5), "the resolver was never reached, so this test proves nothing"
+        p = S._state.get("provenance") or {}
+        assert p.get("engine") == "Athena over S3", (
+            f"the record is not there while table resolution blocks: {p}. A fan-out job stuck here when "
+            f"the batch times out would write into the next tool call's record.")
+        assert (p.get("start"), p.get("end")) == (1000, 5000)
+    finally:
+        held.set()
+        worker.join(5)
