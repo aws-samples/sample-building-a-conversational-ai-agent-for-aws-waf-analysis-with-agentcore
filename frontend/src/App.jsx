@@ -1,16 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
 import React, { useState, useRef, useEffect } from 'react';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
-
-// Render agent markdown to sanitized HTML. Agent output routinely quotes attacker-controlled
-// log content (UAs, URIs, payloads); marked v18 does not sanitize, and this HTML is injected
-// into the main origin where Cognito tokens live. DOMPurify strips active/dangerous constructs
-// (<script>, on*= handlers, javascript: URLs) while keeping tables/code/links intact.
-function renderMarkdown(content) {
-  return DOMPurify.sanitize(marked.parse(content || '', { breaks: true }));
-}
+import { renderMarkdown } from './render';
 import { signIn, signOut, getToken, isAuthenticated, completeNewPassword, confirmResetPassword, getUserProfile, changePassword } from './auth';
 import { invokeAgent, listSessions, getSessionMessages, deleteSession } from './agent';
 import { config } from './config';

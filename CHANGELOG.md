@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+### Added: the frontend markdown sanitizer has tests, structural and behavioural
+
+`App.jsx` composed `DOMPurify.sanitize(marked.parse(...))` in a local function with nothing covering it.
+Everything the agent says goes through that line into the origin holding the Cognito tokens, and the
+agent quotes attacker-controlled log content by design.
+
+- **`tests/test_no_log_data_reaches_html.py` could not have covered this, and the reason is worth
+  naming.** It `ast.parse`s `tools/*.py`. A `.jsx` file cannot be in that corpus, so the check whose
+  name says it covers log data reaching HTML never had the frontend inside its search space.
+- **Split into reachability and correctness, because neither implies the other.** The function is now
+  `frontend/src/render.js`; `frontend/src/render.test.js` runs it, and `tests/test_frontend_sanitizer.py`
+  asserts it is still the only way agent text becomes HTML. A behavioural suite stays green while a
+  second render site bypasses the function it tests, and a structural check says nothing about whether
+  the function works.
+- **The order of the two calls is the property, not the presence of both.** marked has to run first:
+  handed `[x](javascript:alert(1))`, DOMPurify sees text carrying no markup and returns it untouched,
+  and marked then builds the `href` with nothing left to strip it. Measured: swapping them turns four of
+  the nine cases red, and `a raw script tag does not survive` is not one of the four. The payload a
+  reader reaches for first has no power to tell the two orders apart.
+- **Assertions are on scheme and handler, never on element removal.** DOMPurify keeps `<a>text</a>` and
+  drops the `href`, so "the element was removed" would false-fail on a DOMPurify update that changed
+  nothing about safety. The output is parsed and its attributes read rather than matched with a regex,
+  which reports `once=1` in ordinary prose as an event handler. The capability side is asserted too: a
+  payload shown as text, a table, a normal link, `breaks: true`.
+- **The sink inventory.** One `dangerouslySetInnerHTML` whose value comes from `renderMarkdown`, no
+  `.innerHTML` or `document.write` anywhere, the report preview's iframe never carrying `allow-scripts`
+  and `allow-same-origin` together, and all four generated-file anchors setting `download` rather than
+  navigating to a `blob:` URL in this origin.
+- **Those absence claims are made over comment-stripped sources.** `"DOMPurify.sanitize(" not in file`
+  goes red on a comment explaining the sanitizer, and `in file` passes on a file whose only mention is
+  in one. Three perturbation cases are aimed at the stripper itself, since a stripper that eats a file
+  satisfies every absence claim perfectly.
+- vitest and jsdom are new `devDependencies`, with a `vitest` job in `tests.yml`. Measured on dompurify
+  3.4.13: under `--environment node` the default export has no `sanitize` method, so a run without jsdom
+  errors rather than passing on unsanitized output. The limit is that jsdom's parser is not a browser's,
+  so this answers whether the composition is right and not what Blink would hand DOMPurify.
+
+### Added: the patrol report's URI column now rings a bell instead of being remembered
+
+Escaping every report field is deliberately not done, on the grounds that no attacker-controlled string
+reaches a template and escaping would be a mechanism in front of a signal. The condition that ends that
+deferral is someone adding a URI column to the patrol report, and nothing was watching for it.
+
+- **The raw URIs are already inside the renderer's argument**, which had not been written down.
+  `patrol_scan` puts each rule's `log_detail` into `rules_table`, `rules_table` is inside the
+  `webacl_results` handed to `_render_patrol_html_v2`, and `log_detail` carries the raw
+  `httpRequest.uri` rows a rule matched. What keeps them out of the HTML is that the renderer reads 34
+  data keys and none of them is that one.
+- **So the consumption side is pinned rather than escaped.** Four tests: the three links from query to
+  argument, an absence claim over the log-derived key names, the 34-key set so a column under an
+  unpredicted name fires as well, and the wholesale-dict-read hatch that would let one arrive with the
+  set unchanged. The failure message is where the reader learns the item has come due.
+- **The label subtraction is proved safe, not assumed.** The pin subtracts the `_PATROL_I18N["en"]`
+  names so a new translated string does not fire it, which also hides `blocked` and `counted` because
+  those are labels too. That is tolerable only while no log-derived name is also a label, so that is
+  asserted.
+- Seven perturbation cases, including both extractors blinded, since a pin that compares two empty sets
+  passes forever.
+
+### Changed: the perturbation harness runs a second engine
+
+- **`vitest` beside `_pytest`, with one classifier.** `sweep` decides ok / HOLLOW / INVALID by reading a
+  pytest-shaped summary line, so the vitest runner translates its JSON counts into those words instead
+  of handing over its own. That translation is where a wrong verdict would arrive in the right format,
+  so all four of its outcomes are pinned in `tests/test_perturbation_harness.py`.
+- **Selection filters the report, not the command line.** `vitest -t` takes one pattern, and a renamed
+  test has to select nothing and land on `no tests ran` rather than inherit an unrelated failure from
+  the same file.
+- **The reachability probe is per language.** `throw new Error(...)` for `.js`, `raise` for `.py`, and a
+  file type with no form is refused rather than quietly left unprobed. A probe run that died before any
+  assertion is now reported as well: for a `.py` file `ast.parse` caught that, for a `.js` file nothing
+  did, and red read as reachable either way.
+- 22 scripts and 307 cases, with `perturb-frontend-sanitizer.py` and `perturb-frontend-render.py` at 14
+  cases each. `perturbations.yml` installs the frontend dependencies for the second of those.
+
 ### Added: docs/limitations.md, in both languages
 
 What the agent cannot do, or cannot do without a cost worth knowing about. Fourteen entries, so a user
@@ -17,9 +92,10 @@ can tell a limit from a bug before opening an issue.
   query; an active WAF log filter makes every log-derived count low by an amount only your configuration
   knows; JA4 fingerprints are absent on API Gateway and AppSync, so one client behind many IPs cannot be
   distinguished from many clients there.
-- **You can stop a runtime session but nothing will list them.** Verified against the service models the
-  AWS CLI ships: no operation enumerates a runtime's sessions, `ListSessions` is memory-scoped, and
-  `StopRuntimeSession` needs an id you have no way to obtain.
+- **You can stop a runtime session but nothing will list them.** Verified across all 218 operations in
+  the two AgentCore APIs, read from the service models botocore ships: no operation enumerates a
+  runtime's sessions, `ListSessions` is memory-scoped, and `StopRuntimeSession` needs an id you have no
+  way to obtain.
 - Deployment state is deliberately absent, because it would expire on the next deploy and nobody would
   think to come back and fix it.
 
@@ -59,10 +135,9 @@ bump that broke a tool would have merged clean.
 
 ### Added: the perturbation scripts are in the repository, and four of them had stopped proving anything
 
-The suite has 873 passing assertions. Nothing proved any of them can fail, because the scripts that
+Every assertion in the suite passes. Nothing proved any of them can fail, because the scripts that
 check exactly that lived in a gitignored directory and ran only on the maintainer's laptop. They are
-now `tests/perturbations/`, 20 scripts, with `README.md` explaining what a verdict
-means.
+now `tests/perturbations/`, with `README.md` explaining what a verdict means.
 
 - **Four of the 19 had drifted into proving nothing**, which is what happens to a check nobody runs.
   One anchor had matched nothing since a second tool name joined a registration line in `agent.py`. One
@@ -84,12 +159,12 @@ means.
 - **The cheap half runs on every push.** `tests/test_perturbation_harness.py` unit-tests each guard
   against an injected runner, then statically re-checks that every case still anchors to code that
   exists and still name tests that exist, in under a second. Both drifted target names were found that
-  way; the six-minute sweep only reported a red baseline. The sweep is `perturbations.yml`, on pull
-  every pull request, with no paths filter. The static check catches an anchor that stopped matching and
+  way; the sweep itself only reported a red baseline. The sweep is `perturbations.yml`, on every
+  pull request, with no paths filter. The static check catches an anchor that stopped matching and
   cannot catch one that still matches while the perturbation no longer changes behaviour, which happened
   to two cases here, and neither change touched `tests/perturbations/`. A schedule would fire but is the
-  wrong mechanism: nothing in the sweep rots with time, so a nightly run reports the failure later than
-  the commit that caused it.
+  wrong mechanism: what moves a result here is a commit, so a nightly run reports the failure later than
+  the commit that caused it and attributes it to nobody.
 - One of that file's own new assertions was hollow, and its own perturbation caught it: it checked that
   the runner sets `PYTHONDONTWRITEBYTECODE`, while running inside a pytest the harness had already
   started with that variable set, so `dict(os.environ)` satisfied it. Clearing the variable first makes

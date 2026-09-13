@@ -10,14 +10,19 @@
 #
 # Both were ordinary product changes touching neither `tests/perturbations/` nor the harness, so a paths
 # filter on this job would never have fired. A schedule does fire, and it was the first answer here, but
-# it is the wrong mechanism: nothing in this sweep rots with time. The scripts import only the standard
-# library and read files in the repository, so no dependency, service or clock can change their result.
-# What changes it is a commit. A nightly run therefore reports the failure later than the pull request
-# that caused it and attributes it to nobody.
+# it is the wrong mechanism: what changes a result here is a commit, so a nightly run reports the failure
+# later than the pull request that caused it and attributes it to nobody.
 #
-# Six minutes on a pull request was the objection, and it does not hold against `pytest` taking eleven
-# seconds beside it: the point of this job is the expensive question, and the cheap one already has an
-# answer in the other workflow.
+# **One script has a dependency, which the earlier version of this comment denied.** It said nothing in
+# the sweep can be moved by anything but a commit, because the scripts import only the standard library
+# and read files in the repository. That is true of twenty-one of them. `perturb-frontend-render.py`
+# runs vitest, so its result also depends on the installed `marked` and `dompurify`. That strengthens
+# the trigger rather than weakening it: a dependency bump arrives here as a dependabot pull request,
+# which this job already runs on, and a schedule would have reported it later than the PR either way.
+#
+# The sweep's cost on every pull request was the objection, and it does not hold against `pytest`
+# taking eleven seconds beside it: the point of this job is the expensive question, and the cheap
+# one already has an answer in the other workflow.
 #
 # Third-party actions pinned by commit SHA: a tag is mutable and this repository is public.
 name: perturbations
@@ -45,6 +50,20 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
         with:
           enable-cache: true
+
+      # For `perturb-frontend-render.py` alone, which runs vitest. `npx --no-install` in the harness
+      # fetches nothing, so without this step that script stops on a red baseline and `run-all.py`
+      # reports `FAIL ... STATUS: ERROR` and exits non-zero. The failure is loud rather than a sweep
+      # that examined twenty-one scripts and reported a pass.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24  # vitest 5 wants ^22.12 || ^24 || >=26; jsdom 30 wants 24.15 or newer
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the frontend dependencies
+        run: npm ci
+        working-directory: frontend
 
       # Serial, and the runner enforces it. Each script edits shared source files and puts them back,
       # so two at once perturb each other's baseline and both report nonsense.

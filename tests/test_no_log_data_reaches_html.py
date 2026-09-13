@@ -25,11 +25,16 @@ at `_poll_log_query`, bypassing `query_logs` entirely, so it is a fourth query p
 also builds the HTML. All three call sites coerce: two read `first`/`last` timestamps and a row
 count, one reads four `int(float(...))` totals. No attacker-controlled string reaches the template.
 
-**The honest limit: a renderer's ARGUMENTS are not traced.** If someone puts URIs inside
-`webacl_results` and passes it in, nothing here catches it, because that needs dataflow rather than a
-call-graph check. The durable answer is for the renderer to escape by construction, which is
-recorded in ROADMAP 5.3 as the follow-up. This test buys the cheap half: it fires when a renderer
-grows a log query beside it, which is how the natural enrichment would be written.
+**A renderer's ARGUMENTS are not traced, and for the patrol report that is not hypothetical.**
+`patrol_scan` puts each rule's `log_detail` into `rules_table`, and `rules_table` is inside the
+`webacl_results` it hands the renderer. The top URIs a rule matched are therefore already inside the
+argument, raw. Nothing here traces that, because it needs dataflow rather than a call graph.
+
+So the consumption side is pinned instead: the last four tests hold the set of keys the patrol renderer
+reads, and a column added under any name changes it. That is not escaping and does not pretend to be.
+The durable answer stays what ROADMAP 5.3 records, a renderer that escapes by construction, and the
+reason that item is parked is that no attacker-controlled string reaches a template today. What the pin
+buys is that the event ending the deferral rings a bell instead of being remembered.
 """
 
 import ast
@@ -328,3 +333,145 @@ def test_no_dynamic_name_can_reach_a_template():
         assert escape not in src, (
             f"report.py uses {escape}, so a value can reach a template without being named at the "
             f"interpolation and the taint check above no longer covers it")
+
+
+# --- 5.3's trigger, so it fires instead of being remembered --------------------
+#
+# **The residual named in ROADMAP 5.3 is that a renderer's ARGUMENTS are not traced, and that residual
+# is not hypothetical here.** `patrol_scan` puts each rule's `log_detail` into `rules_table`, and
+# `rules_table` is inside the `webacl_results` it hands `_render_patrol_html_v2`. So the top URIs that
+# a rule matched, raw and attacker-controlled, are already inside the renderer's argument. What keeps
+# them out of the HTML is that the renderer does not read that key, and nothing said so.
+#
+# That mattered because of which way 5.3 is parked. It is deferred on the grounds that escaping would
+# be a mechanism in front of a signal while no attacker-controlled string reaches a template, and the
+# condition that ends the deferral is someone adding a URI column to the patrol report. The four tests
+# below make that condition ring a bell rather than wait to be remembered, which is the same shape as
+# `DECLARED` above and `BACKFILL_FLOOR` elsewhere.
+
+# Every constant key `_render_patrol_html_v2` reads, minus the localized labels. Pinned, not sampled:
+# a set is the only form in which "and nothing else" is checkable, and a new key is exactly the event
+# that has to stop being silent.
+RENDERER_KEYS = {
+    "AllowedRequests", "BlockRuleMatch", "BlockedRequests", "CaptchaRequests", "CaptchaRuleMatch",
+    "ChallengeRequests", "ChallengeRuleMatch", "bot_data", "bot_names", "chart_data", "detail", "en",
+    "error", "labels", "limit", "name", "rate_limits", "region", "rule_name", "rules_table", "scope",
+    "series", "severity", "suggestion", "targeted_signals", "text", "totals", "unverified_allowed",
+    "unverified_blocked", "unverified_captchaed", "unverified_challenged", "verified_allowed",
+    "webacl", "window",
+}
+
+# What the detail queries put into the report, at all three levels: the container `patrol_scan` builds,
+# the three cells inside it, and the raw row keys those cells carry.
+LOG_DERIVED_KEYS = {"log_detail", "ips", "uris", "content",
+                    "httpRequest.uri", "httpRequest.clientIp", "@message"}
+
+# Receivers of a wholesale dict read inside the renderer, as `ast.unparse` writes them. `wr.items()`
+# would reach every key without naming one, so the pin above would not see it. Each of these is a
+# nested value already reached through a pinned key.
+RENDERER_DICT_READS = {"cd['series']", "sigs", "names", "x[1]"}
+
+
+def _renderer():
+    for fn in ast.walk(ast.parse((TOOLS / "waf_patrol.py").read_text())):
+        if isinstance(fn, ast.FunctionDef) and fn.name == "_render_patrol_html_v2":
+            return fn
+    raise AssertionError("_render_patrol_html_v2 is gone, and 5.3's whole argument is about it")
+
+
+def _constant_keys(fn) -> set:
+    """Every string key read off anything in `fn`, by subscript or by `.get`."""
+    keys = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) \
+                and isinstance(node.slice.value, str):
+            keys.add(node.slice.value)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "get" and node.args \
+                and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            keys.add(node.args[0].value)
+    return keys
+
+
+def _label_keys() -> set:
+    """The localized label names, read out of `_PATROL_I18N["en"]` by AST rather than by import.
+
+    Subtracted from the renderer's key set below, because a new translated string is not a new data
+    path and a pin that fires on one would be ignored within a week."""
+    for node in ast.walk(ast.parse((TOOLS / "waf_patrol.py").read_text())):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "_PATROL_I18N" for t in node.targets):
+            for key, value in zip(node.value.keys, node.value.values):
+                if isinstance(key, ast.Constant) and key.value == "en":
+                    return {k.value for k in value.keys
+                            if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+    raise AssertionError("_PATROL_I18N['en'] is not a dict literal any more; the subtraction below "
+                         "would remove nothing and the pinned set would gain every label")
+
+
+def test_the_attacker_controlled_rows_are_already_inside_the_renderers_argument():
+    """The precondition, and the reason the pin below is worth having.
+
+    Three links, each asserted, because the interesting statement is not "the data is far away" but
+    "the data is one key away and nothing reads it". If any link breaks, the pin is guarding a path
+    that no longer exists and should be deleted rather than maintained."""
+    patrol = (TOOLS / "waf_patrol.py").read_text()
+    assert '"log_detail": log_details.get(rule_name, {})' in patrol, (
+        "patrol_scan no longer puts log_detail into the rules table. If the detail rows have moved "
+        "out of the renderer's argument entirely, delete the pin below; if they have merely been "
+        "renamed, rename them in LOG_DERIVED_KEYS.")
+    for producer in ("_get_log_details", "_get_log_details_athena"):
+        fn = next(f for f in ast.walk(ast.parse(patrol))
+                  if isinstance(f, ast.FunctionDef) and f.name == producer)
+        cells = {n.value for n in ast.walk(fn)
+                 if isinstance(n, ast.Constant) and n.value in ("ips", "uris", "content")}
+        assert cells == {"ips", "uris", "content"}, f"{producer} now builds cells {sorted(cells)}"
+    assert "rules_table" in _constant_keys(_renderer()), (
+        "the renderer no longer reads rules_table, so log_detail is not inside anything it touches")
+
+
+def test_the_patrol_renderer_reads_no_log_derived_key():
+    """The claim a reader cares about, stated on its own so it does not depend on the pin below being
+    maintained. Every level of the name is here: the container, the cells, and the raw row keys, since
+    reading `ld["uris"]` and reading `r["log_detail"]["uris"]` are the same event."""
+    read = _constant_keys(_renderer()) & LOG_DERIVED_KEYS
+    assert not read, (
+        f"_render_patrol_html_v2 now reads {sorted(read)}, which carries request URIs and inspected "
+        f"request content straight from the logs. That is the condition ROADMAP 5.3 is waiting for: "
+        f"the interpolation needs html.escape, and the renderer should escape by construction rather "
+        f"than field by field.")
+
+
+def test_the_patrol_renderers_key_set_is_pinned_so_a_new_column_fires():
+    """The tripwire. The test above only catches a key someone thought to name here, and the event
+    worth catching is a column added under a name nobody predicted.
+
+    **The label subtraction is proved safe rather than assumed.** `tot` reads `blocked` and `counted`,
+    which are also translated strings, so subtracting the label names hides those from the pin. That is
+    tolerable only while no log-derived name is also a label, and that is the first assertion."""
+    labels = _label_keys()
+    assert labels, "no i18n labels parsed, so the subtraction below removes nothing"
+    assert not (LOG_DERIVED_KEYS & labels), (
+        f"{sorted(LOG_DERIVED_KEYS & labels)} is both a log-derived key and a localized label, so "
+        f"subtracting the labels would hide it from the pin. Rename the label.")
+    found = _constant_keys(_renderer()) - labels
+    assert found == RENDERER_KEYS, {
+        "new keys, and this is the decision to make": sorted(found - RENDERER_KEYS),
+        "gone, so drop them from RENDERER_KEYS": sorted(RENDERER_KEYS - found),
+        "what to do": "If a new key carries text a request put in a log, ROADMAP 5.3 has come due: "
+                      "escape at the interpolation, and read that item before adding the column. If "
+                      "it is a count, a rule name or anything else config-derived, add it here.",
+    }
+
+
+def test_the_patrol_renderer_reads_no_dict_wholesale():
+    """The escape hatch around the pin, and the same shape as the `locals()` check above. `wr.items()`
+    reaches every key in the argument without naming one, so a URI column would arrive with the pinned
+    set unchanged."""
+    found = {ast.unparse(node.func.value) for node in ast.walk(_renderer())
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and node.func.attr in ("items", "values", "keys")}
+    assert found == RENDERER_DICT_READS, (
+        f"the wholesale dict reads in _render_patrol_html_v2 changed to {sorted(found)}. Each one has "
+        f"to be a nested value already reached through a key in RENDERER_KEYS; iterating the argument "
+        f"itself, or a rule row, reads log_detail without naming it and the pin above goes blind.")

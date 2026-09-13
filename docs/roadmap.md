@@ -55,7 +55,8 @@ See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the tr
 |---|---|
 | Keep log content as data and never as instructions, even when a log field contains one | |
 | Escape all report fields on render | |
-| Automated tests for prompt-injection resistance, and for attack payloads still displaying as text | |
+| Automated tests that an attack payload the agent quotes back renders as text and cannot execute | 2026-09-13 |
+| Automated tests for prompt-injection resistance | |
 
 ## Deployment
 

@@ -20,7 +20,9 @@ Eight guards, and each one exists because its absence produced a wrong answer at
 3. **The edit changes something.** `old == new` slips in while editing a case by hand, and a
    transform located by AST can match nothing and return the file unchanged.
 4. **A perturbed `.py` file still parses.** Otherwise the target is red at import and would be red
-   for any edit at all, including one that leaves the property intact.
+   for any edit at all, including one that leaves the property intact. There is no parse check for a
+   `.js` file and none is needed: one that no longer transforms runs zero tests, which guard 6
+   already refuses, and adding a JS parser here would be a second thing to keep correct.
 5. **The perturbed line executes**, for the cases that ask for the probe. See `_reachable`.
 6. **Red at the assertion, not at collection**, and not from a run in which nothing executed. pytest
    exits non-zero for all three and only the first is evidence, which is why the summary line is read
@@ -28,7 +30,7 @@ Eight guards, and each one exists because its absence produced a wrong answer at
 7. **The restore is verified, and the targets pass again.** A restore that writes the wrong bytes
    leaves a mutated tree looking clean.
 8. **The count in the report excludes the refused cases**, since that number is the only thing anyone
-   reads out of a six-minute run.
+   reads out of a full run.
 
 **Bytecode is invalidated on mtime AND size, so a same-length edit written and reverted inside one
 second leaves a `.pyc` compiled from the perturbed source.** The restored tree then fails while `git
@@ -36,18 +38,35 @@ diff` shows nothing. Both halves are closed here: `PYTHONDONTWRITEBYTECODE` stop
 version from ever being cached, and the `__pycache__` beside a written file is removed so a cache
 predating the edit cannot answer for it either.
 
+**Two engines, one classifier.** Most scripts run pytest; the one covering `frontend/src/render.test.js`
+runs vitest. The eight guards above are the same either way, and the verdict is decided in one place by
+reading a pytest-shaped summary line, so `vitest` translates its counts into those words rather than
+handing over its own. That translation is the new place a false state could emit the true output, which
+is why `tests/test_perturbation_harness.py` pins all four of its outcomes.
+
 Scripts run one at a time. They mutate shared source files in place, so two in parallel perturb each
 other's baseline.
 """
 
 import ast
+import json
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+# The statement that stands in for the anchor during the reachability probe, per file type. A file
+# type with no entry is refused rather than probed, because a probe that cannot be written cannot
+# establish anything and skipping it silently is how the guard stops applying.
+PROBE = {
+    ".py": 'raise AssertionError("perturbation probe: line reached")',
+    ".js": 'throw new Error("perturbation probe: line reached");',
+    ".jsx": 'throw new Error("perturbation probe: line reached");',
+}
 
 
 def _write(path: pathlib.Path, text: str) -> None:
@@ -75,6 +94,59 @@ def _pytest(targets, root=ROOT):
     return proc.returncode, (lines[-1] if lines else "<no output>")
 
 
+# Where the JS suite lives, relative to the repository root. vitest resolves its config and its
+# `include` patterns from that directory, so targets are written repo-relative and reduced here.
+FRONTEND = "frontend"
+
+
+def vitest(targets, root=ROOT):
+    """Run the frontend suite over `targets` and return `(returncode, tail)` in pytest's vocabulary.
+
+    **Public where `_pytest` is private, because a script has to name it.** `_pytest` is the default
+    and nothing imports it; a script covering `render.test.js` passes `run=vitest` to `sweep`.
+
+    **The tail is translated rather than quoted, and that is the load-bearing part.** `sweep` decides
+    ok / HOLLOW / INVALID by reading the summary line, and it reads pytest's words: `no tests ran`,
+    `N failed`, `N error`. Handing it vitest's own summary would leave every case classified by
+    accident, which is the exact shape this whole directory exists to catch. So the JSON reporter is
+    read and the counts are re-rendered. `tests/test_perturbation_harness.py` holds the mapping for
+    all four outcomes, since a shared classifier needs its own evidence per engine.
+
+    **Selection happens here, not on the command line.** `vitest -t` takes one pattern, so a call
+    holding several test names could not be expressed. The whole file runs and the JSON is filtered
+    to the requested titles, which also means a renamed test yields zero selected results and lands
+    on `no tests ran` rather than being scored as caught.
+    """
+    files, wanted = set(), set()
+    for target in targets:
+        rel, _, name = target.partition("::")
+        files.add(str(pathlib.PurePosixPath(rel).relative_to(FRONTEND)))
+        if name:
+            wanted.add(name)
+    with tempfile.TemporaryDirectory() as tmp:
+        report = pathlib.Path(tmp) / "vitest.json"
+        proc = subprocess.run(
+            ["npx", "--no-install", "vitest", "run", "--reporter=json",
+             f"--outputFile={report}", *sorted(files)],
+            cwd=root / FRONTEND, capture_output=True, text=True)
+        try:
+            data = json.loads(report.read_text())
+        except (OSError, ValueError):
+            # No report at all means the run died before any test: a transform error, a missing
+            # binary, a config that no longer loads. Red for a reason unrelated to any assertion.
+            return (proc.returncode or 1), "1 error in 0.00s"
+    results = [r for suite in data.get("testResults", ())
+               for r in suite.get("assertionResults", ())
+               if not wanted or r.get("title") in wanted or r.get("fullName") in wanted]
+    if not results:
+        return (proc.returncode or 1), "no tests ran in 0.00s"
+    failed = sum(1 for r in results if r.get("status") == "failed")
+    passed = len(results) - failed
+    if failed:
+        return 1, f"{failed} failed, {passed} passed in 0.00s"
+    return 0, f"{passed} passed in 0.00s"
+
+
 def _reachable(path, text, old, case_targets, root, run):
     """Does the line about to be perturbed actually execute under these targets?
 
@@ -100,17 +172,27 @@ def _reachable(path, text, old, case_targets, root, run):
     and 10/11. The maintainer's reviewer did that independently and got the same six, which is why the
     claim that the migration preserved behaviour rests on something other than a note.
     """
+    if path.suffix not in PROBE:
+        return f"no probe form for a {path.suffix} file, so reachability cannot be established", None
     indent = " " * (len(old) - len(old.lstrip()))
-    _write(path, text.replace(old, f'{indent}raise AssertionError("perturbation probe: line reached")'))
+    _write(path, text.replace(old, indent + PROBE[path.suffix]))
     try:
-        try:
-            ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            return None, "the probe edit does not parse, so reachability is unestablished"
-        rc, _ = run(case_targets, root)
+        if path.suffix == ".py":
+            try:
+                ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:
+                return None, "the probe edit does not parse, so reachability is unestablished"
+        rc, tail = run(case_targets, root)
         if rc == 0:
             return ("the perturbed line never executes under these targets, so a green result "
                     "would prove nothing"), None
+        # **Red is not enough on its own, and this is the half the `ast.parse` above cannot cover for
+        # a `.js` file.** An anchor that is a fragment rather than a whole line leaves the probe
+        # statement spliced into the middle of an expression, and the run then dies before any
+        # assertion. Red for that reason says nothing about whether the line executes, so the same
+        # two tails `sweep` refuses below are refused here.
+        if "no tests ran" in tail or (" error" in tail and " failed" not in tail):
+            return None, f"the probe run ended before any assertion, so reachability is unestablished: {tail}"
         return None, None
     finally:
         _write(path, text)
