@@ -71,6 +71,8 @@ This document lists every IAM permission WAF Analyst requires, what it's used fo
 | Permission | Purpose | Production Impact |
 |---|---|---|
 | `glue:GetTable` | Find existing Athena tables for AWS WAF logs | None (read) |
+| `glue:GetTables` | List the tables in a database, so a table you created yourself is found | None (read) |
+| `glue:GetDatabases` | List databases, so the table search is not narrowed to two known names | None (read) |
 | `glue:GetDatabase` | Check if database exists | None (read) |
 | `glue:CreateDatabase` | Create `waf_analysis_tmp` database if not exists | **Creates a new empty database.** Does not touch existing databases. |
 | `glue:CreateTable` | Create table with partition projection | **Creates a table in `waf_analysis_tmp` database only.** Does not modify existing tables. |

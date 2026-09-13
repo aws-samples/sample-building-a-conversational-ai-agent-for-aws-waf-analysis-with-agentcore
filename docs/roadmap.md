@@ -46,7 +46,6 @@ See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the tr
 | A guided SQL injection investigation, the way false-positive and bypass investigations already work | |
 | Detect one WAF token replayed across many IPs | |
 | Country, referer, and network (ASN) concentration as additional dimensions | |
-| Find the WebACL for a domain name without asking you which one it is | |
 | A cross-WebACL summary in the patrol report | |
 
 ## Security and privacy

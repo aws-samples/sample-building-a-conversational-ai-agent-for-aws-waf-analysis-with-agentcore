@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed: two IAM actions were granted and documented nowhere
+
+`docs/iam-permissions.md` is the list a reader consents to before installing this in their account.
+`glue:GetTables` and `glue:GetDatabases` were granted by `deploy/backend.yaml` and appeared in neither
+language's version of that document, so what was granted was two actions wider than what was read. Both
+are now documented, and `tests/test_iam_policy_is_documented.py` asserts the two sides match from here.
+
+- **The template already explained one of them in a comment**, which is the part worth noticing. The
+  decision was recorded where a maintainer reads and not where the user consents.
+- Both directions are asserted, because the fixes differ. An undocumented grant means the reader agreed
+  to less than they got; a documented action that is no longer granted sends someone writing their own
+  least-privilege policy down a path where an extra action looks required.
+- The precondition is not optional here: the check compares two sets for equality, and two empty sets
+  are equal, so a parser that stopped matching would report perfect agreement. The floor and the
+  named `bedrock:Retrieve` case are what stop that, and four of `perturb-iam-doc.py`'s seven cases
+  blind one side of the comparison rather than changing the data.
+
 ### Added: the frontend markdown sanitizer has tests, structural and behavioural
 
 `App.jsx` composed `DOMPurify.sanitize(marked.parse(...))` in a local function with nothing covering it.
@@ -74,7 +91,7 @@ deferral is someone adding a URI column to the patrol report, and nothing was wa
   file type with no form is refused rather than quietly left unprobed. A probe run that died before any
   assertion is now reported as well: for a `.py` file `ast.parse` caught that, for a `.js` file nothing
   did, and red read as reachable either way.
-- 22 scripts and 308 cases, with `perturb-frontend-sanitizer.py` and `perturb-frontend-render.py` at 14
+- 23 scripts and 315 cases, with `perturb-frontend-sanitizer.py` and `perturb-frontend-render.py` at 14
   cases each. `perturbations.yml` installs the frontend dependencies for the second of those.
 
 ### Added: docs/limitations.md, in both languages
