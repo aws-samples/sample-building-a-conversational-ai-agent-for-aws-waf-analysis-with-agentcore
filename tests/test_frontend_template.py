@@ -133,6 +133,11 @@ def test_the_upload_sends_opposite_headers_for_the_two_kinds_of_file():
         # against a correct document on its first run.
         for command in commands:
             assert "--delete" not in command, (
-                f"{guide} deletes old objects on upload: {command!r}. The previous build's hashed "
-                f"assets are what a browser still holding the old index.html asks for; removing them "
-                f"breaks that tab instead of leaving it merely stale.")
+                f"{guide} deletes old objects on upload: {command!r}. Keeping the previous build's "
+                f"hashed assets is cheap insurance for a browser still holding the old index.html. "
+                f"**How narrow that is, measured 2026-09-13:** the app builds to a single bundle with "
+                f"no lazy chunks, so an open tab never re-requests its own JavaScript, and index.html "
+                f"now ships `no-cache`, which makes a stale copy unlikely rather than impossible. An "
+                f"earlier version of this message claimed deleting them breaks that tab, which "
+                f"overstated it. The assertion stays because the cost is zero and the offline or "
+                f"flaky-network case is real.")

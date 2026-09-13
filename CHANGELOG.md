@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: the prompt told the model the session timezone and then gave it the time in UTC
+
+Found by asking the deployed agent one real question, which is the only thing that could have found it.
+
+`_build_system_prompt` renders two adjacent lines from the same argument, and one of them ignored it.
+The prompt said `Session timezone: UTC+8 — All times from the user are in this timezone. Pass them to
+tools as-is, NEVER convert to UTC`, then stated the current time in UTC. The one instruction that
+consumes that time is "last 6 hours → start_time = now - 6h in session timezone", so it had no correct
+input.
+
+- **What that did to a real answer.** Session timezone UTC+8, `now` 05:52 UTC. The model passed
+  `start_time=2026-09-12T23:52`, which is the UTC number. `_parse_start_time` reads a string with no
+  offset as session-local, so the log query ran over 15:52-21:52 UTC while the question asked about the
+  six hours ending 05:52 UTC. In the same turn `get_waf_overview` was called with an empty `start_time`
+  and computed its own window correctly, so one reply carried two windows eight hours apart.
+- **It read as self-consistent, and that is the part worth keeping.** Both windows happened to hold
+  three blocked requests from the same IP, so the totals agreed with the table. The count could not
+  tell them apart; the timestamps had to be pulled out of CloudWatch Logs to settle which window ran.
+- **The label is now built from the same value as the time.** A session-local time labelled `UTC` is
+  worse than a UTC time labelled `UTC`: the model copies the label into its answer, so neither the
+  reader nor the model can tell.
+- Nothing else moved. `_parse_start_time` still reads an offset-less string as session-local, which is
+  correct for someone typing a local time, and the partition timezone that decides which S3 hour
+  directories an Athena query scans is a third timezone owned by `waf_athena`. This happened upstream
+  of both.
+- `tests/test_prompt_current_time.py` fails on five of its seven cases against the old line.
+  `perturb-prompt-time.py` is 7/7, and one of its cases caught a defect in the new test itself: the
+  first version asserted `"NEVER convert to UTC" in prompt`, and that phrase appears twice, so deleting
+  the copy that mattered left it green.
+
+### Changed: one test's failure message overstated what it was protecting
+
+`test_frontend_template.py` forbids `--delete` on the frontend upload, and said deleting the previous
+build's hashed assets breaks a tab still holding the old `index.html`. Measured on the deployed app:
+the frontend builds to a single bundle with no lazy chunks, so an open tab never re-requests its own
+JavaScript, and `index.html` now ships `no-cache`. The assertion stays, because the cost is zero and
+the offline case is real, but the reason is narrower than the message claimed.
+
 ## 0.24.0 (2026-09-13)
 
 ### Fixed: two IAM actions were granted and documented nowhere
