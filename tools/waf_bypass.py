@@ -9,13 +9,14 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
-from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently
+from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently, truncation_summary
 from tools.query_limits import MAX_MINUTES
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
 
 
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
-                failures: dict | None = None, label: str = "") -> list[dict]:
+                failures: dict | None = None, label: str = "",
+                notes: dict | None = None) -> list[dict]:
     """Run a log query, return its rows, and record why if there are none.
 
     Still never raises, which is what a report assembled from many independent queries
@@ -40,7 +41,7 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
         return []
 
     try:
-        rows = query_logs(cwl, athena, start, end, limit)
+        rows = query_logs(cwl, athena, start, end, limit, notes=notes, label=label)
     except Exception as e:
         return _record(f"{type(e).__name__}: {e}")
     reason = log_query_error(rows)
@@ -206,6 +207,9 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
     failures under the single label `distributed_ips`, so if two fingerprints failed the report
     kept one reason and silently dropped the other."""
     failures: dict[str, str] = {}
+    # Which sections were cut off at their limit, keyed the same way as `failures` so a
+    # renderer looks in one place for both and cannot surface one while forgetting the other.
+    notes: dict[str, int] = {}
     # Reject, do not substitute. `re.sub` of the disallowed characters is injection-safe, since
     # the quotes go, but it then queries a DIFFERENT fingerprint: paste `t13d…h2 ` with a stray
     # character and the report's own header names a fingerprint the user never typed, which
@@ -238,7 +242,7 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
     )
     rows = _safe_query(cwl, athena, start_epoch, end_epoch, limit=10,
-                       failures=failures, label="ja4_ips")
+                       failures=failures, label="ja4_ips", notes=notes)
 
     lines = [f"## IPs behind JA4 {safe_ja4}", ""]
     if failures:
@@ -257,6 +261,9 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("→ Pick one and call detect_bypass(step='investigate_ip', ip='<IP>') for its "
                  "behaviour, labels and query strings.")
+    _cut = truncation_summary(notes, failures)
+    if _cut:
+        lines.append(_cut)
     return "\n".join(lines)
 
 
@@ -382,6 +389,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # list as "(none found)", which is a claim about the traffic, so a failed query
     # has to be told apart from a query that matched nothing.
     failures: dict[str, str] = {}
+    # Which sections were cut off at their limit, keyed the same way as `failures` so a
+    # renderer looks in one place for both and cannot surface one while forgetting the other.
+    notes: dict[str, int] = {}
 
     # ROADMAP 4.6. The six anomaly filters are independent: none reads another's output, so
     # the serial chain's wall time was the sum for no reason. Each is registered here as a
@@ -400,7 +410,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         `failures`. Distinct-key dict assignment is atomic under the GIL, so no lock is
         needed here; a job that MUTATED a shared value would need one."""
         jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
-                                          failures=failures, label=label)
+                                          failures=failures, label=label, notes=notes)
 
     # 0. Quick coverage check (config-based) + WoW volume check
     coverage_gaps = _check_coverage_gaps()
@@ -731,6 +741,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append("If user still suspects bypass, try a shorter/different time window (1-2h around the suspected incident).")
         lines.append("Tip: use get_waf_overview or volume_anomaly to identify peak traffic hours first.")
 
+    _cut = truncation_summary(notes, failures)
+    if _cut:
+        lines.append(_cut)
     return "\n".join(lines)
 
 
@@ -743,6 +756,9 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     # CONFIDENCE. Absence of evidence was being read as evidence of absence, in the
     # direction that produces a false alarm.
     failures: dict[str, str] = {}
+    # Which sections were cut off at their limit, keyed the same way as `failures` so a
+    # renderer looks in one place for both and cannot surface one while forgetting the other.
+    notes: dict[str, int] = {}
 
     # 1. Frequency (ALLOW only — bypass context)
     freq_cwl = (
@@ -758,7 +774,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
-    freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1, failures=failures, label="frequency")
+    freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1, failures=failures, label="frequency", notes=notes)
     peak_rpm = freq[0].get("peak_rpm", "?") if freq else "?"
     avg_rpm = freq[0].get("avg_rpm", "?") if freq else "?"
 
@@ -774,7 +790,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
         f"{ATHENA_EXCLUDE_STATIC}"
     )
-    uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1, failures=failures, label="uri_diversity")
+    uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1, failures=failures, label="uri_diversity", notes=notes)
     unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"
     total_reqs = uri_data[0].get("total", "?") if uri_data else "?"
 
@@ -791,7 +807,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW' AND httprequest.args <> ''"
         f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
     )
-    qs_data = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8, failures=failures, label="query_strings")
+    qs_data = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8, failures=failures, label="query_strings", notes=notes)
 
     # 3. Action breakdown
     action_cwl = (
@@ -804,7 +820,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY action"
     )
-    actions = _safe_query(action_cwl, action_athena, start_epoch, end_epoch, limit=10, failures=failures, label="actions")
+    actions = _safe_query(action_cwl, action_athena, start_epoch, end_epoch, limit=10, failures=failures, label="actions", notes=notes)
     action_map = {r.get("action", ""): int(r.get("hits", 0)) for r in actions}
 
     # 4. Labels (bot detection)
@@ -822,7 +838,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND labels IS NOT NULL AND cardinality(labels) > 0"
         f" GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT 5"
     )
-    labels = _safe_query(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5, failures=failures, label="labels")
+    labels = _safe_query(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5, failures=failures, label="labels", notes=notes)
 
     # 5. Country
     country_cwl = (
@@ -836,7 +852,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY httprequest.country LIMIT 1"
     )
-    country_data = _safe_query(country_cwl, country_athena, start_epoch, end_epoch, limit=1, failures=failures, label="country")
+    country_data = _safe_query(country_cwl, country_athena, start_epoch, end_epoch, limit=1, failures=failures, label="country", notes=notes)
     country = country_data[0].get("httpRequest.country", "?") if country_data else "?"
 
     # 6. User-Agent
@@ -854,7 +870,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
         f" ORDER BY hits DESC LIMIT 3"
     )
-    ua_data = _safe_query(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3, failures=failures, label="user_agent")
+    ua_data = _safe_query(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3, failures=failures, label="user_agent", notes=notes)
 
     # 7. JA4 fingerprint
     ja4_cwl = (
@@ -868,7 +884,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY ja4fingerprint ORDER BY hits DESC LIMIT 3"
     )
-    ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3, failures=failures, label="ja4")
+    ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3, failures=failures, label="ja4", notes=notes)
 
     # 8. COUNT rules triggered (nonTerminatingMatchingRules)
     count_rules_cwl = (
@@ -885,7 +901,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}' AND t.action = 'COUNT'"
         f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
     )
-    count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures, label="count_rules")
+    count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures, label="count_rules", notes=notes)
 
     # Build output
     lines = [
@@ -1043,6 +1059,9 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     lines.append("     Want me to scan for more IPs with similar patterns?'")
     lines.append("  → If yes, call detect_bypass(step='scan', start_time='...')")
 
+    _cut = truncation_summary(notes, failures)
+    if _cut:
+        lines.append(_cut)
     return "\n".join(lines)
 
 
