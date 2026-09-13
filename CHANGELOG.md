@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.24.0 (2026-09-13)
 
 ### Fixed: two IAM actions were granted and documented nowhere
 
