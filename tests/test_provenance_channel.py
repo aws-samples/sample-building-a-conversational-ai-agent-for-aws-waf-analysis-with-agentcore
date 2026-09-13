@@ -110,3 +110,50 @@ def test_the_frontend_attaches_it_to_the_chip_and_renders_both_window_renderings
     assert "p.queries" in text, "how many queries the window describes"
     css = pathlib.Path("frontend/src/style.css").read_text()
     assert ".tool-src" in css, "rendered in the chip, not only in a title attribute"
+
+
+def test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window():
+    """**All three merges are read-modify-write and concurrency reaches them by default.**
+    `run_concurrently` submits every independent query of a tool call to a `ThreadPoolExecutor` and
+    `_cwl_semaphore` allows eight at once, so two threads read `queries` as 3 and both write 4.
+
+    Both losses point the wrong way. An undercount reports fifteen queries as fewer, which is the one
+    thing the counter exists to say. A lost `min` reports a window narrower than what was read, which
+    attributes a finding from the earliest query to a window that starts later — a misattribution, which
+    is what this record was built to prevent.
+
+    Sixteen threads and five hundred writes each, because a lost update has to be near-certain rather
+    than likely for the perturbation that removes the lock to fail reliably. Measured without the lock:
+    the count came back short every run."""
+    import sys
+    import threading
+
+    S._state.pop("provenance", None)
+    THREADS, PER = 16, 500
+    # **Without this the test is hollow, measured.** CPython's default switch interval is 5 ms, long
+    # enough that a thread runs all five hundred cheap iterations before it is ever preempted, so the
+    # threads do not interleave and the unlocked version passes. The sweep reported HOLLOW on exactly
+    # that. Forcing a switch every microsecond makes the interleaving certain rather than likely.
+    _interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+
+    def work(offset):
+        for i in range(PER):
+            # Every thread walks its own window outward, so the true union is the widest pair and a
+            # lost min or max is visible in the result rather than only in the count.
+            S.note_query_provenance("E", 10_000 - offset - i, 10_000 + offset + i)
+
+    threads = [threading.Thread(target=work, args=(t,)) for t in range(THREADS)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(_interval)
+
+    p = S.take_query_provenance()
+    assert p["queries"] == THREADS * PER, f"lost {THREADS * PER - p['queries']} increments"
+    widest = 10_000 - (THREADS - 1) - (PER - 1)
+    assert p["start"] == widest, f"window narrowed to {p['start']} from {widest}"
+    assert p["end"] == 20_000 - widest
