@@ -755,7 +755,7 @@ def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, ru
     Fetches matching messages and extracts the location keyed by the rule name."""
     import json as _json
     from collections import Counter
-    from tools.waf_query import inspection_location, _redact
+    from tools.waf_query import inspection_location, _redact, log_query_error
     loc = inspection_location(rule_name)
     if not loc or loc[1] == "uri":  # uri already shown separately
         return []
@@ -767,6 +767,19 @@ def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, ru
              f" or @message like '\"ruleId\":\"{safe_name}\",\"action\":\"COUNT\"'"
              f" | fields @message | limit 25")
     rows = _poll_log_query(logs_client, log_group, start, end, query)
+    # The failure has to leave here in the shape the renderer reads. `_poll_log_query` returns
+    # `[{"_error": reason}]`, and the loop below reaches for `@message`, which that row does not
+    # have, so `json.loads("")` raised, `continue` swallowed it, and the reason died in an empty
+    # `Counter` — this cell reported absence while its two sibling cells reported the failure.
+    # Measured 2026-09-13 with a client answering `Failed`: `ips` and `uris` came back as
+    # `_error` rows and `content` came back `[]`.
+    #
+    # Its two neighbours needed no such line because they return the poller's rows untouched.
+    # This is the one detail query that parses them, which is what put a swallowing `except`
+    # between the reason and the report. The predicate is `query_logs`' own contract, so it is
+    # `log_query_error`'s to answer rather than a fourth inline copy.
+    if log_query_error(rows):
+        return rows
     counter = Counter()
     for r in rows:
         try:

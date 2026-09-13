@@ -16,6 +16,7 @@ which query. `_get_log_details_athena`'s `table_msg` is not a section at all, an
 rather than keying: it was carrying an informational aside and a refusal explanation in one string.
 """
 
+import json
 import time
 
 import pytest
@@ -134,6 +135,53 @@ def test_a_batch_timeout_marks_the_cells_that_never_answered(monkeypatch):
     assert set(reasons) == {"ips", "uris", "content"}
     for why in reasons.values():
         assert "had not answered" in why
+
+
+# --- the layer between: a real detail query against a failing client -------
+
+
+DETAIL_RULE = "SQLi_QUERYARGUMENTS"
+
+
+def test_every_detail_query_hands_the_failure_on_instead_of_an_empty_cell(no_sleep):
+    """The gap the two groups above leave between them, and it had a defect in it.
+
+    The fan-out tests replace all three detail functions with fakes, so the real ones never run
+    there and the `_error` row they check is injected by `_get_log_details`' own handler. The
+    poller tests call `_poll_log_query` directly, one layer below. Nothing ran a real detail
+    function against a failing client.
+
+    `_query_content_by_rule` lost the reason in exactly that gap. It is the one detail query that
+    parses its rows, and an `_error` row has no `@message`, so `json.loads("")` raised inside a
+    loop whose `except Exception: continue` swallowed it, and the reason died in an empty
+    `Counter`. Measured 2026-09-13 against a client answering `Failed`: `ips` and `uris` came back
+    as `_error` rows and `content` came back `[]`, which the renderer reads as a rule that matched
+    nothing. Swept over all three rather than fixed on the one, because the property is that the
+    three cells of a row agree about what happened."""
+    from tools.waf_query import inspection_location
+
+    # The precondition, and it is load-bearing rather than decorative: `_query_content_by_rule`
+    # returns `[]` without querying anything when the rule inspects the URI or is unknown, so
+    # with the wrong rule name this test would pass while reaching no query at all.
+    loc = inspection_location(DETAIL_RULE)
+    assert loc and loc[1] != "uri", f"{DETAIL_RULE} no longer has a non-uri inspected location"
+
+    for fn in (P._query_top_ips_by_rule, P._query_top_uris_by_rule, P._query_content_by_rule):
+        rows = fn(FakeCwl("Failed"), "lg", 0, 60, DETAIL_RULE)
+        assert rows, f"{fn.__name__} returned nothing, so a failed query reads as an idle rule"
+        assert "_error" in rows[0], f"{fn.__name__} dropped the reason: {rows!r}"
+        assert "rather than for lack of matching requests" in rows[0]["_error"]
+
+
+def test_a_detail_query_that_answered_still_returns_its_content(no_sleep):
+    """The control for the guard above. Returning the poller's rows before the parse rather than
+    only on failure satisfies every assertion there and hands the renderer raw `@message` rows,
+    which it prints as `[? hits]` with an empty payload."""
+    message = json.dumps({"httpRequest": {"uri": "/login", "args": "id=1%20or%201=1",
+                                          "headers": []}})
+    fake = FakeCwl("Complete", [[{"field": "@message", "value": message}]])
+    assert P._query_content_by_rule(fake, "lg", 0, 60, DETAIL_RULE) == [
+        {"content": "id=1%20or%201=1", "cnt": 1}]
 
 
 # --- gap 1: table_msg carried two different meanings ----------------------

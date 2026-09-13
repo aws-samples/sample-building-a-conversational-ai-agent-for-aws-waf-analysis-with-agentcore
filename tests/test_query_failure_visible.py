@@ -66,6 +66,18 @@ def _verdict(report: str) -> str:
     return report.split("## Directional Judgment")[1].split("## Your Next Action")[0]
 
 
+def _next_action(report: str) -> str:
+    """Just the action block, and the split is what makes an assertion here mean anything.
+
+    The refusal above it is written in the same vocabulary: "do NOT report it as clean" contains
+    the word this section must not say, so a search over the whole report cannot tell the
+    instruction from the prohibition. `## Your Next Action` is also the heading every step
+    machine's prompt line tells the model to follow, which is why this block and not another one
+    is the subject."""
+    assert "## Your Next Action" in report
+    return report.split("## Your Next Action")[1]
+
+
 @pytest.fixture
 def offline(monkeypatch):
     """Everything `_step_scan` reaches outside the query layer.
@@ -123,13 +135,112 @@ def test_empty_reason_tells_the_two_kinds_of_empty_apart():
 @pytest.mark.parametrize("how", ["raise", "error_row"])
 def test_a_scan_whose_queries_all_failed_does_not_report_a_clean_scan(monkeypatch, offline, how):
     """The wrong answer that was shipping. Every section is empty because every query
-    failed, and the old code read that as "No IPs matched the anomaly filters"."""
+    failed, and the old code read that as "No IPs matched the anomaly filters".
+
+    **The last two assertions are the ones that were missing, and the refusal they guard shipped
+    overridden for four releases.** This test asserted the absence of one heading, and the action
+    block six lines further down said the same thing in lowercase prose: "Tell user: no obvious
+    bypass detected in this window". Two conditions written as De Morgan twins, only one of which
+    had learned about `failures`. Measured 2026-09-13: the report carried both, and the section
+    the model is told to act on was the one asserting a clean window."""
     monkeypatch.setattr(B, "query_logs", fake_query_logs([""], how))
     out = B._step_scan(0, 3600)
     assert "No Obvious Bypass Candidates Found" not in out
     assert "Cannot Say Whether Bypass Candidates Exist" in out
     assert "do NOT report it as clean" in out
     assert "(none found)" not in out
+    action = _next_action(out)
+    assert "no obvious bypass detected" not in action.lower(), action
+    assert "did not complete" in action, action
+
+
+@pytest.mark.parametrize("how", ["raise", "error_row"])
+def test_a_partial_scan_that_did_find_candidates_says_it_was_partial(monkeypatch, offline, how):
+    """The other side of the same condition, and the reason it is not enough to gate the whole
+    action block on `failures`.
+
+    One section failed and the rest found candidates, so the right instruction is still to present
+    them. What must not happen is presenting them as the complete set: five of six queries
+    answered, so the list is a floor. The verdict block above stays silent here by design, since
+    it only speaks when every section is empty."""
+    monkeypatch.setattr(B, "query_logs", fake_query_logs(["known_bot_data_center"], how))
+    out = B._step_scan(0, 3600)
+    assert "Cannot Say Whether Bypass Candidates Exist" not in out
+    action = _next_action(out)
+    assert "Present candidates" in action
+    assert "partial" in action, action
+    assert "datacenter" in action, "the action block has to name the section that failed"
+    assert "no obvious bypass detected" not in action.lower(), action
+
+
+@pytest.fixture
+def filtered(monkeypatch, offline):
+    """A WebACL with a Log Filter active, which is the only way to reach the ALLOW-log probe."""
+    monkeypatch.setattr(B, "is_log_filter_active", lambda: True)
+    monkeypatch.setattr(B, "get_webacl_name", lambda: "acl")
+    monkeypatch.setattr(B, "get_log_type", lambda: "cwl")
+    from tools import waf_query
+    monkeypatch.setattr(waf_query, "check_coarse_partition_block", lambda: "")
+
+
+@pytest.mark.parametrize("how", ["raise", "error_row"])
+def test_a_failed_allow_probe_is_not_reported_as_the_log_filter(monkeypatch, filtered, how):
+    """The sharpest form of this class in the repository, and the only one that named a cause.
+
+    Elsewhere a failed query became absence. Here it became a *diagnosis*: with a Log Filter
+    active the scan probes for ALLOW rows first, and that `_safe_query` call was the one in this
+    file passing no `failures` dict, so a failure returned `[]` and the tool answered "Log Filter
+    is active and ALLOW logs appear filtered out", told the user to remove the filter or add ALLOW
+    to its KEEP list, and refused the whole scan. A poll timeout produced a recommendation to
+    change a production WAF configuration."""
+    monkeypatch.setattr(B, "query_logs", fake_query_logs([""], how))
+    out = B.detect_bypass._tool_func(step="scan", start_time="2026-09-13T00:00")
+    assert "appear filtered out" not in out, out
+    assert "Remove the filter" not in out, out
+    assert "did not run" in out, out
+    assert "UNKNOWN" in out and ("Athena" in out or "CloudWatch" in out), out
+
+
+def test_a_genuinely_empty_allow_probe_still_blames_the_log_filter(monkeypatch, filtered):
+    """The control, and it is the whole point of the probe. With the filter active and ALLOW rows
+    genuinely absent, that diagnosis is correct and load-bearing: bypass detection reads ALLOW
+    traffic, so continuing would produce a scan of nothing. A guard written as an unconditional
+    refusal passes the test above and destroys this."""
+    monkeypatch.setattr(B, "query_logs", lambda *a, **k: [{"cnt": "0"}])
+    out = B.detect_bypass._tool_func(step="scan", start_time="2026-09-13T00:00")
+    assert "appear filtered out" in out
+    assert "did not run" not in out
+
+
+def test_the_six_section_condition_is_written_once():
+    """Why that condition is a name and not an expression repeated.
+
+    The emptiness guard and the action block held the same six-term disjunction, spelled once
+    negated and once positive, and only the negated copy learned about `failures`. The three tests
+    above cover the failure case as behaviour; this one covers the re-split, which is the move
+    that caused it and which no input can detect while the copies still agree.
+
+    Matched by counting section names per line rather than by the text of either spelling: an
+    assertion on `"or distributed or ua_rotation"` passes the moment someone writes the twin back
+    in its `and not` form, which is the exact form that was there."""
+    import inspect
+
+    sections = ("crawlers", "repeaters", "datacenter", "auto_ua", "distributed", "ua_rotation")
+    multi = [ln.strip() for ln in inspect.getsource(B._step_scan).splitlines()
+             if sum(s in ln for s in sections) >= 3 and not ln.strip().startswith("#")]
+    assert len(multi) == 1, f"the six-section condition is written {len(multi)} times: {multi}"
+    assert multi[0].startswith("found_any = "), multi[0]
+
+
+def test_a_clean_scan_still_says_it_is_clean(monkeypatch, offline):
+    """The control, and without it every assertion above survives a refusal written
+    unconditionally. Both of those tests say what a *failed* scan must not claim; a tool that
+    refuses on every quiet window would satisfy them and be useless."""
+    monkeypatch.setattr(B, "query_logs", fake_query_logs(empty_markers=[""]))
+    out = B._step_scan(0, 3600)
+    assert "No Obvious Bypass Candidates Found" in out
+    assert "no obvious bypass detected in this window" in _next_action(out)
+    assert "did not complete" not in out
 
 
 def test_one_failed_query_marks_only_its_own_section(monkeypatch, offline):

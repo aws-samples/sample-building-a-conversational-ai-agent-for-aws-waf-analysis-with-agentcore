@@ -54,6 +54,69 @@ CASES = [
         [f"{T}::test_a_scan_whose_queries_all_failed_does_not_report_a_clean_scan"],
     ),
     (
+        # The defect this file's third case was supposed to cover and could not: it perturbs the
+        # verdict block, and the action block six lines further down carried the same claim in
+        # lowercase prose. Measured 2026-09-13: both were in the shipped report at once.
+        "the action block ungated again, i.e. the refusal overridden by the next section",
+        "tools/waf_bypass.py",
+        "    elif failures:\n"
+        "        lines.append(\"Tell user the scan did not complete, and name the sections that failed.\")",
+        "    elif False:\n"
+        "        lines.append(\"Tell user the scan did not complete, and name the sections that failed.\")",
+        [f"{T}::test_a_scan_whose_queries_all_failed_does_not_report_a_clean_scan"],
+    ),
+    (
+        # The shipped shape: the one `_safe_query` call in the file with no `failures` dict, so a
+        # failed probe returned [] and the tool diagnosed the user's Log Filter from it.
+        "the ALLOW-log probe recording nothing again, i.e. a timeout reported as a log filter",
+        "tools/waf_bypass.py",
+        "                probe: dict[str, str] = {}\n"
+        "                results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1,\n"
+        "                                      failures=probe, label=\"allow_probe\")\n"
+        "                if probe:\n",
+        "                results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1)\n"
+        "                if False:\n",
+        [f"{T}::test_a_failed_allow_probe_is_not_reported_as_the_log_filter"],
+    ),
+    (
+        "the probe guard unconditional, so a filter that really is dropping ALLOW goes unreported",
+        "tools/waf_bypass.py",
+        "                if probe:\n"
+        "                    return (\"## Cannot Proceed — the ALLOW-log probe did not run",
+        "                if True:\n"
+        "                    return (\"## Cannot Proceed — the ALLOW-log probe did not run",
+        [f"{T}::test_a_genuinely_empty_allow_probe_still_blames_the_log_filter"],
+    ),
+    (
+        "the refusal unconditional, i.e. a quiet window it can no longer report as quiet",
+        "tools/waf_bypass.py",
+        "    elif failures:\n"
+        "        lines.append(\"Tell user the scan did not complete",
+        "    elif True:\n"
+        "        lines.append(\"Tell user the scan did not complete",
+        [f"{T}::test_a_clean_scan_still_says_it_is_clean"],
+    ),
+    (
+        "a partial scan presenting its candidates as the whole set",
+        "tools/waf_bypass.py",
+        "        if failures:\n"
+        "            lines.append(f\"- Say the scan was partial:",
+        "        if False:\n"
+        "            lines.append(f\"- Say the scan was partial:",
+        [f"{T}::test_a_partial_scan_that_did_find_candidates_says_it_was_partial"],
+    ),
+    (
+        # Textual: the target reads `_step_scan`'s source, and reachability of the condition
+        # itself is established by the three behavioural cases above.
+        "the two readings re-split into twin expressions, in the `and not` spelling they had",
+        "tools/waf_bypass.py",
+        "    if not found_any:\n",
+        "    if not crawlers and not repeaters and not datacenter and not auto_ua "
+        "and not distributed and not ua_rotation:\n",
+        [f"{T}::test_the_six_section_condition_is_written_once"],
+        TEXTUAL,
+    ),
+    (
         "the verdict built on an unread label set, i.e. the false bypass call",
         "tools/waf_bypass.py",
         '    labels_unknown = "labels" in failures',
