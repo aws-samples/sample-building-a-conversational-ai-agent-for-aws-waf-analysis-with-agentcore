@@ -67,7 +67,7 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
         f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = '{action}'"
-        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 25"
+        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
 
     results = _run_q(cwl, athena, start_epoch, end_epoch)
@@ -103,9 +103,9 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
         f"SELECT {resp_col_athena}.failurereason as \"failureReason\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = '{action}' AND {resp_col_athena}.failurereason IS NOT NULL"
-        f" GROUP BY {resp_col_athena}.failurereason ORDER BY hits DESC LIMIT 10"
+        f" GROUP BY {resp_col_athena}.failurereason ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
-    fr_results = _run_q(fr_cwl, fr_athena, start_epoch, end_epoch)
+    fr_results = _run_q(fr_cwl, fr_athena, start_epoch, end_epoch, limit=10)
 
     # Check for anti-ddos event (ChallengeAllDuringEvent)
     antiddos_note = ""
@@ -217,7 +217,8 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     return "\n".join(lines)
 
 
-def _run_q(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict]:
+def _run_q(cwl: str, athena: str, start_epoch: int, end_epoch: int,
+           limit: int = 25) -> list[dict]:
     """Execute log query via unified layer, raising if the query did not run.
 
     The two engines were asymmetric here and only one of them was safe. An Athena
@@ -225,7 +226,7 @@ def _run_q(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict
     as a truthy `[{"_error": ...}]` row, and all 3 call sites below read it as data,
     so a stopped query rendered its own error message into the report as a finding.
     Raising makes CloudWatch behave like Athena, which is the loud direction."""
-    results = query_logs(cwl, athena, start_epoch, end_epoch, limit=25)
+    results = query_logs(cwl, athena, start_epoch, end_epoch, limit=limit)
     reason = log_query_error(results)
     if reason:
         raise RuntimeError(reason)

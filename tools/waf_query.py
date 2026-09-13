@@ -537,7 +537,16 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
 
     if ":log-group:" in dest:
         log_group = dest.split(":log-group:")[-1].rstrip(":*")
-        rows = _trim(_run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit + 1),
+        # **The query-string `| limit N` is rewritten to agree, rather than trusted or deleted.**
+        # Measured 2026-09-13: the API parameter governs and the clause is inert, `fields @timestamp |
+        # limit 2` with api 500 returning 500 rows. AWS documents no precedence between the two, so
+        # both readings have to be safe. Leaving the clause at N would cap the engine at N if
+        # precedence ever flipped, and truncation would stop being detectable with nothing to notice.
+        # Deleting it would leave the query unbounded under the same flip, which is the worse of the
+        # two. Writing `limit + 1` in both places means the engine returns at most `limit + 1` either
+        # way. Anchored to the end because CloudWatch requires `limit` to be the last command.
+        cwl = re.sub(r"\|\s*limit\s+\d+\s*$", f"| limit {limit + 1}", query_cwl.strip())
+        rows = _trim(_run_cwl(log_group, cwl, start_epoch, end_epoch, limit + 1),
                      limit, notes, label)
         # CWL Insights returns bin()/@timestamp fields in UTC. Shift the known
         # time-valued columns to the session timezone so CWL output matches the
@@ -702,8 +711,15 @@ def _trim(rows: list[dict] | None, limit: int, notes: dict | None, label: str) -
     **The `_error` row survives this.** A failed query comes back as a single `[{"_error": ...}]` row,
     and one row is never more than a limit of at least one, so a failure cannot be read as truncation
     and cannot be trimmed away. That is why the check is `>` against the caller's limit rather than
-    anything about the row contents.
+    anything about the row contents: rewriting it to look at what is in the rows would quietly take
+    that property away.
+
+    **The property needs `limit >= 1`, so that is asserted rather than trusted.** At `limit = 0` a
+    single `_error` row is `len(rows) == 1 > 0`, and a failed query would be reported as a truncated
+    table. All twenty call sites pass an explicit limit and none passes zero, but "no caller does this"
+    is a fact about today's callers and the sentence above reads as a fact about the function.
     """
+    assert limit >= 1, f"a row limit of {limit} makes an _error row look like truncation"
     if not rows or len(rows) <= limit:
         return rows
     if notes is not None:
@@ -732,9 +748,17 @@ def truncation_summary(notes: dict, failures: dict | None = None) -> str:
     if not cut:
         return ""
     listed = ", ".join(f"{label} ({limit})" for label, limit in cut)
-    return (f"\n⚠️  **Cut off at the row limit, so these are not the whole set**: {listed}. Each is the "
-            f"top N by that query's own ordering. Do not total them, do not call the list complete, and "
-            f"say so if you use them. To see the rest, narrow the window or ask about one value.")
+    # **Neutral wording on purpose.** "Cut off" and a warning glyph read as a defect, and a section that
+    # asks for one row on purpose is listed here too: `country` wants a single value, and appearing in
+    # this line means the IP had more than one, which is a useful fact about the traffic rather than a
+    # problem with the query. The sentence has to be true of both cases without making either look
+    # broken.
+    return (f"\nℹ️  **More rows exist than are shown above**: {listed}, where the number is how many "
+            f"were returned. Each list is the top N by that query's own ordering, so it is a sample of "
+            f"the largest and not the whole set: do not total them and do not describe them as "
+            f"complete. A section that asked for a single row appears here for the same reason, and "
+            f"there it means that value was one of several. To see more, narrow the window or ask "
+            f"about a specific value.")
 
 
 def log_query_error(rows: list[dict] | None) -> str | None:

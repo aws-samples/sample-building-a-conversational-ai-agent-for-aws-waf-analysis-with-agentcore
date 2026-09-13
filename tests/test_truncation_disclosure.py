@@ -74,7 +74,10 @@ def test_the_summary_names_every_cut_section_and_its_limit():
     out = Q.truncation_summary({"crawlers": 10, "distributed": 5})
     assert "crawlers (10)" in out and "distributed (5)" in out
     assert "not the whole set" in out
-    assert "Do not total them" in out, "the wrong use is naming the wrong use, not just flagging it"
+    assert "do not total them" in out, "naming the wrong use, not just flagging the fact"
+    assert "Cut off" not in out, (
+        "the wording has to stay neutral: a section that asks for one row on purpose is listed "
+        "here too, and it must not read as that section being broken")
 
 
 def test_the_summary_is_empty_when_nothing_was_cut():
@@ -188,3 +191,66 @@ def test_the_notes_dict_is_created_wherever_a_failures_dict_is():
         assert failures, f"{module} has no failures dict, so this test proves nothing"
         assert len(notes) >= len(failures), (
             f"{module}: {len(failures)} failures dicts and {len(notes)} notes dicts")
+
+
+def test_a_zero_limit_is_refused_rather_than_reporting_a_failure_as_truncation():
+    """The precondition the `_error`-row property rests on. At `limit = 0` a single `_error` row is
+    `1 > 0`, so a failed query would be reported as a truncated table. Twenty call sites pass an
+    explicit limit and none passes zero, but that is a fact about today's callers while the docstring
+    reads as a fact about the function."""
+    with pytest.raises(AssertionError, match="look like truncation"):
+        Q._trim([{"_error": "boom"}], 0, {}, "s")
+
+
+# --- one limit-writing form, so both engines can be asked for the extra row --
+
+
+def test_no_athena_template_hardcodes_its_row_limit():
+    """**A hardcoded `LIMIT n` makes truncation undetectable on the Athena backend**, because the SQL
+    caps at n however many the caller asked for, so `len(rows) > limit` can never be true. Twenty-four
+    templates were written that way and all twenty-four agreed with their call site's limit, so
+    converting them changed no row count and turned the disclosure on for those sections.
+
+    `waf_patrol` and `report` are excluded by the maintainer's decision, 2026-09-13: those two are
+    overview tools and their queries do not change."""
+    import pathlib
+
+    offenders = {}
+    for path in sorted(pathlib.Path("tools").glob("*.py")):
+        if path.name in ("waf_patrol.py", "report.py"):
+            continue
+        found = re.findall(r"LIMIT \d+", path.read_text())
+        if found:
+            offenders[path.name] = found
+    assert not offenders, (
+        f"hardcoded Athena row limits are back: {offenders}. The caller's limit has to reach the SQL "
+        f"through {{LIMIT}} or the extra row cannot be requested and the table cannot say it was cut.")
+
+
+def test_the_cloudwatch_query_string_limit_is_rewritten_to_agree(monkeypatch):
+    """**Rewritten rather than trusted or deleted, because AWS documents no precedence.** Measured, the
+    API parameter governs and the clause is inert. Leaving it at N caps the engine at N if precedence
+    ever flips, and truncation stops being detectable with nothing to notice; deleting it leaves the
+    query unbounded under the same flip, which is worse. Both at `limit + 1` is safe either way."""
+    seen: dict = {}
+    monkeypatch.setattr(Q, "_run_cwl",
+                        lambda lg, q, s, e, lim: (seen.update(query=q, limit=lim), [])[1])
+    monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
+    monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
+
+    Q.query_logs("filter x | stats count(*) as c by ip | sort c desc | limit 5", "SELECT 1", 0, 60, 5)
+    assert seen["query"].endswith("| limit 6"), seen["query"]
+    assert seen["limit"] == 6, "the API parameter and the clause have to say the same number"
+
+
+def test_a_query_with_no_limit_clause_is_left_alone(monkeypatch):
+    """The control. A blanket append would put a `limit` on a single-row aggregation, and rewriting
+    anywhere but the end would produce a query CloudWatch rejects, since `limit` must be last."""
+    seen: dict = {}
+    monkeypatch.setattr(Q, "_run_cwl",
+                        lambda lg, q, s, e, lim: (seen.update(query=q), [])[1])
+    monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
+    monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
+
+    Q.query_logs("filter x | stats count(*) as c", "SELECT 1", 0, 60, 5)
+    assert seen["query"] == "filter x | stats count(*) as c"
