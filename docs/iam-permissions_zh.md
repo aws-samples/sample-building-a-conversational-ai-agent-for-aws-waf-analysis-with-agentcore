@@ -71,6 +71,8 @@
 | 权限 | 用途 | 生产环境影响 |
 |---|---|---|
 | `glue:GetTable` | 查找现有的 AWS WAF 日志 Athena 表 | 无（只读） |
+| `glue:GetTables` | 列出某个数据库里有哪些表，这样你自己建的表也能被找到 | 无（只读） |
+| `glue:GetDatabases` | 列出有哪些数据库，表搜索就不会被限制在两个已知名字里 | 无（只读） |
 | `glue:GetDatabase` | 检查数据库是否存在 | 无（只读） |
 | `glue:CreateDatabase` | 创建 `waf_analysis_tmp` 数据库（如不存在） | **创建一个新的空数据库。** 不会触碰现有数据库。 |
 | `glue:CreateTable` | 创建带分区投影的永久表 | **仅在 `waf_analysis_tmp` 数据库中创建表。** 不会修改现有表。 |
