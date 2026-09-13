@@ -972,7 +972,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
             f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
             f" AND httprequest.clientip = '{safe_ip}'"
             f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
-            f" ORDER BY cnt DESC LIMIT 20"
+            f" ORDER BY cnt DESC LIMIT {{LIMIT}}"
         )
         ua_rows = _safe_query(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20,
                               failures=failures, label="user_agents", notes=notes)
@@ -999,7 +999,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"SELECT action, terminatingruleid as \"terminatingRuleId\", count(*) as cnt"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}'"
-        f" GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT 15"
+        f" GROUP BY action, terminatingruleid ORDER BY cnt DESC LIMIT {{LIMIT}}"
     )
 
     rate_cwl = (
@@ -1024,7 +1024,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as cnt"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}'"
-        f" GROUP BY ja4fingerprint ORDER BY cnt DESC LIMIT 5"
+        f" GROUP BY ja4fingerprint ORDER BY cnt DESC LIMIT {{LIMIT}}"
     )
 
     uri_cwl = (
@@ -1059,7 +1059,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"SELECT httprequest.args as args, count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}' AND httprequest.args <> ''"
-        f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
+        f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     query_strings = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8,
                                 failures=failures, label="query_strings", notes=notes)

@@ -24,8 +24,8 @@ L = "tools/waf_logs.py"
 CASES = [
     # The shipped behaviour: ask for exactly what the caller wanted and never know there was more.
     ("the CloudWatch path asking for exactly the limit again",
-     [(Q, "        rows = _trim(_run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit + 1),",
-       "        rows = _trim(_run_cwl(log_group, query_cwl, start_epoch, end_epoch, limit),")],
+     [(Q, "        rows = _trim(_run_cwl(log_group, cwl, start_epoch, end_epoch, limit + 1),",
+       "        rows = _trim(_run_cwl(log_group, cwl, start_epoch, end_epoch, limit),")],
      [f"{T}::test_the_cloudwatch_path_asks_the_engine_for_one_more_than_the_caller_wanted"], True),
 
     ("the Athena placeholder substituting the plain limit",
@@ -93,6 +93,24 @@ CASES = [
     ("a notes dict dropped where a failures dict exists, so that tool cannot report at all",
      [(B, "    notes: dict[str, int] = {}\n", "", 3)],
      [f"{T}::test_the_notes_dict_is_created_wherever_a_failures_dict_is"], "textual"),
+
+    # --- one limit-writing form, added with ROADMAP 7.7 item 3 ---
+
+    # A hardcoded Athena LIMIT caps the SQL at n however many the caller asked for, so the extra row
+    # never comes back and that section can never report truncation on the Athena backend.
+    ("an Athena template hardcoding its row limit again",
+     [(B, "ORDER BY hits DESC LIMIT {{LIMIT}}", "ORDER BY hits DESC LIMIT 3", 5)],
+     [f"{T}::test_no_athena_template_hardcodes_its_row_limit"], "textual"),
+
+    ("the CloudWatch query-string limit left at the caller's number",
+     [(Q, 'cwl = re.sub(r"\\|\\s*limit\\s+\\d+\\s*$", f"| limit {limit + 1}", query_cwl.strip())',
+       'cwl = query_cwl.strip()')],
+     [f"{T}::test_the_cloudwatch_query_string_limit_is_rewritten_to_agree"], True),
+
+    ("the limit clause appended to every query, including single-row aggregations",
+     [(Q, 'cwl = re.sub(r"\\|\\s*limit\\s+\\d+\\s*$", f"| limit {limit + 1}", query_cwl.strip())',
+       'cwl = query_cwl.strip() + f" | limit {limit + 1}"')],
+     [f"{T}::test_a_query_with_no_limit_clause_is_left_alone"], True),
 ]
 
 sys.exit(sweep(CASES))

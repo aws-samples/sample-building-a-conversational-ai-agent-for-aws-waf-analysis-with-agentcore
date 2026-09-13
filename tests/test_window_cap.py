@@ -87,6 +87,42 @@ def test_the_cap_is_defined_once():
     assert definers == ["query_limits.py"], definers
 
 
+def test_the_direct_start_query_call_sites_are_the_declared_ones():
+    """`query_logs` is the funnel, and a module that calls `start_query` itself is outside it.
+
+    **Pinned as a named set rather than a count, because each of the five is outside the funnel for a
+    different reason and only two of them are debts.** A count alone goes green when one is removed and
+    another added, which is the shape ROADMAP 4.6 found: seven unchecked call sites survived eight
+    releases because nothing said how many there should be.
+
+    What being outside the funnel costs them, now that the funnel does more than route: no window cap,
+    no `_error` row translation, no session-timezone shift, and since the truncation work, no
+    `limit + 1` and so no way to know their tables were cut off.
+    """
+    declared = {
+        # The funnel itself. Every tool's query arrives here.
+        "waf_query.py": 1,
+        # Patrol's and the weekly report's own pollers. Out of scope by the maintainer's decision,
+        # 2026-09-13: those two are overview tools and neither their queries nor their windows change.
+        "waf_patrol.py": 1,
+        "report.py": 1,
+        # The two debts. ROADMAP 7.6 named them and they are still outside.
+        "waf_logs.py": 2,
+    }
+    found = {}
+    for path in TOOLS:
+        tree = ast.parse(path.read_text())
+        sites = [n.lineno for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "start_query"]
+        if sites:
+            found[path.name] = len(sites)
+    assert found == declared, (
+        f"the set of modules calling start_query directly changed: {found} against {declared}. A new "
+        f"one is a new hole in the funnel; removing one of waf_logs.py's two is progress and this "
+        f"declaration should say so.")
+
+
 # --- the retry advice, which is where partition granularity actually matters ---
 
 

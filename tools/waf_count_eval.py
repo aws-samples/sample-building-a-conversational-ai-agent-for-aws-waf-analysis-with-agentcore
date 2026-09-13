@@ -418,7 +418,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
-        f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT 5"
+        f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT {{LIMIT}}"
     )
     cwl_top = (
         f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
@@ -431,7 +431,7 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
-        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 5"
+        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
 
     try:

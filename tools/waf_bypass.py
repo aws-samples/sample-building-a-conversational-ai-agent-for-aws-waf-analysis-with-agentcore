@@ -239,7 +239,7 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
         f" AND action = 'ALLOW' AND ja4fingerprint = '{safe_ja4}'"
         f"{ATHENA_EXCLUDE_STATIC}"
         f" AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
-        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT 10"
+        f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     rows = _safe_query(cwl, athena, start_epoch, end_epoch, limit=10,
                        failures=failures, label="ja4_ips", notes=notes)
@@ -456,7 +456,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY httprequest.clientip"
         " HAVING count(DISTINCT httprequest.uri) > 50"
-        " ORDER BY unique_uris DESC LIMIT 10"
+        " ORDER BY unique_uris DESC LIMIT {LIMIT}"
     )
 
     repeaters_cwl = (
@@ -477,7 +477,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY httprequest.clientip"
         " HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10"
-        " ORDER BY total DESC LIMIT 10"
+        " ORDER BY total DESC LIMIT {LIMIT}"
     )
 
     # Data-center IPs not caught by Bot Control
@@ -497,7 +497,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:unverified%') )"
         " GROUP BY httprequest.clientip HAVING count(*) > 50"
-        " ORDER BY total DESC LIMIT 10"
+        " ORDER BY total DESC LIMIT {LIMIT}"
     )
 
     later("crawlers", crawlers_cwl, crawlers_athena)
@@ -525,7 +525,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " GROUP BY httprequest.clientip,"
         " element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
         " HAVING count(*) > 10"
-        " ORDER BY total DESC LIMIT 10"
+        " ORDER BY total DESC LIMIT {LIMIT}"
     )
     later("auto_ua", auto_ua_cwl, auto_ua_athena)
 
@@ -553,7 +553,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " GROUP BY ja4fingerprint"
         " HAVING count(DISTINCT httprequest.clientip) > 10 AND count(*) > 500"
         " AND count(DISTINCT httprequest.uri) > 50"
-        " ORDER BY total DESC LIMIT 10"
+        " ORDER BY total DESC LIMIT {LIMIT}"
     )
     later("distributed", distributed_cwl, distributed_athena)
 
@@ -590,7 +590,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " GROUP BY ja4fingerprint"
         " HAVING count(DISTINCT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value) > 5"
         " AND count(DISTINCT httprequest.clientip) < 5"
-        " ORDER BY unique_uas DESC LIMIT 10"
+        " ORDER BY unique_uas DESC LIMIT {LIMIT}"
     )
     later("ua_rotation", ua_rotation_cwl, ua_rotation_athena)
 
@@ -805,7 +805,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"SELECT httprequest.args as args, count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW' AND httprequest.args <> ''"
-        f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT 8"
+        f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     qs_data = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8, failures=failures, label="query_strings", notes=notes)
 
@@ -836,7 +836,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}'"
         f" AND labels IS NOT NULL AND cardinality(labels) > 0"
-        f" GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT 5"
+        f" GROUP BY json_format(cast(labels as json)) ORDER BY cnt DESC LIMIT {{LIMIT}}"
     )
     labels = _safe_query(labels_cwl, labels_athena, start_epoch, end_epoch, limit=5, failures=failures, label="labels", notes=notes)
 
@@ -850,7 +850,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"SELECT httprequest.country as \"httpRequest.country\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}'"
-        f" GROUP BY httprequest.country LIMIT 1"
+        f" GROUP BY httprequest.country LIMIT {{LIMIT}}"
     )
     country_data = _safe_query(country_cwl, country_athena, start_epoch, end_epoch, limit=1, failures=failures, label="country", notes=notes)
     country = country_data[0].get("httpRequest.country", "?") if country_data else "?"
@@ -868,7 +868,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}'"
         f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
-        f" ORDER BY hits DESC LIMIT 3"
+        f" ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     ua_data = _safe_query(ua_cwl, ua_athena, start_epoch, end_epoch, limit=3, failures=failures, label="user_agent", notes=notes)
 
@@ -882,7 +882,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"SELECT ja4fingerprint as \"ja4Fingerprint\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}'"
-        f" GROUP BY ja4fingerprint ORDER BY hits DESC LIMIT 3"
+        f" GROUP BY ja4fingerprint ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3, failures=failures, label="ja4", notes=notes)
 
@@ -899,7 +899,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND t.action = 'COUNT'"
-        f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT 5"
+        f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures, label="count_rules", notes=notes)
 

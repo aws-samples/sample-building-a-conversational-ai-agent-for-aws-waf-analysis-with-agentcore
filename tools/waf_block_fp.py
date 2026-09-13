@@ -169,7 +169,7 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         f"SELECT terminatingruleid as \"terminatingRuleId\", terminatingruletype as \"terminatingRuleType\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
-        f" GROUP BY terminatingruleid, terminatingruletype ORDER BY hits DESC LIMIT 10"
+        f" GROUP BY terminatingruleid, terminatingruletype ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     later("block", block_cwl, block_athena)
 
@@ -213,7 +213,7 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         f"SELECT terminatingruleid as \"terminatingRuleId\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action != 'ALLOW'"
-        f" GROUP BY terminatingruleid ORDER BY hits DESC LIMIT 10"
+        f" GROUP BY terminatingruleid ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     later("multi", multi_cwl, multi_athena)
 
@@ -227,7 +227,7 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         f"SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as hits"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
-        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT 10"
+        f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     later("uri", uri_cwl, uri_athena)
 
@@ -285,9 +285,9 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
             f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
             f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
             f" AND rg.terminatingrule.ruleid IS NOT NULL"
-            f" GROUP BY rg.terminatingrule.ruleid ORDER BY hits DESC LIMIT 5"
+            f" GROUP BY rg.terminatingrule.ruleid ORDER BY hits DESC LIMIT {{LIMIT}}"
         )
-        sub_results = _run_query(sub_cwl, sub_athena, start_epoch, end_epoch)
+        sub_results = _run_query(sub_cwl, sub_athena, start_epoch, end_epoch, limit=5)
         if sub_results:
             sub_rule = sub_results[0].get("sub_rule", "")
 
@@ -375,9 +375,9 @@ def _gather_match_detail(ip: str, start_epoch: int, end_epoch: int) -> tuple[str
                 f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
                 f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
                 f" AND cardinality(terminatingrulematchdetails) > 0"
-                f" LIMIT 3"
+                f" LIMIT {{LIMIT}}"
             )
-            rows = _run_query(md_athena, md_athena, start_epoch, end_epoch)
+            rows = _run_query(md_athena, md_athena, start_epoch, end_epoch, limit=3)
             if rows:
                 match_detail = "\n".join(r.get("md", "") for r in rows[:3] if r.get("md"))
                 if not match_detail:
@@ -552,7 +552,7 @@ def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND action = 'BLOCK'{rule_filter_athena}"
         f" GROUP BY httprequest.clientip HAVING count(*) < 10"
-        f" ORDER BY block_hits ASC LIMIT 25"
+        f" ORDER BY block_hits ASC LIMIT {{LIMIT}}"
     )
     block_results = _run_query(block_cwl, block_athena, start_epoch, end_epoch)
 
@@ -705,7 +705,8 @@ def _extract_transforms_from_statement(stmt: dict) -> list[str]:
     return transforms
 
 
-def _run_query(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[dict]:
+def _run_query(cwl: str, athena: str, start_epoch: int, end_epoch: int,
+               limit: int = 25) -> list[dict]:
     """Execute log query via unified layer, raising if the query did not run.
 
     The two engines were asymmetric here and only one of them was safe. An Athena
@@ -713,7 +714,7 @@ def _run_query(cwl: str, athena: str, start_epoch: int, end_epoch: int) -> list[
     as a truthy `[{"_error": ...}]` row, and all 12 call sites below read it as data,
     so a stopped query rendered its own error message into the report as a finding.
     Raising makes CloudWatch behave like Athena, which is the loud direction."""
-    results = query_logs(cwl, athena, start_epoch, end_epoch, limit=25)
+    results = query_logs(cwl, athena, start_epoch, end_epoch, limit=limit)
     reason = log_query_error(results)
     if reason:
         raise RuntimeError(reason)
