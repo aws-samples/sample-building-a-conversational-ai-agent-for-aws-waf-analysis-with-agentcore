@@ -47,7 +47,34 @@ jobs:
       # This includes `tests/test_perturbation_harness.py`, which holds the guards every perturbation
       # script depends on and re-checks, statically, that every case still anchors to code that
       # exists and still names a test that exists. Anchor drift is silent and four scripts had drifted
-      # into proving nothing; that check finds it here in milliseconds instead of in a six-minute
-      # sweep nobody runs. The sweep itself is `perturbations.yml`.
+      # into proving nothing; that check finds it here in milliseconds instead of in a full sweep
+      # nobody runs. The sweep itself is `perturbations.yml`.
       - name: Run tests
         run: uv run --extra dev python -m pytest -q
+
+  # The frontend suite is one file, `frontend/src/render.test.js`, and it covers one function: the
+  # markdown-to-HTML render that everything the agent says passes through on its way into the origin
+  # holding the Cognito tokens. A separate job rather than a step in the one above, because a JS
+  # toolchain failure and a pytest failure are different reports and the checks list should say which.
+  #
+  # `tests/test_frontend_sanitizer.py` holds the half that does not need node: that this function is
+  # still the only path from agent text to the document. It runs in `pytest` above.
+  vitest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24  # vitest 5 wants ^22.12 || ^24 || >=26; jsdom 30 wants 24.15 or newer
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: frontend
+
+      # `vitest run`, never `vitest`, which watches and would hang the job to its timeout.
+      - name: Run tests
+        run: npm test
+        working-directory: frontend

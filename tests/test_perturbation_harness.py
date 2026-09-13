@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """The perturbation scripts are what shows the rest of this suite can fail, so their guards are held here.
 
-The full sweep takes tens of minutes: every script runs pytest once per case plus a baseline and a
+The full sweep takes minutes: every script runs its engine once per case plus a baseline and a
 restore, and the scripts mutate shared source files so they cannot run in parallel. CI therefore does
 not run it, which leaves a gap with a specific shape. `tests/perturbations/_harness.py` decides, for
 every case in every script, whether a red run counts as the assertion noticing or as an accident. If
@@ -27,6 +27,7 @@ file that no longer exists, or hand-rolling the loop and skipping the guards.
 
 import ast
 import importlib.util
+import json
 import pathlib
 import sys
 import types
@@ -275,6 +276,131 @@ def test_the_real_runner_disables_bytecode_writing(monkeypatch):
     assert captured["cwd"] == ROOT, "running outside the repo root would resolve every path wrongly"
 
 
+# --- the second engine, whose only job is to speak the classifier's vocabulary ----
+
+
+def _fake_vitest(monkeypatch, report, returncode=1):
+    """Stand in for the vitest process, writing `report` as its JSON output. `None` writes nothing."""
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(argv=argv, cwd=kwargs.get("cwd"))
+        out = next(a.split("=", 1)[1] for a in argv if a.startswith("--outputFile="))
+        if report is not None:
+            pathlib.Path(out).write_text(json.dumps(report))
+
+        class Proc:
+            pass
+
+        Proc.returncode = returncode
+        Proc.stdout = Proc.stderr = ""
+        return Proc()
+
+    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+    return captured
+
+
+def _report(*statuses):
+    return {"testResults": [{"assertionResults": [
+        {"title": title, "fullName": title, "status": status} for title, status in statuses]}]}
+
+
+def test_the_vitest_runner_reports_a_pass_the_way_the_classifier_reads_one(monkeypatch):
+    """`sweep` decides ok / HOLLOW / INVALID by reading a pytest-shaped summary line, and it is the
+    only classifier. So the whole risk of a second engine sits in this translation: a green run that
+    came back saying something the classifier does not recognise lands on `rc != 0` and reports as
+    caught. Four outcomes, four tests, because that is where a false state would emit the true
+    output."""
+    captured = _fake_vitest(monkeypatch, _report(("a", "passed"), ("b", "passed")), returncode=0)
+    rc, tail = harness.vitest(["frontend/src/render.test.js"], root=ROOT)
+    assert (rc, tail) == (0, "2 passed in 0.00s"), "a green run must classify as HOLLOW, not as caught"
+    assert captured["cwd"] == ROOT / "frontend", "vitest resolves its config from the frontend root"
+    assert "src/render.test.js" in captured["argv"], captured["argv"]
+    assert "--no-install" in captured["argv"], (
+        "without --no-install a missing vitest is fetched from the network mid-sweep instead of "
+        "failing, which turns an offline run into a silent download")
+
+
+def test_the_vitest_runner_reports_a_failure_as_a_failure(monkeypatch):
+    _fake_vitest(monkeypatch, _report(("a", "failed"), ("b", "passed")))
+    assert harness.vitest(["frontend/src/render.test.js"], root=ROOT) == (1, "1 failed, 1 passed in 0.00s")
+
+
+def test_a_vitest_run_that_produced_no_report_is_an_error_not_a_failure(monkeypatch):
+    """A transform error, a config that no longer loads, a missing binary. The process exits non-zero
+    and no test ever ran, which is the pytest collection error by another name."""
+    _fake_vitest(monkeypatch, None)
+    assert harness.vitest(["frontend/src/render.test.js"], root=ROOT) == (1, "1 error in 0.00s")
+
+
+def test_a_vitest_target_whose_name_is_gone_runs_no_tests(monkeypatch):
+    """The `no tests ran` protection, carried over to the other engine. Selection happens by filtering
+    the report rather than on the command line, so a renamed test selects nothing and must not inherit
+    an unrelated failure from the same file."""
+    _fake_vitest(monkeypatch, _report(("still here", "failed")))
+    rc, tail = harness.vitest(["frontend/src/render.test.js::renamed away"], root=ROOT)
+    assert (rc, tail) == (1, "no tests ran in 0.00s")
+
+
+def test_a_vitest_failure_outside_the_requested_test_is_not_credited(monkeypatch):
+    """The other half of selection. The requested test passed, so this case is HOLLOW, even though the
+    process exited non-zero because of a different test in the same file."""
+    _fake_vitest(monkeypatch, _report(("wanted", "passed"), ("other", "failed")))
+    rc, tail = harness.vitest(["frontend/src/render.test.js::wanted"], root=ROOT)
+    assert (rc, tail) == (0, "1 passed in 0.00s")
+
+
+def test_a_probe_on_a_file_type_with_no_probe_form_is_refused(tmp_path, capsys):
+    """The reachability probe writes a statement in the language of the file it edits. A file type
+    with no form for that cannot be probed, and skipping the probe silently is how the guard stops
+    applying to exactly the cases that asked for it."""
+    (tmp_path / "sheet.css").write_text("body { color: red }\n")
+    rc = harness.sweep([("styled", [("sheet.css", "red", "blue")], ["t"], True)],
+                       root=tmp_path, run=_runner(GREEN, RED, GREEN))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "no probe form for a .css file" in out
+
+
+def test_a_probe_run_that_died_before_any_assertion_is_reported(tmp_path, capsys):
+    """Red proves reachability only if a test actually ran. A probe spliced into the middle of an
+    expression breaks the file, and for a `.js` file nothing parses it first, so the run dies at
+    transform time and exits non-zero exactly like a real failure."""
+    (tmp_path / "mod.js").write_text("export const V = 1;\n")
+    rc = harness.sweep([("mid expression", [("mod.js", "1", "2")], ["t"], True)],
+                       root=tmp_path,
+                       run=_runner(GREEN, (1, "1 error in 0.00s"), RED, GREEN))
+    out = capsys.readouterr().out
+    assert "the probe run ended before any assertion" in out
+    assert "ok       mid expression" in out, (
+        "the note is a warning, not a refusal: the real perturbation is still judged")
+    assert rc == 0
+
+
+@pytest.mark.parametrize("suffix", sorted({".py", ".js", ".jsx"}))
+def test_every_probe_form_is_a_statement_naming_the_probe(suffix):
+    """The dispatch table, swept for what it can be asked for rather than spot-checked. Both halves
+    of each entry matter: `_reachable` requires the run to go red, which only happens if the
+    statement actually raises, and the marker string is what a reader greps for when a note appears."""
+    form = harness.PROBE[suffix]
+    assert "perturbation probe: line reached" in form
+    assert form.startswith("raise ") or form.startswith("throw "), form
+
+
+def test_every_case_that_asks_for_a_probe_edits_a_file_with_a_probe_form():
+    """The pairing invariant, over what the scripts actually ask for. A case whose file type has no
+    entry above is refused rather than probed, so it would report INVALID for a reason that has
+    nothing to do with the property it aims at."""
+    unsupported = []
+    for script in _scripts():
+        for case in _cases(script) or ():
+            if len(case) > 3 and case[3]:
+                suffix = pathlib.PurePosixPath(case[1][0][0]).suffix
+                if suffix not in harness.PROBE:
+                    unsupported.append(f"{script.name}: {case[0]!r} probes a {suffix} file")
+    assert not unsupported, "; ".join(unsupported)
+
+
 def _scripts():
     return sorted(SCRIPTS.glob("perturb-*.py"))
 
@@ -351,6 +477,9 @@ def _cases(script):
     recorded = {}
     stub = types.ModuleType("_harness")
     stub.ROOT = ROOT
+    # `vitest` is here because a script naming the second engine imports it, and an ImportError on
+    # this stub would empty every static check below for that script alone.
+    stub.vitest = harness.vitest
     stub.sweep = lambda cases, root=None, run=None: recorded.setdefault("cases", cases) and 0
     saved = sys.modules.get("_harness")
     sys.modules["_harness"] = stub
@@ -365,6 +494,20 @@ def _cases(script):
         if saved is not None:
             sys.modules["_harness"] = saved
     return recorded.get("cases")
+
+
+def _defines(path: pathlib.Path, name: str) -> bool:
+    """Whether `path` declares a test called `name`, in either engine's spelling.
+
+    A pytest node id names a function, so the AST answers it. A vitest title is a string argument to
+    `it`, and there is no JS parser here, so the call form is required rather than a bare mention: a
+    title appearing only in a comment does not count. The narrower thing a substring check cannot see
+    is a title assembled at runtime, and none is, which is worth knowing rather than implying."""
+    if path.suffix == ".py":
+        return name in {node.name for node in ast.walk(ast.parse(path.read_text()))
+                        if isinstance(node, ast.FunctionDef)}
+    text = path.read_text()
+    return any(f"it({quote}{name}{quote}" in text for quote in ("'", '"'))
 
 
 @pytest.mark.parametrize("script", _scripts(), ids=lambda p: p.name)
@@ -385,8 +528,7 @@ def test_every_case_names_a_test_that_still_exists(script):
             path = ROOT / rel
             if not path.exists():
                 missing.append(f"{case[0]!r}: {rel} does not exist")
-            elif name and name not in {node.name for node in ast.walk(ast.parse(path.read_text()))
-                                       if isinstance(node, ast.FunctionDef)}:
+            elif name and not _defines(path, name):
                 missing.append(f"{case[0]!r}: {rel} has no {name}")
     assert not missing, f"{script.name} names tests that are gone: " + "; ".join(missing)
 
@@ -394,7 +536,7 @@ def test_every_case_names_a_test_that_still_exists(script):
 @pytest.mark.parametrize("script", _scripts(), ids=lambda p: p.name)
 def test_every_case_still_applies_to_the_code_it_perturbs(script):
     """Anchor drift is the failure that actually happens, and it is silent. Four of the nineteen
-    scripts had drifted, one of them fatally, and nothing said so until somebody ran a six-minute
+    scripts had drifted, one of them fatally, and nothing said so until somebody ran the full
     sweep. The harness refuses a drifted case, but only while the sweep is running.
 
     This is the same check on every push. If it goes red on a change of yours, the perturbation

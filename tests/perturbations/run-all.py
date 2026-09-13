@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT-0
 """Run every perturbation script, one at a time, and report which of them proved anything.
 
-    python tests/perturbations/run-all.py            # all of them, about ten minutes
+    python tests/perturbations/run-all.py            # all of them, about seven minutes
     python tests/perturbations/run-all.py hit-rate   # just the ones whose name contains this
 
 **Serial on purpose.** Each script edits shared source files and puts them back, so two at once

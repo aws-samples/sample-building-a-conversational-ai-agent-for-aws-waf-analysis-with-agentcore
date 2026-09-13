@@ -14,4 +14,12 @@ export default defineConfig({
     // app throws "global is not defined" at runtime (white screen).
     global: 'globalThis',
   },
+  // `renderMarkdown` needs a DOM, because DOMPurify parses HTML in order to decide what to strip.
+  // Measured on dompurify 3.4.13: with `--environment node` the default export has no `sanitize`
+  // method at all, so all nine cases in `render.test.js` error rather than passing on unsanitized
+  // output. The environment therefore cannot degrade quietly, and this line is what keeps it set.
+  test: {
+    environment: 'jsdom',
+    include: ['src/**/*.test.js'],
+  },
 });

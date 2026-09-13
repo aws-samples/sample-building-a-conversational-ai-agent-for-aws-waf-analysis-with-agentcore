@@ -73,9 +73,46 @@ CASES = [
      [f"{T}::test_a_red_baseline_stops_the_sweep_before_it_writes_anything"]),
 
     ("the reachability probe passing an unreachable line",
-     [(H, "        rc, _ = run(case_targets, root)\n        if rc == 0:",
-       "        rc, _ = run(case_targets, root)\n        if False:")],
+     [(H, "        rc, tail = run(case_targets, root)\n        if rc == 0:",
+       "        rc, tail = run(case_targets, root)\n        if False:")],
      [f"{T}::test_a_line_that_never_executes_is_refused_before_the_real_edit"]),
+
+    ("a probe run that died before any assertion counted as proving reachability",
+     [(H, '        if "no tests ran" in tail or (" error" in tail and " failed" not in tail):',
+       "        if False:")],
+     [f"{T}::test_a_probe_run_that_died_before_any_assertion_is_reported"]),
+
+    ("a file type with no probe form probed anyway",
+     [(H, "    if path.suffix not in PROBE:", "    if False:")],
+     [f"{T}::test_a_probe_on_a_file_type_with_no_probe_form_is_refused"]),
+
+    # The second engine's translation into the classifier's words. `sweep` reads one summary-line
+    # vocabulary, so each of vitest's four outcomes has to arrive spelled the way pytest spells it,
+    # and a mistranslation is silent: the wrong verdict, printed in the right format.
+    ("a vitest run with no report translated as a failure rather than an error",
+     [(H, '            return (proc.returncode or 1), "1 error in 0.00s"',
+       '            return (proc.returncode or 1), "1 failed in 0.00s"')],
+     [f"{T}::test_a_vitest_run_that_produced_no_report_is_an_error_not_a_failure"]),
+
+    ("a vitest selection matching nothing translated as a failure",
+     [(H, '        return (proc.returncode or 1), "no tests ran in 0.00s"',
+       '        return (proc.returncode or 1), "1 failed in 0.00s"')],
+     [f"{T}::test_a_vitest_target_whose_name_is_gone_runs_no_tests"]),
+
+    ("vitest selection dropped, so an unrelated failure in the same file is credited",
+     [(H, "               if not wanted or r.get(\"title\") in wanted or r.get(\"fullName\") in wanted]",
+       "               if True]")],
+     [f"{T}::test_a_vitest_failure_outside_the_requested_test_is_not_credited"]),
+
+    ("vitest run from the repository root, where it finds neither its config nor jsdom",
+     [(H, "            cwd=root / FRONTEND, capture_output=True, text=True)",
+       "            cwd=root, capture_output=True, text=True)")],
+     [f"{T}::test_the_vitest_runner_reports_a_pass_the_way_the_classifier_reads_one"]),
+
+    ("--no-install dropped, so a missing vitest is fetched from the network mid-sweep",
+     [(H, '            ["npx", "--no-install", "vitest", "run", "--reporter=json",',
+       '            ["npx", "vitest", "run", "--reporter=json",')],
+     [f"{T}::test_the_vitest_runner_reports_a_pass_the_way_the_classifier_reads_one"]),
 
     ("a transform that changed nothing allowed through",
      [(H, "                    if edited == text:", "                    if False:")],

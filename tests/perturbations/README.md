@@ -3,7 +3,7 @@
 The suite passes. That says nothing about whether any of it can fail.
 
 A test that checks something already enforced one layer upstream passes forever and guards nothing,
-and it looks exactly like a test that works. The 20 scripts here settle the question one property at a
+and it looks exactly like a test that works. The 22 scripts here settle the question one property at a
 time: each breaks something the suite claims to hold, then requires a named test to go red. If the
 test stays green, the assertion was decoration.
 
@@ -29,7 +29,8 @@ rather than repaired, and the harness now reads the summary line instead of trus
 ## Running them
 
 ```bash
-python tests/perturbations/run-all.py                      # everything, about six minutes
+(cd frontend && npm ci)                                    # once, for the one script that needs node
+python tests/perturbations/run-all.py                      # everything, about seven minutes
 python tests/perturbations/run-all.py hit-rate tool-reach  # just the names matching these
 python tests/perturbations/perturb-hit-rate.py             # one script on its own
 ```
@@ -38,6 +39,10 @@ python tests/perturbations/perturb-hit-rate.py             # one script on its o
 perturb each other's baseline and both report nonsense. `run-all.py` also runs the whole suite before
 the first script and after the last, because a script that restores wrongly leaves a mutated tree and
 the next script reads that as its baseline.
+
+**One script needs node.** `perturb-frontend-render.py` covers `frontend/src/render.test.js`, so it
+runs vitest instead of pytest. Without the frontend dependencies installed it stops on a red baseline:
+`npx --no-install` fetches nothing mid-sweep, so the runner reports an error before the first case.
 
 ## Reading the output
 
@@ -61,6 +66,10 @@ A docstring naming the test file it covers and why those cases, a `CASES` list, 
 call. Read the docstring in `_harness.py` first: it holds eight guards and says what went wrong
 without each.
 
+A script covering the frontend passes `run=vitest` and writes its targets as
+`frontend/src/render.test.js::the test title`. The eight guards apply either way, so there is no
+second set of rules to learn.
+
 Don't write the loop and don't call `subprocess.run`. `tests/test_perturbation_harness.py` refuses
 both, and it refuses a module-level `for` loop too, because one script kept its entire original loop
 through the move by calling a local helper named `run`, so the banned token wasn't there and the file
@@ -74,11 +83,11 @@ skips the probe and says so in a comment.
 ## What CI runs
 
 On every push, `tests/test_perturbation_harness.py` unit-tests the harness guards and statically
-re-checks that all 265 cases still anchor to code that exists and still name tests that exist. It
+re-checks that all 308 cases still anchor to code that exists and still name tests that exist. It
 takes under a second, and anchor drift is silent, so that is where drift gets caught.
 
-The sweep itself is `.github/workflows/perturbations.yml`, on every pull request. What only the sweep
-can answer is whether the test actually goes red.
+The sweep itself is `.github/workflows/perturbations.yml`, on every pull request, and it installs the
+frontend dependencies too. What only the sweep can answer is whether the test actually goes red.
 
 **Every pull request, with no paths filter, because the failure this catches is caused by product code.**
 The static check catches an anchor that has stopped matching. It cannot catch an anchor that still
