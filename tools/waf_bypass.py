@@ -140,7 +140,23 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "",
             start_epoch = _parse_start_time(start_time)
             if start_epoch:
                 end_epoch = start_epoch + min(duration_minutes, 60) * 60
-                results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1)
+                # The one `_safe_query` call in this file that recorded nothing, and the only place
+                # in the repository where a failed query was reported as a *named cause* rather
+                # than as absence. Without a `failures` dict a failure returns `[]`, `not results`
+                # is true, and the tool answered "Log Filter is active and ALLOW logs appear
+                # filtered out", then told the user to change their WAF logging configuration and
+                # refused the whole scan. A poll timeout produced a diagnosis of their filter.
+                probe: dict[str, str] = {}
+                results = _safe_query(test_cwl, test_athena, start_epoch, end_epoch, limit=1,
+                                      failures=probe, label="allow_probe")
+                if probe:
+                    return ("## Cannot Proceed — the ALLOW-log probe did not run\n\n"
+                            f"{_empty_reason(probe, 'allow_probe')}\n\n"
+                            "A Log Filter is active on this WebACL, so the scan checks first whether "
+                            "ALLOW rows reach the log destination. That check failed, which says "
+                            "nothing about the filter. Do NOT tell the user their filter is dropping "
+                            "ALLOW logs, and do NOT suggest they change it. Re-run "
+                            "detect_bypass(step='scan') once the reason above is addressed.")
                 if not results or int(results[0].get("cnt", 0)) == 0:
                     return ("## Cannot Proceed — ALLOW Logs Unavailable\n\n"
                             "⚠️  Log Filter is active and ALLOW logs appear filtered out.\n"
@@ -663,7 +679,17 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append(_empty_reason(failures, "ua_rotation"))
 
-    if not crawlers and not repeaters and not datacenter and not auto_ua and not distributed and not ua_rotation:
+    # One expression, read twice, because the two readings disagreed. This condition and the
+    # action block below were written separately as De Morgan twins, and only this one learned
+    # about `failures`: with every query failed the report said "Cannot Say Whether Bypass
+    # Candidates Exist ... do NOT report it as clean" and then, six lines later, "Tell user: no
+    # obvious bypass detected in this window". `## Your Next Action` is the heading the step
+    # machines instruct the model to follow, so the refusal was overridden by the section that
+    # decides what happens next. Naming the condition once is half the fix; the other half is
+    # that both readings now branch on `failures`.
+    found_any = bool(crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation)
+
+    if not found_any:
         lines.append("")
         if failures:
             # The emptiness guard, and it is the whole point of recording the reasons.
@@ -686,11 +712,20 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     lines.append("")
     lines.append("## Your Next Action")
     lines.append("")
-    if crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation:
+    if found_any:
         lines.append("Present candidates to user. For each:")
         lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
         lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")
         lines.append("- For deeper analysis → call detect_bypass(step='investigate_ip', ip='...', start_time='...')")
+        if failures:
+            lines.append(f"- Say the scan was partial: {len(failures)} of its queries failed "
+                         f"({', '.join(sorted(failures))}), so these candidates are a floor and "
+                         f"not the whole picture.")
+    elif failures:
+        lines.append("Tell user the scan did not complete, and name the sections that failed.")
+        lines.append("Do NOT say no bypass was detected. That is a claim about their traffic, and "
+                     "a query that did not run is no evidence for it.")
+        lines.append("Then re-run detect_bypass(step='scan') once the reason above is addressed.")
     else:
         lines.append("Tell user: no obvious bypass detected in this window.")
         lines.append("If user still suspects bypass, try a shorter/different time window (1-2h around the suspected incident).")

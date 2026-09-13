@@ -211,14 +211,17 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
              f"Window: {start_time} + {duration} min", ""]
 
     # Step 1. Which rules do injection detection, read off the WebACL rather than guessed.
-    injection, unknown = [], []
+    # Held beyond the `try` because the metric cross-check below re-checks a rule name against it
+    # at the line that issues the query, rather than trusting that the name came from here.
+    injection, unknown, acl_rules = [], [], []
     try:
         waf = get_client("wafv2", region_name=resolve_region(scope))
         acls = waf.list_web_acls(Scope=scope).get("WebACLs", [])
         match = next((a for a in acls if a["Name"].lower() == get_webacl_name().lower()), None)
         if match:
             acl = waf.get_web_acl(Name=get_webacl_name(), Scope=scope, Id=match["Id"])["WebACL"]
-            injection, unknown = _injection_rules(acl.get("Rules", []))
+            acl_rules = acl.get("Rules", [])
+            injection, unknown = _injection_rules(acl_rules)
     except Exception as exc:
         lines.append(f"Could not read the WebACL's rules ({type(exc).__name__}: {exc}), so the "
                      f"rule list below is whatever the logs show rather than the configured set.")
@@ -275,8 +278,35 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
                          "rules:")
             lines += ["", by_rule, "",
                       "If you expected injection activity, widen the window or check whether a "
-                      "Log Filter is dropping BLOCK records before they reach the log destination.",
-                      "", CONFIDENCE]
+                      "Log Filter is dropping BLOCK records before they reach the log destination."]
+            # ROADMAP 7.1. This is the sentence the investigation got wrong on 2026-09-08: it said
+            # zero SQLi hits on the strength of one log query, and a log query returning zero is
+            # byte-identical to the attack not having happened. Metrics are the one witness immune
+            # to the log side's failure modes, so before the claim goes out, ask them.
+            #
+            # **Per rule, never at the WebACL.** In that same window `shield-sample-webacl`'s
+            # rate-limit rule blocked 566,070 requests while its SQLi series was empty, so a
+            # WebACL-level comparison would fire here and be wrong. A check that is always on is
+            # not a check.
+            #
+            # `acl_rules` comes from the `get_web_acl` above, in this function, and the helper
+            # re-checks each name against it at the line that issues the query.
+            import time
+            from tools.waf_logs import _parse_start_time
+            from tools.waf_metrics import missed_data_warning
+            # Parsed here rather than passed in, and it can be None on the very path that reaches
+            # this branch: an unparseable `start_time` makes `aggregate_logs` return an error string
+            # instead of a table, `_rank_by_blocks` finds no rule in it, and `active` is empty. The
+            # aggregate already said so in `by_rule` above, so the cross-check just stands down.
+            start_epoch = _parse_start_time(start_time)
+            if start_epoch is not None:
+                end_epoch = min(start_epoch + duration * 60, int(time.time()))
+                for target in targets:
+                    warning = missed_data_warning(get_webacl_name(), target, acl_rules,
+                                                  start_epoch, end_epoch, log_rows=0)
+                    if warning:
+                        lines.append(warning)
+            lines += ["", CONFIDENCE]
             return "\n".join(lines)
         # `active` is already ordered busiest-first by `_rank_by_blocks`, which read the counts
         # rather than trusting the table's row order, so `active[0]` below needs nothing from the
