@@ -279,6 +279,38 @@ def test_an_action_with_no_metric_of_its_own_is_skipped(cw):
     assert not cw.requests
 
 
+def test_a_cross_check_that_cannot_run_does_not_cost_the_answer_it_annotates(monkeypatch):
+    """**The property the whole design rests on, and the one I broke.** The cross-check annotates an
+    answer the tool has already produced, so nothing in it may take that answer away. Resolving the
+    metric dimension needs the WebACL, which is two more wafv2 calls in a branch that previously
+    touched no AWS, and they fail on their own for credentials, throttling or a missing
+    `wafv2:GetWebACL`.
+
+    CI found it, not review: `test_a_padded_rule_name_reaches_the_query_without_its_padding` drives
+    this branch with no credentials, and the unguarded read turned a passing test into
+    `NoCredentialsError`. Locally it passed, because this machine has credentials, which is the whole
+    reason that test failing was worth more than my reading of the diff."""
+    from tools import waf_count_eval as C
+    from tools import waf_query as WQ
+
+    def boom(*a, **k):
+        raise RuntimeError("wafv2 is unreachable")
+
+    monkeypatch.setattr(C, "_get_webacl_rules", boom)
+    monkeypatch.setattr(C, "query_logs", lambda *a, **k: [])
+    monkeypatch.setattr(WQ, "query_logs", lambda *a, **k: [])
+    monkeypatch.setattr(C, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(C, "get_webacl_name", lambda: "acl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: "")
+    S.set_webacl_context("acl", "arn:x", "CLOUDFRONT", "us-east-1")
+    S.set_user_timezone(0.0)
+
+    out = C._step_check_clients("SomeRule", "2026-09-08T12:00", 60)
+    assert "Client Distribution: SomeRule" in out, out
+    assert "no results" in out, "the answer the tool already had must survive"
+    assert "missed data" not in out, "a cross-check that could not run must not claim anything"
+
+
 def test_the_challenge_tool_reaches_the_cross_check_from_its_no_results_branch():
     """The wiring. Read structurally, because the behavioural path needs a live WebACL and log
     backend; the sentence it appends is covered by the tests above."""

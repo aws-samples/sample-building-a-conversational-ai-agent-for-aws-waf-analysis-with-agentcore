@@ -19,6 +19,7 @@ from _harness import sweep
 T = "tests/test_metric_cross_check.py"
 M = "tools/waf_metrics.py"
 I = "tools/waf_injection.py"
+I2 = "tools/waf_count_eval.py"
 
 CASES = [
     # The refusal restored. It was in this file until 2026-09-13 and it cost a real 33,932-match
@@ -105,6 +106,19 @@ CASES = [
     ("a zero metric beside zero log rows reported as a missed query",
      [(M, "    if count <= 0:\n        return \"\"", "    if False:\n        return \"\"")],
      [f"{T}::test_a_zero_metric_beside_zero_log_rows_says_nothing"], True),
+
+    # The additive-check property, and the one CI caught rather than review: resolving the dimension
+    # needs two wafv2 calls in a branch that previously touched no AWS, so an unguarded read turns a
+    # working answer into an exception wherever those calls fail.
+    ("the WebACL read unguarded again, so a cross-check failure costs the answer",
+     [(I2, "        try:\n"
+           "            rules = _get_webacl_rules(resolve_region(scope), scope)\n"
+           "        except Exception as exc:                          # noqa: BLE001\n"
+           "            print(f\"[waf_count_eval] no metric cross-check for {rule_name}: \"\n"
+           "                  f\"{type(exc).__name__}: {exc}\", file=sys.stderr, flush=True)\n"
+           "            rules = None\n",
+       "        rules = _get_webacl_rules(resolve_region(scope), scope)\n")],
+     [f"{T}::test_a_cross_check_that_cannot_run_does_not_cost_the_answer_it_annotates"], True),
 
     # The wiring. Textual: the target reads the tool's source, so a spliced raise would edit nothing
     # that runs, and the guard's own reachability is established by the behavioural cases above.
