@@ -10,6 +10,28 @@ function generateSessionId() {
   return crypto.randomUUID() + crypto.randomUUID().slice(0, 2);
 }
 
+// Which WebACL, which window and which engine a tool actually queried.
+//
+// **Both renderings of the window, because they answer different questions.** The local pair answers
+// "is this the window I asked about" and the UTC pair answers "is this what the log store saw"; a
+// session-timezone bug that shipped in 0.24.0 was invisible for exactly as long as only one of them was
+// shown. The offset is rendered from the number the query used rather than from the browser, so a
+// mismatch between the two is visible instead of being smoothed over.
+function provenanceText(p) {
+  const fmt = (epoch, offsetHours) => {
+    const d = new Date((epoch + offsetHours * 3600) * 1000);
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  };
+  const off = typeof p.tz_offset === 'number' ? p.tz_offset : 0;
+  const sign = off >= 0 ? '+' : '-';
+  const abs = Math.abs(off);
+  const label = off === 0 ? 'UTC' : `UTC${sign}${Number.isInteger(abs) ? abs : abs.toFixed(2)}`;
+  const local = `${fmt(p.start, off)} → ${fmt(p.end, off)} (${label})`;
+  const utc = `${fmt(p.start, 0)} → ${fmt(p.end, 0)} UTC`;
+  const n = p.queries > 1 ? `${p.queries} queries` : '1 query';
+  return `${p.webacl || 'unknown WebACL'} · ${p.engine} · ${n} · ${local} = ${utc}`;
+}
+
 function ReportDownload({ sessionId, type = 'roi' }) {
   const [html, setHtml] = useState(null);
   const [error, setError] = useState(null);
@@ -350,6 +372,19 @@ export default function App() {
               break;
             }
             case 'CUSTOM':
+              // Which WebACL, which window and which engine answered. Attached to the tool chip rather
+              // than left to the model: measured 2026-09-13, the model reads the SOURCE line the tools
+              // emit and does not repeat it, so anything that depends on it being relayed is invisible.
+              if (event.name === 'provenance' && event.value?.toolCallId) {
+                const p = event.value;
+                assistantMsg = {
+                  ...assistantMsg,
+                  tools: assistantMsg.tools.map(t =>
+                    t.id === p.toolCallId ? { ...t, provenance: p } : t),
+                };
+                setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
+                break;
+              }
               if (event.name === 'interrupt' && event.value?.interrupts?.length) {
                 const interrupt = event.value.interrupts[0];
                 const question = interrupt.reason?.question || interrupt.reason || 'Agent needs your input';
@@ -565,7 +600,11 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
             {msg.tools?.length > 0 && (
               <div className="tools">
                 {msg.tools.map((t, j) => (
-                  <span key={j} className={`tool ${t.status}`}>{t.status === 'running' ? '⏳' : '✅'} {t.name}</span>
+                  <span key={j} className={`tool ${t.status}`}
+                        title={t.provenance ? provenanceText(t.provenance) : undefined}>
+                    {t.status === 'running' ? '⏳' : '✅'} {t.name}
+                    {t.provenance && <span className="tool-src">{provenanceText(t.provenance)}</span>}
+                  </span>
                 ))}
               </div>
             )}

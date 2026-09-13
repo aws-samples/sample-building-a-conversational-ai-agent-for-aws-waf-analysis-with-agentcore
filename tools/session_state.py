@@ -150,3 +150,43 @@ def get_findings() -> list:
 def clear_findings():
     """Reset findings (for new investigation)."""
     _state["findings"] = []
+
+
+# --- ROADMAP 7.2: provenance the frontend renders, not the model ------------
+#
+# **Measured 2026-09-13: the model reads the `SOURCE:` line and does not relay it.** In one verification
+# session `SOURCE:` appeared nowhere in the answer while the same answer proved the line had been read,
+# because it noticed the loaded WebACL was the wrong one and reloaded. So instruction-following is the
+# link that is already failing here, and another prompt rule would be a second layer on the same
+# unreliable mechanism. These facts are recorded by the query layer and emitted as their own event, so
+# what the user sees does not depend on the model choosing to repeat it.
+
+def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
+    """Record which engine answered and over which window. Called once per query, merged per tool call.
+
+    `queries` counts them because one tool call issues up to fifteen, and a user reading "CloudWatch,
+    12:37 to 18:37" deserves to know whether that describes one query or fifteen. The window is stored
+    as epochs so the renderer can show both the session-local and the UTC pair without re-deriving
+    either from a string.
+    """
+    # Read through the accessors rather than by key. Both were guessed from their function names on the
+    # first draft and `user_timezone` is spelled `user_tz_offset`, so the offset silently recorded as
+    # None: a plausible key name for a value that is never there is the same defect as a plausible API
+    # field, and it fails the same quiet way.
+    p = _state.setdefault("provenance", {})
+    p["webacl"] = get_webacl_name()
+    p["engine"] = engine
+    p["tz_offset"] = get_user_timezone()
+    p["start"] = min(start_epoch, p["start"]) if "start" in p else start_epoch
+    p["end"] = max(end_epoch, p["end"]) if "end" in p else end_epoch
+    p["queries"] = p.get("queries", 0) + 1
+
+
+def take_query_provenance() -> dict:
+    """The record for the tool call that just finished, and clear it.
+
+    Cleared on read so the next tool call cannot inherit the previous one's window. Returning `{}` for a
+    tool that ran no log query is the point: a config-only tool has no window to disclose, and inventing
+    one would be the same defect this exists to fix.
+    """
+    return _state.pop("provenance", {})

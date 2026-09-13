@@ -741,6 +741,20 @@ def create_app():
                 yield _make_sse({"type": "TOOL_CALL_START", "toolCallId": payload["id"], "toolCallName": payload["name"]})
             elif event_type == "TOOL_END":
                 yield _make_sse({"type": "TOOL_CALL_END", "toolCallId": payload})
+                # ROADMAP 7.2. **Emitted as its own event because the model demonstrably does not relay
+                # the `SOURCE:` line.** Measured 2026-09-13: `SOURCE:` appeared nowhere in a verification
+                # answer while that same answer proved the line had been read, because it noticed the
+                # loaded WebACL was wrong and reloaded. Instruction-following is the failing link, so a
+                # further instruction would stack on the mechanism that already failed. This path ends at
+                # the frontend, which renders it whatever the model says.
+                #
+                # `{}` for a tool that ran no log query, and nothing is emitted then: a config-only tool
+                # has no window to disclose and inventing one would be the defect this exists to fix.
+                from tools.session_state import take_query_provenance
+                _prov = take_query_provenance()
+                if _prov:
+                    yield _make_sse({"type": "CUSTOM", "name": "provenance",
+                                     "value": {"toolCallId": payload, **_prov}})
             elif event_type == "RESULT":
                 result = payload
             elif event_type == "ERROR":

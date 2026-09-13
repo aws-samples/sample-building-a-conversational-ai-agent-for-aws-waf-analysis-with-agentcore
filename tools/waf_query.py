@@ -9,7 +9,7 @@ import concurrent.futures
 import threading
 from collections import Counter
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success
+from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success, note_query_provenance
 
 _cwl_semaphore = threading.Semaphore(8)
 from tools.query_limits import (MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL,
@@ -546,6 +546,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         # two. Writing `limit + 1` in both places means the engine returns at most `limit + 1` either
         # way. Anchored to the end because CloudWatch requires `limit` to be the last command.
         cwl = re.sub(r"\|\s*limit\s+\d+\s*$", f"| limit {limit + 1}", query_cwl.strip())
+        note_query_provenance("CloudWatch Logs Insights", start_epoch, end_epoch)
         rows = _trim(_run_cwl(log_group, cwl, start_epoch, end_epoch, limit + 1),
                      limit, notes, label)
         # CWL Insights returns bin()/@timestamp fields in UTC. Shift the known
@@ -602,6 +603,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
             if wn and re.fullmatch(r"[A-Za-z0-9_-]+", wn):
                 partition_clause += f" AND webaclid LIKE '%/{wn}/%'"
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
+        note_query_provenance("Athena over S3", start_epoch, end_epoch)
         return _scan_log_values(_trim(_run_athena(sql), limit, notes, label))
     raise RuntimeError(f"Unsupported log destination format: {dest}")
 
