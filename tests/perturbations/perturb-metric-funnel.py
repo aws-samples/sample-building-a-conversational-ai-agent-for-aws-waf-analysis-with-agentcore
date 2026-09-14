@@ -31,12 +31,11 @@ CASES = [
      [f"{T}::test_get_client_wraps_cloudwatch_and_nothing_else"], True),
 
     ("the record dropped, so a metric read discloses nothing again",
-     [(A, '            note_query_provenance("CloudWatch metrics", int(start.timestamp()), int(end.timestamp()))\n',
-       "")],
+     [(A, '            note_query_provenance("CloudWatch metrics", _epoch(start), _epoch(end))\n', "")],
      [f"{T}::test_a_metric_read_records_its_window_and_names_the_engine"], True),
 
     ("a metric read labelled as a log query, which is the misattribution one layer down",
-     [(A, '"CloudWatch metrics", int(start.timestamp())', '"CloudWatch Logs Insights", int(start.timestamp())')],
+     [(A, '"CloudWatch metrics", _epoch(start)', '"CloudWatch Logs Insights", _epoch(start)')],
      [f"{T}::test_a_metric_read_records_its_window_and_names_the_engine"], True),
 
     ("the window read from the wrong end, so the record describes a window nobody asked for",
@@ -56,6 +55,18 @@ CASES = [
     ("the missing-window guard removed, so a call botocore would refuse crashes in the proxy",
      [(A, "        if start is not None and end is not None:", "        if True:")],
      [f"{T}::test_a_read_missing_its_window_records_nothing_and_is_refused_downstream"], True),
+
+    # The naive/aware pair. Both directions, because reading everything as UTC passes the first test and
+    # corrupts every real call site, all of which pass aware values.
+    ("a naive window read in the machine's local zone, which is not what botocore sends",
+     [(A, "    return int((dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).timestamp())",
+       "    return int(dt.timestamp())")],
+     [f"{T}::test_a_naive_window_is_recorded_as_utc_because_that_is_what_aws_reads"], True),
+
+    ("every window forced to UTC, discarding the offset an aware call site passed",
+     [(A, "    return int((dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).timestamp())",
+       "    return int(dt.replace(tzinfo=timezone.utc).timestamp())")],
+     [f"{T}::test_an_aware_window_keeps_its_own_offset"], True),
 
     # Structural target, so no probe: it reads source rather than running the line.
     ("a module building its own client, which is how a metric read escapes the funnel",

@@ -14,6 +14,7 @@ call site written next year. `tools/aws_session.get_client` is the only place a 
 constructed in this repository, which is what makes that possible.
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -140,3 +141,48 @@ def test_the_only_client_constructor_is_the_one_that_wraps():
     assert not offenders, (
         f"these build a client without going through get_client, so a CloudWatch client from one of "
         f"them records no provenance: {offenders}")
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="tzset is Unix-only; this test cannot run here")
+def test_a_naive_window_is_recorded_as_utc_because_that_is_what_aws_reads(monkeypatch):
+    """**`datetime.timestamp()` reads a naive datetime in the machine's local zone, and botocore sends the
+    same value with no offset, which AWS reads as UTC.** The record and the request would then describe
+    windows an offset apart: measured before the fix on `TZ=Asia/Shanghai`, `datetime(2026, 5, 8)`
+    recorded 2026-05-07T16:00Z while AWS received 2026-05-08T00:00Z. A chip showing a window no query
+    used is the 0.24.0 defect inside the mechanism built to expose it.
+
+    **This test has to set a non-UTC local zone or it passes either way.** CI runs on UTC, where naive
+    and aware readings are identical, so without `TZ` and `tzset` it would be green against the broken
+    version, which is the same hollow shape as a fixture that used session midnight at UTC-5. The
+    premise is asserted rather than assumed, because `tzset` silently does nothing for a zone name the
+    machine cannot resolve.
+
+    No call site passes a naive datetime, all 30 traced. The funnel owns this because its whole claim is
+    that it covers the call site nobody has written yet."""
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    time.tzset()
+    try:
+        naive, aware = datetime(2026, 5, 8), datetime(2026, 5, 8, tzinfo=timezone.utc)
+        assert naive.timestamp() != aware.timestamp(), (
+            "the local zone is still UTC, so this test cannot tell the two readings apart")
+        A._RecordingCloudWatch(FakeClient()).get_metric_data(
+            MetricDataQueries=[], StartTime=naive, EndTime=datetime(2026, 5, 8, 2))
+        p = S.take_query_provenance()
+        assert p["start"] == int(aware.timestamp()), (
+            "recorded in local time while botocore sends it as UTC")
+        assert p["end"] == int(datetime(2026, 5, 8, 2, tzinfo=timezone.utc).timestamp())
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_an_aware_window_keeps_its_own_offset():
+    """The control. Reading every datetime as UTC regardless would pass the test above and corrupt every
+    real call site, all of which pass aware values."""
+    shanghai = timezone(timedelta(hours=8))
+    A._RecordingCloudWatch(FakeClient()).get_metric_data(
+        MetricDataQueries=[], StartTime=datetime(2026, 5, 8, tzinfo=shanghai),
+        EndTime=datetime(2026, 5, 8, 2, tzinfo=shanghai))
+    p = S.take_query_provenance()
+    assert p["start"] == int(datetime(2026, 5, 7, 16, tzinfo=timezone.utc).timestamp()), (
+        "an aware datetime must keep its offset, not be reinterpreted as UTC")
