@@ -97,8 +97,26 @@ _I18N = {
 }
 
 
-def _date_range_label(start, end, user_tz, tz_label: str) -> str:
-    """The window this report covers, in the zone the caller asked in, with the zone named.
+def _window_labels(start, end, baseline_start, user_tz, tz_label: str) -> str:
+    """The window this report reports on, and the window it read to compare against.
+
+    **Both are read, so both are named.** `generate_weekly_report` queries `start_last_week` to
+    `start_this_week` for every week-over-week figure, so the report reads fourteen days and reported
+    seven. The provenance record on the tool chip is the union of everything read, which is the
+    convention that record has, so with only the reported window in the title the chip showed fourteen
+    days beside a title claiming seven and nothing said why. Naming the baseline is the cheaper half of
+    resolving that: the alternative is a record that omits a real read, and that is the thing the record
+    exists to remove.
+
+    A week-over-week percentage whose baseline dates are unstated is also a number a reader cannot check,
+    which is the same reason the zone is named.
+    """
+    return (f"{_date_range_label(start, end, user_tz, tz_label)} · baseline "
+            f"{_date_range_label(baseline_start, start, user_tz, '')}")
+
+
+def _date_range_label(start, end, user_tz, tz_label: str = "") -> str:
+    """One window, in the zone the caller asked in, with the zone named when there is one to name.
 
     **Both arguments are UTC while the caller asked in session time, so formatting them raw named a day
     the report does not cover.** `start_time="2026-05-08"` in a UTC+8 session parses to
@@ -129,8 +147,9 @@ def _date_range_label(start, end, user_tz, tz_label: str) -> str:
     one rule for spelling it and a second copy is what drifts.
     """
     last = end - timedelta(seconds=1)
-    return (f"{start.astimezone(user_tz).strftime('%Y-%m-%d')} to "
-            f"{last.astimezone(user_tz).strftime('%Y-%m-%d')} {tz_label}")
+    dates = (f"{start.astimezone(user_tz).strftime('%Y-%m-%d')} to "
+             f"{last.astimezone(user_tz).strftime('%Y-%m-%d')}")
+    return f"{dates} {tz_label}" if tz_label else dates
 
 
 def _dims(webacl: str, scope: str, region: str, rule: str = "ALL") -> list[dict]:
@@ -864,7 +883,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     bot_pct = f"{(bot_requests / total_this * 100):.1f}" if total_this > 0 else "0"
     executive_summary = "{{EXECUTIVE_SUMMARY}}"
 
-    date_range = _date_range_label(start_this_week, end, _user_tz, tz_label)
+    date_range = _window_labels(start_this_week, end, start_last_week, _user_tz, tz_label)
     from datetime import datetime as _dt
     gen_time = _dt.now(timezone(timedelta(hours=_tz_off)) if _tz_off else timezone.utc).strftime('%Y-%m-%d %H:%M')
 
