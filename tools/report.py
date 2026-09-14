@@ -97,6 +97,28 @@ _I18N = {
 }
 
 
+def _date_range_label(start, end, user_tz, tz_label: str) -> str:
+    """The window this report covers, in the zone the caller asked in, with the zone named.
+
+    **Both arguments are UTC while the caller asked in session time, so formatting them raw named a day
+    the report does not cover.** `start_time="2026-05-08"` in a UTC+8 session parses to
+    2026-05-07T16:00Z, and the subtitle said `2026-05-07 to …`: a report whose title disagrees with the
+    request that produced it, in the same shape as the `get_waf_metrics` date defect that started
+    ROADMAP 7. Any positive offset moves the start date back a day, any negative one moves it forward.
+
+    **The end is the last instant covered, not the first instant after.** `end` is exclusive,
+    `_st + days`, so a 7-day report from the 8th ends at midnight on the 15th and the title claimed a
+    day outside its own window. One second back names the 14th, and it stays correct when `end` was
+    capped at `now`, where it is a mid-day timestamp rather than a boundary.
+
+    The zone label comes from the caller rather than being derived again here, because there is already
+    one rule for spelling it and a second copy is what drifts.
+    """
+    last = end - timedelta(seconds=1)
+    return (f"{start.astimezone(user_tz).strftime('%Y-%m-%d')} to "
+            f"{last.astimezone(user_tz).strftime('%Y-%m-%d')} {tz_label}")
+
+
 def _dims(webacl: str, scope: str, region: str, rule: str = "ALL") -> list[dict]:
     """Build CloudWatch metric dimensions. Omit Region for CLOUDFRONT scope."""
     d = [{"Name": "WebACL", "Value": webacl}, {"Name": "Rule", "Value": rule}]
@@ -828,7 +850,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     bot_pct = f"{(bot_requests / total_this * 100):.1f}" if total_this > 0 else "0"
     executive_summary = "{{EXECUTIVE_SUMMARY}}"
 
-    date_range = f"{start_this_week.strftime('%Y-%m-%d')} to {end.strftime('%Y-%m-%d')}"
+    date_range = _date_range_label(start_this_week, end, _user_tz, tz_label)
     from datetime import datetime as _dt
     gen_time = _dt.now(timezone(timedelta(hours=_tz_off)) if _tz_off else timezone.utc).strftime('%Y-%m-%d %H:%M')
 
