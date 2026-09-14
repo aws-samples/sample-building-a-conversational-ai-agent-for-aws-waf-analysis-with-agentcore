@@ -189,18 +189,28 @@ def test_the_stash_lives_where_the_isolation_fixture_can_clear_it():
     drift test with the message "the case has drifted". That sends the next reader to update the anchor,
     which turns the suite green and brings the leak back. **A guard has to say the property when it fires**,
     not name a neighbour of the symptom, which is the same lesson as the sweep reporting an unreachable line
-    for what was really a stale anchor.
-
-    **The two assertions do not guard the same thing, and the second is the weaker one.** It is only reached
-    when the first holds, so the perturbation that moves the container out of `_state` never runs it. What
-    it does pin is the reader: a `take_query_provenance` that kept its own copy somewhere outside `_state`
-    would satisfy the first assertion and fail this one."""
+    for what was really a stale anchor."""
     _context("shield-sample-webacl", LOG_GROUP_DEST)
     session_state.note_query_provenance(CWL, 1000, 2000)
     session_state.stash_query_provenance("t1")
     assert "provenance_stash" in session_state._state, (
         "the stash has to live inside _state, which is the only thing conftest's "
         "_isolate_module_state clears")
+
+
+def test_a_cleared_state_drops_the_stash():
+    """The same property from the reader's side, **and it is a separate function because that is what makes
+    it run.**
+
+    It began as a second assertion inside the test above, where it was unreachable: pytest stops at the
+    first failure, so the perturbation that moves the container out of `_state` never got here. I wrote that
+    up as a weak assertion that only a reader keeping its own copy could break. Measured: under that same
+    perturbation `take_query_provenance("t1")` returns the whole record after `_state.clear()`, so it is
+    red, and the only thing hiding it was sharing a function. One `def` turns a gap I had recorded into a
+    property that is guarded, with no new case."""
+    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    session_state.note_query_provenance(CWL, 1000, 2000)
+    session_state.stash_query_provenance("t1")
     session_state._state.clear()
     assert session_state.take_query_provenance("t1") == {}, "a cleared _state must drop the stash"
 

@@ -62,7 +62,8 @@ CASES = [
        '            stash = globals().setdefault("_leaked_stash", {})'),
       (S, '            record = (_state.get("provenance_stash") or {}).pop(tool_use_id, None)',
        '            record = globals().setdefault("_leaked_stash", {}).pop(tool_use_id, None)')],
-     [f"{T}::test_the_stash_lives_where_the_isolation_fixture_can_clear_it"], False),
+     [f"{T}::test_the_stash_lives_where_the_isolation_fixture_can_clear_it",
+      f"{T}::test_a_cleared_state_drops_the_stash"], False),
 
     # The regression review caught: one wording for both paths.
     ("both paths given the session-derived wording again, which orders the model to undo the bypass",
