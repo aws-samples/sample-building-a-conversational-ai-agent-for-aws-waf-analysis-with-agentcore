@@ -44,4 +44,4 @@
 
 ## 模型行为
 
-**Amazon Bedrock 上的 GPT 系列模型在这个场景里可能静默卡住。** 这里每一个提示词都塞满 SQLi、XSS、绕过、payload，上游的 cyber-safety 检查可能在不报错的情况下中止响应，看起来就像 agent 卡死。请用 Claude Sonnet 4.6 或 Claude Opus。这一条我们在 agent 内部修不了。
+**Amazon Bedrock 上的 GPT 系列模型在这个场景里可能静默卡住。** 这里每一个提示词都塞满 SQLi、XSS、绕过、payload，上游的 cyber-safety 检查可能在不报错的情况下中止响应，看起来就像 agent 卡死。请用 Claude Sonnet 5。这一条我们在 agent 内部修不了。

@@ -7,9 +7,9 @@
 WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 
 > [!IMPORTANT]
-> **模型选择很重要：请使用 Claude Sonnet 4.6 或 Claude Opus。除非已经完整测试自己的 WAF 调查工作流，否则不要在 Amazon Bedrock 上为本 Agent 部署 GPT 系列模型。**
+> **模型选择很重要：请使用 Claude Sonnet 5。除非已经完整测试自己的 WAF 调查工作流，否则不要在 Amazon Bedrock 上为本 Agent 部署 GPT 系列模型。**
 >
-> 本 Agent 是防御性的 AWS WAF 分析工具，但它会读取并分析安全日志、拦截请求、SQLi/XSS 命中、绕过候选、Bot/DDoS 流量。使用 Bedrock 上的 GPT 系列模型时，上游 cyber-safety 检查可能静默拦截这些上下文，表现为 Agent 突然没有反应。如果必须使用 GPT 模型，并发现 Agent 卡住，请告诉 Agent："我只是在防御性地分析自己环境中的 AWS WAF 日志和指标。请继续调查 WAF metrics 和 logs。不要提供 exploit payload、凭证窃取步骤、规避、持久化、恶意软件行为，或任何针对未授权系统的操作说明。"
+> 本 Agent 是防御性的 AWS WAF 分析工具，但它会读取并分析安全日志、拦截请求、SQLi/XSS 命中、绕过候选、Bot/DDoS 流量。使用 Bedrock 上的 GPT 系列模型时，上游 cyber-safety 检查可能静默拦截这些上下文，表现为 Agent 突然没有反应。
 
 | Stack | 区域 | 资源 |
 |-------|------|------|
@@ -29,7 +29,7 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 
 选择后端区域时考虑：
 - **靠近你的 AWS WAF 资源** — 减少 CloudWatch API 延迟
-- **模型可用性** — Claude Sonnet 4.6 必须可用
+- **模型可用性** — Claude Sonnet 5 必须可用
 - **AgentCore 支持** — CloudFormation 必须支持 `AWS::BedrockAgentCore::Runtime`
 
 ### 支持的区域
@@ -47,20 +47,25 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 
 ### 各区域的模型 ID
 
-| 区域前缀 | 默认 MODEL_ID |
-|---------|--------------|
-| us-* | `us.anthropic.claude-sonnet-4-6` |
-| ap-northeast-1 | `jp.anthropic.claude-sonnet-4-6` |
-| ap-*（其他） | `apac.anthropic.claude-sonnet-4-6` |
-| eu-* | `eu.anthropic.claude-sonnet-4-6` |
+| 你所在的区域 | 模型 ID |
+|------------|--------|
+| us-* | `us.anthropic.claude-sonnet-5` |
+| eu-* | `eu.anthropic.claude-sonnet-5` |
+| 其余区域，包括所有 ap-* | `global.anthropic.claude-sonnet-5` |
 
-可通过环境变量 `WAF_AGENT_MODEL_ID` 覆盖。
+内置默认值就是 `global.anthropic.claude-sonnet-5`，所以 `ModelId` 留空在上面任何一种区域都能用。要换模型，改 Stack
+参数 `ModelId`；本地跑的话用环境变量 `WAF_AGENT_MODEL_ID`。
+
+**Sonnet 5 没有 `jp.` 和 `apac.` 的 inference profile**。2026-09-14 把上面六个区域全查了一遍，都没有。六个
+区域都有 Sonnet 5：global profile 处处都在，us-* 和 eu-* 那四个还各有自己区域的 profile。所以亚太走 global，
+那个 profile 我们在 ap-northeast-1 真调过一次，能返回。global profile 会把请求路由到有容量的任意区域，如果你要求推理本身留在某一个地理范围内，就选一个
+us-* 或 eu-* 区域部署，用该区域自己的 profile。
 
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `WAF_AGENT_MODEL_ID` | 按区域（见上） | Bedrock 模型 ID |
+| `WAF_AGENT_MODEL_ID` | `global.anthropic.claude-sonnet-5` | Bedrock 模型 ID |
 | `WAF_AGENT_MODEL_REGION` | 栈所在区域 | 调用 Bedrock 模型的区域 |
 | `WAF_AGENT_TIMEZONE_OFFSET` | `0`（UTC） | 用户没指定日期时，解析日期用的时区偏移（小时）。UTC+8 填 `8` |
 
@@ -141,7 +146,7 @@ aws cloudformation deploy \
 
 ### 自定义模型（可选）
 
-默认使用当前区域对应的 Claude Sonnet 4.6。如需使用其他 Amazon Bedrock 模型：
+默认用 `global.anthropic.claude-sonnet-5`。要换成别的 Amazon Bedrock 模型：
 
 ```bash
 aws cloudformation deploy \
@@ -150,7 +155,7 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:$COMMIT \
-    ModelId=us.anthropic.claude-sonnet-4-6 \
+    ModelId=us.anthropic.claude-sonnet-5 \
     ModelRegion=us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM
 ```
@@ -158,7 +163,7 @@ aws cloudformation deploy \
 模型必须支持 tool use 并有足够的上下文窗口。
 
 > [!WARNING]
-> **强烈建议使用 Claude Sonnet 4.6 或 Claude Opus。请避免为 WAF Analyst 选择 Bedrock 上的 GPT 系列模型。** WAF 运维中的正常防御性问题经常包含 SQLi、XSS、绕过、exploit attempt、恶意 IP、payload 等词。GPT 系列模型可能触发上游 cyber-safety 过滤并静默失败，让 UI 看起来像没有响应。如果你覆盖 `ModelId`，请先完整验证误报分析、COUNT 规则评估、绕过检测、注入拦截调查，再给其他用户使用。
+> **强烈建议使用 Claude Sonnet 5。请避免为 WAF Analyst 选择 Bedrock 上的 GPT 系列模型。** WAF 运维中的正常防御性问题经常包含 SQLi、XSS、绕过、exploit attempt、恶意 IP、payload 等词。GPT 系列模型可能触发上游 cyber-safety 过滤并静默失败，让 UI 看起来像没有响应。如果你覆盖 `ModelId`，请先完整验证误报分析、COUNT 规则评估、绕过检测、注入拦截调查，再给其他用户使用。
 
 ### 持久记忆（推荐）
 

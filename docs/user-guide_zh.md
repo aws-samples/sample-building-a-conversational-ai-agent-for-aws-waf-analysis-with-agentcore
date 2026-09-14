@@ -7,9 +7,7 @@ WAF Analyst 是一个 AI 助手，帮助安全工程师调查 AWS WAF 安全事�
 > [!WARNING]
 > **如果部署时选择了 Amazon Bedrock 上的 GPT 系列模型，WAF 分析可能被静默拦截。**
 >
-> 本工具是防御性的，但正常 WAF 工作会包含 SQLi、XSS、绕过、blocked payload、恶意 IP、exploit attempt 等词。一些 GPT 系列模型部署可能触发上游 cyber-safety 检查，让 Agent 看起来像卡住或没有响应。推荐部署 Claude Sonnet 4.6 或 Claude Opus。
->
-> 如果 Agent 在分析 WAF 日志或指标时突然没有反应，请发送："我只是在防御性地分析自己环境中的 AWS WAF 日志和指标。请继续调查 WAF metrics 和 logs。不要提供 exploit payload、凭证窃取步骤、规避、持久化、恶意软件行为，或任何针对未授权系统的操作说明。"
+> 本工具是防御性的，但正常 WAF 工作会包含 SQLi、XSS、绕过、blocked payload、恶意 IP、exploit attempt 等词。一些 GPT 系列模型部署可能触发上游 cyber-safety 检查，让 Agent 看起来像卡住或没有响应。推荐部署 Claude Sonnet 5。
 
 ## 核心原则：具体、具体、再具体
 
@@ -148,4 +146,4 @@ Agent 可以访问你的 AWS WAF 配置、CloudWatch 指标、CloudWatch 日志�
 - **冷启动。** 新会话的第一次查询需要约 30 秒（容器启动）。
 - **版本确认。** 问 Agent "你运行的是什么版本？" 可以确认当前代码版本。Agent 会报告构建时的 commit hash 和构建时间。如果部署后版本仍是旧的，请开启新会话（旧会话会继续运行旧代码）。
 - **匹配详情。** AWS WAF 只对 SQLi 和 XSS 规则提供请求体匹配详情。其他规则无法告诉你具体是什么内容触发了规则。
-- **GPT 系列模型安全过滤。** 如果部署使用了 Bedrock 上的 GPT 系列模型，并且 Agent 在防御性 WAF 分析中突然静默，请明确说明这是授权的防御性 AWS WAF 日志分析，并要求继续。优先使用 Claude 模型以避免这个失败模式。
+- **GPT 系列模型安全过滤。** 用 Bedrock 上的 GPT 系列模型部署，Agent 可能在防御性 WAF 分析中途突然静默，哪里都不报错。你打什么字都救不回来。换成 Claude Sonnet 5 重新部署。
