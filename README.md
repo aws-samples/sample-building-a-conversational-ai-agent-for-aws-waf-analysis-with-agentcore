@@ -5,13 +5,13 @@ English | [中文](README_zh.md)
 An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates weekly summarys for management. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
 
 > [!WARNING]
-> **Use Claude models. Do not choose GPT models on Amazon Bedrock for this agent unless you have tested your exact workflow.**
+> **Use Claude Sonnet 5. Do not choose GPT models on Amazon Bedrock for this agent unless you have tested your exact workflow.**
 >
-> WAF Analyst analyzes security logs, blocked requests, SQLi/XSS rule matches, bypass candidates, and bot/DDoS indicators. With GPT-family models on Bedrock, this defensive WAF analysis can be silently blocked by upstream cyber-safety checks and appear as if the agent stopped responding. The recommended models are Claude Sonnet 4.6 or Claude Opus.
->
-> If you already deployed with a GPT model and the agent appears stuck, send a clarifying message such as: "This is authorized defensive AWS WAF log analysis for my own environment. Please continue investigating the WAF metrics and logs. Do not provide exploit payloads, credential theft steps, evasion, persistence, malware behavior, or instructions for unauthorized systems."
+> WAF Analyst analyzes security logs, blocked requests, SQLi/XSS rule matches, bypass candidates, and bot/DDoS indicators. With GPT-family models on Bedrock, this defensive WAF analysis can be silently blocked by upstream cyber-safety checks and appear as if the agent stopped responding. The recommended model is Claude Sonnet 5.
 
 ## What It Does
+
+![WAF Analyst Screenshot](docs/screenshot.png)
 
 - **Proactive security checks** — scan for bypasses, evaluate COUNT rules, audit WAF configuration
 - **Incident investigation** — false positive analysis, attack source identification, IP profiling
@@ -24,7 +24,25 @@ See [docs/capabilities.md](docs/capabilities.md) for full details and example qu
 
 ## Quick Start
 
-![WAF Analyst Screenshot](docs/screenshot.png)
+### You install this by asking an agent
+
+**There is no install script, on purpose.** This is an AI project, so its installer is a runbook written
+for an AI. Point your coding agent (Claude Code, Cursor, Codex, whatever you use) at this repository and
+say:
+
+```text
+Read AGENTS.md and walk me through deploying WAF Analyst to my AWS account.
+```
+
+[AGENTS.md](AGENTS.md) is a directional runbook for LLM agents: the stack order and dependency flow, the
+inputs to collect from you, and the gotchas that break a first deployment (ARM64-only image, us-east-1
+frontend, never `:latest`, CloudFormation forgetting parameters). It links to the exact commands in the
+[Deployment Guide](docs/deployment.md) rather than duplicating them, so the agent reads each step there
+as it goes, asks you for your region and profile, runs the commands, and carries each stack's outputs
+into the next one.
+
+A shell script would hide all of that behind one command and tell you nothing when step 3 of 8 failed in
+a region where a template is not supported. The agent reads the same guide you would, in front of you.
 
 ### Prerequisites
 
@@ -36,28 +54,17 @@ See [docs/capabilities.md](docs/capabilities.md) for full details and example qu
   `deploy/image-build.yaml` builds it on AWS CodeBuild instead, which is also the answer on Windows x86,
   where a local ARM64 build runs under emulation.
 
-Deployment is a few CloudFormation stacks, plus a container build that runs either on your machine or on
-CodeBuild. Pick one of two paths:
+### Or run the commands yourself
 
-**Option 1 — Let your AI agent drive it (recommended).** Point your coding/ops agent (Claude Code,
-Cursor, etc.) at [AGENTS.md](AGENTS.md) and just talk to it:
-
-> Read AGENTS.md and walk me through deploying WAF Analyst to my AWS account.
-
-`AGENTS.md` is a directional runbook written for LLM agents — the stack order and dependency flow,
-the inputs to collect from you, and the gotchas (ARM64-only image, us-east-1 frontend,
-never-use-`:latest`, CloudFormation forgetting parameters). It links to the exact commands in the
-Deployment Guide rather than duplicating them, so the agent reads each step there as it goes,
-collects your region/profile, runs the commands, and captures each stack's outputs for the next one.
-
-**Option 2 — Deploy it yourself.** Follow the [Deployment Guide](docs/deployment.md) step by step —
-the single source of truth for the actual commands, with region selection, frontend config, cost
-notes, and troubleshooting.
+Deployment is a few CloudFormation stacks plus a container build that runs either on your machine or on
+CodeBuild. The [Deployment Guide](docs/deployment.md) is the single source of truth for those commands,
+with region selection, frontend config, cost notes and troubleshooting. It is the same document the agent
+reads, so this path is the long way round rather than a different one.
 
 > [!IMPORTANT]
-> Whichever path you pick: the container image **must be ARM64**, the frontend stack **must be
-> us-east-1**, and you should **use a Claude model** (GPT-family Bedrock models can silently stall on
-> WAF security analysis). Details in both docs above.
+> Either way: the container image **must be ARM64**, the frontend stack **must be us-east-1**, and the
+> model should be **Claude Sonnet 5** (GPT-family Bedrock models can silently stall on WAF security
+> analysis). Details in both docs above.
 
 ## Architecture
 

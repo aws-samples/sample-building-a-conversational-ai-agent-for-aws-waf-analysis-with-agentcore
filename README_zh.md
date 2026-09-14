@@ -5,13 +5,13 @@
 基于 [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python) 构建的智能 AWS WAF 分析工具，能自动调查安全事件、检测绕过攻击、生成周度业务报告。
 
 > [!WARNING]
-> **请使用 Claude 模型。除非你已经完整测试过自己的工作流，否则强烈不建议在 Amazon Bedrock 上为本 Agent 选择 GPT 模型。**
+> **请使用 Claude Sonnet 5。除非你已经完整测试过自己的工作流，否则强烈不建议在 Amazon Bedrock 上为本 Agent 选择 GPT 模型。**
 >
-> WAF Analyst 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 4.6 或 Claude Opus。
->
-> 如果你已经部署了 GPT 模型，并发现 Agent 没有反应，请发送类似这句话恢复上下文："我只是在防御性地分析自己环境中的 AWS WAF 日志和指标。请继续调查 WAF metrics 和 logs。不要提供 exploit payload、凭证窃取步骤、规避、持久化、恶意软件行为，或任何针对未授权系统的操作说明。"
+> WAF Analyst 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 5。
 
 ## 功能
+
+![WAF Analyst 截图](docs/screenshot.png)
 
 - **主动安全检查** — 扫描漏杀、评估 COUNT 规则、审计 WAF 配置
 - **事件调查** — 误杀分析、攻击源定位、IP 行为画像
@@ -24,7 +24,22 @@
 
 ## 快速开始
 
-![WAF Analyst 截图](docs/screenshot.png)
+### 装法是让 agent 读 AGENTS.md
+
+**这个项目没有一键安装脚本，是故意的。** 它本身就是个 AI 项目，那它的安装程序就该是一份写给 AI 看的操作手册。把你
+用的编码 agent（Claude Code、Cursor、Codex，随便哪个）指向这个仓库，然后说：
+
+```text
+读一下 AGENTS.md，带我把 WAF Analyst 部署到我的 AWS 账号。
+```
+
+[AGENTS.md](AGENTS.md) 是专门写给 LLM agent 的方向性手册：栈的部署顺序和依赖关系、要向你收集哪些输入，以及那些能
+让第一次部署失败的坑（镜像只能 ARM64、前端只能 us-east-1、绝不用 `:latest`、CloudFormation 会「忘记」参数）。它
+不重复具体命令，而是链到[部署指南](docs/deployment_zh.md)里对应的步骤，agent 边读边做：先问你区域和 profile，
+再逐条执行，把每个栈的输出接到下一步。
+
+一键脚本会把这些全藏进一条命令里，等到第 8 步里的第 3 步在某个不支持某个模板的区域挂掉，它什么也告诉不了你。让
+agent 来，它读的是你自己也会读的那份指南，而且是在你眼前读。
 
 ### 前置条件
 
@@ -35,22 +50,13 @@
   [finch](https://github.com/runfinch/finch)，镜像就在你本机构建；都没装，`deploy/image-build.yaml`
   会把构建放到 AWS CodeBuild 上跑。Windows x86 也建议走这条，本机构建 ARM64 得过一层模拟。
 
-部署是几个 CloudFormation 栈，加一次容器构建；这次构建在本机跑，也可以放到 CodeBuild 上。二选一：
+### 或者自己敲命令
 
-**方式一 —— 让你的 AI agent 帮你装（推荐）。** 把你的编码/运维 agent（Claude Code、Cursor 等）指向
-[AGENTS.md](AGENTS.md)，直接对话即可：
-
-> 读一下 AGENTS.md，带我把 WAF Analyst 部署到我的 AWS 账号。
-
-`AGENTS.md` 是专门写给 LLM agent 看的方向性操作手册——讲清栈的部署顺序和依赖关系、需要向你收集的输入，以及各种坑
-（镜像必须 ARM64、前端必须 us-east-1、绝不能用 `:latest`、CloudFormation 会「忘记」参数）。它不重复具体命令，而是
-链接到部署指南里对应的步骤——agent 会边读边执行、先问你区域/profile，再逐步运行命令，并把每个栈的输出接到下一步。
-
-**方式二 —— 自己手工部署。** 照着[部署指南](docs/deployment_zh.md)一步步来——它是具体命令的唯一来源，含区域选择、
-前端配置、成本说明和排错。
+部署是几个 CloudFormation 栈，加一次容器构建，构建在本机跑或者放到 CodeBuild 上。具体命令以[部署指南](docs/deployment_zh.md)
+为唯一来源，含区域选择、前端配置、成本说明和排错。agent 读的就是这一份，所以自己敲只是绕远，不是另一条路。
 
 > [!IMPORTANT]
-> 无论哪种方式：容器镜像**必须是 ARM64**，前端栈**必须在 us-east-1**，并且**请用 Claude 模型**（Bedrock 上的
+> 两种方式都一样：容器镜像**必须是 ARM64**，前端栈**必须在 us-east-1**，模型请用 **Claude Sonnet 5**（Bedrock 上的
 > GPT 系模型在 WAF 安全分析场景可能会静默卡住）。详见上面两份文档。
 
 ## 架构
