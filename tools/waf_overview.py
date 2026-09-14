@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_scope, get_user_timezone
+from tools.session_state import declare_query_subject, get_scope, get_user_timezone
 
 
 def _log(msg: str):
@@ -52,6 +52,7 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
         Formatted overview data with time-series. For deeper analysis of specific IPs/URIs,
         use run_logs_query with start_time.
     """
+    declare_query_subject(webacl_name)
     _log(f"query_type={query_type} webacl={webacl_name} minutes={minutes} start_time={start_time}")
     if not scope:
         scope = get_scope() or "CLOUDFRONT"

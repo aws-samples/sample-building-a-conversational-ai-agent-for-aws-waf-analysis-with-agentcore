@@ -866,6 +866,9 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         hours: Duration in hours from start_time (default 24, max 24). For weekly overview use 24 and check WoW comparison in the report.
         lang: Language for report — "zh" (Chinese) or "en" (English). Match user's language.
     """
+    from tools.session_state import declare_query_subject
+    declare_query_subject(webacl_name)
+
     # Validate start_time
     if not start_time:
         return "Error: start_time is required. Ask the user which time period to scan.\nExample: patrol_scan(webacl_name=\"...\", start_time=\"2026-05-09\", hours=24)"

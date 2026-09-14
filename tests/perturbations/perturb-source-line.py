@@ -71,13 +71,14 @@ CASES = [
      [f"{T}::test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group"], True),
 
     ("the explicit-subject bit never set, so the wording cannot tell the two paths apart",
-     [(S, '        p["subject_explicit"] = subject is not None', '        p["subject_explicit"] = False')],
+     [(S, '        p["subject_explicit"] = bool(subject or declared)',
+       '        p["subject_explicit"] = False')],
      [f"{T}::test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group"], True),
 
     # The other regression: the CLI path never drained.
     ("the drain moved back off the per-tool-call path, so a second tool call inherits the first's window",
-     [(S, '        record = _state.pop("provenance", {})\n        if record and tool_use_id:',
-       '        record = dict(_state.get("provenance") or {})\n        if record and tool_use_id:')],
+     [(S, '        record = _state.pop("provenance", {})',
+       '        record = dict(_state.get("provenance") or {})')],
      [f"{T}::test_a_second_tool_call_does_not_inherit_the_first_ones_window"], True),
 
     # The old emitter's shape: derive the engine from session state when the line is rendered, which
@@ -89,7 +90,8 @@ CASES = [
      [f"{T}::test_the_engine_named_is_the_one_the_query_used"], True),
 
     ("the subject ignored, so an explicit log group is reported as the session's WebACL",
-     [(S, '        p["webacl"] = subject or get_webacl_name()', '        p["webacl"] = get_webacl_name()')],
+     [(S, '        p["webacl"] = subject or declared or get_webacl_name()',
+       '        p["webacl"] = get_webacl_name()')],
      [f"{T}::test_an_explicit_log_group_is_named_instead_of_the_session_webacl"], True),
 
     # The one query in the repository outside the funnel. Nothing else would notice.

@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_scope, resolve_region
+from tools.session_state import declare_query_subject, get_scope, resolve_region
 
 MAX_RESULTS = 25
 
@@ -43,6 +43,7 @@ def get_waf_metrics(
     Returns:
         Metric data points formatted as a table, or SEARCH results.
     """
+    declare_query_subject(webacl_name)
     if region == "auto":
         from tools.session_state import resolve_region
         scope = get_scope()

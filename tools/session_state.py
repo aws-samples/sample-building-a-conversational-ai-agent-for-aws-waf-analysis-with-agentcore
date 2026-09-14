@@ -166,6 +166,43 @@ def clear_findings():
 _provenance_lock = threading.Lock()
 
 
+def declare_query_subject(name: str | None):
+    """The WebACL this tool call is reporting on, for a tool that takes its own `webacl_name`.
+
+    **Measured 2026-09-14 against the live account, before this existed.** Session context held
+    `response-id-on-page`; `get_waf_metrics(webacl_name="shield-sample-webacl", ...)` answered
+    `## BlockedRequests — shield-sample-webacl (last 24h) / Total: 6` and its `SOURCE:` line read
+    `response-id-on-page via CloudWatch metrics. That is the WebACL from the last get_waf_config call ...
+    call get_waf_config(webacl_name='...') and run this again.` So the disclosure credited one WebACL's
+    number to another and then told the model to discard a correct answer. That is the misattribution the
+    record exists to remove, produced by the record itself.
+
+    Six `@tool` entry points take a `webacl_name` and use it as the metric dimension:
+    `get_waf_metrics`, `get_waf_overview`, `patrol_scan`, `generate_weekly_report`,
+    `review_waf_rules_deep` and `get_waf_config`. Only the last writes it to session state, which is why
+    only the last was right by construction. The other five declare it here.
+    `test_provenance_subject.py` requires every tool taking that parameter to do one or the other, so a
+    seventh cannot arrive quietly.
+
+    **Declaring creates no record**, which is what keeps a config-only tool silent. `review_waf_rules_deep`
+    reads wafv2 and queries nothing, so nothing merges this in and no `SOURCE:` line is appended. The pin
+    is popped in `stash_query_provenance`, on every tool call whether or not a query ran, so a tool that
+    declared and then refused cannot leave its subject behind for the next one.
+
+    **The subject is the tool's answer, not one query's dimension.** Reading the `WebACL` dimension out of
+    each `get_metric_data` request would be automatic and would need no declaration, and it names the
+    subject of the last query merged rather than the subject of the answer. `patrol_scan` issues a
+    week-over-week comparison and a DDoS sweep in one call; a reader asking "which WebACL is this about"
+    wants one answer, and the tool is the only thing that has it.
+    """
+    # Under the lock because every other access to the three provenance keys is, not because a caller
+    # contends: the declaration runs in the tool's own thread before it submits a query. An empty name is
+    # stored rather than refused, since the merge's `or` chain already falls through to session state and a
+    # guard here would be one no input can reach.
+    with _provenance_lock:
+        _state["provenance_subject"] = name
+
+
 def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject: str | None = None):
     """Record which engine was asked and over which window. Once per query ATTEMPT, merged per tool call.
 
@@ -173,6 +210,9 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject
     builds its own CloudWatch client and calls `start_query` directly, so it never reaches `query_logs`
     and the session's WebACL was not consulted at all. Naming that WebACL would be a false statement of
     exactly the kind this record exists to remove, so that path passes the log group instead.
+
+    A subject `declare_query_subject` pinned for this tool call is used the same way, for the five tools
+    that take their own `webacl_name`. See that function for the measurement.
 
     **`webacl` stays one value while `engines` is a list, and that asymmetry is measured rather than
     accidental.** Two engines in one tool call is ordinary: three tools pair a log query with a metric
@@ -222,11 +262,13 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject
     """
     with _provenance_lock:
         p = _state.setdefault("provenance", {})
-        p["webacl"] = subject or get_webacl_name()
+        declared = _state.get("provenance_subject")
+        p["webacl"] = subject or declared or get_webacl_name()
         # Which of the two `SOURCE:` texts applies. Carried as a bit rather than inferred from the
         # subject's shape, because "does it start with 'log group'" is a guess about a string and this is
-        # a fact the caller knows.
-        p["subject_explicit"] = subject is not None
+        # a fact the caller knows. `bool` rather than `is not None`, so an empty subject cannot select
+        # the "passed explicitly" wording for a name that fell through to session state.
+        p["subject_explicit"] = bool(subject or declared)
         engines = p.setdefault("engines", [])
         if engine not in engines:
             engines.append(engine)
@@ -264,6 +306,9 @@ def stash_query_provenance(tool_use_id: str) -> dict:
     """
     with _provenance_lock:
         record = _state.pop("provenance", {})
+        # Unconditional, and before the `if`: a tool that declared a subject and then refused before
+        # querying leaves no record, and its subject must not survive into the next tool call.
+        _state.pop("provenance_subject", None)
         if record and tool_use_id:
             # **Inside `_state` rather than a module global**, because `tests/conftest.py`'s autouse
             # `_isolate_module_state` clears `_state` and nothing else. A module-level dict here made that
@@ -321,6 +366,10 @@ def take_query_provenance(tool_use_id: str | None = None) -> dict:
     post-deploy checklist precisely because nothing here can answer it.
     """
     with _provenance_lock:
+        # Draining a record clears the pinned subject, at both drain points rather than only in the hook.
+        # A hook that never fires appends no `SOURCE:` line at all, so the pin's only remaining reader is
+        # the next tool call's record, and the chip would then name a WebACL that tool never asked about.
+        _state.pop("provenance_subject", None)
         if tool_use_id is not None:
             record = (_state.get("provenance_stash") or {}).pop(tool_use_id, None)
             if record:

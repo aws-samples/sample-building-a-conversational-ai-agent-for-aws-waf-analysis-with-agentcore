@@ -398,6 +398,9 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     Returns:
         Path to the generated HTML file, or error message.
     """
+    from tools.session_state import declare_query_subject
+    declare_query_subject(webacl_name)
+
     if not start_time:
         return "Error: start_time is required. Ask the user which period to report on.\nExample: generate_weekly_report(webacl_name=\"my-acl\", start_time=\"2026-05-08\", days=7)"
     days = min(days, 7)
