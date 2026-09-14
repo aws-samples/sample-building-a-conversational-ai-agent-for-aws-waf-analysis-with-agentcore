@@ -29,7 +29,10 @@ function provenanceText(p) {
   const local = `${fmt(p.start, off)} → ${fmt(p.end, off)} (${label})`;
   const utc = `${fmt(p.start, 0)} → ${fmt(p.end, 0)} UTC`;
   const n = p.queries > 1 ? `${p.queries} queries` : '1 query';
-  return `${p.webacl || 'unknown WebACL'} · ${p.engine} · ${n} · ${local} = ${utc}`;
+  // Joined here rather than sent joined: one tool call can read two engines, and a log query paired
+  // with a metric cross-check is the ordinary case rather than the exception.
+  const engines = (p.engines || []).join(' + ');
+  return `${p.webacl || 'unknown WebACL'} · ${engines} · ${n} · ${local} = ${utc}`;
 }
 
 function ReportDownload({ sessionId, type = 'roi' }) {

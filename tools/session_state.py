@@ -169,6 +169,16 @@ _provenance_lock = threading.Lock()
 def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
     """Record which engine was asked and over which window. Once per query ATTEMPT, merged per tool call.
 
+    **`engines` is a list because one tool call reads two, and a single field would name the last
+    writer.** It was a single value while `query_logs` was the only recorder, since the log destination
+    fixes one engine for the session. Three tools already pair a log query with a CloudWatch metric read
+    in the same call, through `missed_data_warning` and `missed_action_warning`: `waf_injection`,
+    `waf_challenge_check` and `waf_count_eval`. The last is the clearest case for a list rather than a
+    field: its log query is at line 55 and its metric read at line 490, so last-writer-wins would label a
+    conclusion drawn from logs `CloudWatch metrics`. In reading order rather than sorted, because a set's
+    iteration order is randomised per process and a display string that changes between runs cannot be
+    asserted.
+
     **`queries` counts attempts, not queries that ran, and that follows from where this is called.** It
     runs as the first statement of each engine branch, before `_ensure_athena_table`, before the
     coarse-partition refusal and before the `range_problem` refusal, so `Athena over S3 · 1 query` beside
@@ -202,7 +212,9 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
     with _provenance_lock:
         p = _state.setdefault("provenance", {})
         p["webacl"] = get_webacl_name()
-        p["engine"] = engine
+        engines = p.setdefault("engines", [])
+        if engine not in engines:
+            engines.append(engine)
         p["tz_offset"] = get_user_timezone()
         p["start"] = min(start_epoch, p["start"]) if "start" in p else start_epoch
         p["end"] = max(end_epoch, p["end"]) if "end" in p else end_epoch
