@@ -110,8 +110,9 @@ CASES = [
      [(H, "        at = text.find(old, at + step)", "        at = -1")],
      [f"{T}::test_the_probe_covers_every_line_a_declared_repeat_matches"]),
 
-    # The step that skips an anchor's leading whitespace. It is the identity for all 388 cases, since
-    # none is written with a leading newline, so its own test is the only thing that would notice.
+    # The step that skips an anchor's leading whitespace. The one case anchored on a string beginning
+    # with a newline, in `perturb-frontend-template.py`, declines the probe, so this step is reached by
+    # nothing today and its own test is the only thing that would notice it breaking.
     ("an anchor's leading newline counted as part of its line, probing one line early",
      [(H, "        first = at + len(old) - len(old.lstrip())", "        first = at")],
      [f"{T}::test_an_anchor_written_with_a_leading_newline_names_the_line_it_quotes"]),

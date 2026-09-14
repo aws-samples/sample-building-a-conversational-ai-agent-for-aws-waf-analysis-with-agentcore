@@ -106,10 +106,24 @@ def _date_range_label(start, end, user_tz, tz_label: str) -> str:
     request that produced it, in the same shape as the `get_waf_metrics` date defect that started
     ROADMAP 7. Any positive offset moves the start date back a day, any negative one moves it forward.
 
-    **The end is the last instant covered, not the first instant after.** `end` is exclusive,
-    `_st + days`, so a 7-day report from the 8th ends at midnight on the 15th and the title claimed a
-    day outside its own window. One second back names the 14th, and it stays correct when `end` was
-    capped at `now`, where it is a mid-day timestamp rather than a boundary.
+    **The end was exclusive, and only one of the two dates was ever wrong in a given session.** Which one
+    depends on the sign of the offset, measured across five of them for `start_time="2026-05-08"`,
+    `days=7`:
+
+        offset   old title              this function
+        +8       05-07 to 05-14         05-08 to 05-14 UTC+8
+        +5.5     05-07 to 05-14         05-08 to 05-14 UTC+5.5
+        0        05-08 to 05-15         05-08 to 05-14 UTC
+        -5       05-08 to 05-15         05-08 to 05-14 UTC-5
+        -8       05-08 to 05-15         05-08 to 05-14 UTC-8
+
+    At a positive offset the two errors cancel on the end date, because the exclusive UTC boundary falls
+    on the same day as the last local instant, so the end was accidentally right and only the start was
+    wrong. At zero and negative offsets the start is right and the end named the 15th, a day the report
+    read nothing on. An argument built on either half alone is wrong for half the world.
+
+    So the end is now the last instant covered, one second back from `end`, and it stays correct when
+    `end` was capped at `now`, where it is a mid-day timestamp rather than a boundary.
 
     The zone label comes from the caller rather than being derived again here, because there is already
     one rule for spelling it and a second copy is what drifts.
