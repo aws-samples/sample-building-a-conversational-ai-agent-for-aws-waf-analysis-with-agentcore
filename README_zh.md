@@ -132,7 +132,7 @@ graph TB
 
 ## 支持的区域
 
-AgentCore + CloudFormation 部署支持：us-east-1, us-east-2, us-west-2, ap-northeast-1, ap-southeast-1, ap-southeast-2, ap-south-1, eu-west-1, eu-central-1。
+AgentCore + CloudFormation 部署支持：us-east-1, us-east-2, us-west-2, ap-northeast-1, ap-southeast-1, ap-southeast-2, ap-south-1, eu-west-1, eu-central-1。这九个区域都有 Claude Sonnet 5，2026-09-14 实测。
 
 详见[部署指南 - 区域选择](docs/deployment_zh.md#区域选择)。
 

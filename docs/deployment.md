@@ -49,20 +49,23 @@ Choose a backend region based on:
 
 | Your region | Model ID |
 |-------------|----------|
-| us-* | `us.anthropic.claude-sonnet-5` |
-| eu-* | `eu.anthropic.claude-sonnet-5` |
-| everywhere else, including every ap-* region | `global.anthropic.claude-sonnet-5` |
+| us-east-1, us-east-2, us-west-2 | `us.anthropic.claude-sonnet-5` |
+| eu-west-1, eu-central-1 | `eu.anthropic.claude-sonnet-5` |
+| ap-southeast-2 | `au.anthropic.claude-sonnet-5` |
+| ap-northeast-1, ap-southeast-1, ap-south-1 | `global.anthropic.claude-sonnet-5` |
 
 The built-in default is `global.anthropic.claude-sonnet-5`, so leaving `ModelId` empty works in any of
 them. Override it with the `ModelId` stack parameter, or with the `WAF_AGENT_MODEL_ID` environment
 variable when running locally.
 
-**There is no `jp.` or `apac.` Sonnet 5 inference profile**, checked on 2026-09-14 in all six regions
-listed above. Sonnet 5 is present in every one of them, as the global profile everywhere and as a
-regional profile in the us-* and eu-* four. That is why Asia Pacific uses the global profile, which was
-invoked in ap-northeast-1 to confirm it answers there. A global profile routes the
-request to whichever region has capacity, so if the inference itself has to stay inside one geography,
-deploy in a us-* or eu-* region and use that region's profile.
+Measured on 2026-09-14 across all nine supported regions. `global.anthropic.claude-sonnet-5` exists in
+every one of them, so the default holds wherever you deploy, and it was invoked in ap-northeast-1 to
+confirm it answers rather than merely being listed. **There is no `jp.` and no `apac.` Sonnet 5 profile**,
+which is why three of the four ap-* regions have no regional row above.
+
+A global profile routes the request to whichever region has capacity. If the inference itself has to stay
+inside one geography, use the regional profile for your region, and note that ap-southeast-2 has one
+(`au.`) while the other three ap-* regions do not.
 
 ### Environment Variables
 

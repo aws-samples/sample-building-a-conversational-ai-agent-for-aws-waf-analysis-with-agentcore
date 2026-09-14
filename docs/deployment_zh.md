@@ -49,17 +49,20 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 
 | 你所在的区域 | 模型 ID |
 |------------|--------|
-| us-* | `us.anthropic.claude-sonnet-5` |
-| eu-* | `eu.anthropic.claude-sonnet-5` |
-| 其余区域，包括所有 ap-* | `global.anthropic.claude-sonnet-5` |
+| us-east-1、us-east-2、us-west-2 | `us.anthropic.claude-sonnet-5` |
+| eu-west-1、eu-central-1 | `eu.anthropic.claude-sonnet-5` |
+| ap-southeast-2 | `au.anthropic.claude-sonnet-5` |
+| ap-northeast-1、ap-southeast-1、ap-south-1 | `global.anthropic.claude-sonnet-5` |
 
 内置默认值就是 `global.anthropic.claude-sonnet-5`，所以 `ModelId` 留空在上面任何一种区域都能用。要换模型，改 Stack
 参数 `ModelId`；本地跑的话用环境变量 `WAF_AGENT_MODEL_ID`。
 
-**Sonnet 5 没有 `jp.` 和 `apac.` 的 inference profile**。2026-09-14 把上面六个区域全查了一遍，都没有。六个
-区域都有 Sonnet 5：global profile 处处都在，us-* 和 eu-* 那四个还各有自己区域的 profile。所以亚太走 global，
-那个 profile 我们在 ap-northeast-1 真调过一次，能返回。global profile 会把请求路由到有容量的任意区域，如果你要求推理本身留在某一个地理范围内，就选一个
-us-* 或 eu-* 区域部署，用该区域自己的 profile。
+2026-09-14 把支持的九个区域全查了一遍。`global.anthropic.claude-sonnet-5` 九个区域都有，所以默认值在哪个区域
+部署都成立；我们在 ap-northeast-1 真调了一次，确认它能返回，而不是只出现在列表里。**Sonnet 5 没有 `jp.`，也没有
+`apac.`**，这就是上表里四个 ap- 区域有三个没有区域 profile 的原因。
+
+global profile 会把请求路由到有容量的任意区域。如果你要求推理本身留在某一个地理范围内，就用你所在区域的那个 profile；
+注意 ap-southeast-2 是有的（`au.`），另外三个 ap- 区域没有。
 
 ### 环境变量
 
