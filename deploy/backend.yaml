@@ -15,7 +15,7 @@ Parameters:
   ModelId:
     Type: String
     Default: ""
-    Description: "Amazon Bedrock model ID (e.g., anthropic.claude-sonnet-4-6, us.anthropic.claude-sonnet-4-6). Leave empty for region-based default."
+    Description: "Amazon Bedrock model ID (e.g., us.anthropic.claude-sonnet-5, eu.anthropic.claude-sonnet-5). Leave empty for global.anthropic.claude-sonnet-5, which works in every region checked."
   ModelRegion:
     Type: String
     Default: ""

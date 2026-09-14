@@ -30,7 +30,7 @@ region and AWS profile with the user before the first deploy, and don't run Clea
 explicitly ask to tear down.**
 
 Collect from the user first:
-- **Backend region** — must support AgentCore CloudFormation **and** Claude Sonnet 4.6. See the
+- **Backend region** — must support AgentCore CloudFormation **and** Claude Sonnet 5. See the
   supported list in [`docs/deployment.md` → Region Selection](docs/deployment.md#region-selection).
   (Frontend is always us-east-1 regardless.)
 - **AWS profile / credentials** — verify `aws sts get-caller-identity` points at the intended account.
@@ -105,8 +105,8 @@ verification**, because both happen for an image that cannot serve a request.
    `detect-stack-drift` will not warn you.
 5. **Use a Claude model, not GPT-family.** This is a defensive tool but every prompt is full of
    "SQLi / XSS / bypass / payload". GPT-family models on Bedrock can hit upstream cyber-safety filters
-   and **fail silently** — the UI just looks idle. Default Claude Sonnet 4.6 / Opus avoid this. If the
-   user overrides `ModelId` to a GPT model, warn them.
+   and **fail silently** — the UI just looks idle. Nothing the user types recovers it reliably, so the
+   default is Claude Sonnet 5. If the user overrides `ModelId` to a GPT model, warn them.
 6. **`AgentRuntimeName` must match `[a-zA-Z][a-zA-Z0-9_]{0,47}`** — no hyphens or spaces (default
    `waf_agent`).
 

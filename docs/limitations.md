@@ -44,4 +44,4 @@ What this agent cannot do, or cannot do without a cost you should know about. Re
 
 ## Model behaviour
 
-**GPT-family models on Amazon Bedrock can stall silently on this workload.** Every prompt here is full of SQLi, XSS, bypass and payload, and upstream cyber-safety checks can stop a response with no error, which looks like the agent hanging. Use Claude Sonnet 4.6 or Claude Opus. This is not a limitation we can fix from inside the agent.
+**GPT-family models on Amazon Bedrock can stall silently on this workload.** Every prompt here is full of SQLi, XSS, bypass and payload, and upstream cyber-safety checks can stop a response with no error, which looks like the agent hanging. Use Claude Sonnet 5. This is not a limitation we can fix from inside the agent.

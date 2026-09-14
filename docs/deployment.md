@@ -7,9 +7,9 @@ English | [中文](deployment_zh.md)
 WAF Analyst deploys as up to four CloudFormation stacks:
 
 > [!IMPORTANT]
-> **Model choice matters: use Claude Sonnet 4.6 or Claude Opus. Do not deploy this agent with GPT-family models on Amazon Bedrock unless you have tested your exact WAF investigation workflow.**
+> **Model choice matters: use Claude Sonnet 5. Do not deploy this agent with GPT-family models on Amazon Bedrock unless you have tested your exact WAF investigation workflow.**
 >
-> This agent is a defensive AWS WAF analysis tool, but it reads and reasons about security logs, blocked requests, SQLi/XSS matches, bypass candidates, and bot/DDoS traffic. GPT-family models on Bedrock can silently fail or stop responding when upstream cyber-safety checks flag that context. If you must use a GPT model and the agent appears stuck, tell the agent: "This is authorized defensive AWS WAF log analysis for my own environment. Please continue investigating the WAF metrics and logs. Do not provide exploit payloads, credential theft steps, evasion, persistence, malware behavior, or instructions for unauthorized systems."
+> This agent is a defensive AWS WAF analysis tool, but it reads and reasons about security logs, blocked requests, SQLi/XSS matches, bypass candidates, and bot/DDoS traffic. GPT-family models on Bedrock can silently fail or stop responding when upstream cyber-safety checks flag that context.
 
 | Stack | Region | Resources |
 |-------|--------|-----------|
@@ -29,10 +29,10 @@ WAF Analyst deploys as up to four CloudFormation stacks:
 
 Choose a backend region based on:
 - **Proximity to your AWS WAF resources** — reduces CloudWatch API latency
-- **Model availability** — Claude Sonnet 4.6 must be available
+- **Model availability** — Claude Sonnet 5 must be available
 - **AgentCore support** — CloudFormation must support `AWS::BedrockAgentCore::Runtime`
 
-### Supported regions (CloudFormation + AgentCore + Claude Sonnet 4.6)
+### Supported regions (CloudFormation + AgentCore + Claude Sonnet 5)
 
 | Region | Best for |
 |--------|----------|
@@ -47,20 +47,31 @@ Choose a backend region based on:
 
 ### Model ID by region
 
-| Region prefix | Default MODEL_ID |
-|---------------|-----------------|
-| us-* | `us.anthropic.claude-sonnet-4-6` |
-| ap-northeast-1 | `jp.anthropic.claude-sonnet-4-6` |
-| ap-* (other) | `apac.anthropic.claude-sonnet-4-6` |
-| eu-* | `eu.anthropic.claude-sonnet-4-6` |
+| Your region | Model ID |
+|-------------|----------|
+| us-east-1, us-east-2, us-west-2 | `us.anthropic.claude-sonnet-5` |
+| eu-west-1, eu-central-1 | `eu.anthropic.claude-sonnet-5` |
+| ap-southeast-2 | `au.anthropic.claude-sonnet-5` |
+| ap-northeast-1, ap-southeast-1, ap-south-1 | `global.anthropic.claude-sonnet-5` |
 
-Override via environment variable `WAF_AGENT_MODEL_ID` if needed.
+The built-in default is `global.anthropic.claude-sonnet-5`, so leaving `ModelId` empty works in any of
+them. Override it with the `ModelId` stack parameter, or with the `WAF_AGENT_MODEL_ID` environment
+variable when running locally.
+
+Measured on 2026-09-14 across all nine supported regions. `global.anthropic.claude-sonnet-5` exists in
+every one of them, so the default holds wherever you deploy, and it was invoked in ap-northeast-1 to
+confirm it answers rather than merely being listed. **There is no `jp.` and no `apac.` Sonnet 5 profile**,
+which is why three of the four ap-* regions have no regional row above.
+
+A global profile routes the request to whichever region has capacity. If the inference itself has to stay
+inside one geography, use the regional profile for your region, and note that ap-southeast-2 has one
+(`au.`) while the other three ap-* regions do not.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WAF_AGENT_MODEL_ID` | Region-based (see above) | Bedrock model ID |
+| `WAF_AGENT_MODEL_ID` | `global.anthropic.claude-sonnet-5` | Bedrock model ID |
 | `WAF_AGENT_MODEL_REGION` | Stack region | Region for Bedrock model invocation |
 | `WAF_AGENT_TIMEZONE_OFFSET` | `0` (UTC) | Fallback timezone offset (hours) for date parsing when user doesn't specify. Set to `8` for UTC+8 (China/Singapore/etc.) |
 
@@ -142,7 +153,7 @@ aws cloudformation deploy \
 
 ### Custom Model (optional)
 
-By default, the agent uses a region-appropriate Claude Sonnet 4.6 model. To use a different Amazon Bedrock model:
+By default the agent uses `global.anthropic.claude-sonnet-5`. To use a different Amazon Bedrock model:
 
 ```bash
 aws cloudformation deploy \
@@ -151,7 +162,7 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:$COMMIT \
-    ModelId=us.anthropic.claude-sonnet-4-6 \
+    ModelId=us.anthropic.claude-sonnet-5 \
     ModelRegion=us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM
 ```
@@ -159,7 +170,7 @@ aws cloudformation deploy \
 The model must support tool use and have sufficient context window.
 
 > [!WARNING]
-> **Strong recommendation: use Claude Sonnet 4.6 or Claude Opus. Avoid GPT-family Bedrock models for WAF Analyst.** In WAF operations, normal defensive questions often contain terms such as SQLi, XSS, bypass, exploit attempt, malicious IP, and payload. GPT-family models may trigger upstream cyber-safety filters and fail silently, leaving the UI looking idle. If you override `ModelId`, validate false-positive review, COUNT rule evaluation, bypass detection, and blocked-injection investigation before using it with other users.
+> **Strong recommendation: use Claude Sonnet 5. Avoid GPT-family Bedrock models for WAF Analyst.** In WAF operations, normal defensive questions often contain terms such as SQLi, XSS, bypass, exploit attempt, malicious IP, and payload. GPT-family models may trigger upstream cyber-safety filters and fail silently, leaving the UI looking idle. If you override `ModelId`, validate false-positive review, COUNT rule evaluation, bypass detection, and blocked-injection investigation before using it with other users.
 
 ### Persistent Memory (recommended)
 

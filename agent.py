@@ -31,7 +31,7 @@ from tools.waf_bypass import detect_bypass
 from tools.finding import record_finding
 from tools.ask_user import ask_user
 
-MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "jp.anthropic.claude-sonnet-4-6")
+MODEL_ID = os.environ.get("WAF_AGENT_MODEL_ID", "global.anthropic.claude-sonnet-5")
 MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "ap-northeast-1")
 # How long the SSE stream may go silent before it sends something. Ten seconds is well
 # inside any proxy or load-balancer idle timeout worth worrying about, and far enough
