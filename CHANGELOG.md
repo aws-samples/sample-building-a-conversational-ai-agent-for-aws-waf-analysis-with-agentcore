@@ -1,5 +1,151 @@
 # Changelog
 
+## 0.25.0 (2026-09-14)
+
+### Fixed: get_waf_metrics named the wrong day for the largest attack in this account's history
+
+For `period_hours > 168` the tool asked CloudWatch for `Period=86400`, and a daily period buckets from
+`StartTime`, which is `now - period_hours`. So the buckets began at whatever time of day the question was
+asked while the table labelled each one with its own start.
+
+- **Measured at 10:50 UTC with the session timezone at UTC+8**: `period_hours=720` reported
+  `| 2026-09-07 | 566,070 |` for an attack that happened 2026-09-08 04:15 UTC, 12:15 local. 2026-09-07
+  00:00 to 24:00 UTC holds zero and 2026-09-08 holds 566,077.
+- **The total was 566,275 before and after, so only the day moved**, which is why nothing downstream
+  noticed. A sum that agrees with its own table is not evidence that the table is right.
+- The same tool answered correctly for `period_hours <= 168`, which took the hourly branch, so the two
+  ranges contradicted each other and neither output said which to believe.
+- The daily branch is gone. Hour buckets are aligned to the hour, so grouping them by local date is
+  correct for every offset the frontend offers, and 1-hour resolution is retained for 455 days. A window
+  older than that is now refused rather than answered from the part that survives.
+
+### Fixed: a failed query read as a statement about the traffic, in three tools
+
+A log query that fails returns no rows, and no rows is byte-identical to the attack not having happened.
+Three tools rendered the second when they had the first.
+
+- **`detect_bypass` printed a refusal and then contradicted it six lines later.** The output carried
+  "Cannot Say Whether Bypass Candidates Exist … do NOT report it as clean" and, under
+  `## Your Next Action`, "Tell user: no obvious bypass detected in this window". The two conditions were
+  De Morgan twins written as separate expressions and only one of them learned about `failures` when the
+  guard was added. `## Your Next Action` is the heading the step machine's prompt tells the model to
+  follow, so the refusal was the paragraph the model did not act on.
+- **The ALLOW-log probe blamed the customer's configuration for its own timeout.** It was the one
+  `_safe_query` call in that file passing no `failures` dict, so a failed probe returned `[]`, `not
+  results` was true, and the tool answered that the log filter is dropping ALLOW logs and recommended
+  removing it. That was the only place in the repository where a failed query became a named cause plus a
+  recommendation to change a production WAF configuration. The control matters as much: with the filter
+  active and ALLOW rows genuinely absent, that diagnosis is correct and continuing would scan nothing.
+- **The patrol report showed a rule that matched nothing.** `_query_content_by_rule` is the one detail
+  query that parses its rows, an `_error` row has no `@message`, and `json.loads("")` raised inside a loop
+  whose `except Exception: continue` swallowed it. Measured with a client answering Failed: the IP and URI
+  cells came back as error rows and the content cell came back empty, which the renderer reads as a rule
+  with no matches.
+- `tests/test_partial_details.py` was written for this defect class and could not see it. Its poller tests
+  call `_poll_log_query` directly and its fan-out tests monkeypatch all three detail functions, so no real
+  detail function ever ran against a failing client.
+
+### Added: CloudWatch metrics as a second witness, so a zero-row log answer stops meaning "it did not happen"
+
+CloudWatch metrics are the one witness no partition layout, engine difference, logging filter or query
+timeout can reach. Three tools whose question has a metric of the same subject now ask it before reporting
+an absence.
+
+- **Verified live on the 2026-09-08 window.** `response-id-on-page` SQLi returns 122 and the warning
+  fires; `shield-sample-webacl` SQLi returns 0 and it stays silent while that same WebACL's rate-limit
+  rule returns 566,070. That is why the comparison is per rule rather than at the WebACL: a check that is
+  always on is not a check.
+- **`check_challenge_compatibility` is the exception that falsifies "per rule, never at the WebACL" as a
+  general rule.** Its question names an action, so the witness is the `Rule=ALL` aggregate. The witness's
+  subject has to match the question, and one special case had been written up as universal.
+- **The rule name is re-checked on the line that issues the query rather than trusted for having come
+  from a config read.** A `MetricStat` for a name that does not exist returns a series present,
+  `StatusCode: Complete`, empty `Values` and empty `Messages`. It caught a real case rather than a
+  hypothetical typo: `rate-limit` exists on one WebACL while the equivalent on the other is
+  `rate-limit-blanket`.
+- **A membership check against the WebACL's rule list was dropped, because it refused a real rule.**
+  `TGT_TokenAbsent` publishes `CountedRequests` 33,932 for 2026-09-08 while appearing in no
+  `Rules[].Name` and in no `RuleActionOverrides`: a managed rule group publishes metrics for its internal
+  rules and the configuration carries only the overridden ones. `resolve_rule_dimension` returns a state
+  instead, queries on `unknown`, and keeps refusing `metrics-off`, where a zero really carries no
+  information.
+- **The period comes from the age of the window's oldest point, not its newest.** A 30-day window ending
+  today straddles the boundary where 1-minute data stops existing, and keyed on the recent end the older
+  half returns empty and `Complete`. Measured at 20 days: `Period=60` returned nothing and `Period=300`
+  returned 2.
+- **The dimension value is `VisibilityConfig.MetricName`**, and a rule with `CloudWatchMetricsEnabled:
+  false` is refused rather than reported as zero. `Name` equals `MetricName` for all 20 rules on the
+  measurement account, so an implementation reading `Name` would pass every test written against real
+  data.
+- The cross-check speaks only for a metric above zero beside exactly zero log rows. 122 beside 40 rows may
+  be a row limit rather than missed data, which is what the next item makes decidable.
+
+### Added: a table cut off at its row limit now says so
+
+Every tool asks for a fixed number of rows, and a full page of results looked exactly like the whole set.
+A reader who counted 25 attacking IPs had no way to know whether the 26th exists.
+
+- `query_logs` asks the engine for one row more than the caller wanted, trims the extra, and records that
+  the section was cut. One neutral line per tool output names the sections and their limits.
+- **A section whose query failed is excluded from that line**, because a failure is not truncation, and
+  the two have opposite fixes: ask for more rows, or find out why the query died.
+- `_trim` asserts `limit >= 1`. At zero a single `_error` row satisfies `1 > 0`, so a failed query would
+  be reported as a partial table.
+
+### Fixed: one limit-writing form, and three sections that disagreed across engines
+
+- **A hardcoded Athena `LIMIT n` makes truncation undetectable on that backend.** The SQL caps at n
+  however many the caller asked for, so the extra row never returns. Twenty-four templates were written
+  that way and all twenty-four agreed with their call site's limit, so converting them to a placeholder
+  changed no row count and turned the disclosure on for those sections. Verified by driving the real
+  Athena path: nine queries rendered, zero leftover placeholders, every `LIMIT` exactly the call site's
+  limit plus one.
+- **Three sections returned different row counts on the two backends.** Two `waf_block_fp` queries and
+  one in `waf_challenge_check` each wrote a limit in both dialects, `| limit 5` and `LIMIT 5`, and passed
+  nothing to the wrapper. The CloudWatch clause is inert, so the API limit was the wrapper's default 25
+  while Athena applied 5. The author wrote the number twice and one of the two was ignored.
+- **The inert CloudWatch clause is rewritten to the same number rather than deleted**, because AWS
+  documents no precedence between the clause and the API parameter, so both readings have to be safe.
+  Leaving it lower caps the engine if precedence ever flips; deleting it leaves the query unbounded under
+  the same flip.
+
+### Added: the answer now says which WebACL, which window and which engine produced it
+
+The date-offset defect above was invisible because nothing in the output said what had been asked. The
+query layer now records it and the frontend renders it on the tool chip, in both the session-local and the
+UTC rendering of the window, with how many queries that window covers.
+
+- **The channel does not go through the model, and that is the point.** A `SOURCE:` line already existed
+  in one module, and measured on 2026-09-13 it appeared nowhere in a verification answer while the same
+  answer proved the line had been read, because the model noticed the loaded WebACL was wrong and
+  reloaded before querying. Instruction-following was the failing link, so a prompt rule telling the model
+  to relay the line would have been a second layer on the same mechanism.
+- **The record is a union across a tool call's queries, not the last one.** One tool call issues up to
+  fifteen, and keeping only the final window would hide the widest thing that was read.
+- **Written as the first statement of each engine branch.** A fan-out job still inside table resolution
+  when the batch times out would otherwise write into the next tool call's record. Reproduced before the
+  fix: a tool that ran only CloudWatch queries over one hour rendered `Athena over S3` and a 195-hour
+  window.
+- Cleared on read, so a tool that ran no log query discloses nothing rather than inheriting a window it
+  never queried. `patrol_scan`, `get_waf_metrics` and `get_waf_overview` do not go through `query_logs`
+  and are not on the channel yet.
+
+### Fixed: the perturbation suite's reachability probe was silent for 60 of 132 cases
+
+No user-visible effect. It decides whether a green perturbation run means anything, which is what every
+other claim in this file rests on.
+
+- The probe replaced a perturbation's anchor with a bare `raise` and required the tests to go red. That
+  edit does not parse for 60 of the 132 Python cases that ask for a probe, and an unparseable probe edit
+  is skipped with a note, so those cases printed a note and then got a verdict with nothing behind it.
+- It now goes in as its own statement above the anchor's line, indented from the line. That parses for 37
+  of the 60 and for every case the old form already handled. 23 remain, listed in
+  `tests/perturbations/unprobeable.txt` with a test requiring that file to match the real set.
+- **The marker meaning "do not probe this case" was a truthy string**, so eight cases asked for exactly
+  the probe they were declining. The harness refuses any marker that is not a bool now.
+
+1019 tests, 29 perturbation scripts, 388 cases.
+
 ## 0.24.1 (2026-09-13)
 
 ### Fixed: the prompt told the model the session timezone and then gave it the time in UTC
