@@ -44,6 +44,19 @@ CASES = [
      [f"{T}::test_the_record_is_cleared_on_read_so_the_next_tool_cannot_inherit_it"], True),
 
     # The offset read by a guessed key, which is how it first shipped: silently None.
+    # One field instead of a list. Reachable today rather than after the metric funnel: three tools pair
+    # a log query with a metric read in the same call, and in `waf_count_eval` the metric read is 435
+    # lines below the log query, so the last writer would name the engine that did not produce the answer.
+    ("the engine kept as one value again, so a log answer is labelled with the metric read",
+     [(S, "        if engine not in engines:\n            engines.append(engine)",
+       "        engines[:] = [engine]")],
+     [f"{T}::test_one_tool_call_reading_two_engines_names_both"], True),
+
+    ("the chip naming only the first engine, which is the same loss one layer out",
+     [("frontend/src/App.jsx", "const engines = (p.engines || []).join(' + ');",
+       "const engines = (p.engines || [])[0];")],
+     [f"{T}::test_the_frontend_attaches_it_to_the_chip_and_renders_both_window_renderings"], False),
+
     ("the timezone read by a guessed state key instead of the accessor",
      [(S, '        p["tz_offset"] = get_user_timezone()', '        p["tz_offset"] = _state.get("user_timezone")')],
      [f"{T}::test_a_log_query_records_the_engine_and_the_window"], True),

@@ -35,7 +35,7 @@ def test_a_log_query_records_the_engine_and_the_window(monkeypatch):
     monkeypatch.setattr(Q, "_run_cwl", lambda *a, **k: [])
     Q.query_logs("filter x", "SELECT 1", 1000, 4600, 5)
     p = S.take_query_provenance()
-    assert p["engine"] == "CloudWatch Logs Insights"
+    assert p["engines"] == ["CloudWatch Logs Insights"]
     assert (p["start"], p["end"]) == (1000, 4600)
     assert p["webacl"] == "acl"
     assert p["tz_offset"] == 8.0
@@ -55,6 +55,25 @@ def test_many_queries_in_one_tool_call_widen_the_window_and_count(monkeypatch):
     Q.query_logs("filter b", "SELECT 1", 2000, 3000, 5)
     p = S.take_query_provenance()
     assert (p["start"], p["end"], p["queries"]) == (1000, 5000, 2)
+
+
+def test_one_tool_call_reading_two_engines_names_both(monkeypatch):
+    """**Not a hypothetical, and not deferred until the metric funnel lands.** Three tools pair a log
+    query with a CloudWatch metric read in the same call, through `missed_data_warning` and
+    `missed_action_warning`: `waf_injection`, `waf_challenge_check` and `waf_count_eval`. In
+    `waf_count_eval` the log query is at line 55 and the metric read at line 490, so a single field
+    holding the last writer would label a conclusion drawn from logs `CloudWatch metrics`, which is a
+    misattribution of exactly the kind this record exists to prevent.
+
+    In reading order, because a set's iteration order is randomised per process and this string is
+    displayed."""
+    monkeypatch.setattr(Q, "_run_cwl", lambda *a, **k: [])
+    Q.query_logs("filter x", "SELECT 1", 1000, 2000, 5)
+    S.note_query_provenance("CloudWatch metrics", 1000, 2000)
+    S.note_query_provenance("CloudWatch metrics", 1500, 2500)
+    p = S.take_query_provenance()
+    assert p["engines"] == ["CloudWatch Logs Insights", "CloudWatch metrics"], p["engines"]
+    assert p["queries"] == 3, "the count is per attempt, whichever engine was asked"
 
 
 def test_the_record_is_cleared_on_read_so_the_next_tool_cannot_inherit_it(monkeypatch):
@@ -108,6 +127,8 @@ def test_the_frontend_attaches_it_to_the_chip_and_renders_both_window_renderings
     text = text[:text.index("\n}\n")]
     assert "UTC" in text and "tz_offset" in text, "both renderings, from the offset the query used"
     assert "p.queries" in text, "how many queries the window describes"
+    assert "p.engines" in text and ".join(" in text, (
+        "a tool call can read two engines, so the chip names all of them rather than one")
     css = pathlib.Path("frontend/src/style.css").read_text()
     assert ".tool-src" in css, "rendered in the chip, not only in a title attribute"
 
@@ -203,7 +224,7 @@ def test_the_athena_record_lands_before_table_resolution_can_block(monkeypatch):
     try:
         assert entered.wait(5), "the resolver was never reached, so this test proves nothing"
         p = S._state.get("provenance") or {}
-        assert p.get("engine") == "Athena over S3", (
+        assert p.get("engines") == ["Athena over S3"], (
             f"the record is not there while table resolution blocks: {p}. A fan-out job stuck here when "
             f"the batch times out would write into the next tool call's record.")
         assert (p.get("start"), p.get("end")) == (1000, 5000)

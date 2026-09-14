@@ -261,10 +261,12 @@ def test_an_anchor_written_with_a_leading_newline_names_the_line_it_quotes():
     """`_anchor_lines` measures from the anchor's first non-blank character, so `"\\n    go()"` names
     `go()`'s line and not the one above it.
 
-    **No case in the suite is written that way**, all 388 checked on 2026-09-14, so that step is the
-    identity for every real anchor and a regression in it would be silent: the probe would land one line
-    early, `ast.parse` would still pass, red would still be red, and nothing would report. Two asserts
-    are cheaper than leaving a documented property with no case behind it."""
+    **One case in the suite is written that way and it declines the probe**, so this step is reached by
+    nothing: `perturb-frontend-template.py`'s "the two passes collapsed into one" anchors on a string
+    beginning with a newline and passes no probe flag. The distinction matters more than "no case does
+    this" would, because the day that case asks for a probe, this step becomes load-bearing with no
+    announcement. A regression in it is silent either way: the probe lands one line early, `ast.parse`
+    still passes, red is still red, and nothing reports."""
     text = "def f():\n    setup()\n    go()\n"
     assert harness._anchor_lines(text, "\n    go()") == [
         (text.index("    go()"), text.index("go()"))], "the line above is not the anchor's line"

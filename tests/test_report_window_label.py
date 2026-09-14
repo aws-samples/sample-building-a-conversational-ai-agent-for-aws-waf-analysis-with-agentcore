@@ -52,9 +52,15 @@ def test_a_negative_offset_moves_the_day_the_other_way():
 
 
 def test_the_end_date_is_the_last_day_covered_not_the_first_day_after():
-    """**The second error, independent of the timezone one.** `end` is exclusive, so a 7-day report from
-    the 8th runs to midnight on the 15th, and the title said `to 2026-05-15`: a date on which the report
-    read nothing. Seven days beginning on the 8th end on the 14th."""
+    """`end` is exclusive, so seven days beginning on the 8th run to midnight on the 15th and the last
+    day covered is the 14th.
+
+    **The old code printed the 14th here too, and for the wrong reason**, which is worth stating because
+    the fixture is UTC+8. Formatting the exclusive UTC boundary raw happens to land on the same day as
+    the last local instant at any positive offset, so the two errors cancelled on this date and only the
+    start was wrong. At zero and negative offsets the cancellation does not happen and the old title said
+    `to 2026-05-15`. What makes this test discriminating is not the old behaviour but the perturbation
+    that drops the one-second step, which prints the 15th at every offset."""
     start = _asked("2026-05-08", UTC8)
     label = _date_range_label(start, start + timedelta(days=7), UTC8, "UTC+8")
     assert label == "2026-05-08 to 2026-05-14 UTC+8", label
