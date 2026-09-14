@@ -257,6 +257,20 @@ def test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_i
     ast.parse(seen[1])
 
 
+def test_an_anchor_written_with_a_leading_newline_names_the_line_it_quotes():
+    """`_anchor_lines` measures from the anchor's first non-blank character, so `"\\n    go()"` names
+    `go()`'s line and not the one above it.
+
+    **No case in the suite is written that way**, all 388 checked on 2026-09-14, so that step is the
+    identity for every real anchor and a regression in it would be silent: the probe would land one line
+    early, `ast.parse` would still pass, red would still be red, and nothing would report. Two asserts
+    are cheaper than leaving a documented property with no case behind it."""
+    text = "def f():\n    setup()\n    go()\n"
+    assert harness._anchor_lines(text, "\n    go()") == [
+        (text.index("    go()"), text.index("go()"))], "the line above is not the anchor's line"
+    assert harness._probe_edit(text, "\n    go()", "P") == "def f():\n    setup()\n    P\n    go()\n"
+
+
 def test_an_anchor_sharing_its_line_with_a_compound_header_is_named():
     """The positive control for the pin in the inventory test below, which asserts an empty list.
 

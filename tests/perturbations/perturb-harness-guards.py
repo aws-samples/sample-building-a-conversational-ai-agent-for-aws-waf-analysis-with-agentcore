@@ -110,6 +110,12 @@ CASES = [
      [(H, "        at = text.find(old, at + step)", "        at = -1")],
      [f"{T}::test_the_probe_covers_every_line_a_declared_repeat_matches"]),
 
+    # The step that skips an anchor's leading whitespace. It is the identity for all 388 cases, since
+    # none is written with a leading newline, so its own test is the only thing that would notice.
+    ("an anchor's leading newline counted as part of its line, probing one line early",
+     [(H, "        first = at + len(old) - len(old.lstrip())", "        first = at")],
+     [f"{T}::test_an_anchor_written_with_a_leading_newline_names_the_line_it_quotes"]),
+
     ("the compound-header check answering False to everything, which the pin cannot see",
      [(H, '        if ";" in prefix or prefix.endswith(":"):', "        if False:")],
      [f"{T}::test_an_anchor_sharing_its_line_with_a_compound_header_is_named"]),
