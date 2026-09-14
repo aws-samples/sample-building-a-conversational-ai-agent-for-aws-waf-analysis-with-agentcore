@@ -177,8 +177,18 @@ def test_a_naive_window_is_recorded_as_utc_because_that_is_what_aws_reads(monkey
 
 
 def test_an_aware_window_keeps_its_own_offset():
-    """The control. Reading every datetime as UTC regardless would pass the test above and corrupt every
-    real call site, all of which pass aware values."""
+    """The control, and it guards a call site nobody has written yet rather than a current one.
+
+    **Reading every datetime as UTC regardless breaks no call site in the repository today**, measured:
+    `replace(tzinfo=utc)` is the identity on a value that is already UTC-aware, and all 30 sites pass one,
+    each ending in `.astimezone(timezone.utc)`, `datetime.now(timezone.utc)` or
+    `fromtimestamp(x, timezone.utc)`. The property that discriminates is aware **with a non-UTC offset**,
+    and only this test supplies it.
+
+    It stays because the funnel's claim is the call site written next year, the same reason the naive case
+    exists. `datetime.now(_user_tz)` is an ordinary thing to write here: a session-local timezone object is
+    constructed at eleven places across six modules, and in `waf_metrics` one of them sits 31 lines from a
+    `get_metric_data` call."""
     shanghai = timezone(timedelta(hours=8))
     A._RecordingCloudWatch(FakeClient()).get_metric_data(
         MetricDataQueries=[], StartTime=datetime(2026, 5, 8, tzinfo=shanghai),

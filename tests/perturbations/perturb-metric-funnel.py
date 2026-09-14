@@ -56,8 +56,11 @@ CASES = [
      [(A, "        if start is not None and end is not None:", "        if True:")],
      [f"{T}::test_a_read_missing_its_window_records_nothing_and_is_refused_downstream"], True),
 
-    # The naive/aware pair. Both directions, because reading everything as UTC passes the first test and
-    # corrupts every real call site, all of which pass aware values.
+    # The naive/aware pair. Both directions, and the second one guards a future call site rather than a
+    # current one: forcing UTC is the identity on every datetime the 30 call sites pass today, because
+    # each one ends in `.astimezone(timezone.utc)`, `datetime.now(timezone.utc)` or
+    # `fromtimestamp(x, timezone.utc)`. The input it discriminates is aware with a non-UTC offset, and
+    # `waf_metrics` builds a session-local timezone 31 lines from one of its own metric calls.
     ("a naive window read in the machine's local zone, which is not what botocore sends",
      [(A, "    return int((dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt).timestamp())",
        "    return int(dt.timestamp())")],
