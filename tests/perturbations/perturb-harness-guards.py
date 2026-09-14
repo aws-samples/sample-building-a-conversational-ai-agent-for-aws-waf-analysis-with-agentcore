@@ -83,6 +83,12 @@ CASES = [
        "        if False:")],
      [f"{T}::test_a_probe_run_that_died_before_any_assertion_is_reported"]),
 
+    # The probe speaks before the count guard can, so a drifted anchor has to be named here or the
+    # sweep blames coverage for a case that is simply out of date.
+    ("a drifted anchor reported as an unreachable line, which is where the reader goes next",
+     [(H, "    if old not in text:", "    if False:")],
+     [f"{T}::test_a_probe_case_whose_anchor_is_gone_says_so_rather_than_blaming_reachability"]),
+
     ("a file type with no probe form probed anyway",
      [(H, "    if path.suffix not in PROBE:", "    if False:")],
      [f"{T}::test_a_probe_on_a_file_type_with_no_probe_form_is_refused"]),

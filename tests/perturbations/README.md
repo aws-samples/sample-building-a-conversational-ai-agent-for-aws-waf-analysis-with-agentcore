@@ -3,7 +3,7 @@
 The suite passes. That says nothing about whether any of it can fail.
 
 A test that checks something already enforced one layer upstream passes forever and guards nothing,
-and it looks exactly like a test that works. The 30 scripts here settle the question one property at a
+and it looks exactly like a test that works. The 31 scripts here settle the question one property at a
 time: each breaks something the suite claims to hold, then requires a named test to go red. If the
 test stays green, the assertion was decoration.
 
@@ -100,7 +100,7 @@ cannot stay on it. If that test sends you there, re-anchor the case on the whole
 ## What CI runs
 
 On every push, `tests/test_perturbation_harness.py` unit-tests the harness guards and statically
-re-checks that all 396 cases still anchor to code that exists and still name tests that exist. It
+re-checks that all 411 cases still anchor to code that exists and still name tests that exist. It
 takes under a second, and anchor drift is silent, so that is where drift gets caught.
 
 The sweep itself is `.github/workflows/perturbations.yml`, on every pull request, and it installs the

@@ -13,7 +13,7 @@ reader could not spot either by arithmetic on the other.
 
 from datetime import datetime, timedelta, timezone
 
-from tools.report import _date_range_label
+from tools.report import _date_range_label, _window_labels
 
 UTC8 = timezone(timedelta(hours=8))
 UTC_MINUS_5 = timezone(timedelta(hours=-5))
@@ -84,3 +84,34 @@ def test_the_zone_is_named_in_the_label():
     utc = _asked("2026-05-08", timezone.utc)
     assert _date_range_label(utc, utc + timedelta(days=7), timezone.utc, "UTC") == (
         "2026-05-08 to 2026-05-14 UTC")
+
+
+def test_the_subtitle_names_the_baseline_window_it_also_read():
+    """**The report reads fourteen days and reports on seven**, because every week-over-week figure comes
+    from `start_last_week` to `start_this_week`. The provenance record on the tool chip is the union of
+    everything read, so a title naming only the reported week put fourteen days on the chip beside a
+    title claiming seven, with nothing to explain it.
+
+    Naming the baseline is the cheaper half of resolving that. The other half would be a record that
+    leaves a real read out, which is what the record exists to prevent. A week-over-week percentage whose
+    baseline dates are unstated is also a number nobody can check."""
+    start = _asked("2026-05-08", UTC8)
+    label = _window_labels(start, start + timedelta(days=7), start - timedelta(days=7), UTC8, "UTC+8")
+    assert label == "2026-05-08 to 2026-05-14 UTC+8 · baseline 2026-05-01 to 2026-05-07", label
+
+
+def test_the_baseline_ends_where_the_reported_window_begins():
+    """Not seven days back from the end, which is the plausible wrong bound and overlaps the window being
+    reported on. `_get_weekly_totals` is called with `(start_last_week, start_this_week)`, so the two
+    windows meet and do not overlap."""
+    start = _asked("2026-05-08", UTC8)
+    label = _window_labels(start, start + timedelta(days=3), start - timedelta(days=7), UTC8, "UTC+8")
+    assert label.endswith("baseline 2026-05-01 to 2026-05-07"), label
+    assert label.startswith("2026-05-08 to 2026-05-10 "), label
+
+
+def test_the_zone_is_named_once_rather_than_on_both_halves():
+    """Two identical zone labels in one subtitle read as two different zones being compared."""
+    start = _asked("2026-05-08", UTC8)
+    label = _window_labels(start, start + timedelta(days=7), start - timedelta(days=7), UTC8, "UTC+8")
+    assert label.count("UTC+8") == 1, label
