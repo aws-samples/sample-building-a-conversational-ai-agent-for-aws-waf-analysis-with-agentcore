@@ -44,10 +44,12 @@ def _context(name, dest):
                                      "us-east-1", log_destination=dest)
 
 
-def _record(engine, subject=None):
+def _record(engine, subject=None, start=1000, end=2000):
+    """A fresh record, read straight out of state. Nothing peeks in production: the hook drains."""
     session_state._state.pop("provenance", None)
-    session_state.note_query_provenance(engine, 1000, 2000, subject=subject)
-    return session_state.peek_query_provenance()
+    session_state._provenance_stash.clear()
+    session_state.note_query_provenance(engine, start, end, subject=subject)
+    return dict(session_state._state["provenance"])
 
 
 class _FakeEvent:
@@ -106,6 +108,29 @@ def test_an_explicit_log_group_is_named_instead_of_the_session_webacl():
         "the explicit-log-group path no longer records what it queried, so its answer discloses nothing")
 
 
+def test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group():
+    """**The assertion above passed while the rest of the sentence was false.** Merging the two emitters
+    into one kept only the session-derived wording, so with an explicit log group the line read
+    `SOURCE: log group X via CloudWatch Logs Insights. That is the WebACL from the last get_waf_config
+    call ... call get_waf_config(webacl_name='...') and run this again.` The subject was right and every
+    clause after it was wrong, including an instruction to undo the thing the caller had just asked for.
+
+    Same class as the ALLOW probe that told a user to change their logging filter because a query had
+    timed out: a tool acting on a false premise and directing a change to the user's own configuration.
+
+    **The criterion is the whole string the model reads, not the identifier inside it.** The test above
+    checks which names appear and would have passed on that line forever; the lie sat thirty characters
+    later in prose."""
+    _context("some-other-webacl", FIREHOSE)
+    explicit = provenance_source_line(_record(CWL, subject="log group aws-waf-logs-group"))
+    assert "get_waf_config" not in explicit, explicit
+    assert "not consulted" in explicit, "it has to say the session context was bypassed, not imply it"
+
+    session_derived = provenance_source_line(_record(CWL))
+    assert "get_waf_config" in session_derived, (
+        "the session-derived path still needs the instruction; that is the whole point of the line")
+
+
 def test_an_unset_context_says_so_rather_than_looking_confident():
     """The empty case has to read as empty. `None` or a blank name would render as a sentence that
     looks like it names something."""
@@ -139,15 +164,73 @@ def test_every_tool_result_that_queried_carries_the_line():
         "a tool that ran no query claimed a source anyway")
 
 
-def test_the_hook_leaves_the_record_for_the_chip_to_read():
-    """Two readers, one record, and only the streaming loop may clear it. Reading destructively here
-    would append the line for the model and leave the user's chip empty, which is the exact split the
-    channel was built to close."""
+def test_the_hook_hands_the_record_to_the_chip_by_tool_call_id():
+    """Two readers, one record. The hook drains and stashes under this tool call's id; the streaming loop
+    collects it with that id, which it already has as the `TOOL_END` payload."""
     _context("shield-sample-webacl", LOG_GROUP_DEST)
     _record(CWL)
     agent.SourceDisclosure().append_source(_FakeEvent([{"text": "rows"}]))
-    assert session_state.take_query_provenance().get("webacl") == "shield-sample-webacl", (
-        "the hook drained the record, so the frontend has nothing to render")
+    assert session_state.take_query_provenance("other-tool") == {}, (
+        "another tool call collected this one's record")
+    assert session_state.take_query_provenance("t1").get("webacl") == "shield-sample-webacl", (
+        "the record never reached the chip, so the model got the line and the user got nothing")
+    assert session_state.take_query_provenance("t1") == {}, "collected twice"
+
+
+def test_the_chip_still_gets_a_record_if_the_hook_never_ran():
+    """**The fallback, and it keeps the two failures independent.** Whether the hook fires is on the
+    post-deploy checklist, because nothing in this suite can answer it: a unit test calls it directly. If
+    it does not fire, the model loses its line, and without this the chip would lose its window in the
+    same breath. One degradation at a time."""
+    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _record(CWL)
+    assert session_state.take_query_provenance("t1").get("webacl") == "shield-sample-webacl", (
+        "the live record is unreachable once the stash is empty, so a hook that did not fire loses both")
+
+
+def test_a_second_tool_call_does_not_inherit_the_first_ones_window():
+    """**The CLI path never drained, so the line accumulated.** `take_query_provenance` was called in one
+    place, inside the SSE generator, and `invoke` does not go through it. Measured 2026-09-14: a second
+    tool call in one CLI run rendered `SOURCE: webacl-B` over a 167-hour window that spanned the first
+    tool's query of webacl-A, and a count of 2. A subject and a window contradicting each other is the
+    misattribution this record exists to remove.
+
+    It was a regression rather than an old gap: before the record existed, the CLI line was rendered fresh
+    from state with no window at all, so it had nothing to accumulate.
+
+    **Clearing at the end of a turn would not have fixed it**, which is why the drain sits in the hook: the
+    second tool call in one turn inherits the first one's window either way. Driven here as two tool calls
+    with no streaming loop at all, which is exactly the CLI shape."""
+    _context("webacl-A", LOG_GROUP_DEST)
+    _record(CWL, start=1000, end=4600)
+    first = _FakeEvent([{"text": "rows from A"}])
+    agent.SourceDisclosure().append_source(first)
+
+    _context("webacl-B", LOG_GROUP_DEST)
+    session_state.note_query_provenance(CWL, 600_000, 604_600)
+    second = _FakeEvent([{"text": "rows from B"}])
+    second.tool_use = {"name": "run_logs_query", "toolUseId": "t2"}
+    second.result = {"toolUseId": "t2", "status": "success", "content": second.result["content"]}
+    agent.SourceDisclosure().append_source(second)
+
+    record = session_state.take_query_provenance("t2")
+    assert record["webacl"] == "webacl-B"
+    assert (record["start"], record["end"]) == (600_000, 604_600), (
+        f"the second tool call inherited the first's window: {record}")
+    assert record["queries"] == 1, "and its query count"
+    assert "webacl-B" in second.result["content"][1]["text"]
+
+
+def test_the_streaming_loop_collects_by_the_id_it_already_has():
+    """The other end of the handoff, asserted on the source because reaching it needs a live agent. The
+    `TOOL_END` branch has the tool call id as its payload, so passing it costs nothing; passing nothing
+    would fall through to the live record, which the hook has already drained, and every chip would go
+    blank while every test here stayed green."""
+    src = pathlib.Path(agent.__file__).read_text()
+    block = src[src.index('"type": "TOOL_CALL_END"'):]
+    block = block[:block.index("elif event_type ==", 10)]
+    assert "take_query_provenance(payload)" in block, (
+        "the loop takes the live record instead of this tool call's stashed one")
 
 
 def test_the_prompt_tells_the_model_to_read_the_source_line():

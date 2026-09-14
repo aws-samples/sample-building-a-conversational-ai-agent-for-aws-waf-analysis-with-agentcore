@@ -8,8 +8,10 @@ tests can fail. It moved on 2026-09-14 from two call sites inside `waf_logs` to 
 `AfterToolCallEvent`, which is what made most of these cases expressible: a property spread across two
 renderers is broken two ways, and one held in a hook is broken once.
 
-The last case is the pairing. A disclosure the model is never told to read is a string in a log, and an
-instruction naming a marker nothing emits is worse than neither.
+Two of the cases below are for defects the move itself introduced and review caught: the merged wording
+told the model to undo an explicit log group, and the hook's drain point is what makes the CLI path stop
+accumulating. Both were reproduced before being fixed, and both have their own case here because a
+regression is exactly what a case is for.
 """
 
 import sys
@@ -35,12 +37,37 @@ CASES = [
        '        content[-1] = {"text": content[-1].get("text", "") + f"\\n{provenance_source_line(record)}"}')],
      [f"{T}::test_every_tool_result_that_queried_carries_the_line"], True),
 
-    # Two readers, one record, and only the streaming loop may clear it.
-    ("the hook draining the record, leaving the user's chip empty",
-     [(A, "        record = peek_query_provenance()", "        record = take_query_provenance()"),
-      (A, "from tools.session_state import peek_query_provenance, provenance_source_line",
-       "from tools.session_state import take_query_provenance, provenance_source_line")],
-     [f"{T}::test_the_hook_leaves_the_record_for_the_chip_to_read"], False),
+    # The handoff. The hook drains, so the record has to arrive somewhere the loop can find it.
+    ("the record drained and not stashed, so the chip goes blank",
+     [(A, '        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")',
+       '        record = stash_query_provenance("")')],
+     [f"{T}::test_the_hook_hands_the_record_to_the_chip_by_tool_call_id"], True),
+
+    ("the loop asking for the live record instead of this tool call's",
+     [(A, "                _prov = take_query_provenance(payload)",
+       "                _prov = take_query_provenance()")],
+     [f"{T}::test_the_streaming_loop_collects_by_the_id_it_already_has"], False),
+
+    ("the fallback removed, so a hook that did not fire loses the chip as well as the line",
+     [(S, "            record = _provenance_stash.pop(tool_use_id, None)\n            if record:\n"
+          "                return record",
+       "            return _provenance_stash.pop(tool_use_id, None) or {}")],
+     [f"{T}::test_the_chip_still_gets_a_record_if_the_hook_never_ran"], True),
+
+    # The regression review caught: one wording for both paths.
+    ("both paths given the session-derived wording again, which orders the model to undo the bypass",
+     [(S, '    if p.get("subject_explicit"):', "    if False:")],
+     [f"{T}::test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group"], True),
+
+    ("the explicit-subject bit never set, so the wording cannot tell the two paths apart",
+     [(S, '        p["subject_explicit"] = subject is not None', '        p["subject_explicit"] = False')],
+     [f"{T}::test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group"], True),
+
+    # The other regression: the CLI path never drained.
+    ("the drain moved back off the per-tool-call path, so a second tool call inherits the first's window",
+     [(S, '        record = _state.pop("provenance", {})\n        if record and tool_use_id:',
+       '        record = dict(_state.get("provenance") or {})\n        if record and tool_use_id:')],
+     [f"{T}::test_a_second_tool_call_does_not_inherit_the_first_ones_window"], True),
 
     # The old emitter's shape: derive the engine from session state when the line is rendered, which
     # answers "what would a query use now" rather than "what did this one use".
@@ -61,14 +88,13 @@ CASES = [
      [f"{T}::test_an_explicit_log_group_is_named_instead_of_the_session_webacl"], False),
 
     ("an unset context rendered as a sentence that looks like it names something",
-     [(S, """    return (f"SOURCE: {p.get('webacl') or '(none set)'} via {engines}. That is the WebACL from the last \"""",
-       """    return (f"SOURCE: {p.get('webacl')} via {engines}. That is the WebACL from the last \"""")],
+     [(S, '    subject = p.get("webacl") or "(none set)"', '    subject = p.get("webacl")')],
      [f"{T}::test_an_unset_context_says_so_rather_than_looking_confident"], True),
 
     # The pairing. Either half alone is worthless, so the marker is perturbed on the emitter's side and
-    # the prompt's side is what goes red.
+    # the prompt's side is what goes red. Twice, because there are two wordings now.
     ("the marker renamed on the emitter while the prompt still names SOURCE",
-     [(S, '    return (f"SOURCE: ', '    return (f"ORIGIN: ')],
+     [(S, '    return (f"SOURCE: ', '    return (f"ORIGIN: ', 2)],
      [f"{T}::test_the_prompt_tells_the_model_to_read_the_source_line"], True),
 ]
 

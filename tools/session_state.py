@@ -223,6 +223,10 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject
     with _provenance_lock:
         p = _state.setdefault("provenance", {})
         p["webacl"] = subject or get_webacl_name()
+        # Which of the two `SOURCE:` texts applies. Carried as a bit rather than inferred from the
+        # subject's shape, because "does it start with 'log group'" is a guess about a string and this is
+        # a fact the caller knows.
+        p["subject_explicit"] = subject is not None
         engines = p.setdefault("engines", [])
         if engine not in engines:
             engines.append(engine)
@@ -232,16 +236,35 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject
         p["queries"] = p.get("queries", 0) + 1
 
 
-def peek_query_provenance() -> dict:
-    """The record so far, without clearing it. For the reader that runs before the tool call ends.
+# Records already drained by the hook, keyed by tool call id, waiting for the streaming loop.
+_provenance_stash: dict[str, dict] = {}
+# Only the streaming loop pops from the stash and the CLI never does, so without a bound a long CLI
+# process would keep every record it ever made. A tool call issues at most fifteen queries and a turn a
+# handful of tool calls, so this is far above anything real; it exists to make the growth impossible
+# rather than unlikely.
+_STASH_LIMIT = 64
 
-    Two readers now, and only one of them may clear. `SourceDisclosure` appends the `SOURCE:` line to
-    the tool result while the call is still finishing, then the streaming loop drains the same record for
-    the chip. Reading destructively here would leave the chip with nothing, which is the failure the two
-    functions exist to keep apart.
+
+def stash_query_provenance(tool_use_id: str) -> dict:
+    """Drain the record and keep it under this tool call's id. Returns what was drained.
+
+    **The hook is the only drain point, and that is what fixes the CLI path.** `take_query_provenance`
+    used to be called once, inside the SSE generator, so `invoke` never cleared anything: measured on
+    2026-09-14, a second tool call in one CLI run rendered `SOURCE: webacl-B` over a 167-hour window that
+    spanned the first tool's query of webacl-A. A subject and a window contradicting each other is the
+    misattribution this record exists to remove, and before the hook existed the CLI line was rendered
+    fresh with no window at all, so this was a regression on that path rather than an old gap.
+
+    Draining here rather than clearing in `invoke` is the part that matters: clearing at the end of a turn
+    still lets the second tool call in that turn inherit the first one's window.
     """
     with _provenance_lock:
-        return dict(_state.get("provenance") or {})
+        record = _state.pop("provenance", {})
+        if record and tool_use_id:
+            _provenance_stash[tool_use_id] = record
+            while len(_provenance_stash) > _STASH_LIMIT:
+                _provenance_stash.pop(next(iter(_provenance_stash)))
+        return record
 
 
 def provenance_source_line(p: dict) -> str:
@@ -259,17 +282,38 @@ def provenance_source_line(p: dict) -> str:
     Firehose while the question was about one logging to CloudWatch.
     """
     engines = " + ".join(p.get("engines") or []) or "no engine"
-    return (f"SOURCE: {p.get('webacl') or '(none set)'} via {engines}. That is the WebACL from the last "
+    subject = p.get("webacl") or "(none set)"
+    if p.get("subject_explicit"):
+        # **The other text, and dropping it made the line contradict itself.** Merging the two emitters
+        # kept only the session-derived wording, so on the one path that needs a subject the line called a
+        # log group "the WebACL from the last get_waf_config call" and then told the model to call
+        # get_waf_config and run the query again. The user had just bypassed the session context
+        # deliberately; that instruction is an order to bypass the bypass, issued on a false premise. Same
+        # class as the ALLOW probe that told a user to change their logging filter because a query timed
+        # out.
+        return (f"SOURCE: {subject} via {engines}, passed explicitly, so the session's WebACL context was "
+                f"not consulted.")
+    return (f"SOURCE: {subject} via {engines}. That is the WebACL from the last "
             f"get_waf_config call, not from your question. If it is not the one you asked about, call "
             f"get_waf_config(webacl_name='...') and run this again.")
 
 
-def take_query_provenance() -> dict:
+def take_query_provenance(tool_use_id: str | None = None) -> dict:
     """The record for the tool call that just finished, and clear it.
 
     Cleared on read so the next tool call cannot inherit the previous one's window. Returning `{}` for a
     tool that ran no log query is the point: a config-only tool has no window to disclose, and inventing
     one would be the same defect this exists to fix.
+
+    **The stash first, then the live record, and the fallback is deliberate.** `SourceDisclosure` drains
+    into the stash before this runs, so the stash is the normal path. Falling back keeps the two
+    degradations independent: if the hook does not fire, the model loses its `SOURCE:` line and the chip
+    still renders, where a stash with no fallback would lose both. "Does the hook fire" is on the
+    post-deploy checklist precisely because nothing here can answer it.
     """
     with _provenance_lock:
+        if tool_use_id is not None:
+            record = _provenance_stash.pop(tool_use_id, None)
+            if record:
+                return record
         return _state.pop("provenance", {})

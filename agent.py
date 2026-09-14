@@ -476,25 +476,33 @@ class SourceDisclosure(HookProvider):
     eight the plan named: the CloudWatch metric funnel records too, so `get_waf_metrics`,
     `get_waf_overview` and `patrol_scan` are inside it as well.
 
-    **Peeks rather than drains.** The streaming loop pops the same record afterwards to render the chip,
-    so clearing it here would leave the user with nothing while the model got everything, which is the
-    split these two readers exist to prevent.
+    **This is the only place the record is drained, and it hands it on by tool call id.** Draining in the
+    streaming loop alone left the CLI path never clearing anything, because `invoke` does not go through
+    that loop: measured, a second tool call in one CLI run rendered the second WebACL over a window
+    spanning the first tool's query. Clearing at the end of a turn instead would not have fixed it, since
+    the second tool call in that turn inherits the first one's window either way. So the drain moves to
+    the one place that runs once per tool call in both modes, and `take_query_provenance(id)` collects it.
 
-    **That "afterwards" is an SDK ordering, and it was read rather than assumed.**
+    **That handoff falls back to the live record on purpose.** If this hook does not fire, the model loses
+    its line and the chip still renders; a stash with no fallback would lose both, and whether the hook
+    fires is exactly the thing on the post-deploy checklist.
+
+    **The ordering it relies on was read rather than assumed.**
     `strands/tools/executors/_executor.py` awaits `_invoke_after_tool_call_hook` and only then does
     `yield ToolResultEvent(after_event.result, ...)`, on the success path and the exception path both.
     `TOOL_END` here fires later still, when the message carrying `toolResult` reaches the callback. If a
     future SDK ever emitted the result before the hook, this line would vanish from every tool at once
     and the suite would not notice, since a unit test calls the hook directly. So it is on the post-deploy
-    checklist as one real answer carrying one `SOURCE:` line.
+    checklist as one real answer carrying one `SOURCE:` line. The fallback above is what keeps that
+    failure from taking the chip with it.
     """
 
     def register_hooks(self, registry: HookRegistry, **kwargs):
         registry.add_callback(AfterToolCallEvent, self.append_source)
 
     def append_source(self, event: AfterToolCallEvent):
-        from tools.session_state import peek_query_provenance, provenance_source_line
-        record = peek_query_provenance()
+        from tools.session_state import provenance_source_line, stash_query_provenance
+        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")
         if not record:
             return
         result = event.result
@@ -796,7 +804,7 @@ def create_app():
                 # `{}` for a tool that ran no log query, and nothing is emitted then: a config-only tool
                 # has no window to disclose and inventing one would be the defect this exists to fix.
                 from tools.session_state import take_query_provenance
-                _prov = take_query_provenance()
+                _prov = take_query_provenance(payload)
                 if _prov:
                     yield _make_sse({"type": "CUSTOM", "name": "provenance",
                                      "value": {"toolCallId": payload, **_prov}})
