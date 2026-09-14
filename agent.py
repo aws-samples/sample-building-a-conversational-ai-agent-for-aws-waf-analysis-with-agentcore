@@ -461,6 +461,66 @@ class LogValueDisclosure(HookProvider):
         event.result = {**result, "content": content}
 
 
+class SourceDisclosure(HookProvider):
+    """Names the WebACL and engine that answered, on every tool call that queried something.
+
+    ROADMAP 7.7 item 4. The `SOURCE:` line existed in `waf_logs` and covered two of the ten tools that
+    query, and the plan was to add it to the other eight by hand. **The mechanism for doing it once
+    already existed in this file**, in `LogValueDisclosure` directly above, for the same stated reason:
+    asking each renderer to remember is asking a renderer to forget, and there are ten-odd renderers.
+    Eight hand-written call sites would also have been an inventory to keep, which is the shape the
+    metric funnel was built to avoid.
+
+    Keyed on the provenance record rather than on a list of tool names, so a tool that queries nothing
+    gets no line and a tool written next year gets one for free. That makes the coverage wider than the
+    eight the plan named: the CloudWatch metric funnel records too, so `get_waf_metrics`,
+    `get_waf_overview` and `patrol_scan` are inside it as well.
+
+    **This is the only place the record is drained, and it hands it on by tool call id.** Draining in the
+    streaming loop alone left the CLI path never clearing anything, because `invoke` does not go through
+    that loop: measured, a second tool call in one CLI run rendered the second WebACL over a window
+    spanning the first tool's query. Clearing at the end of a turn instead would not have fixed it, since
+    the second tool call in that turn inherits the first one's window either way. So the drain moves to
+    the one place that runs once per tool call in both modes, and `take_query_provenance(id)` collects it.
+
+    **That handoff falls back to the live record on purpose.** If this hook does not fire, the model loses
+    its line and the chip still renders; a stash with no fallback would lose both, and whether the hook
+    fires is exactly the thing on the post-deploy checklist.
+
+    **There is a third degradation and the fallback cannot reach it.** With an empty `toolUseId` the drain
+    still happens and the stash write does not, so the model gets its line and the chip gets nothing, with
+    no live record left to fall back to. Unreachable rather than guarded: `toolResult.toolUseId` is
+    required by the Converse API, which is also where the streaming loop's id comes from, so the two ids
+    are the same string and neither is optional. Making it symmetric would mean not draining when there is
+    no id, and it is counted here rather than fixed because a guard against an impossible input hides the
+    reason it is impossible.
+
+    **The ordering it relies on was read rather than assumed.**
+    `strands/tools/executors/_executor.py` awaits `_invoke_after_tool_call_hook` and only then does
+    `yield ToolResultEvent(after_event.result, ...)`, on the success path and the exception path both.
+    `TOOL_END` here fires later still, when the message carrying `toolResult` reaches the callback. If a
+    future SDK ever emitted the result before the hook, this line would vanish from every tool at once
+    and the suite would not notice, since a unit test calls the hook directly. So it is on the post-deploy
+    checklist as one real answer carrying one `SOURCE:` line. The fallback above is what keeps that
+    failure from taking the chip with it.
+    """
+
+    def register_hooks(self, registry: HookRegistry, **kwargs):
+        registry.add_callback(AfterToolCallEvent, self.append_source)
+
+    def append_source(self, event: AfterToolCallEvent):
+        from tools.session_state import provenance_source_line, stash_query_provenance
+        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")
+        if not record:
+            return
+        result = event.result
+        if not isinstance(result, dict):
+            return
+        content = list(result.get("content") or [])
+        content.append({"text": f"\n{provenance_source_line(record)}"})
+        event.result = {**result, "content": content}
+
+
 _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
@@ -546,7 +606,8 @@ def get_agent(session_id: str = "", user_id: str = "") -> Agent:
             print(f"WARNING: memory disabled, setup failed: {type(exc).__name__}: {exc}")
 
     _agent = Agent(model=_get_model(), system_prompt=_build_system_prompt(), tools=_TOOLS,
-                   hooks=[PreQueryGuard(), LogValueDisclosure()], session_manager=session_manager)
+                   hooks=[PreQueryGuard(), LogValueDisclosure(), SourceDisclosure()],
+                   session_manager=session_manager)
     _agent_user_id = user_id
     return _agent
 
@@ -751,7 +812,7 @@ def create_app():
                 # `{}` for a tool that ran no log query, and nothing is emitted then: a config-only tool
                 # has no window to disclose and inventing one would be the defect this exists to fix.
                 from tools.session_state import take_query_provenance
-                _prov = take_query_provenance()
+                _prov = take_query_provenance(payload)
                 if _prov:
                     yield _make_sse({"type": "CUSTOM", "name": "provenance",
                                      "value": {"toolCallId": payload, **_prov}})
