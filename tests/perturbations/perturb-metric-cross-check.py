@@ -120,13 +120,14 @@ CASES = [
        "        rules = _get_webacl_rules(resolve_region(scope), scope)\n")],
      [f"{T}::test_a_cross_check_that_cannot_run_does_not_cost_the_answer_it_annotates"], True),
 
-    # The wiring. Textual: the target reads the tool's source, so a spliced raise would edit nothing
-    # that runs, and the guard's own reachability is established by the behavioural cases above.
+    # The wiring. No probe: the target reads the tool's source, so a raise inserted there would sit in
+    # a line nothing runs, and the guard's own reachability is established by the behavioural cases
+    # above. Written `"textual"` at first, which is truthy, so it asked for the probe it was declining.
     ("the injection tool's no-activity branch no longer cross-checking metrics",
      [(I, "                    warning = missed_data_warning(get_webacl_name(), target, acl_rules,",
        "                    warning = _no_cross_check(get_webacl_name(), target, acl_rules,")],
      [f"{T}::test_the_injection_tool_reaches_the_cross_check_from_its_no_activity_branch"],
-     "textual"),
+     False),
 ]
 
 sys.exit(sweep(CASES))

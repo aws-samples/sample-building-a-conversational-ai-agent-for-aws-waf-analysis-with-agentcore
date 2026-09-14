@@ -86,6 +86,27 @@ CASES = [
      [(H, "    if path.suffix not in PROBE:", "    if False:")],
      [f"{T}::test_a_probe_on_a_file_type_with_no_probe_form_is_refused"]),
 
+    ("a non-bool probe marker accepted, so a case declining the probe asks for one",
+     [(H, "            if not isinstance(probe, bool):", "            if False:")],
+     [f"{T}::test_a_probe_marker_that_is_not_a_bool_is_refused"]),
+
+    # How the probe is written into the file. Both of these were the shipped behaviour, and between
+    # them they silenced the probe for 66 of the 139 Python cases that ask for one: the edit did not
+    # parse, and an edit that does not parse is skipped with a note.
+    ("the probe substituted for the anchor again, which orphans the body of a block opener",
+     [(H, "    _write(path, _probe_edit(text, old, PROBE[path.suffix]))",
+       "    _write(path, text.replace(old, PROBE[path.suffix]))")],
+     [f"{T}::test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_it"]),
+
+    ("the probe indented from the anchor rather than from the line it goes above",
+     [(H, '        out.append(text[pos:bol] + " " * (len(rest) - len(rest.lstrip())) + probe + "\\n")',
+       '        out.append(text[pos:bol] + " " * (len(old) - len(old.lstrip())) + probe + "\\n")')],
+     [f"{T}::test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_it"]),
+
+    ("only the first line of a declared repeat probed, narrowing what red would mean",
+     [(H, "        at = text.find(old, at + step)", "        at = -1")],
+     [f"{T}::test_the_probe_covers_every_line_a_declared_repeat_matches"]),
+
     # The second engine's translation into the classifier's words. `sweep` reads one summary-line
     # vocabulary, so each of vitest's four outcomes has to arrive spelled the way pytest spells it,
     # and a mistranslation is silent: the wrong verdict, printed in the right format.

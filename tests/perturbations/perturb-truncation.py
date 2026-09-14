@@ -80,19 +80,23 @@ CASES = [
      [f"{T}::test_the_summary_is_empty_when_nothing_was_cut"], True),
 
     # The carriage. The record can be perfect and reach nobody.
+    #
+    # No probe for these three or for the Athena template below: each target reads source across every
+    # tool rather than running one, so there is no line for a raise to be reached on. They were written
+    # `"textual"`, which is truthy, so each asked for the probe it was declining.
     ("the bypass scan no longer surfacing the record",
      [(B, "    _cut = truncation_summary(notes, failures)\n    if _cut:\n        lines.append(_cut)\n",
        "", 3)],
-     [f"{T}::test_every_tool_that_builds_a_table_appends_the_summary"], "textual"),
+     [f"{T}::test_every_tool_that_builds_a_table_appends_the_summary"], False),
 
     ("analyze_ip no longer surfacing the record",
      [(L, "    _cut = truncation_summary(notes, failures)\n    if _cut:\n        lines.append(_cut)\n",
        "")],
-     [f"{T}::test_every_tool_that_builds_a_table_appends_the_summary"], "textual"),
+     [f"{T}::test_every_tool_that_builds_a_table_appends_the_summary"], False),
 
     ("a notes dict dropped where a failures dict exists, so that tool cannot report at all",
      [(B, "    notes: dict[str, int] = {}\n", "", 3)],
-     [f"{T}::test_the_notes_dict_is_created_wherever_a_failures_dict_is"], "textual"),
+     [f"{T}::test_the_notes_dict_is_created_wherever_a_failures_dict_is"], False),
 
     # --- one limit-writing form, added with ROADMAP 7.7 item 3 ---
 
@@ -100,7 +104,7 @@ CASES = [
     # never comes back and that section can never report truncation on the Athena backend.
     ("an Athena template hardcoding its row limit again",
      [(B, "ORDER BY hits DESC LIMIT {{LIMIT}}", "ORDER BY hits DESC LIMIT 3", 5)],
-     [f"{T}::test_no_athena_template_hardcodes_its_row_limit"], "textual"),
+     [f"{T}::test_no_athena_template_hardcodes_its_row_limit"], False),
 
     ("the CloudWatch query-string limit left at the caller's number",
      [(Q, 'cwl = re.sub(r"\\|\\s*limit\\s+\\d+\\s*$", f"| limit {limit + 1}", query_cwl.strip())',

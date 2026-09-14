@@ -49,17 +49,21 @@ CASES = [
      [f"{T}::test_a_log_query_records_the_engine_and_the_window"], True),
 
     # Link two: the event is never emitted, or is emitted without saying which tool call it belongs to.
+    #
+    # No probe for these three: the emit sits inside an async generator whose other branches need a
+    # live Strands agent, so the target reads the source instead and no line of it runs. They were
+    # written `"textual"`, which is truthy, so each asked for the probe it was declining.
     ("the event never emitted, so the record reaches nobody",
      [(A, "                if _prov:\n", "                if False:\n")],
-     [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], "textual"),
+     [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], False),
 
     ("an empty record emitted anyway, inventing a window for a config-only tool",
      [(A, "                if _prov:\n", "                if True:\n")],
-     [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], "textual"),
+     [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], False),
 
     ("the event omitting the tool call id, so the frontend cannot place it",
      [(A, '"value": {"toolCallId": payload, **_prov}', '"value": {**_prov}')],
-     [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], "textual"),
+     [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], False),
 
     # The lock. All three merges are read-modify-write and `run_concurrently` reaches them by default.
     ("the lock removed, so concurrent queries lose a count and narrow the window",

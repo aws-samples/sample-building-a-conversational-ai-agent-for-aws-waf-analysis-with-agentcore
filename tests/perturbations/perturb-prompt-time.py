@@ -52,15 +52,19 @@ CASES = [
 
     ("the two lines disagreeing, which is the shape the original bug had",
      [(A, "\\nSession timezone: {tz_str} — All times", "\\nSession timezone: UTC+0 — All times")],
-     # Anchor inside the return f-string, so no probe: a spliced `raise` edits the string.
+     # Anchor inside the return f-string, so no probe: a `raise` inserted ahead of that line lands
+     # inside the string, where it is text and not a statement, and the probe would then call a
+     # perfectly good perturbation unreachable.
      [f"{T}::test_the_two_lines_agree_about_the_timezone"]),
 
     # A session with no timezone must say so rather than guess one. Guessing is worse than UTC here:
     # the model would compute a window in a zone nobody chose.
     ("an unset timezone guessing a zone instead of saying it is unset",
      [(A, '    if tz_offset is None:\n', "    if tz_offset is None and False:\n")],
-     # No probe: a `raise` at this indent orphans the block below it, so the file stops parsing.
-     [f"{T}::test_an_unset_timezone_says_utc_and_says_it_is_unset"]),
+     # Probed since 2026-09-14. It was opted out because a `raise` in place of this line orphaned the
+     # block below it and the file stopped parsing; the probe now goes above the line instead, so a
+     # block opener is fine and this case gets the guarantee the others here have.
+     [f"{T}::test_an_unset_timezone_says_utc_and_says_it_is_unset"], True),
 
     # The consumer. Without the rule that derives a window from the stated time, everything above
     # guards a value nothing reads.

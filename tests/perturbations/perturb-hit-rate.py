@@ -129,7 +129,7 @@ CASES = [
     ),
 ]
 
-# A case with no marker gets the reachability probe: the anchor is replaced with a bare raise
+# A case with no marker gets the reachability probe: a bare raise goes in above the anchor's line
 # and the targets must go red, or the line never executes and a green result from the real
 # perturbation below would say nothing. A marker means the target reads source rather than
 # running it, or that reachability is established elsewhere; each one says which in a comment.

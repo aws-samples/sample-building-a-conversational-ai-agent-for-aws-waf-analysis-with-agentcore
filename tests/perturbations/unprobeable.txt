@@ -1,0 +1,44 @@
+# The cases that ask for the reachability probe and cannot have one, as of 2026-09-14.
+#
+# The probe is inserted as a statement ahead of the line the anchor begins on. Two anchor shapes have
+# no line that can take one: a continuation line inside a multi-line expression, which is what an
+# anchor quoting one dict entry or one f-string fragment lands on, and an `elif` or `except` clause
+# header, which cannot have a statement above it. Those cases still run, and the sweep prints
+# `note ... reachability is unestablished` for each, but nothing establishes that the line they
+# perturb executes. Red for them could be red about anything.
+#
+# Declared here rather than in a comment beside each case so it is checked.
+# `tests/test_perturbation_harness.py::test_the_cases_that_cannot_take_a_probe_are_declared_here`
+# reads this file and requires the set to match exactly, so a new case cannot join the list quietly
+# and a case that becomes probeable cannot stay on it.
+#
+# If that test sends you here, you have three options and only the third is free: re-anchor the case
+# on the whole statement rather than a fragment inside it, pass `probe=False` and say in the script
+# why reachability cannot be established for it, or add the line the test prints. 23 lines today, 18
+# continuation lines and 5 clause headers, and a smaller number is the direction.
+#
+# `script: label`, matching the label the case declares.
+
+perturb-aggregate-logs.py: a dimension with no Athena expression at all
+perturb-aggregate-logs.py: the percentile scales swapped, i.e. CloudWatch silently returns the near-minimum
+perturb-aggregate-logs.py: the CloudWatch percentile taking a fraction, which is the silent direction
+perturb-aggregate-logs.py: the ratio numerator ALSO scoping the query, i.e. every group reads 100%
+perturb-aggregate-logs.py: the rule filter missing the nested-COUNT array, i.e. a copy of rule_uri_prefix
+perturb-aggregate-logs.py: the label filter back to a LIKE, whose `_` wildcard widens what it matches
+perturb-aggregate-logs.py: the bucket column renamed, so CloudWatch results stay in UTC
+perturb-aggregate-logs.py: a validator dropped, i.e. the dimension with no guard at all
+perturb-aggregate-logs.py: the label filter back to a raw-message substring, i.e. the shipped divergence
+perturb-aggregate-logs.py: the label filter reading only the first label, i.e. silent under-matching
+perturb-aggregate-logs.py: the excluded-rules branch searching the log's own camelCase key, which matches nothing
+perturb-aggregate-logs.py: the excluded-rules branch dropped entirely, i.e. Athena under-reports a real match
+perturb-concurrent-queries.py: the worker cap removed, i.e. a whole chain submitted against Athena's DML quota
+perturb-hit-rate.py: counted dropped from the numerator, so a Count rule reads 0%
+perturb-injection.py: an unparseable count dropping the rule instead of ranking it last
+perturb-injection.py: an unreadable rule group dropped instead of named
+perturb-query-failure.py: the action block ungated again, i.e. the refusal overridden by the next section
+perturb-query-failure.py: the refusal unconditional, i.e. a quiet window it can no longer report as quiet
+perturb-query-failure.py: _run_log_query swallows the Athena raise, i.e. the engine asymmetry
+perturb-static-assets.py: jpeg dropped, i.e. the gap that was in both halves of the old list
+perturb-static-assets.py: one bypass query filtering on CloudWatch only, i.e. per-engine answers
+perturb-static-assets.py: one template filtering on CloudWatch only
+perturb-truncation.py: a failed section reported as merely truncated
