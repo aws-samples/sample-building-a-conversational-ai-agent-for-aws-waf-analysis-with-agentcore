@@ -3,6 +3,8 @@
 """Session state — stores current WebACL context for cross-tool coordination."""
 
 # Populated by get_waf_config, consumed by other tools
+import threading
+
 _state: dict = {}
 
 
@@ -150,3 +152,69 @@ def get_findings() -> list:
 def clear_findings():
     """Reset findings (for new investigation)."""
     _state["findings"] = []
+
+
+# --- ROADMAP 7.2: provenance the frontend renders, not the model ------------
+#
+# **Measured 2026-09-13: the model reads the `SOURCE:` line and does not relay it.** In one verification
+# session `SOURCE:` appeared nowhere in the answer while the same answer proved the line had been read,
+# because it noticed the loaded WebACL was the wrong one and reloaded. So instruction-following is the
+# link that is already failing here, and another prompt rule would be a second layer on the same
+# unreliable mechanism. These facts are recorded by the query layer and emitted as their own event, so
+# what the user sees does not depend on the model choosing to repeat it.
+
+_provenance_lock = threading.Lock()
+
+
+def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
+    """Record which engine was asked and over which window. Once per query ATTEMPT, merged per tool call.
+
+    **`queries` counts attempts, not queries that ran, and that follows from where this is called.** It
+    runs as the first statement of each engine branch, before `_ensure_athena_table`, before the
+    coarse-partition refusal and before the `range_problem` refusal, so `Athena over S3 · 1 query` beside
+    zero executed queries is a reachable state: the coarse-partition case is pre-checked at all nine tool
+    entry points and this is only a backstop there, but a table that fails to build and an unprojectable
+    range have no such pre-check. That is the intended side. **A query that dies in table resolution
+    still discloses the window it asked about**, which is exactly when a user needs to know what was
+    asked, and it is the same reason the record is written on entry rather than on completion.
+
+    `queries` counts them because one tool call issues up to fifteen, and a user reading "CloudWatch,
+    12:37 to 18:37" deserves to know whether that describes one query or fifteen. The window is stored
+    as epochs so the renderer can show both the session-local and the UTC pair without re-deriving
+    either from a string.
+
+    **Locked, because all three merges are read-modify-write and concurrency reaches this by default.**
+    `waf_query.run_concurrently` submits every independent query of a tool call to a
+    `ThreadPoolExecutor` and `_cwl_semaphore` allows eight at once, so two threads read `queries` as 3
+    and both write 4. Both losses point the wrong way: an undercount reports fifteen queries as fewer,
+    which is the one thing this counter exists to say, and a lost `min` reports a window narrower than
+    what was read, which attributes a finding from 05:00 to a window starting at 06:46. That is a
+    misattribution, and misattribution is what this whole record was built to prevent.
+
+    The lock is `waf_query._value_findings_lock`'s shape, four call sites in the file that calls this
+    one, and not using it was the sixth time a capability sat in this repository unreferenced.
+
+    Read through the accessors rather than by key. Both were guessed from their function names on the
+    first draft and `user_timezone` is spelled `user_tz_offset`, so the offset silently recorded as
+    None: a plausible key name for a value that is never there is the same defect as a plausible API
+    field, and it fails the same quiet way.
+    """
+    with _provenance_lock:
+        p = _state.setdefault("provenance", {})
+        p["webacl"] = get_webacl_name()
+        p["engine"] = engine
+        p["tz_offset"] = get_user_timezone()
+        p["start"] = min(start_epoch, p["start"]) if "start" in p else start_epoch
+        p["end"] = max(end_epoch, p["end"]) if "end" in p else end_epoch
+        p["queries"] = p.get("queries", 0) + 1
+
+
+def take_query_provenance() -> dict:
+    """The record for the tool call that just finished, and clear it.
+
+    Cleared on read so the next tool call cannot inherit the previous one's window. Returning `{}` for a
+    tool that ran no log query is the point: a config-only tool has no window to disclose, and inventing
+    one would be the same defect this exists to fix.
+    """
+    with _provenance_lock:
+        return _state.pop("provenance", {})

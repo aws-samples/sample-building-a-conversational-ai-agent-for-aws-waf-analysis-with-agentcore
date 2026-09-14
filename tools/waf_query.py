@@ -9,7 +9,7 @@ import concurrent.futures
 import threading
 from collections import Counter
 from tools.aws_session import get_client
-from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success
+from tools.session_state import get_log_destination, get_logs_region, get_webacl_name, get_scope, get_user_timezone, note_query_success, note_query_provenance
 
 _cwl_semaphore = threading.Semaphore(8)
 from tools.query_limits import (MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL,
@@ -546,6 +546,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         # two. Writing `limit + 1` in both places means the engine returns at most `limit + 1` either
         # way. Anchored to the end because CloudWatch requires `limit` to be the last command.
         cwl = re.sub(r"\|\s*limit\s+\d+\s*$", f"| limit {limit + 1}", query_cwl.strip())
+        note_query_provenance("CloudWatch Logs Insights", start_epoch, end_epoch)
         rows = _trim(_run_cwl(log_group, cwl, start_epoch, end_epoch, limit + 1),
                      limit, notes, label)
         # CWL Insights returns bin()/@timestamp fields in UTC. Shift the known
@@ -554,6 +555,26 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         _tz_off = get_user_timezone()
         return _scan_log_values(_shift_time_fields(rows, int(round((_tz_off or 0) * 3600))))
     elif ":s3:::" in dest or ":firehose:" in dest:
+        # **Recorded here, as the branch's first statement, and the position is the property.** What
+        # decides whether a write can land after its tool call has drained is the distance from entering
+        # this function to the record, not the distance from the record to the engine call. Recording
+        # after `_ensure_athena_table` left 48 lines of that distance, and on a cold session that call
+        # walks S3, enumerates Glue and runs a CREATE through `_wait_query`, whose deadline is `MAX_POLL`
+        # 120 s — the same number as `MAX_FANOUT_WAIT`. So one slow CREATE can consume the whole batch
+        # budget and a fan-out job can still be inside table resolution when the batch gives up. The tool
+        # returns, the record is drained, and the job then writes into the *next* tool call's record,
+        # where `setdefault` merges it and `engine` goes to the last writer. Reproduced: a tool that ran
+        # only CloudWatch queries over one hour showed `Athena over S3`, a 195-hour window and an
+        # inflated count. Wrong engine, wrong window, rendered as fact on a tool that queried something
+        # else, which is the class this channel exists to remove.
+        #
+        # The branch condition already fixes the engine, the epochs are parameters, and both accessors
+        # are dict reads, so nothing between entering the branch and this line can block. That makes "a
+        # job that entered and picked its branch has already written" true rather than half true. It also
+        # follows the reason for writing at the start rather than at completion: a query that dies in
+        # table resolution now discloses the window it asked about, which is when a user most needs to
+        # know what they asked.
+        note_query_provenance("Athena over S3", start_epoch, end_epoch)
         table = _ensure_athena_table(dest)
         # Block queries on coarse (hourly or coarser) partitions — they make
         # Athena scan too much data per query and time out on production traffic.
