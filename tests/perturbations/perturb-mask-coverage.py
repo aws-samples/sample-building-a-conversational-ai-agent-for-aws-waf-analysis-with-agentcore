@@ -23,8 +23,9 @@ CASES = [
      'api[-_]?key|access[-_]?token|bearer)\\w*\\s*[=]\\s*\\S)',
      [f"{T}::test_a_bare_short_form_label_is_still_masked_which_is_the_known_boundary"]),
     ("waf_overview reaching the masker, which gives the boundary a live path",
-     "tools/waf_overview.py", "from tools.session_state import get_scope, get_user_timezone",
-     "from tools.session_state import get_scope, get_user_timezone\n"
+     "tools/waf_overview.py",
+     "from tools.session_state import declare_query_subject, get_scope, get_user_timezone",
+     "from tools.session_state import declare_query_subject, get_scope, get_user_timezone\n"
      "from tools.waf_query import query_logs  # noqa: F401",
      [f"{T}::test_the_metrics_label_path_does_not_reach_the_masker"]),
     ("the raw-record exclusion dropped", Q,
