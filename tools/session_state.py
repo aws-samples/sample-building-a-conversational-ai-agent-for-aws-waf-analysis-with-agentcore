@@ -236,8 +236,6 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject
         p["queries"] = p.get("queries", 0) + 1
 
 
-# Records already drained by the hook, keyed by tool call id, waiting for the streaming loop.
-_provenance_stash: dict[str, dict] = {}
 # Only the streaming loop pops from the stash and the CLI never does, so without a bound a long CLI
 # process would keep every record it ever made. A tool call issues at most fifteen queries and a turn a
 # handful of tool calls, so this is far above anything real; it exists to make the growth impossible
@@ -257,13 +255,24 @@ def stash_query_provenance(tool_use_id: str) -> dict:
 
     Draining here rather than clearing in `invoke` is the part that matters: clearing at the end of a turn
     still lets the second tool call in that turn inherit the first one's window.
+
+    **An empty `tool_use_id` drains without stashing**, so the model would get its line and the chip
+    nothing, with no live record left for the fallback. Counted in `SourceDisclosure`'s docstring rather
+    than guarded: `toolResult.toolUseId` is required by the Converse API and is where the streaming loop's
+    id comes from, so the state is unreachable, and a guard against an impossible input hides the reason it
+    is impossible.
     """
     with _provenance_lock:
         record = _state.pop("provenance", {})
         if record and tool_use_id:
-            _provenance_stash[tool_use_id] = record
-            while len(_provenance_stash) > _STASH_LIMIT:
-                _provenance_stash.pop(next(iter(_provenance_stash)))
+            # **Inside `_state` rather than a module global**, because `tests/conftest.py`'s autouse
+            # `_isolate_module_state` clears `_state` and nothing else. A module-level dict here made that
+            # fixture's own claim false for one container in this file: harmless while a single test file
+            # touched the stash, and a leak between files the day a second one does.
+            stash = _state.setdefault("provenance_stash", {})
+            stash[tool_use_id] = record
+            while len(stash) > _STASH_LIMIT:
+                stash.pop(next(iter(stash)))
         return record
 
 
@@ -313,7 +322,7 @@ def take_query_provenance(tool_use_id: str | None = None) -> dict:
     """
     with _provenance_lock:
         if tool_use_id is not None:
-            record = _provenance_stash.pop(tool_use_id, None)
+            record = (_state.get("provenance_stash") or {}).pop(tool_use_id, None)
             if record:
                 return record
         return _state.pop("provenance", {})

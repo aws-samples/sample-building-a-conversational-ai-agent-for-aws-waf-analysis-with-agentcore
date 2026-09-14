@@ -487,6 +487,14 @@ class SourceDisclosure(HookProvider):
     its line and the chip still renders; a stash with no fallback would lose both, and whether the hook
     fires is exactly the thing on the post-deploy checklist.
 
+    **There is a third degradation and the fallback cannot reach it.** With an empty `toolUseId` the drain
+    still happens and the stash write does not, so the model gets its line and the chip gets nothing, with
+    no live record left to fall back to. Unreachable rather than guarded: `toolResult.toolUseId` is
+    required by the Converse API, which is also where the streaming loop's id comes from, so the two ids
+    are the same string and neither is optional. Making it symmetric would mean not draining when there is
+    no id, and it is counted here rather than fixed because a guard against an impossible input hides the
+    reason it is impossible.
+
     **The ordering it relies on was read rather than assumed.**
     `strands/tools/executors/_executor.py` awaits `_invoke_after_tool_call_hook` and only then does
     `yield ToolResultEvent(after_event.result, ...)`, on the success path and the exception path both.

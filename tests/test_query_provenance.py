@@ -47,7 +47,7 @@ def _context(name, dest):
 def _record(engine, subject=None, start=1000, end=2000):
     """A fresh record, read straight out of state. Nothing peeks in production: the hook drains."""
     session_state._state.pop("provenance", None)
-    session_state._provenance_stash.clear()
+    session_state._state.pop("provenance_stash", None)
     session_state.note_query_provenance(engine, start, end, subject=subject)
     return dict(session_state._state["provenance"])
 

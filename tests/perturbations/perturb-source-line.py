@@ -49,9 +49,9 @@ CASES = [
      [f"{T}::test_the_streaming_loop_collects_by_the_id_it_already_has"], False),
 
     ("the fallback removed, so a hook that did not fire loses the chip as well as the line",
-     [(S, "            record = _provenance_stash.pop(tool_use_id, None)\n            if record:\n"
-          "                return record",
-       "            return _provenance_stash.pop(tool_use_id, None) or {}")],
+     [(S, '            record = (_state.get("provenance_stash") or {}).pop(tool_use_id, None)\n'
+          "            if record:\n                return record",
+       '            return (_state.get("provenance_stash") or {}).pop(tool_use_id, None) or {}')],
      [f"{T}::test_the_chip_still_gets_a_record_if_the_hook_never_ran"], True),
 
     # The regression review caught: one wording for both paths.
