@@ -54,6 +54,16 @@ CASES = [
        '            return (_state.get("provenance_stash") or {}).pop(tool_use_id, None) or {}')],
      [f"{T}::test_the_chip_still_gets_a_record_if_the_hook_never_ran"], True),
 
+    # Two edits, so no probe: this moves a container rather than changing a line, and the target runs
+    # both halves anyway. It is the shape of the regression itself, someone putting the stash back where
+    # `conftest` cannot reach it.
+    ("the stash moved back out of _state, where the isolation fixture cannot clear it",
+     [(S, '            stash = _state.setdefault("provenance_stash", {})',
+       '            stash = globals().setdefault("_leaked_stash", {})'),
+      (S, '            record = (_state.get("provenance_stash") or {}).pop(tool_use_id, None)',
+       '            record = globals().setdefault("_leaked_stash", {}).pop(tool_use_id, None)')],
+     [f"{T}::test_the_stash_lives_where_the_isolation_fixture_can_clear_it"], False),
+
     # The regression review caught: one wording for both paths.
     ("both paths given the session-derived wording again, which orders the model to undo the bypass",
      [(S, '    if p.get("subject_explicit"):', "    if False:")],

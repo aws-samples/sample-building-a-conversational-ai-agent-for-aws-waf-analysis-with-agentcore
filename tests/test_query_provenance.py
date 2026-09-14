@@ -177,6 +177,34 @@ def test_the_hook_hands_the_record_to_the_chip_by_tool_call_id():
     assert session_state.take_query_provenance("t1") == {}, "collected twice"
 
 
+def test_the_stash_lives_where_the_isolation_fixture_can_clear_it():
+    """**The property the stash's location is for, asserted instead of implied.**
+
+    `tests/conftest.py`'s autouse `_isolate_module_state` clears `session_state._state` and the Athena
+    table cache, and nothing else. A module-level stash sits outside it, which leaks records between test
+    files the day a second file touches the hook.
+
+    Moving it into `_state` fixed that, and for one commit the only thing holding it there was a string:
+    `perturb-source-line.py` quotes the new expression in an anchor, so reverting the move goes red on the
+    drift test with the message "the case has drifted". That sends the next reader to update the anchor,
+    which turns the suite green and brings the leak back. **A guard has to say the property when it fires**,
+    not name a neighbour of the symptom, which is the same lesson as the sweep reporting an unreachable line
+    for what was really a stale anchor.
+
+    **The two assertions do not guard the same thing, and the second is the weaker one.** It is only reached
+    when the first holds, so the perturbation that moves the container out of `_state` never runs it. What
+    it does pin is the reader: a `take_query_provenance` that kept its own copy somewhere outside `_state`
+    would satisfy the first assertion and fail this one."""
+    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    session_state.note_query_provenance(CWL, 1000, 2000)
+    session_state.stash_query_provenance("t1")
+    assert "provenance_stash" in session_state._state, (
+        "the stash has to live inside _state, which is the only thing conftest's "
+        "_isolate_module_state clears")
+    session_state._state.clear()
+    assert session_state.take_query_provenance("t1") == {}, "a cleared _state must drop the stash"
+
+
 def test_the_chip_still_gets_a_record_if_the_hook_never_ran():
     """**The fallback, and it keeps the two failures independent.** Whether the hook fires is on the
     post-deploy checklist, because nothing in this suite can answer it: a unit test calls it directly. If
