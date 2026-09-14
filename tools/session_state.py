@@ -166,8 +166,19 @@ def clear_findings():
 _provenance_lock = threading.Lock()
 
 
-def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
+def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject: str | None = None):
     """Record which engine was asked and over which window. Once per query ATTEMPT, merged per tool call.
+
+    **`subject` overrides the session WebACL, and one path needs it.** `run_logs_query(log_group=...)`
+    builds its own CloudWatch client and calls `start_query` directly, so it never reaches `query_logs`
+    and the session's WebACL was not consulted at all. Naming that WebACL would be a false statement of
+    exactly the kind this record exists to remove, so that path passes the log group instead.
+
+    **`webacl` stays one value while `engines` is a list, and that asymmetry is measured rather than
+    accidental.** Two engines in one tool call is ordinary: three tools pair a log query with a metric
+    read. Two subjects in one tool call is not reachable today, because every query's destination comes
+    from session state and the single path that overrides it is a one-query tool. If a tool ever mixes
+    them, this field needs what `engines` got.
 
     **`engines` is a list because one tool call reads two, and a single field would name the last
     writer.** It was a single value while `query_logs` was the only recorder, since the log destination
@@ -211,7 +222,7 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
     """
     with _provenance_lock:
         p = _state.setdefault("provenance", {})
-        p["webacl"] = get_webacl_name()
+        p["webacl"] = subject or get_webacl_name()
         engines = p.setdefault("engines", [])
         if engine not in engines:
             engines.append(engine)
@@ -219,6 +230,38 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int):
         p["start"] = min(start_epoch, p["start"]) if "start" in p else start_epoch
         p["end"] = max(end_epoch, p["end"]) if "end" in p else end_epoch
         p["queries"] = p.get("queries", 0) + 1
+
+
+def peek_query_provenance() -> dict:
+    """The record so far, without clearing it. For the reader that runs before the tool call ends.
+
+    Two readers now, and only one of them may clear. `SourceDisclosure` appends the `SOURCE:` line to
+    the tool result while the call is still finishing, then the streaming loop drains the same record for
+    the chip. Reading destructively here would leave the chip with nothing, which is the failure the two
+    functions exist to keep apart.
+    """
+    with _provenance_lock:
+        return dict(_state.get("provenance") or {})
+
+
+def provenance_source_line(p: dict) -> str:
+    """The `SOURCE:` line, for the model rather than for the user.
+
+    **The model reads this and acts on it, and does not repeat it**, measured 2026-09-13: in one
+    verification session it noticed the loaded WebACL was wrong and reloaded before querying, and the
+    line appeared nowhere in its answer. So this text and the frontend chip are two renderings of one
+    record with two audiences, and this one carries the instruction because the model is the only reader
+    who can act on it.
+
+    The defect it exists for: a log tool takes its destination from session state and has no idea which
+    WebACL the question was about, so a question about one WebACL is answered from another's logs with no
+    error. Measured 2026-09-12 on a real investigation, where the answer came from a WebACL logging to
+    Firehose while the question was about one logging to CloudWatch.
+    """
+    engines = " + ".join(p.get("engines") or []) or "no engine"
+    return (f"SOURCE: {p.get('webacl') or '(none set)'} via {engines}. That is the WebACL from the last "
+            f"get_waf_config call, not from your question. If it is not the one you asked about, call "
+            f"get_waf_config(webacl_name='...') and run this again.")
 
 
 def take_query_provenance() -> dict:

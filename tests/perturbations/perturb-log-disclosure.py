@@ -130,7 +130,8 @@ CASES = [
       f"{T}::test_a_real_waf_record_produces_no_finding"]),
     # And the disclosure's own delivery, which every one of the above rides on.
     ("the hook unregistered from the agent", A,
-     "hooks=[PreQueryGuard(), LogValueDisclosure()]", "hooks=[PreQueryGuard()]",
+     "hooks=[PreQueryGuard(), LogValueDisclosure(), SourceDisclosure()]",
+     "hooks=[PreQueryGuard(), SourceDisclosure()]",
      [f"{T}::test_every_hook_defined_in_agent_is_registered_on_the_agent"]),
 ]
 

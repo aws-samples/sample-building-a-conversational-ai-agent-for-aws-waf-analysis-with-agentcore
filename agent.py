@@ -461,6 +461,50 @@ class LogValueDisclosure(HookProvider):
         event.result = {**result, "content": content}
 
 
+class SourceDisclosure(HookProvider):
+    """Names the WebACL and engine that answered, on every tool call that queried something.
+
+    ROADMAP 7.7 item 4. The `SOURCE:` line existed in `waf_logs` and covered two of the ten tools that
+    query, and the plan was to add it to the other eight by hand. **The mechanism for doing it once
+    already existed in this file**, in `LogValueDisclosure` directly above, for the same stated reason:
+    asking each renderer to remember is asking a renderer to forget, and there are ten-odd renderers.
+    Eight hand-written call sites would also have been an inventory to keep, which is the shape the
+    metric funnel was built to avoid.
+
+    Keyed on the provenance record rather than on a list of tool names, so a tool that queries nothing
+    gets no line and a tool written next year gets one for free. That makes the coverage wider than the
+    eight the plan named: the CloudWatch metric funnel records too, so `get_waf_metrics`,
+    `get_waf_overview` and `patrol_scan` are inside it as well.
+
+    **Peeks rather than drains.** The streaming loop pops the same record afterwards to render the chip,
+    so clearing it here would leave the user with nothing while the model got everything, which is the
+    split these two readers exist to prevent.
+
+    **That "afterwards" is an SDK ordering, and it was read rather than assumed.**
+    `strands/tools/executors/_executor.py` awaits `_invoke_after_tool_call_hook` and only then does
+    `yield ToolResultEvent(after_event.result, ...)`, on the success path and the exception path both.
+    `TOOL_END` here fires later still, when the message carrying `toolResult` reaches the callback. If a
+    future SDK ever emitted the result before the hook, this line would vanish from every tool at once
+    and the suite would not notice, since a unit test calls the hook directly. So it is on the post-deploy
+    checklist as one real answer carrying one `SOURCE:` line.
+    """
+
+    def register_hooks(self, registry: HookRegistry, **kwargs):
+        registry.add_callback(AfterToolCallEvent, self.append_source)
+
+    def append_source(self, event: AfterToolCallEvent):
+        from tools.session_state import peek_query_provenance, provenance_source_line
+        record = peek_query_provenance()
+        if not record:
+            return
+        result = event.result
+        if not isinstance(result, dict):
+            return
+        content = list(result.get("content") or [])
+        content.append({"text": f"\n{provenance_source_line(record)}"})
+        event.result = {**result, "content": content}
+
+
 _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
@@ -546,7 +590,8 @@ def get_agent(session_id: str = "", user_id: str = "") -> Agent:
             print(f"WARNING: memory disabled, setup failed: {type(exc).__name__}: {exc}")
 
     _agent = Agent(model=_get_model(), system_prompt=_build_system_prompt(), tools=_TOOLS,
-                   hooks=[PreQueryGuard(), LogValueDisclosure()], session_manager=session_manager)
+                   hooks=[PreQueryGuard(), LogValueDisclosure(), SourceDisclosure()],
+                   session_manager=session_manager)
     _agent_user_id = user_id
     return _agent
 
