@@ -25,6 +25,7 @@ from _harness import ROOT, sweep
 H = "tests/perturbations/_harness.py"
 T = "tests/test_perturbation_harness.py"
 README = "tests/perturbations/README.md"
+UNPROBEABLE = "tests/perturbations/unprobeable.txt"
 
 _readme = (ROOT / README).read_text()
 
@@ -85,6 +86,46 @@ CASES = [
     ("a file type with no probe form probed anyway",
      [(H, "    if path.suffix not in PROBE:", "    if False:")],
      [f"{T}::test_a_probe_on_a_file_type_with_no_probe_form_is_refused"]),
+
+    ("a non-bool probe marker accepted, so a case declining the probe asks for one",
+     [(H, "            if not isinstance(probe, bool):", "            if False:")],
+     [f"{T}::test_a_probe_marker_that_is_not_a_bool_is_refused"]),
+
+    # How the probe is written into the file. Both of these were the shipped behaviour, and between
+    # them they silenced the probe for 66 of the 139 Python cases the harness was really probing then,
+    # a count that includes the eight whose truthy marker asked for a probe by accident. The edit did
+    # not parse, and an edit that does not parse is skipped with a note. `_probe_edit`'s docstring says
+    # 60 of 132, which is the same measurement counted over `probe is True` alone.
+    ("the probe substituted for the anchor again, which orphans the body of a block opener",
+     [(H, "    _write(path, _probe_edit(text, old, PROBE[path.suffix]))",
+       "    _write(path, text.replace(old, PROBE[path.suffix]))")],
+     [f"{T}::test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_it"]),
+
+    ("the probe indented from the anchor rather than from the line it goes above",
+     [(H, '        out.append(text[pos:bol] + " " * (len(rest) - len(rest.lstrip())) + probe + "\\n")',
+       '        out.append(text[pos:bol] + " " * (len(old) - len(old.lstrip())) + probe + "\\n")')],
+     [f"{T}::test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_it"]),
+
+    ("only the first line of a declared repeat probed, narrowing what red would mean",
+     [(H, "        at = text.find(old, at + step)", "        at = -1")],
+     [f"{T}::test_the_probe_covers_every_line_a_declared_repeat_matches"]),
+
+    ("the compound-header check answering False to everything, which the pin cannot see",
+     [(H, '        if ";" in prefix or prefix.endswith(":"):', "        if False:")],
+     [f"{T}::test_an_anchor_sharing_its_line_with_a_compound_header_is_named"]),
+
+    # The 23 cases whose line cannot take a probe are declared in a file, and that inventory is the
+    # only guard added here that would otherwise have no case of its own. Both directions, because one
+    # `assert not new and not gone` carries both and a perturbation can only reach one at a time.
+    # Written as transforms so the cases do not quote a label; editing a label is exactly the event
+    # that would disarm an anchor here.
+    ("an entry missing from the unprobeable list, so a case can lose its probe unnoticed",
+     [(UNPROBEABLE, lambda t: t[:t.rstrip().rfind("\n") + 1])],
+     [f"{T}::test_the_cases_that_cannot_take_a_probe_are_declared_here"]),
+
+    ("a stale entry left on the list, so a case reads as unprobed while it is probed",
+     [(UNPROBEABLE, lambda t: t + "perturb-truncation.py: a case that no longer exists\n")],
+     [f"{T}::test_the_cases_that_cannot_take_a_probe_are_declared_here"]),
 
     # The second engine's translation into the classifier's words. `sweep` reads one summary-line
     # vocabulary, so each of vitest's four outcomes has to arrive spelled the way pytest spells it,

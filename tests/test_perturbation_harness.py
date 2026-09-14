@@ -190,15 +190,109 @@ def test_a_target_that_ran_no_tests_is_not_counted_as_caught(tree, capsys):
 
 
 def test_a_line_that_never_executes_is_refused_before_the_real_edit(tree, capsys):
-    """The reachability probe. Replacing the anchor with a bare `raise` and getting a green run means
-    the target never reaches that line, so the real perturbation leaving it green would be evidence
-    about coverage rather than about the assertion."""
+    """The reachability probe. A bare `raise` goes in above the anchor's line, and a green run then
+    means the target never reaches that line, so the real perturbation leaving it green would be
+    evidence about coverage rather than about the assertion."""
     rc = harness.sweep([("unreached", [("mod.py", "VALUE = 1", "VALUE = 2")], ["t"], True)],
                        root=tree, run=_runner(GREEN, GREEN, GREEN))
     out = capsys.readouterr().out
     assert rc == 1
     assert "never executes under these targets" in out
     assert (tree / "mod.py").read_text() == "VALUE = 1\nOTHER = 1\n", "the probe left its raise behind"
+
+
+def test_a_probe_marker_that_is_not_a_bool_is_refused(tree, capsys):
+    """**A marker meaning "do not probe this" is truthy, so it asked for the probe it was declining.**
+    Eight cases were written `"textual"` in that position, and the substituting probe form hid all
+    eight: its edit did not parse, so the probe was skipped with a note and the case reported `ok`.
+    Found by fixing the insertion form, which made six of them start reporting the line unreachable.
+
+    The scripts that predate this harness convert their marker with `len(c) == 5`, so they were never
+    in that state, which is what makes this an accident rather than a convention worth supporting.
+    Refused rather than coerced, because both readings are defensible and only one is safe: a string
+    could mean "skip, and here is why" or "probe, and here is a label"."""
+    rc = harness.sweep([("marked", [("mod.py", "VALUE = 1", "VALUE = 2")], ["t"], "textual")],
+                       root=tree, run=_runner(GREEN, RED, GREEN))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "INVALID  marked" in out, "a case whose marker is unreadable must be refused, not scored"
+    assert "probe is 'textual', not a bool" in out
+
+
+def test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_it(tmp_path, capsys):
+    """**Substituting the probe for the anchor produced an edit that does not parse for 60 of the 132
+    Python cases that ask for a probe**, measured 2026-09-14 by writing both forms and parsing each. A
+    probe edit that does not parse is skipped with a note, so the guard that establishes reachability
+    was itself unestablished for 45% of the cases requesting it, each of which printed the note and
+    then a verdict anyway.
+
+    The anchor here is both shapes at once, which is why one fixture covers the whole change. `if x:`
+    opens a block, so putting the probe in its place orphans `return 1`. And the anchor is quoted
+    without the line's indentation, which is the ordinary way to write one, so a probe indented from
+    the anchor rather than from the line lands at column 0 inside a function. Neither parses, and a
+    probe edit that does not parse is skipped with a note.
+    """
+    src = "def f(x):\n    if x:\n        return 1\n    return 0\n"
+    mod = tmp_path / "mod.py"
+    mod.write_text(src)
+    seen = []
+
+    def run(targets, root):
+        # Green while the file is pristine, red once anything has been written to it: the baseline and
+        # the restore pass, the probe and the real edit fail. Keyed on content rather than on call
+        # order so the assertions below fail for their own reason and not on a runner index.
+        text = mod.read_text()
+        seen.append(text)
+        return GREEN if text == src else RED
+
+    rc = harness.sweep([("block opener", [("mod.py", "if x:", "if not x:")], ["t"], True)],
+                       root=tmp_path, run=run)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "unestablished" not in out, out
+    assert "perturbation probe" in seen[1], (
+        "the probe never reached the file, so the edit it wrote did not parse")
+    assert "    if x:\n        return 1" in seen[1], (
+        "the anchor has to survive the probe: substituting for a block opener orphans its body")
+    ast.parse(seen[1])
+
+
+def test_an_anchor_sharing_its_line_with_a_compound_header_is_named():
+    """The positive control for the pin in the inventory test below, which asserts an empty list.
+
+    **Inserting the probe above the line proves less than substituting for the anchor in exactly one
+    shape**: with `if c: go()` the probe fires whenever the header is reached, while `go()` may never
+    run, where substituting for `go()` could not be reached without running it. 0 of the 109 probeable
+    Python cases are in that shape, so without this test the pin passes for a predicate that answers
+    False to everything."""
+    assert harness._anchor_shares_its_line("def f(c):\n    if c: go()\n", "go()")
+    assert harness._anchor_shares_its_line("    a = 1; go()\n", "go()")
+    assert not harness._anchor_shares_its_line("def f(c):\n    if c:\n        go()\n", "go()")
+    assert not harness._anchor_shares_its_line("    go()\n    go()\n", "go()"), (
+        "a repeated anchor on plain lines is not sharing a line with anything")
+
+
+def test_the_probe_covers_every_line_a_declared_repeat_matches(tmp_path, capsys):
+    """The count guard lets a case declare an anchor that legitimately appears three or five times,
+    and three cases in the suite do. The substituting form edited all of them, so red meant at least
+    one of those lines runs. Probing only the first would narrow that claim to one line while the
+    perturbation still breaks all of them."""
+    src = "def f():\n    hit()\n\n\ndef g():\n    hit()\n"
+    mod = tmp_path / "mod.py"
+    mod.write_text(src)
+    seen = []
+
+    def run(targets, root):
+        seen.append(mod.read_text())
+        return GREEN if seen[-1] == src else RED
+
+    rc = harness.sweep([("both call sites", [("mod.py", "    hit()", "    pass", 2)], ["t"], True)],
+                       root=tmp_path, run=run)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert seen[1].count("perturbation probe") == 2, (
+        f"one probe per matching line, so either line running is enough: {seen[1]!r}")
+    ast.parse(seen[1])
 
 
 def test_a_probe_that_goes_red_lets_the_real_perturbation_be_judged(tree, capsys):
@@ -363,16 +457,18 @@ def test_a_probe_on_a_file_type_with_no_probe_form_is_refused(tmp_path, capsys):
 
 
 def test_a_probe_run_that_died_before_any_assertion_is_reported(tmp_path, capsys):
-    """Red proves reachability only if a test actually ran. A probe spliced into the middle of an
-    expression breaks the file, and for a `.js` file nothing parses it first, so the run dies at
-    transform time and exits non-zero exactly like a real failure."""
-    (tmp_path / "mod.js").write_text("export const V = 1;\n")
-    rc = harness.sweep([("mid expression", [("mod.js", "1", "2")], ["t"], True)],
+    """Red proves reachability only if a test actually ran. The anchor here is a continuation line
+    inside an array literal, so the statement inserted ahead of it lands in the middle of an
+    expression, and for a `.js` file nothing parses it first: the run dies at transform time and exits
+    non-zero exactly like a real failure. That shape is what remains after the insertion form, and for
+    Python it is caught by the `ast.parse` above instead."""
+    (tmp_path / "mod.js").write_text("export const V = [\n  1,\n];\n")
+    rc = harness.sweep([("continuation line", [("mod.js", "  1,", "  2,")], ["t"], True)],
                        root=tmp_path,
                        run=_runner(GREEN, (1, "1 error in 0.00s"), RED, GREEN))
     out = capsys.readouterr().out
     assert "the probe run ended before any assertion" in out
-    assert "ok       mid expression" in out, (
+    assert "ok       continuation line" in out, (
         "the note is a warning, not a refusal: the real perturbation is still judged")
     assert rc == 0
 
@@ -399,6 +495,59 @@ def test_every_case_that_asks_for_a_probe_edits_a_file_with_a_probe_form():
                 if suffix not in harness.PROBE:
                     unsupported.append(f"{script.name}: {case[0]!r} probes a {suffix} file")
     assert not unsupported, "; ".join(unsupported)
+
+
+def test_the_cases_that_cannot_take_a_probe_are_declared_here():
+    """**The reachability guard's own silence, counted and pinned.** 23 of the 132 Python cases that
+    ask for the probe have an anchor no statement can be inserted ahead of: 18 continuation lines
+    inside a multi-line expression, and 5 `elif`/`except` clause headers. Each runs, each prints a
+    note, and nothing establishes that the line it perturbs executes.
+
+    A comment beside each case would say the same thing and would not be checked. This holds the same
+    inventory as a file the test reads, so a new case cannot join the list quietly and a case that
+    becomes probeable cannot stay on it. Under the substituting probe form the number was 60, and every
+    one of those printed a note that nobody was counting.
+
+    **Limited to `.py` on purpose.** There is no JS parser here, so the 14 `.js` cases cannot be
+    checked this way; for those the probe run's own summary line is what catches a broken edit, which
+    `test_a_probe_run_that_died_before_any_assertion_is_reported` holds.
+    """
+    declared = {line.strip() for line in (SCRIPTS / "unprobeable.txt").read_text().splitlines()
+                if line.strip() and not line.startswith("#")}
+    found, unfit, inline = set(), [], []
+    for script in _scripts():
+        for case in _cases(script) or ():
+            if not (len(case) > 3 and case[3]):
+                continue
+            if len(case[1]) != 1 or callable(case[1][0][1]):
+                unfit.append(f"{script.name}: {case[0]}")
+                continue
+            rel, old = case[1][0][0], case[1][0][1]
+            path = ROOT / rel
+            if path.suffix != ".py":
+                continue
+            text = path.read_text()
+            if harness._anchor_shares_its_line(text, old):
+                inline.append(f"{script.name}: {case[0]}")
+            try:
+                ast.parse(harness._probe_edit(text, old, harness.PROBE[".py"]))
+            except SyntaxError:
+                found.add(f"{script.name}: {case[0]}")
+    # The precondition. `sweep` refuses a probe case that is not exactly one literal edit, so such a
+    # case would report INVALID for a reason unrelated to its property, and it would sit outside the
+    # inventory below rather than inside it.
+    assert not unfit, ("a probe needs exactly one literal edit; these would be refused: "
+                       + "; ".join(unfit))
+    # 0 of 109 today, and a habit rather than a guarantee, so it is asserted. The predicate's own
+    # evidence is `test_an_anchor_sharing_its_line_with_a_compound_header_is_named`, because an
+    # assertion on an empty list proves nothing about the rule that filled it.
+    assert not inline, ("these anchors have code before them on their own line, so reaching the line "
+                        "does not mean reaching the anchor: " + "; ".join(inline))
+    new = sorted(found - declared)
+    gone = sorted(declared - found)
+    assert not new and not gone, (
+        f"tests/perturbations/unprobeable.txt is out of date.\nNo longer unprobeable, delete: "
+        f"{gone}\nNewly unprobeable, either re-anchor on the whole statement or add: {new}")
 
 
 def _scripts():

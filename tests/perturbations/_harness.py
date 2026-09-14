@@ -147,11 +147,91 @@ def vitest(targets, root=ROOT):
     return 0, f"{passed} passed in 0.00s"
 
 
+def _anchor_lines(text: str, old: str) -> list[tuple[int, int]]:
+    """`(line start, anchor start)` for every line the anchor begins on, one entry per line.
+
+    The anchor start is its first non-blank character, so an anchor written with a leading newline
+    names the line it quotes rather than the one above it. Shared with the inventory test in
+    `tests/test_perturbation_harness.py`, which needs the text between the two offsets: a second copy
+    of this walk over there would be a check on the copy.
+    """
+    seen, at, step = {}, text.find(old), max(len(old), 1)
+    while at >= 0:
+        first = at + len(old) - len(old.lstrip())
+        seen.setdefault(text.rfind("\n", 0, first) + 1, first)
+        at = text.find(old, at + step)
+    return sorted(seen.items())
+
+
+def _anchor_shares_its_line(text: str, old: str) -> bool:
+    """Is there code before the anchor on its own line, `if c: stmt` or anything after a semicolon?
+
+    **The one shape where inserting the probe above the line proves less than substituting for the
+    anchor.** The line is reached whenever the compound header is, while the anchor itself may not run.
+    Substitution deleted the anchor and had no such gap. True for 0 of the 109 probeable Python cases on
+    2026-09-14, because nothing in this repository writes a single-line compound statement, which is a
+    habit rather than a guarantee, so `tests/test_perturbation_harness.py` asserts it.
+
+    Textual, so an anchor that follows a dict key or a colon inside a string reads as sharing its line
+    too. None does today, and the answer to a red here is the same either way: re-anchor the case on the
+    whole statement.
+    """
+    for bol, first in _anchor_lines(text, old):
+        prefix = text[bol:first].rstrip()
+        if ";" in prefix or prefix.endswith(":"):
+            return True
+    return False
+
+
+def _probe_edit(text: str, old: str, probe: str) -> str:
+    """`text` with `probe` inserted as its own statement ahead of every line the anchor begins on.
+
+    **Ahead of the anchor rather than in place of it, and indented from the line rather than from the
+    anchor.** Substituting the probe for the anchor produced an edit that does not parse for 60 of the
+    132 Python cases that ask for a probe, measured 2026-09-14 by writing both forms and parsing each:
+    it orphans the body of a block opener, it glues the probe onto the following line when the anchor
+    ends in a newline, and it dedents the anchor to column 0 whenever the anchor text begins mid-line,
+    which is the shape a case gets by quoting a statement without its indentation. A probe edit that
+    does not parse is skipped with a note, so those 60 got a verdict with nothing behind it.
+
+    **Counted over `probe is True`**, which excludes the eight cases whose truthy marker asked for a
+    probe by accident and includes the one re-enabled with this change. The harness was really probing
+    139 then, 66 of which did not parse, and `perturb-harness-guards.py` states that pair beside the
+    cases that break this.
+
+    Inserting ahead parses for 37 of the 60, and for every case substitution already handled, which is
+    the half worth checking before swapping one form for another. Taking the indentation from the line
+    is what makes that true: two cases are anchored mid-line, and indenting from the anchor instead
+    would have broken both. 23 remain, listed in `unprobeable.txt`.
+
+    It proves the same property and promises slightly more. A statement that raises immediately before
+    the anchor's line goes red exactly when control flow reaches that line, and when it does not the
+    file behaves as it did, which substitution could not offer: deleting the anchor changes the program
+    on paths that never reach it, so red could come from somewhere else entirely.
+
+    **One shape where it proves less, and it holds for 0 of the 109 probeable Python cases rather than
+    by construction.** An anchor with code before it on its own line, `if c: stmt` or anything after a
+    semicolon, is reached whenever the line is reached while the anchor itself may not run. Substitution
+    had no such gap, since it deleted the anchor. Nothing in this repository writes a single-line
+    compound statement, and the inventory test asserts that rather than leaving it as a habit.
+
+    **Every line the anchor matches, because the count guard lets a case declare an anchor that
+    legitimately appears three or five times**, and the substituting form edited all of them. Red then
+    means at least one of those lines runs, which is what it meant before.
+    """
+    out, pos = [], 0
+    for bol, _ in _anchor_lines(text, old):
+        rest = text[bol:]
+        out.append(text[pos:bol] + " " * (len(rest) - len(rest.lstrip())) + probe + "\n")
+        pos = bol
+    return "".join(out) + text[pos:]
+
+
 def _reachable(path, text, old, case_targets, root, run):
     """Does the line about to be perturbed actually execute under these targets?
 
-    Replaces the anchor with a bare `raise` and requires the targets to go red. If they stay green
-    the line never runs, so the real perturbation leaving them green would say nothing about the
+    Inserts a bare `raise` ahead of the anchor's line and requires the targets to go red. If they stay
+    green the line never runs, so the real perturbation leaving them green would say nothing about the
     assertion. Returns `(problem, note)`, at most one of them set.
 
     Only meaningful when the target executes the code. A structural sweep reads the file and notices
@@ -166,22 +246,27 @@ def _reachable(path, text, old, case_targets, root, run):
     and both meant skip. The other fourteen never had a probe and say so where they call `sweep`.
 
     The pre-move copies were deleted on 2026-09-13 from a gitignored directory, so that grep cannot be
-    repeated. **The set can still be re-derived from this repository**, which is better than taking
-    this paragraph's word for it: collect the cases each script passes to `sweep`, count those whose
-    fourth element is true, and exactly those six scripts appear, at 21/31, 13/15, 6/13, 12/18, 12/13
-    and 10/11. The maintainer's reviewer did that independently and got the same six, which is why the
-    claim that the migration preserved behaviour rests on something other than a note.
+    repeated. **The re-derivation that stood behind this paragraph has since expired, and the recipe is
+    recorded because a reader will otherwise try it.** Collecting each script's cases and counting the
+    ones asking for a probe isolated exactly those six on 2026-09-13, at 21/31, 13/15, 6/13, 12/18,
+    12/13 and 10/11; the maintainer's reviewer did it independently and got the same six. Fourteen
+    scripts probe today, so that count no longer isolates anything, and one of the six has moved:
+    `query-failure` is 17/19 after cases were added to it.
     """
     if path.suffix not in PROBE:
         return f"no probe form for a {path.suffix} file, so reachability cannot be established", None
-    indent = " " * (len(old) - len(old.lstrip()))
-    _write(path, text.replace(old, indent + PROBE[path.suffix]))
+    _write(path, _probe_edit(text, old, PROBE[path.suffix]))
     try:
         if path.suffix == ".py":
             try:
                 ast.parse(path.read_text(encoding="utf-8"))
             except SyntaxError:
-                return None, "the probe edit does not parse, so reachability is unestablished"
+                # What is left after the insertion form: an anchor whose line is a continuation of a
+                # multi-line expression, and an `elif`/`except` clause header, which cannot have a
+                # statement above it. 23 cases, listed in `unprobeable.txt` and pinned by a test, so a
+                # new one cannot join them quietly.
+                return None, ("no statement can be inserted ahead of this anchor's line, so "
+                              "reachability is unestablished")
         rc, tail = run(case_targets, root)
         if rc == 0:
             return ("the perturbed line never executes under these targets, so a green result "
@@ -226,7 +311,16 @@ def sweep(cases, root=ROOT, run=_pytest):
         originals: dict[pathlib.Path, str] = {}
         problem = None
         try:
-            if probe:
+            if not isinstance(probe, bool):
+                # **A marker meaning "do not probe this" is truthy, so it asked for the probe it says
+                # it is skipping.** Eight cases were in that state, all written with `"textual"` in
+                # this position, and the substituting probe form hid every one: its edit did not
+                # parse, so the probe was skipped with a note and the case reported `ok`. The scripts
+                # that predate the shared harness convert their marker with `len(c) == 5` and are
+                # unaffected, which is why this reads as an accident rather than a convention.
+                problem = (f"probe is {probe!r}, not a bool. A truthy marker asks for the probe it "
+                           f"means to skip, so write False and say why in a comment.")
+            elif probe:
                 if len(edits) != 1 or callable(edits[0][1]):
                     problem = "the reachability probe needs exactly one literal edit"
                 else:

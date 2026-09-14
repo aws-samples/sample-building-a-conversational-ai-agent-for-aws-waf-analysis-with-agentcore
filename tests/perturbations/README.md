@@ -75,15 +75,32 @@ both, and it refuses a module-level `for` loop too, because one script kept its 
 through the move by calling a local helper named `run`, so the banned token wasn't there and the file
 would have raised `NameError` on its first line.
 
-The reachability probe is opt-in per case. It replaces the anchor with a bare `raise` and requires the
-targets to go red first; if they stay green the line never executes under those tests and the real
-perturbation would prove nothing either way. A case whose target reads source rather than running it
-skips the probe and says so in a comment.
+The reachability probe is opt-in per case. It inserts a bare `raise` as its own statement ahead of the
+line the anchor begins on and requires the targets to go red first; if they stay green the line never
+executes under those tests and the real perturbation would prove nothing either way. A case whose
+target reads source rather than running it passes `probe=False` and says so in a comment.
+
+**Substituting the probe for the anchor left it silent for 60 of the 132 Python cases that ask for
+one.** That edit does not parse, and an edit that does not parse is skipped with a note, so those cases
+printed the note and then got a verdict with nothing behind it. Inserting ahead of the line parses for
+37 of the 60, and it loses none of the cases the old form handled, including two whose anchor begins
+mid-line, because the indentation comes from the line.
+
+The marker is a bool and nothing else. A case that declines the probe writes `False`; eight wrote
+`"textual"`, which is truthy, so each asked for the probe it meant to skip. The harness refuses
+anything that is not a bool now, because a string can as easily mean "skip, and here is why".
+
+23 cases are left that no statement can be inserted ahead of, because the anchor's line is a
+continuation line inside a multi-line expression or an `elif`/`except` clause header. They are listed
+in `unprobeable.txt`, one per line, and `tests/test_perturbation_harness.py` requires that file to
+match the real set exactly: a new one cannot join the list quietly, and a case that becomes probeable
+cannot stay on it. If that test sends you there, re-anchor the case on the whole statement, pass
+`probe=False` with a reason, or add the line the test prints.
 
 ## What CI runs
 
 On every push, `tests/test_perturbation_harness.py` unit-tests the harness guards and statically
-re-checks that all 381 cases still anchor to code that exists and still name tests that exist. It
+re-checks that all 388 cases still anchor to code that exists and still name tests that exist. It
 takes under a second, and anchor drift is silent, so that is where drift gets caught.
 
 The sweep itself is `.github/workflows/perturbations.yml`, on every pull request, and it installs the
