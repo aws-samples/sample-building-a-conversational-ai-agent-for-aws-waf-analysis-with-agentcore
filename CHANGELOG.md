@@ -1,5 +1,109 @@
 # Changelog
 
+## 0.26.0 (2026-09-14)
+
+### Fixed: five tools disclosed a WebACL they never queried
+
+Six tools take their own `webacl_name` and use it as the metric dimension. Only `get_waf_config` writes
+that name to session state, and the provenance record read session state, so the other five labelled their
+answers with whatever WebACL had been loaded last.
+
+- **Measured on a live account with the context on `response-id-on-page`**:
+  `get_waf_metrics(webacl_name="shield-sample-webacl", metric_name="BlockedRequests")` answered `Total: 6`
+  under a heading naming `shield-sample-webacl`, and the `SOURCE:` line on that same answer read
+  `response-id-on-page via CloudWatch metrics ... call get_waf_config(webacl_name='...') and run this
+  again`. One WebACL's number labelled with another's name, and an instruction to discard a correct answer.
+- `get_waf_metrics`, `get_waf_overview`, `patrol_scan`, `generate_weekly_report` and
+  `review_waf_rules_deep` now declare the subject they report on. A test requires any tool taking a
+  `webacl_name` to declare it or to set the context, so a seventh cannot arrive without one.
+- **The line for a declared subject no longer tells the model to reload the session context**, because
+  re-running changes nothing when the dimension comes from the call's own argument.
+
+### Fixed: the weekly report's title named a day the report does not cover
+
+Both dates came from the window's own boundaries with no zone, so the label was off by one day at one end.
+Which end depends on the sign of the session offset, and only one of the two is ever wrong.
+
+- Measured across five offsets for a report covering 05-08 to 05-14: at UTC+8 and UTC+5:30 the title read
+  `05-07 to 05-14`; at UTC, UTC-5 and UTC-8 it read `05-08 to 05-15`.
+- The title now renders in the session timezone and names the zone. The subtitle names the baseline week
+  the report also read, which carried no label at all.
+
+### Added: a metric read now says which window it asked for
+
+0.25.0 put the WebACL, the window and the engine on the tool chip for log queries, and said `patrol_scan`,
+`get_waf_metrics` and `get_waf_overview` were not on that channel. They are now.
+
+- **The recording sits in the CloudWatch client rather than in a wrapper each call site has to adopt.**
+  `get_metric_data` is called at 30 sites across five files, and `tools/aws_session.get_client` is the only
+  place in the repository that constructs a boto3 client, which a structural test keeps true. A call site
+  written next year is covered without being listed.
+- The count is per read rather than per tool call. `patrol_scan` makes seven, and printing `1 query` would
+  be a false statement of exactly the kind this channel exists to remove.
+
+### Fixed: a naive window was recorded in local time and sent as UTC
+
+`datetime.timestamp()` reads a naive value in the machine's local zone, botocore serialises it with no
+offset, and AWS reads that as UTC. Measured on `TZ=Asia/Shanghai`, `datetime(2026, 5, 8)` recorded
+2026-05-07T16:00Z while AWS received 2026-05-08T00:00Z, an eight-hour gap between the window shown and the
+window read. No call site passes a naive datetime today, all 30 checked, so this guards the one nobody has
+written yet.
+
+### Fixed: the SOURCE line now reaches every tool that queried
+
+It was built inside one module and appended at that module's two output paths, which covered two of the ten
+tools that answer from a query. It is appended once now, at `AfterToolCallEvent`, keyed on whether the call
+queried anything rather than on a list of tool names, so a tool added later is covered without being listed.
+
+- **The engine named is the one the query used**, rather than one re-derived from session state at render
+  time, which answers "what would a query use now" where the question is "what did this one use".
+- `run_logs_query(log_group=...)` records for itself. It builds its own client and never reaches the shared
+  query path, so it was invisible to the disclosure, and the WebACL it would have been labelled with was
+  not consulted at all.
+- The record is drained per tool call, which fixes a CLI-only regression: a second tool call rendered
+  `SOURCE: webacl-B` over a 167-hour window that spanned the first tool's query of `webacl-A`.
+
+### Fixed: the tool chip named one engine where a tool call read two
+
+Three tools pair a log query with a CloudWatch metric read in the same call, and the record held a single
+engine value where the last writer won, so a conclusion drawn from logs could be labelled `CloudWatch
+metrics`. Engines are a list now, joined for display, in reading order rather than sorted: a set's
+iteration order is randomised per process, and a display string that changes between runs cannot be
+asserted.
+
+### Added: an attribution has to carry its own uncertainty
+
+Attributing traffic to one actor now requires listing the evidence and naming what else would explain it.
+
+- One answer concluded "highly likely the same attacker, two-phase" from an identical User-Agent and a
+  12-minute gap, in the same answer that reported the JA4 fingerprints differed. That traffic came from a
+  test fleet, where the shared User-Agent is a load generator artifact.
+- A history table credited `2026-09-08 11:00-13:00 | 122 | SQLi` to a WebACL whose SQLi series is empty for
+  that whole day. The number belongs to another WebACL queried in an earlier turn of the same conversation,
+  so the rule covers recall inside one conversation and not only inference across WebACLs.
+- **This is a second instruction on a mechanism already measured to be lossy.** On 2026-09-13 the model
+  read the `SOURCE:` line, acted on it and did not relay it. It is what is available: no tool sees two
+  WebACLs in one call, and the attribution is drawn in the answer.
+
+### Changed: Claude Sonnet 5 everywhere, and the GPT workaround is gone
+
+Sonnet 5 is the recommended model in every document and the default in the deploy template. The workaround
+that let a GPT model drive the agent is removed from every document, because it does not work.
+
+- The install path is stated at the top of the Quick Start: ask an AI agent to read `AGENTS.md`. There is
+  deliberately no one-click script.
+- Model IDs were measured in all nine supported regions rather than generalised from two.
+  `global.anthropic.claude-sonnet-5` resolves in all nine, `us.` in three, `eu.` in two, `au.` in one, and
+  no `jp.` or `apac.` Sonnet 5 exists.
+
+### Fixed: a drifted perturbation anchor was reported as an unreachable line
+
+The sweep said "the perturbed line never executes" when the anchor no longer occurred in the file at all,
+which sends a reader to look at code that is fine. It says the case has drifted now. The fix paid for itself
+in the pull request that made it, when two anchors drifted.
+
+1072 tests, 34 perturbation scripts, 442 cases. Full sweep 34/34.
+
 ## 0.25.0 (2026-09-14)
 
 ### Fixed: get_waf_metrics named the wrong day for the largest attack in this account's history
