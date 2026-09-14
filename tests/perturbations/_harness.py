@@ -147,6 +147,42 @@ def vitest(targets, root=ROOT):
     return 0, f"{passed} passed in 0.00s"
 
 
+def _anchor_lines(text: str, old: str) -> list[tuple[int, int]]:
+    """`(line start, anchor start)` for every line the anchor begins on, one entry per line.
+
+    The anchor start is its first non-blank character, so an anchor written with a leading newline
+    names the line it quotes rather than the one above it. Shared with the inventory test in
+    `tests/test_perturbation_harness.py`, which needs the text between the two offsets: a second copy
+    of this walk over there would be a check on the copy.
+    """
+    seen, at, step = {}, text.find(old), max(len(old), 1)
+    while at >= 0:
+        first = at + len(old) - len(old.lstrip())
+        seen.setdefault(text.rfind("\n", 0, first) + 1, first)
+        at = text.find(old, at + step)
+    return sorted(seen.items())
+
+
+def _anchor_shares_its_line(text: str, old: str) -> bool:
+    """Is there code before the anchor on its own line, `if c: stmt` or anything after a semicolon?
+
+    **The one shape where inserting the probe above the line proves less than substituting for the
+    anchor.** The line is reached whenever the compound header is, while the anchor itself may not run.
+    Substitution deleted the anchor and had no such gap. True for 0 of the 109 probeable Python cases on
+    2026-09-14, because nothing in this repository writes a single-line compound statement, which is a
+    habit rather than a guarantee, so `tests/test_perturbation_harness.py` asserts it.
+
+    Textual, so an anchor that follows a dict key or a colon inside a string reads as sharing its line
+    too. None does today, and the answer to a red here is the same either way: re-anchor the case on the
+    whole statement.
+    """
+    for bol, first in _anchor_lines(text, old):
+        prefix = text[bol:first].rstrip()
+        if ";" in prefix or prefix.endswith(":"):
+            return True
+    return False
+
+
 def _probe_edit(text: str, old: str, probe: str) -> str:
     """`text` with `probe` inserted as its own statement ahead of every line the anchor begins on.
 
@@ -158,6 +194,11 @@ def _probe_edit(text: str, old: str, probe: str) -> str:
     which is the shape a case gets by quoting a statement without its indentation. A probe edit that
     does not parse is skipped with a note, so those 60 got a verdict with nothing behind it.
 
+    **Counted over `probe is True`**, which excludes the eight cases whose truthy marker asked for a
+    probe by accident and includes the one re-enabled with this change. The harness was really probing
+    139 then, 66 of which did not parse, and `perturb-harness-guards.py` states that pair beside the
+    cases that break this.
+
     Inserting ahead parses for 37 of the 60, and for every case substitution already handled, which is
     the half worth checking before swapping one form for another. Taking the indentation from the line
     is what makes that true: two cases are anchored mid-line, and indenting from the anchor instead
@@ -168,18 +209,18 @@ def _probe_edit(text: str, old: str, probe: str) -> str:
     file behaves as it did, which substitution could not offer: deleting the anchor changes the program
     on paths that never reach it, so red could come from somewhere else entirely.
 
+    **One shape where it proves less, and it holds for 0 of the 109 probeable Python cases rather than
+    by construction.** An anchor with code before it on its own line, `if c: stmt` or anything after a
+    semicolon, is reached whenever the line is reached while the anchor itself may not run. Substitution
+    had no such gap, since it deleted the anchor. Nothing in this repository writes a single-line
+    compound statement, and the inventory test asserts that rather than leaving it as a habit.
+
     **Every line the anchor matches, because the count guard lets a case declare an anchor that
     legitimately appears three or five times**, and the substituting form edited all of them. Red then
     means at least one of those lines runs, which is what it meant before.
     """
-    starts, at, step = set(), text.find(old), max(len(old), 1)
-    while at >= 0:
-        # From the anchor's first non-blank character, so an anchor written with a leading newline
-        # probes the line it names rather than the one above it.
-        starts.add(text.rfind("\n", 0, at + len(old) - len(old.lstrip())) + 1)
-        at = text.find(old, at + step)
     out, pos = [], 0
-    for bol in sorted(starts):
+    for bol, _ in _anchor_lines(text, old):
         rest = text[bol:]
         out.append(text[pos:bol] + " " * (len(rest) - len(rest.lstrip())) + probe + "\n")
         pos = bol

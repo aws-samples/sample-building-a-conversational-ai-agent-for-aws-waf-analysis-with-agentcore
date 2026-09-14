@@ -257,6 +257,21 @@ def test_the_probe_is_inserted_ahead_of_the_anchor_rather_than_substituted_for_i
     ast.parse(seen[1])
 
 
+def test_an_anchor_sharing_its_line_with_a_compound_header_is_named():
+    """The positive control for the pin in the inventory test below, which asserts an empty list.
+
+    **Inserting the probe above the line proves less than substituting for the anchor in exactly one
+    shape**: with `if c: go()` the probe fires whenever the header is reached, while `go()` may never
+    run, where substituting for `go()` could not be reached without running it. 0 of the 109 probeable
+    Python cases are in that shape, so without this test the pin passes for a predicate that answers
+    False to everything."""
+    assert harness._anchor_shares_its_line("def f(c):\n    if c: go()\n", "go()")
+    assert harness._anchor_shares_its_line("    a = 1; go()\n", "go()")
+    assert not harness._anchor_shares_its_line("def f(c):\n    if c:\n        go()\n", "go()")
+    assert not harness._anchor_shares_its_line("    go()\n    go()\n", "go()"), (
+        "a repeated anchor on plain lines is not sharing a line with anything")
+
+
 def test_the_probe_covers_every_line_a_declared_repeat_matches(tmp_path, capsys):
     """The count guard lets a case declare an anchor that legitimately appears three or five times,
     and three cases in the suite do. The substituting form edited all of them, so red meant at least
@@ -499,7 +514,7 @@ def test_the_cases_that_cannot_take_a_probe_are_declared_here():
     """
     declared = {line.strip() for line in (SCRIPTS / "unprobeable.txt").read_text().splitlines()
                 if line.strip() and not line.startswith("#")}
-    found, unfit = set(), []
+    found, unfit, inline = set(), [], []
     for script in _scripts():
         for case in _cases(script) or ():
             if not (len(case) > 3 and case[3]):
@@ -511,8 +526,11 @@ def test_the_cases_that_cannot_take_a_probe_are_declared_here():
             path = ROOT / rel
             if path.suffix != ".py":
                 continue
+            text = path.read_text()
+            if harness._anchor_shares_its_line(text, old):
+                inline.append(f"{script.name}: {case[0]}")
             try:
-                ast.parse(harness._probe_edit(path.read_text(), old, harness.PROBE[".py"]))
+                ast.parse(harness._probe_edit(text, old, harness.PROBE[".py"]))
             except SyntaxError:
                 found.add(f"{script.name}: {case[0]}")
     # The precondition. `sweep` refuses a probe case that is not exactly one literal edit, so such a
@@ -520,6 +538,11 @@ def test_the_cases_that_cannot_take_a_probe_are_declared_here():
     # inventory below rather than inside it.
     assert not unfit, ("a probe needs exactly one literal edit; these would be refused: "
                        + "; ".join(unfit))
+    # 0 of 109 today, and a habit rather than a guarantee, so it is asserted. The predicate's own
+    # evidence is `test_an_anchor_sharing_its_line_with_a_compound_header_is_named`, because an
+    # assertion on an empty list proves nothing about the rule that filled it.
+    assert not inline, ("these anchors have code before them on their own line, so reaching the line "
+                        "does not mean reaching the anchor: " + "; ".join(inline))
     new = sorted(found - declared)
     gone = sorted(declared - found)
     assert not new and not gone, (
