@@ -311,6 +311,24 @@ def test_the_probe_covers_every_line_a_declared_repeat_matches(tmp_path, capsys)
     ast.parse(seen[1])
 
 
+def test_a_probe_case_whose_anchor_is_gone_says_so_rather_than_blaming_reachability(tree, capsys):
+    """**The probe runs before the anchor-count guard, so a drifted anchor made the probe edit a no-op**
+    and the targets stayed green, which `_reachable` reported as the perturbed line never executing.
+
+    That happened on 2026-09-14, in a case anchored on a return statement that had been rewritten in the
+    same session. The message sent the reader after a coverage question about code that was fine, and the
+    count guard, which says `anchor matched 0x`, never got to speak because a `problem` from the probe
+    skips the edits loop. The earlier judgement that this could not mislead anyone, on the grounds that
+    `test_every_case_still_applies_to_the_code_it_perturbs` catches drift on every push, was wrong in the
+    one place it mattered: the sweep is what you run while editing, and it is the thing that spoke."""
+    rc = harness.sweep([("gone", [("mod.py", "VALUE = 99", "VALUE = 2")], ["t"], True)],
+                       root=tree, run=_runner(GREEN, GREEN, GREEN))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "does not occur in mod.py, so the case has drifted" in out
+    assert "never executes" not in out, "a drifted anchor is not an unreachable line"
+
+
 def test_a_probe_that_goes_red_lets_the_real_perturbation_be_judged(tree, capsys):
     """The positive control for the probe: baseline green, probe red, real edit red. Without this the
     two tests above pass for a probe that refuses everything."""

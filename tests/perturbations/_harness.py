@@ -255,6 +255,13 @@ def _reachable(path, text, old, case_targets, root, run):
     """
     if path.suffix not in PROBE:
         return f"no probe form for a {path.suffix} file, so reachability cannot be established", None
+    if old not in text:
+        # **The probe runs before the anchor-count guard, so a drifted anchor makes the probe edit a
+        # no-op and the targets stay green**, which reads as "the perturbed line never executes". That
+        # happened on 2026-09-14 and sent the reader after a coverage question when the case was simply
+        # anchored on a statement that had been rewritten. The count guard below says the right thing and
+        # never got to speak, so this says it here.
+        return f"the anchor does not occur in {path.name}, so the case has drifted", None
     _write(path, _probe_edit(text, old, PROBE[path.suffix]))
     try:
         if path.suffix == ".py":
