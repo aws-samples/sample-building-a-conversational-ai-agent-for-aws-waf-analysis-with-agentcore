@@ -146,10 +146,25 @@ def _date_range_label(start, end, user_tz, tz_label: str = "") -> str:
     The zone label comes from the caller rather than being derived again here, because there is already
     one rule for spelling it and a second copy is what drifts.
     """
-    last = end - timedelta(seconds=1)
     dates = (f"{start.astimezone(user_tz).strftime('%Y-%m-%d')} to "
-             f"{last.astimezone(user_tz).strftime('%Y-%m-%d')}")
+             f"{last_day_covered(end, user_tz)}")
     return f"{dates} {tz_label}" if tz_label else dates
+
+
+def last_day_covered(end, user_tz, fmt: str = "%Y-%m-%d") -> str:
+    """The last day the window covers, from its exclusive end.
+
+    **Shared with the filename because keeping two copies is how the filename stayed wrong.** The title
+    was fixed in 0.26.0 and `output_path` went on formatting `end` directly, so a report covering
+    2026-09-08 to 09-14 was written to `waf-weekly-summary-…-20260915.html`, measured against the
+    deployed endpoint on 2026-09-15. It reads correctly only when `end` was capped at `now` by the `min`
+    in `generate_weekly_report`, which is why a run earlier in the same week looked fine and nothing
+    noticed.
+
+    The filename is the one string a reader sees before opening the file, and the one they see in a
+    directory a year later, so a day it does not cover is the same defect as the title carrying one.
+    """
+    return (end - timedelta(seconds=1)).astimezone(user_tz).strftime(fmt)
 
 
 def _dims(webacl: str, scope: str, region: str, rule: str = "ALL") -> list[dict]:
@@ -930,7 +945,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         L_attack_chart_title=L["attack_chart_title"],
     )
 
-    output_path = f"waf-weekly-summary-{webacl_name}-{end.strftime('%Y%m%d')}.html"
+    # Through the same derivation the title uses, so the name and the title cannot disagree again.
+    output_path = f"waf-weekly-summary-{webacl_name}-{last_day_covered(end, _user_tz, '%Y%m%d')}.html"
     with open(output_path, "w") as f:
         f.write(html)
 

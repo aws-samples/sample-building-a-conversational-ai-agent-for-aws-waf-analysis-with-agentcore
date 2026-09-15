@@ -13,7 +13,7 @@ reader could not spot either by arithmetic on the other.
 
 from datetime import datetime, timedelta, timezone
 
-from tools.report import _date_range_label, _window_labels
+from tools.report import _date_range_label, _window_labels, last_day_covered
 
 UTC8 = timezone(timedelta(hours=8))
 UTC_MINUS_5 = timezone(timedelta(hours=-5))
@@ -115,3 +115,46 @@ def test_the_zone_is_named_once_rather_than_on_both_halves():
     start = _asked("2026-05-08", UTC8)
     label = _window_labels(start, start + timedelta(days=7), start - timedelta(days=7), UTC8, "UTC+8")
     assert label.count("UTC+8") == 1, label
+
+
+def test_the_filename_names_the_last_day_the_report_covers():
+    """**The title was fixed in 0.26.0 and the filename was not**, because each derived the last day for
+    itself. Measured against the deployed endpoint 2026-09-15: a report covering 2026-09-08 to 09-14 was
+    written to `waf-weekly-summary-shield-sample-webacl-20260915.html`.
+
+    Driven at UTC, where the old code was wrong, and at UTC+8, where `end`'s exclusive boundary lands on
+    the same local day as the last instant so the old code happened to be right. One offset alone cannot
+    tell the two derivations apart, which is the same reason the title's own tests sweep five offsets."""
+    for tz, label in ((timezone.utc, "UTC"), (UTC8, "UTC+8")):
+        start = _asked("2026-09-08", tz)
+        end = start + timedelta(days=7)
+        assert last_day_covered(end, tz, "%Y%m%d") == "20260914", (
+            f"at {label} the filename names {last_day_covered(end, tz, '%Y%m%d')}, and the report covers "
+            f"through 2026-09-14")
+
+
+def test_the_filename_and_the_title_cannot_disagree():
+    """The pairing, and it is the property rather than the instance. Two copies of one derivation is what
+    produced the defect, so the assertion is that they are one: the day the filename carries is the day
+    the title's range ends on, for a window `now` capped mid-day as well as one on a boundary."""
+    start = _asked("2026-09-08", UTC8)
+    for end in (start + timedelta(days=7), start + timedelta(days=6, hours=13, minutes=27)):
+        title = _date_range_label(start, end, UTC8, "UTC+8")
+        title_end = title.split(" to ")[1].split(" ")[0]
+        assert last_day_covered(end, UTC8, "%Y%m%d") == title_end.replace("-", ""), (
+            f"the file is named for {last_day_covered(end, UTC8, '%Y%m%d')} and its own title says the "
+            f"window ends {title_end}")
+
+
+def test_the_name_comes_from_the_shared_derivation():
+    """Structural, and it guards the state rather than the symptom. The test above would pass again after
+    someone re-derived the last day at the filename with a correct expression, and the next fix to one of
+    the two would leave the other behind, which is exactly what happened between 0.26.0 and 0.26.1."""
+    import pathlib
+
+    from tools import report
+
+    line = next(ln for ln in pathlib.Path(report.__file__).read_text().splitlines()
+                if "output_path = " in ln)
+    assert "last_day_covered(" in line, (
+        f"the filename derives its own last day again rather than sharing the title's: {line.strip()}")
