@@ -8,10 +8,10 @@ from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import (
     get_webacl_name, get_scope, resolve_region,
-    is_log_filter_active,
+    is_log_filter_active, note_window_capped,
 )
 from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently
-from tools.query_limits import MAX_MINUTES, window_capped_note
+from tools.query_limits import MAX_MINUTES
 
 _cwl_semaphore = threading.Semaphore(8)
 
@@ -88,9 +88,9 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
         return f"Error: cannot parse start_time '{start_time}'."
 
     _duration = min(duration_minutes, MAX_MINUTES)
-    # The third silent clamp. Both steps append it, because a scan over the first 360 minutes of a
-    # requested two days is as incomplete as an investigation over them.
-    _cap = window_capped_note(duration_minutes, _duration)
+    # Both steps are covered, because a scan over the first 360 minutes of a requested two days is as
+    # incomplete as an investigation over them.
+    note_window_capped(duration_minutes, _duration)
     end_epoch = start_epoch + _duration * 60
 
     # Check ALLOW log availability for both steps
@@ -135,9 +135,9 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
             _ipa.ip_address(ip)
         except ValueError:
             return f"Error: invalid IP address '{ip}'"
-        return _step_investigate(ip, start_epoch, end_epoch, rule_name) + _cap
+        return _step_investigate(ip, start_epoch, end_epoch, rule_name)
     elif step == "scan":
-        return _step_scan(start_epoch, end_epoch, rule_name) + _cap
+        return _step_scan(start_epoch, end_epoch, rule_name)
     else:
         return f"Error: unknown step '{step}'. Available: investigate, scan"
 

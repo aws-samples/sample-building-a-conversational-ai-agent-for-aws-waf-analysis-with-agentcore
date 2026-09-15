@@ -240,6 +240,45 @@ def declare_query_subject(name: str | None):
         _state.setdefault("provenance_subject", {})[current_tool_call()] = name
 
 
+def note_window_capped(asked_minutes: int, used_minutes: int):
+    """Record that this tool call queried a shorter window than it was asked for.
+
+    **Recorded here and rendered by the hook, because the first attempt appended the sentence at each
+    return and there are more returns than anyone counts.** 0.27.1 shipped it at three of the five return
+    paths in the two tools it touched, and the two it missed were the ones that answer with content:
+    `run_logs_query`'s table (a reader who gets 25 rows reads them as two days, while a reader who gets 0
+    rows at least doubts them) and `analyze_ip`'s NAT verdict, which prints `Confidence: HIGH` and
+    "blocking this IP would affect multiple legitimate users" from diversity counts taken over a window
+    that may have been cut from 2,880 minutes to 360. Its three query-failure returns were silent too, so
+    a user read "my two-day query timed out" for a six-hour attempt.
+
+    **And the tool count was wrong in the same way.** Seven call sites clamp with
+    `min(duration_minutes, MAX_MINUTES)`: `run_logs_query`, `analyze_ip`, `investigate_block_fp`,
+    `aggregate_logs`, `detect_bypass`, `check_challenge_compatibility` and `investigate_injection`. The
+    first pass covered the three it was already editing and pinned that set in a test, which locked the
+    gap in rather than finding it. `aggregate_logs` echoes the window it used, which is a different
+    statement from "your request was narrowed", so it records here too.
+
+    So the clamp records and `SourceDisclosure` appends, once per tool call, on whichever return the tool
+    took, for a tool written next year without being listed anywhere. Same slot keying as the provenance
+    record, and popped by the same drain.
+    """
+    with _provenance_lock:
+        if used_minutes < asked_minutes:
+            _state.setdefault("window_cap", {})[current_tool_call()] = {
+                "asked": asked_minutes, "used": used_minutes}
+
+
+def take_window_cap(tool_use_id: str | None = None) -> dict:
+    """The clamp this tool call applied, and clear it. `{}` when the window fitted.
+
+    Cleared on read for the reason the provenance record is: a note that outlives its tool call becomes a
+    claim about the next one's window.
+    """
+    with _provenance_lock:
+        return (_state.get("window_cap") or {}).pop(tool_use_id or "", {})
+
+
 def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject: str | None = None):
     """Record which engine was asked and over which window. Once per query ATTEMPT, merged per tool call.
 

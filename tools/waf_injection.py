@@ -40,7 +40,7 @@ from strands import tool
 
 from tools.aws_session import get_client
 from tools.query_limits import MAX_MINUTES
-from tools.session_state import get_scope, get_webacl_name, resolve_region
+from tools.session_state import get_scope, get_webacl_name, note_window_capped, resolve_region
 
 # Managed rule groups whose sub-rules are injection detectors. Matched on the group name because
 # the sub-rule names inside are AWS's own.
@@ -206,6 +206,7 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
         return coarse
 
     duration = min(duration_minutes, MAX_MINUTES)
+    note_window_capped(duration_minutes, duration)
     scope = get_scope() or "CLOUDFRONT"
     lines = [f"## Injection Investigation: {get_webacl_name()}", "",
              f"Window: {start_time} + {duration} min", ""]

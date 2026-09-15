@@ -365,6 +365,54 @@ def _get_version() -> str:
         return "dev (local)"
 
 
+TZ_OFFSET_LIMIT = 24
+
+
+def parse_tz_offset(raw):
+    """The client's `userTimezoneOffset` in hours, or a sentence saying why it is not usable.
+
+    Returns `(offset, None)` or `(None, reason)`.
+
+    **Measured 2026-09-15 against the deployed v0.27.1.** A request carrying
+    `forwardedProps.userTimezoneOffset: -480` returned HTTP 424 wrapping a runtime 500, whose only
+    actionable content was "Please check your CloudWatch logs". The log held an unhandled
+    `ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24),
+    not datetime.timedelta(days=-20)` from `timezone(timedelta(hours=tz_offset))`. The field is hours: the
+    frontend sends `-(new Date().getTimezoneOffset() / 60)`, and -480 is what `getTimezoneOffset()` itself
+    returns, in minutes.
+
+    **The frontend cannot send it, and that is not the same as unreachable.** `docs/deployment.md`
+    documents this POST as the way a script or an agent drives the runtime, and it is how this deployment
+    is verified, so any caller can send any number. `float(raw)` on a non-numeric string fails the same
+    way, before the range is ever checked.
+
+    **Refused rather than defaulted, because every timestamp in the answer depends on it.** Falling back
+    to UTC would silently shift the window, the report title and every row's time by up to fourteen hours,
+    which is the misattribution the provenance channel exists to prevent. A 400 naming the field and the
+    range is one the caller can act on.
+
+    **The offset reaches session state before the prompt is built**, so the old code stored the bad value
+    and then raised: `set_user_timezone(-480)` succeeded, and the runtime instance carried -480 into every
+    later request in that session that sent no offset of its own. Validating before either write is why
+    this returns a value rather than raising inside the handler.
+    """
+    # `bool` before `float`, because `float(True)` is 1.0: JSON `true` would be accepted as UTC+1 and
+    # every timestamp in the answer would be an hour out with nothing said about it.
+    if isinstance(raw, bool):
+        return None, "forwardedProps.userTimezoneOffset must be a number of hours from UTC, not a boolean."
+    try:
+        offset = float(raw)
+    except (TypeError, ValueError):
+        return None, (f"forwardedProps.userTimezoneOffset must be a number of hours from UTC, "
+                      f"got {raw!r}.")
+    if offset != offset or abs(offset) >= TZ_OFFSET_LIMIT:      # NaN compares unequal to itself
+        return None, (f"forwardedProps.userTimezoneOffset is in hours from UTC and must be between "
+                      f"-{TZ_OFFSET_LIMIT} and {TZ_OFFSET_LIMIT}, got {offset}. A browser's "
+                      f"getTimezoneOffset() returns minutes and with the opposite sign; send "
+                      f"-(getTimezoneOffset() / 60).")
+    return offset, None
+
+
 def _build_system_prompt(tz_offset: float | None = None) -> str:
     """Build system prompt with current date and timezone injected.
 
@@ -528,15 +576,33 @@ class SourceDisclosure(HookProvider):
         registry.add_callback(AfterToolCallEvent, self.append_source)
 
     def append_source(self, event: AfterToolCallEvent):
-        from tools.session_state import provenance_source_line, stash_query_provenance
-        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")
-        if not record:
+        # **Two disclosures, one append, and the second one is here because per-return appending failed.**
+        # 0.27.1 added the window-cap sentence at each return that seemed to need it and reached three of
+        # five in two tools, missing both returns that answer with content, while four other tools clamp
+        # and said nothing at all. See `note_window_capped`. Appending where the result leaves the tool
+        # call covers every return of every tool, including the ones nobody has written yet.
+        from tools.query_limits import window_capped_note
+        from tools.session_state import provenance_source_line, stash_query_provenance, take_window_cap
+        tool_use_id = (event.tool_use or {}).get("toolUseId") or ""
+        record = stash_query_provenance(tool_use_id)
+        cap = take_window_cap(tool_use_id)
+        # Named for what it holds rather than `notes`, which is what `LogValueDisclosure` above calls its
+        # own accumulator: two identical lines in two hooks make an anchor ambiguous, and the perturbation
+        # sweep reported exactly that.
+        disclosures = []
+        # The cap first, because it changes how the rows above it should be read, and the `SOURCE:` line
+        # is the signature under both.
+        if cap:
+            disclosures.append(window_capped_note(cap["asked"], cap["used"]).lstrip("\n"))
+        if record:
+            disclosures.append(provenance_source_line(record))
+        if not disclosures:
             return
         result = event.result
         if not isinstance(result, dict):
             return
         content = list(result.get("content") or [])
-        content.append({"text": f"\n{provenance_source_line(record)}"})
+        content.append({"text": "\n" + "\n".join(disclosures)})
         event.result = {**result, "content": content}
 
 
@@ -957,6 +1023,17 @@ def create_app():
         user_id = _get_user_id_from_jwt(request)
         session_id = request.headers.get("x-amzn-bedrock-agentcore-runtime-session-id", "")
 
+        # **Validated once, above the resume/stream split, and before anything is built.** The two
+        # branches below each used to do `set_user_timezone(float(raw))` and then build the prompt, so a
+        # bad value was stored and the build then raised where the caller saw only a 500. See
+        # `parse_tz_offset` for the measurement.
+        tz_offset = None
+        raw_tz = (input_data.get("forwardedProps") or {}).get("userTimezoneOffset")
+        if raw_tz is not None:
+            tz_offset, tz_error = parse_tz_offset(raw_tz)
+            if tz_error:
+                return JSONResponse({"error": tz_error}, status_code=400)
+
         # --- Agent invocation ---
         agent = get_agent(session_id=session_id, user_id=user_id)
 
@@ -964,12 +1041,10 @@ def create_app():
         interrupt_responses = input_data.get("interruptResponses")
         if interrupt_responses:
             # Inject timezone even on resume
-            forwarded = input_data.get("forwardedProps", {})
-            tz_offset = forwarded.get("userTimezoneOffset")
             if tz_offset is not None:
                 from tools.session_state import set_user_timezone
-                set_user_timezone(float(tz_offset))
-                agent.system_prompt = _build_system_prompt(float(tz_offset))
+                set_user_timezone(tz_offset)
+                agent.system_prompt = _build_system_prompt(tz_offset)
             resume_input = [
                 {"interruptResponse": {"interruptId": ir["interruptId"], "response": ir["response"]}}
                 for ir in interrupt_responses
@@ -1029,14 +1104,12 @@ def create_app():
             return StreamingResponse(patrol_report_generator(), media_type="text/event-stream")
 
         # --- Stream agent execution ---
-        # Inject user timezone from frontend (browser-detected)
-        forwarded = input_data.get("forwardedProps", {})
-        tz_offset = forwarded.get("userTimezoneOffset")
+        # Inject user timezone from frontend (browser-detected), validated at the top of this handler.
         if tz_offset is not None:
             from tools.session_state import set_user_timezone
-            set_user_timezone(float(tz_offset))
+            set_user_timezone(tz_offset)
             # Update system prompt with timezone so LLM sees it
-            agent.system_prompt = _build_system_prompt(float(tz_offset))
+            agent.system_prompt = _build_system_prompt(tz_offset)
 
         msg_seq = int(time.time() * 1000)  # timestamp-based seq for DDB ordering
         return StreamingResponse(

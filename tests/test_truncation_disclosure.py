@@ -179,6 +179,22 @@ def test_every_tool_that_builds_a_table_appends_the_summary(module, function):
     body = ast.get_source_segment(src, fn) or ""
     assert "truncation_summary(" in body, f"{function} never surfaces the truncation record"
 
+    # **Present is not reached, and asserting only presence is what kept this defect alive for four
+    # releases.** In `run_logs_query` the call sat inside `if interpretation:`, and
+    # `_interpret_results` returns nothing for 31 of the 37 query templates, so a table cut off at its
+    # limit rendered as a complete answer for 31 of them. The version of this test above it passed the
+    # whole time, because the string was in the function.
+    #
+    # Function-body level, not merely unconditional: any enclosing `if` is a condition about something
+    # other than truncation, and a disclosure gated on an unrelated fact carries no information. The
+    # `if _cut:` around the append is inside the statement itself and is the truncation fact.
+    at_top = [n for n in fn.body
+              if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
+              and getattr(n.value.func, "id", "") == "truncation_summary"]
+    assert at_top, (
+        f"{function} calls truncation_summary only from inside a nested block, so it runs for some "
+        f"inputs and not others. It has to be a statement of the function body.")
+
 
 def test_the_notes_dict_is_created_wherever_a_failures_dict_is():
     """The pairing. A tool that threads `failures` and not `notes` cannot report truncation at all, and

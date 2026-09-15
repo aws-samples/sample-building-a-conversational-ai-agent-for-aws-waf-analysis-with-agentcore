@@ -8,7 +8,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
+from tools.session_state import (get_webacl_name, get_scope, resolve_region, is_log_filter_active,
+                                 note_window_capped)
 from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently, truncation_summary
 from tools.query_limits import MAX_MINUTES
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
@@ -172,6 +173,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "",
         return f"Error: cannot parse start_time '{start_time}'."
 
     _duration = min(duration_minutes, MAX_MINUTES)
+    note_window_capped(duration_minutes, _duration)
     end_epoch = min(start_epoch + _duration * 60, int(time.time()))
 
     if step == "scan":

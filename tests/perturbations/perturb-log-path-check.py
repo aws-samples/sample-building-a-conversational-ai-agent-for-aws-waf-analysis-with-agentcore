@@ -89,8 +89,8 @@ CASES = [
     ("analyze_ip back to reporting absence with no witness",
      [("tools/waf_logs.py",
        "        warning = log_path_warning(get_webacl_name(), None, start_epoch, end_epoch, narrow_rows=0)\n"
-       '        return f"No log records found for {ip} in this time window.{warning}{_cap}"',
-       '        return f"No log records found for {ip} in this time window.{_cap}"')],
+       '        return f"No log records found for {ip} in this time window.{warning}"',
+       '        return f"No log records found for {ip} in this time window."')],
      [f"{T}::test_every_absence_branch_group_b_names_asks_the_check"], False),
 
     ("investigate_block_fp's absence branch unwitnessed",
