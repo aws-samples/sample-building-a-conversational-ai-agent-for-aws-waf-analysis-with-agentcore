@@ -7,6 +7,7 @@ import hashlib
 import json as _json_mod
 import os
 import re
+import sys
 import time
 from strands import Agent
 from strands.models import BedrockModel
@@ -561,7 +562,20 @@ def _get_model():
     parameter is not gone, it is pinned, and there is no way to ask this family for low-variance
     sampling. `temperature=0.0` was here for reproducible tool routing.
 
-    **Omitting it is AWS's documented migration, and the reason first written here was wrong.** That
+    **No output bound either, and this one is the maintainer's standing instruction rather than a
+    measurement.** `max_tokens=4096` arrived with the initial skeleton on 2026-05-08 and sat untouched for
+    four months, until one ordinary question exceeded it on the deployed endpoint: country and referer
+    breakdowns for a day, which the 360-minute query cap splits into four windows, produced a table that
+    stopped mid-row with the SDK's own `max_tokens` exception glued to the last cell. The first fix raised
+    the number, which was the wrong shape: a number picked here is a ceiling the model did not choose.
+
+    Measured that nothing needs to be sent: a Converse call with no `inferenceConfig` at all answers and
+    reports `stopReason: end_turn`, and `BedrockModel` with neither keyword sends `inferenceConfig: {}`. For
+    the record, this model does have a Bedrock ceiling, 131,072 is refused with "exceeds the model limit of
+    128000", but the ceiling is the service's to enforce and not this file's to guess.
+
+    **Omitting the sampling parameter is AWS's documented migration, and the reason first written here was
+    wrong.** That
     reason was that a per-family conditional would need a rule like "Claude 5 and later", a guess about
     model ids AWS has not published. AWS has published the boundary: the Claude Opus 4.7 model card is
     where the change starts, and it says to omit these parameters and steer with the prompt instead.
@@ -579,7 +593,6 @@ def _get_model():
         _model = BedrockModel(
             model_id=MODEL_ID,
             region_name=MODEL_REGION,
-            max_tokens=4096,
         )
     return _model
 
@@ -698,6 +711,33 @@ async def _queue_with_heartbeat(q, timeout: float = SSE_HEARTBEAT_SECONDS):
             yield await asyncio.wait_for(q.get(), timeout=timeout)
         except asyncio.TimeoutError:
             yield _BEAT
+
+def _error_text(message: str, mid_answer: bool) -> str:
+    """What the user reads when the agent thread raised, given whether text was already streaming.
+
+    **Two defects met here, measured on the deployed endpoint 2026-09-15.** A question about country and
+    referer breakdowns across four windows produced a table that stopped mid-row and then, with no
+    separator and on the same `messageId`, `Error: Agent has reached an unrecoverable state due to
+    max_tokens limit. For more information see: https://strandsagents.com/...`. So the answer read as
+    though the last table row were `**全天Error: Agent has reached...`, and the only actionable content was
+    a link to another project's documentation.
+
+    The limit itself is raised in `MAX_OUTPUT_TOKENS`; this is the other half, because a limit that is
+    high enough today is still a limit. Separated from the streamed text, and named in terms the person
+    reading a WAF report can act on: the answer is incomplete, the numbers above it are still real, and
+    the way out is a narrower question.
+
+    The SDK's own sentence goes to stderr rather than into the report. It names a Python exception and a
+    URL, neither of which is about this WebACL.
+    """
+    prefix = "\n\n" if mid_answer else ""
+    if "max_tokens" in message or "MaxTokens" in message:
+        print(f"[agent] max output tokens reached: {message}", file=sys.stderr, flush=True)
+        return (f"{prefix}⚠️  **This answer is incomplete.** It reached the model's output limit and stopped "
+                f"partway. Everything above this line is real; nothing below it was written. Ask for one "
+                f"part of the question at a time, or a narrower window, and the rest will fit.")
+    return f"{prefix}Error: {message}"
+
 
 def _make_sse(event: dict) -> str:
     return f"data: {_json_mod.dumps(event)}\n\n"
@@ -859,7 +899,8 @@ def create_app():
                 result = payload
             elif event_type == "ERROR":
                 yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
-                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": f"Error: {payload}"})
+                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1",
+                                 "delta": _error_text(payload, has_streamed_text)})
                 yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
 
         # Close any open text stream (safe: text_started only written by agent thread, which has ended)
