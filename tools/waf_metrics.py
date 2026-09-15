@@ -320,24 +320,94 @@ def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_e
 
 def missed_data_warning(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
                         end_epoch: int, log_rows: int, metric_name: str = "BlockedRequests") -> str:
-    """The sentence to add when the metric says a rule fired and the log query found nothing.
+    """The sentence to add when the metric says a rule fired and the logs hold less than it says.
 
-    **Only the exactly-zero case, and that limit is a dependency rather than caution.** If the
-    metric says 122 and the log query returned 40 rows, the gap may be a `limit` on the query rather
-    than data it missed, and nothing available today can tell those apart. ROADMAP 7.7's second item
-    is the truncation disclosure that makes a partial gap decidable; **when it lands, come back and
-    widen this**, because a partial gap is the more common shape and it is unreported until then.
+    **Widened past the exactly-zero case on 2026-09-15, and `log_rows` has to mean requests.** The
+    earlier limit was written as a dependency on the truncation disclosure, and reading the callers
+    showed that was only half of it. All three passed a literal `0` that their own emptiness test had
+    established, so the `!= 0` gate was narrowing nothing. What blocked the widening was that the one
+    caller with rows to count had them from `stats count(*) as hits by httpRequest.clientIp | limit 5`,
+    where the row count is a number of distinct IPs capped at five. Summing that column instead would
+    have given a lower bound that goes silent exactly on windows with many distinct clients, which are
+    the busy ones, where missing data matters most. So the caller sends one ungrouped count with the
+    same filter, which is immune to truncation by construction rather than corrected for it.
+
+    **The two counts are only comparable on a window aligned to the metric period**, measured on
+    2026-09-08 against `rate-limit`, whose 566,070 blocks make the skew visible:
+
+        04:16-04:22, 6 min, spans the traffic   metric 566,070  log 566,070   0.000%
+        04:15-04:25, 10 min, spans the traffic  metric 566,070  log 566,070   0.000%
+        04:17-04:21, a boundary cuts traffic    metric 477,480  log 478,880  -0.293%
+        04:16:30-04:20:30, unaligned            metric 432,530  log 478,488 -10.630%
+
+    A window whose boundaries do not fall on the period covers a different span in the metric than in
+    the logs, so it is refused rather than compared. Within an aligned window the residual skew is
+    `@timestamp` against the request's own time, which shifts records across a boundary.
+
+    **The threshold is `max(1, 5%)` and both numbers have a basis.** 5% is seventeen times the
+    largest aligned skew measured; the absolute floor of one handles a quiet window, where a
+    percentage of three requests means nothing. All four measurements above have the metric lower than
+    the logs, which is the harmless direction here, but three of them sit inside one ramping attack, so
+    the direction is not established and the threshold is two-sided in effect.
+
+    **What the threshold hides, stated rather than left out.** A real gap between 0.3% and 5% is not
+    distinguishable from boundary skew with what is available. The failure modes this check exists for
+    are all far above that: a `LoggingFilter` dropping an action drops all of it, a partition or
+    timezone mismatch drops whole hours, and a silently failed query drops everything. So the blind
+    spot is a band this check cannot resolve rather than a class of failure it declines to look at.
 
     Returns "" when there is nothing to say, which includes every case where the metric could not
     answer. A failure to reach CloudWatch must not turn into a claim about the logs, and the reason
     is on stderr rather than in the report because this runs beside a conclusion the tool already
     reached.
     """
-    if log_rows != 0:
-        return ""
     count, reason = rule_blocked_per_metrics(webacl_name, rule_name, rules, start_epoch, end_epoch,
                                              metric_name)
-    return _missed_data_sentence(count, reason, f"rule '{rule_name}'", webacl_name, metric_name)
+    if log_rows == 0:
+        return _missed_data_sentence(count, reason, f"rule '{rule_name}'", webacl_name, metric_name)
+    return _partial_gap_sentence(count, reason, rule_name, webacl_name, metric_name, log_rows,
+                                 start_epoch, end_epoch)
+
+
+_GAP_FRACTION = 0.05
+
+
+def _partial_gap_sentence(count, reason: str, rule_name: str, webacl_name: str, metric_name: str,
+                          log_rows: int, start_epoch: int, end_epoch: int) -> str:
+    """The sentence for a metric above a non-zero log count. See `missed_data_warning` for the numbers.
+
+    Every refusal is silence with the reason on stderr, the same rule the zero case follows.
+    """
+    if count is None:
+        print(f"[waf_metrics] no metric cross-check for rule '{rule_name}': {reason}",
+              file=sys.stderr, flush=True)
+        return ""
+    period = _period_for_window(start_epoch)
+    if period is None:
+        return ""
+    # **The bound is derived, not picked, and requiring exact alignment would have been wrong.** An
+    # unaligned boundary shifts the metric's window by up to one period at that end, so the two counts can
+    # differ by one period's traffic per unaligned end. Refusing every unaligned window silences the common
+    # case: `end_epoch` is `min(start + duration*60, now)`, so any window reaching the present ends on a
+    # second rather than a minute. What matters is whether that shift can exceed the threshold, which is a
+    # question about the ratio of period to span.
+    shifted = (1 if start_epoch % period else 0) + (1 if end_epoch % period else 0)
+    span = max(end_epoch - start_epoch, 1)
+    if shifted * period > _GAP_FRACTION * span:
+        print(f"[waf_metrics] no partial-gap check for rule '{rule_name}': the window is unaligned to the "
+              f"{period}s metric period and {shifted * period}s of shift is more than {_GAP_FRACTION:.0%} "
+              f"of its {span}s span, so the two counts are not comparable",
+              file=sys.stderr, flush=True)
+        return ""
+    gap = count - log_rows
+    if gap <= max(1, _GAP_FRACTION * count):
+        return ""
+    return (f"\n⚠️  **The logs hold less than the metric says.** CloudWatch reports {count:,} "
+            f"{metric_name} for rule '{rule_name}' on {webacl_name} in this window and the log query "
+            f"counted {log_rows:,}, a gap of {gap:,} ({gap / count * 100:.1f}%). The rows below are "
+            f"therefore a subset, so do NOT present their totals or their client list as complete. "
+            f"Likely causes: a Log Filter dropping some of these records, a partition or timezone "
+            f"mismatch on the log table, or a query that failed for part of the window.")
 
 
 def missed_action_warning(webacl_name: str, action: str, start_epoch: int, end_epoch: int,

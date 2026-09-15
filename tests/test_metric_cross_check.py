@@ -27,6 +27,8 @@ Three of the guards below exist because a wrong answer here is indistinguishable
 import re
 from datetime import datetime, timedelta, timezone
 
+import time
+
 import pytest
 
 from tools import session_state as S
@@ -210,14 +212,67 @@ def test_a_non_zero_metric_beside_zero_log_rows_reports_a_missed_query(cw):
     assert "Do NOT report this window as quiet" in out
 
 
-def test_a_partial_gap_is_not_reported_yet_and_the_reason_is_a_dependency(cw):
-    """**The deliberate limit, asserted so that widening it is a decision rather than a discovery.**
-    Metric 122 beside 40 log rows may be a `limit` on the query rather than data it missed, and nothing
-    available today separates those. ROADMAP 7.7's truncation disclosure is what makes a partial gap
-    decidable; until then this stays silent, and a partial gap is the more common shape."""
+def test_a_partial_gap_is_reported_now_and_the_old_reason_was_half_right(cw):
+    """**Widened 2026-09-15, and the limit that stood here was for one of two reasons.** This test used to
+    assert silence, on the reasoning that metric 122 beside 40 log rows might be a `limit` on the query
+    rather than data it missed, with the truncation disclosure named as the dependency. That was half of
+    it. The other half was that `40` never meant forty requests: the caller's rows came from
+    `stats count(*) as hits by httpRequest.clientIp | limit 5`, so the number was distinct IPs capped at
+    five. The caller sends an ungrouped count now, and the comparison is between two request counts.
+
+    Superseded reasoning kept in ROADMAP 7.7 rather than here; what stays here is what the code does."""
     start, end = _window()
-    assert M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=40) == ""
-    assert not cw.requests, "no metric query at all when the log side returned rows"
+    cw.values = [1000]
+    msg = M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=40)
+    assert "logs hold less than the metric says" in msg, msg
+    assert "1,000" in msg and "40" in msg and "96.0%" in msg, msg
+    assert "do NOT present their totals" in msg
+
+
+def test_a_gap_inside_the_boundary_skew_is_not_reported(cw):
+    """**The threshold, and both of its numbers are measured.** On 2026-09-08 against `rate-limit`, whose
+    566,070 blocks make the skew visible: a window that spans the traffic gives metric and log counts
+    equal to the record, 566,070 against 566,070; a window whose boundary cuts through it gives 477,480
+    against 478,880, a 0.293% difference from `@timestamp` shifting records across a boundary. 5% is
+    seventeen times that, and the absolute floor of one handles a quiet window where a percentage of three
+    requests means nothing.
+
+    What it hides is stated rather than left out: a real gap between 0.3% and 5% is indistinguishable from
+    boundary skew with what is available. The failure modes this check exists for are all far above it, a
+    filter dropping an action or a partition mismatch dropping whole hours."""
+    start, end = _window()
+    cw.values = [1000]
+    assert M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=960) == ""
+    assert M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=949) != ""
+    cw.values = [3]
+    assert M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=2) == "", (
+        "one request apart on a quiet window is timing, not a gap")
+    assert M.missed_data_warning("acl", "rate-limit", RULES, start, end, log_rows=1) != ""
+
+
+def test_a_window_too_short_for_its_metric_period_is_refused(cw):
+    """**Requiring exact alignment would have been the wrong precondition**, and the first draft of this
+    check had it. `end_epoch` is `min(start + duration*60, now)`, so every window reaching the present ends
+    on a second rather than a minute, and refusing those silences the common case rather than an unsound
+    comparison.
+
+    What an unaligned boundary actually costs is one period of shift at that end, measured: 04:16:30 to
+    04:20:30 against a 60s period gives metric 432,530 and log 478,488, 10.63% apart, on a 240s span where
+    one period is 25% of the window. So the precondition is on the ratio: refuse when the possible shift
+    exceeds the threshold. A three-hour window unaligned by a second is fine; a four-minute one is not."""
+    period = M._period_for_window(int(time.time()) - 3600)
+    assert period == 60, period
+    cw.values = [1000]
+
+    long_start = (int(time.time()) - 7200) // 60 * 60          # aligned start, three-hour span
+    assert M.missed_data_warning("acl", "rate-limit", RULES, long_start, long_start + 7199,
+                                 log_rows=40) != "", (
+        "one second of shift in a 7,199s window is 0.01% and must not silence the check")
+
+    short_start = long_start + 30                               # 240s span, unaligned at both ends
+    assert M.missed_data_warning("acl", "rate-limit", RULES, short_start, short_start + 240,
+                                 log_rows=40) == "", (
+        "120s of possible shift in a 240s window is 50%, far above the threshold")
 
 
 def test_a_metric_that_could_not_answer_never_becomes_a_claim_about_the_logs(cw):

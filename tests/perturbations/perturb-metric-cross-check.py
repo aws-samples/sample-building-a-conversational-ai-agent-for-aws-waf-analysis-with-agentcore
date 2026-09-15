@@ -62,8 +62,9 @@ CASES = [
      [f"{T}::test_the_period_follows_the_age_of_the_oldest_point",
       f"{T}::test_the_query_uses_the_period_the_window_earns"], True),
 
+    # Anchored through the following line: `_partial_gap_sentence` has its own `if period is None:` now.
     ("the retention floor removed, so a 500-day window is answered from nothing",
-     [(M, "    if period is None:\n", "    if False:\n")],
+     [(M, '    if period is None:\n        return None, (', '    if False:\n        return None, (')],
      [f"{T}::test_a_window_beyond_every_retention_is_refused_without_querying"], True),
 
     # One target, not two. The "never becomes a claim" test refuses at the membership check before any
@@ -78,16 +79,36 @@ CASES = [
     # Anchored through the following line: `log_path_warning` now has its own `if count is None:` at a
     # deeper indent, which contains this one as a substring, so the bare form matched twice.
     ("a refusal turned into a claim about the logs",
-     [(M, '    if count is None:\n        print(f"[waf_metrics] no metric cross-check',
-       '    if False:\n        print(f"[waf_metrics] no metric cross-check')],
+     [(M, '    if count is None:\n        print(f"[waf_metrics] no metric cross-check for {subject}',
+       '    if False:\n        print(f"[waf_metrics] no metric cross-check for {subject}')],
      [f"{T}::test_a_metric_that_could_not_answer_never_becomes_a_claim_about_the_logs"], True),
 
-    # Anchored through the following line, because `if log_rows != 0` now appears in both
-    # `missed_data_warning` and `missed_action_warning` and a two-line anchor would match twice.
-    ("the partial-gap gate removed, so an undecidable gap is reported as missed data",
-     [(M, "    if log_rows != 0:\n        return \"\"\n    count, reason = rule_blocked_per_metrics(",
-       "    if False:\n        return \"\"\n    count, reason = rule_blocked_per_metrics(")],
-     [f"{T}::test_a_partial_gap_is_not_reported_yet_and_the_reason_is_a_dependency"], True),
+    # The gate this replaced was `if log_rows != 0: return ""`, and it is gone: a partial gap is
+    # reported now. These four cases cover what the widening has to keep true.
+    ("the zero and partial paths merged, so an empty log side takes the partial wording",
+     [(M, "    if log_rows == 0:\n        return _missed_data_sentence(",
+       "    if False:\n        return _missed_data_sentence(")],
+     # Only the test that asserts the zero wording can see this: with the paths merged, a zero log side
+     # falls into the partial branch, where 122 against 0 still exceeds the threshold and prints the
+     # partial sentence. The two tests first declared here both stay green, which the sweep called HOLLOW.
+     [f"{T}::test_a_non_zero_metric_beside_zero_log_rows_reports_a_missed_query"], True),
+
+    ("the threshold removed, so boundary skew is reported as a gap",
+     [(M, "    if gap <= max(1, _GAP_FRACTION * count):", "    if gap <= 0:")],
+     [f"{T}::test_a_gap_inside_the_boundary_skew_is_not_reported"], True),
+
+    ("the absolute floor removed, so one request apart on a quiet window is a gap",
+     [(M, "    if gap <= max(1, _GAP_FRACTION * count):",
+       "    if gap <= _GAP_FRACTION * count:")],
+     [f"{T}::test_a_gap_inside_the_boundary_skew_is_not_reported"], True),
+
+    ("the shift bound removed, so a window shorter than its metric period is compared anyway",
+     [(M, "    if shifted * period > _GAP_FRACTION * span:", "    if False:")],
+     [f"{T}::test_a_window_too_short_for_its_metric_period_is_refused"], True),
+
+    ("the shift bound tightened back to exact alignment, which silences every window ending now",
+     [(M, "    if shifted * period > _GAP_FRACTION * span:", "    if shifted:")],
+     [f"{T}::test_a_window_too_short_for_its_metric_period_is_refused"], True),
 
     # The action-subject entry point, which has no membership check by design because `ALL` is a
     # service aggregate rather than a name a caller can misspell.
