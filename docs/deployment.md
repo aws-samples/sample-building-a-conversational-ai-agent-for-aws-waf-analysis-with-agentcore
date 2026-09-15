@@ -32,7 +32,12 @@ Choose a backend region based on:
 - **Model availability** — Claude Sonnet 5 must be available
 - **AgentCore support** — CloudFormation must support `AWS::BedrockAgentCore::Runtime`
 
-### Supported regions (CloudFormation + AgentCore + Claude Sonnet 5)
+### Six regions to start from, out of the nine that work
+
+**This table is a shortlist, not the supported set.** Deployment works in nine regions, listed in the
+[README](../README.md#supported-regions), and every one of them has an entry in the model-ID table below.
+Six are listed here because "Best for" is a recommendation and a nine-row table of recommendations
+recommends nothing. If your region is absent from this table and present in the README's list, it works.
 
 | Region | Best for |
 |--------|----------|

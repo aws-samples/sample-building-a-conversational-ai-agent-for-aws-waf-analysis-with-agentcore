@@ -151,6 +151,35 @@ def _date_range_label(start, end, user_tz, tz_label: str = "") -> str:
     return f"{dates} {tz_label}" if tz_label else dates
 
 
+def _antiddos_skip(has_amr: bool, log_group: str | None, num_events: int) -> str | None:
+    """Why the Anti-DDoS section is absent, or `None` when its absence needs no explanation.
+
+    **Three of the four states were silent, and only one of them is a failure.** The section is built
+    from three CloudWatch Logs Insights queries inside `if caps.get("anti_ddos_amr") and log_group`, and
+    the `empty` list further down tests `country_map`, `attack_types` and `bot_control` for emptiness
+    without testing this one. So the section reached `missing` only by raising, and a reader could not
+    tell "no event this week" from "this check cannot run against your log destination".
+
+    Measured 2026-09-15 on the account: the rule group labelled 919,476 requests in a week and declared
+    no event, so all three queries returned zero rows and the section vanished with nothing said.
+
+    **A WebACL without the rule group stays silent on purpose**, which is the one state that is not a
+    gap. The other three sections are always applicable; this one describes a rule group the WebACL may
+    simply not have, and listing it as missing would tell a user to go looking for something that was
+    never going to be there.
+    """
+    if not has_amr:
+        return None
+    if not log_group:
+        return ("the Anti-DDoS section reads the rule group's own labels out of CloudWatch Logs, and "
+                "this WebACL logs to S3 or Firehose, so the check could not run against this "
+                "destination rather than finding nothing")
+    if not num_events:
+        return ("the Anti-DDoS rule group did not declare an event in this window, so this section has "
+                "nothing to report rather than something missing")
+    return None
+
+
 def last_day_covered(end, user_tz, fmt: str = "%Y-%m-%d") -> str:
     """The last day the window covers, from its exclusive end.
 
@@ -641,6 +670,13 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             section_skips["anti_ddos_events"] = (
                 f"the anti-DDoS event query could not be run ({type(exc).__name__}), so this "
                 f"section is missing for a call failure rather than because the WebACL was idle")
+
+    # The two non-failure silences. `empty` below tests three sections for emptiness and this is not
+    # one of them, so until now the only way this section reached `missing` was by raising.
+    if "anti_ddos_events" not in section_skips:
+        why = _antiddos_skip(bool(caps.get("anti_ddos_amr")), log_group, ddos_num_events)
+        if why:
+            section_skips["anti_ddos_events"] = why
 
     # Bot Control section — Free Bot Visibility metrics + label metrics
     bot_section = ""
