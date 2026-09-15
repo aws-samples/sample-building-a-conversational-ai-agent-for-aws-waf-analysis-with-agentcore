@@ -32,7 +32,9 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 - **模型可用性** — Claude Sonnet 5 必须可用
 - **AgentCore 支持** — CloudFormation 必须支持 `AWS::BedrockAgentCore::Runtime`
 
-### 支持的区域
+### 九个能部署的区域里，先看这六个
+
+**这张表是精选，不是支持列表。** 能部署的有九个区域，名单在 [README](../README_zh.md#支持的区域) 里，下面那张模型 ID 表也是九行全的。这里只列六个，是因为"适合"这一列是建议，九行建议就等于没建议。你的区域不在这张表里、但在 README 那份名单里，照样能用。
 
 | 区域 | 适合 |
 |------|------|
