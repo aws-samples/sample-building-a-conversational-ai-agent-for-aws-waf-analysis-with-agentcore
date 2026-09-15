@@ -80,10 +80,17 @@ CASES = [
      [f"{T}::test_the_event_carries_the_record_and_names_the_tool_call"], False),
 
     # The lock. All three merges are read-modify-write and `run_concurrently` reaches them by default.
+    #
+    # **This case was the reason its target was rewritten.** The target used to race sixteen threads for a
+    # lost update, which caught a lock-free build fifteen times out of fifteen locally, then passed on
+    # #111's runner and failed on #112's against identical code. The target now stops the first writer
+    # between its read and its write, so both orderings, a lost count and a lost `min`, fail on any
+    # machine. Both parameters are named because either one alone proves the lock is load-bearing and
+    # neither one alone covers both merges.
     ("the lock removed, so concurrent queries lose a count and narrow the window",
      [(S, "    with _provenance_lock:\n        slot = current_tool_call()",
        "    if True:\n        slot = current_tool_call()")],
-     [f"{T}::test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window"], True),
+     [f"{T}::test_the_lock_is_what_keeps_one_merge_from_overwriting_the_other"], True),
 
     # The position of the Athena record. Moved back below `_ensure_athena_table`, a fan-out job stuck in
     # table resolution when the batch times out writes into the NEXT tool call's record.

@@ -133,54 +133,86 @@ def test_the_frontend_attaches_it_to_the_chip_and_renders_both_window_renderings
     assert ".tool-src" in css, "rendered in the chip, not only in a title attribute"
 
 
-def test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window():
+_PAUSE = 0.4
+
+
+class _PausingRecord(dict):
+    """The record dict, holding the first writer between one merge's read and its write.
+
+    The pause is what makes the interleaving a fact rather than a hope. It fires once, on the first read
+    of the key under test, after that read has returned its value, so the paused writer resumes holding
+    a value the other writer has since replaced.
+    """
+
+    def __init__(self, trigger, read, resume):
+        super().__init__()
+        self._trigger, self._read, self._resume = trigger, read, resume
+        self._fired = False
+
+    def _pause(self, key):
+        if key == self._trigger and not self._fired:
+            self._fired = True
+            self._read.set()
+            # The locked build waits this out, because the other writer cannot get in. 0.4 s against a
+            # call that takes microseconds, so a slow machine changes the wait and not the verdict.
+            self._resume.wait(_PAUSE)
+
+    def get(self, key, *default):
+        value = super().get(key, *default)
+        self._pause(key)
+        return value
+
+    def __contains__(self, key):
+        present = super().__contains__(key)
+        self._pause(key)
+        return present
+
+
+@pytest.mark.parametrize("trigger,field,expected,broken", [
+    ("queries", "queries", 2, 1),
+    ("start", "start", 5_000, 10_000),
+])
+def test_the_lock_is_what_keeps_one_merge_from_overwriting_the_other(trigger, field, expected, broken):
     """**All three merges are read-modify-write and concurrency reaches them by default.**
     `run_concurrently` submits every independent query of a tool call to a `ThreadPoolExecutor` and
     `_cwl_semaphore` allows eight at once, so two threads read `queries` as 3 and both write 4.
 
-    Both losses point the wrong way. An undercount reports fifteen queries as fewer, which is the one
-    thing the counter exists to say. A lost `min` reports a window narrower than what was read, which
-    attributes a finding from the earliest query to a window that starts later — a misattribution, which
-    is what this record was built to prevent.
+    Both losses point the wrong way, and both are driven here. An undercount reports fifteen queries as
+    fewer, which is the one thing the counter exists to say. A lost `min` reports a window narrower than
+    what was read, so a finding from the earliest query is attributed to a window that starts later, and
+    misattribution is what this record was built to prevent.
 
-    Sixteen threads and five hundred writes each, because a lost update has to be near-certain rather
-    than likely for the perturbation that removes the lock to fail reliably. Measured without the lock:
-    the count came back short every run."""
-    import sys
+    **The interleaving is forced, not raced for.** This test used to be sixteen threads writing five
+    hundred times each under `sys.setswitchinterval(1e-6)`, and it caught a lock-free build fifteen times
+    out of fifteen locally. It then passed on one CI runner and failed on another against identical code,
+    #111 against #112, so its verdict was a fact about the machine. A `dict` subclass stops the first
+    writer between its read and its write instead, which puts the two orderings under this test's control
+    and makes the same defect fail the same way on any machine.
+
+    Two orderings rather than one, because the read the pause interposes on decides which merge loses.
+    Paused at `queries`, the resuming writer holds a stale count and its increment lands on the same
+    number the other writer already wrote. Paused at `"start" in p`, it holds "absent" and writes its own
+    epoch over a lower one, which is the lost `min`."""
     import threading
 
-    S._state.pop("provenance", None)
-    THREADS, PER = 16, 500
-    # **Without this the test is hollow, measured.** CPython's default switch interval is 5 ms, long
-    # enough that a thread runs all five hundred cheap iterations before it is ever preempted, so the
-    # threads do not interleave and the unlocked version passes. The sweep reported HOLLOW on exactly
-    # that. Forcing a switch every microsecond makes the interleaving certain rather than likely.
-    _interval = sys.getswitchinterval()
-    sys.setswitchinterval(1e-6)
+    S.begin_tool_call("")
+    read, resume = threading.Event(), threading.Event()
+    S._state["provenance"] = {"": _PausingRecord(trigger, read, resume)}
 
-    def work(offset):
-        for i in range(PER):
-            # Every thread walks its own window outward so a lost `min` or `max` can show in the result
-            # too. **The count assertion is the one that carries this test**, measured over twenty runs
-            # against a lock-free version: the count caught it 20 times out of 20 and the window
-            # assertion 4 times out of 20. The window pair stays because it is a real property and it
-            # costs nothing; it is not what makes the perturbation reliable.
-            S.note_query_provenance("E", 10_000 - offset - i, 10_000 + offset + i)
-
-    threads = [threading.Thread(target=work, args=(t,)) for t in range(THREADS)]
+    # The paused writer asks about the later window, so clobbering the other one narrows it.
+    paused = threading.Thread(target=S.note_query_provenance, args=("E", 10_000, 20_000))
+    paused.start()
     try:
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        assert read.wait(5), "the pause was never reached, so this test proves nothing"
+        S.note_query_provenance("E", 5_000, 15_000)
     finally:
-        sys.setswitchinterval(_interval)
+        resume.set()
+        paused.join(5)
 
     p = S.take_query_provenance()
-    assert p["queries"] == THREADS * PER, f"lost {THREADS * PER - p['queries']} increments"
-    widest = 10_000 - (THREADS - 1) - (PER - 1)
-    assert p["start"] == widest, f"window narrowed to {p['start']} from {widest}"
-    assert p["end"] == 20_000 - widest
+    assert p[field] == expected, (
+        f"{field} is {p[field]}, which is what a lost update leaves behind ({broken} when the two merges "
+        f"overlap unprotected). Both writers ran, so {field} has to be {expected}.")
 
 
 def test_the_athena_record_lands_before_table_resolution_can_block(monkeypatch):
