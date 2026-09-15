@@ -692,7 +692,8 @@ def _classify_rules(webacl_data: dict) -> list[dict]:
     return rules
 
 
-def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: str) -> list[dict]:
+def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: str,
+                    webacl_name: str) -> list[dict]:
     """Run a Logs Insights query and wait for results.
 
     The sixth polling site, and the one that shows why the collapse in 2.1 was not finished:
@@ -716,6 +717,11 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
     every give-up path, the idiom `_run_cwl` already established, and the one consumer of a detail
     cell surfaces it. Left for reference: the deferral read as a roadmap item rather than a
     drive-by."""
+    # Scoped here rather than in each builder: this is the one executor, so a fourth query added later
+    # cannot forget. Patrol passes its own `webacl_name` because it never writes session state, so
+    # `get_webacl_name()` here would name whatever the conversation last loaded.
+    from tools.waf_query import scope_cwl_query
+    query = scope_cwl_query(query, webacl_name)
     try:
         resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=10)
         query_id = resp["queryId"]
@@ -736,21 +742,24 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
         return [{"_error": _skip_reason("detail_query_error", type(exc).__name__)}]
 
 
-def _query_top_ips_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str) -> list[dict]:
+def _query_top_ips_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str,
+                           webacl_name: str) -> list[dict]:
     """Get top 5 IPs blocked by a specific rule."""
     safe_name = rule_name.replace("'", "\\'")
     query = f"filter terminatingRuleId = '{safe_name}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit 5"
-    return _poll_log_query(logs_client, log_group, start, end, query)
+    return _poll_log_query(logs_client, log_group, start, end, query, webacl_name)
 
 
-def _query_top_uris_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str) -> list[dict]:
+def _query_top_uris_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str,
+                            webacl_name: str) -> list[dict]:
     """Get top 5 URIs blocked by a specific rule."""
     safe_name = rule_name.replace("'", "\\'")
     query = f"filter terminatingRuleId = '{safe_name}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit 5"
-    return _poll_log_query(logs_client, log_group, start, end, query)
+    return _poll_log_query(logs_client, log_group, start, end, query, webacl_name)
 
 
-def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str) -> list[dict]:
+def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str,
+                           webacl_name: str) -> list[dict]:
     """Get the inspected request component (the WHY) for a rule, redacted.
     Fetches matching messages and extracts the location keyed by the rule name."""
     import json as _json
@@ -766,7 +775,7 @@ def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, ru
     query = (f"filter terminatingRuleId = '{safe_name}'"
              f" or @message like '\"ruleId\":\"{safe_name}\",\"action\":\"COUNT\"'"
              f" | fields @message | limit 25")
-    rows = _poll_log_query(logs_client, log_group, start, end, query)
+    rows = _poll_log_query(logs_client, log_group, start, end, query, webacl_name)
     # The failure has to leave here in the shape the renderer reads. `_poll_log_query` returns
     # `[{"_error": reason}]`, and the loop below reaches for `@message`, which that row does not
     # have, so `json.loads("")` raised, `continue` swallowed it, and the reason died in an empty
@@ -802,7 +811,8 @@ def _query_content_by_rule(logs_client, log_group: str, start: int, end: int, ru
     return [{"content": c, "cnt": n} for c, n in counter.most_common(5)]
 
 
-def _get_log_details(logs_client, log_group: str, start: int, end: int, attention_rules: list[str]) -> dict:
+def _get_log_details(logs_client, log_group: str, start: int, end: int, attention_rules: list[str],
+                     webacl_name: str) -> dict:
     """Query log details for rules that need attention. Parallel execution."""
     details = {}
     # See the Athena twin above for why this is not a `with` block: shutdown(wait=True)
@@ -811,9 +821,9 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
     try:
         futures = {}
         for rule_name in attention_rules[:5]:  # max 5 rules
-            futures[executor.submit(_query_top_ips_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "ips")
-            futures[executor.submit(_query_top_uris_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "uris")
-            futures[executor.submit(_query_content_by_rule, logs_client, log_group, start, end, rule_name)] = (rule_name, "content")
+            futures[executor.submit(_query_top_ips_by_rule, logs_client, log_group, start, end, rule_name, webacl_name)] = (rule_name, "ips")
+            futures[executor.submit(_query_top_uris_by_rule, logs_client, log_group, start, end, rule_name, webacl_name)] = (rule_name, "uris")
+            futures[executor.submit(_query_content_by_rule, logs_client, log_group, start, end, rule_name, webacl_name)] = (rule_name, "content")
         # The TimeoutError as_completed raises comes from the iterator, at the `for`, not
         # from inside the body, so the inner except never saw it and it propagated out of
         # here into patrol_scan. One slow CloudWatch query therefore killed the entire
@@ -963,7 +973,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         logs_client = get_client("logs", region_name=region)
         log_start = int(start.timestamp())
         log_end = int(end.timestamp())
-        log_details = _get_log_details(logs_client, log_group, log_start, log_end, traffic_attention_rules)
+        log_details = _get_log_details(logs_client, log_group, log_start, log_end,
+                                      traffic_attention_rules, webacl_name)
     elif logging_type == "s3" and traffic_attention_rules:
         _athena_details = _get_log_details_athena(log_dest, webacl_name, scope, region, start, end, traffic_attention_rules)
         log_details = _athena_details["details"]

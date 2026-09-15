@@ -132,6 +132,10 @@ def _run(monkeypatch, no_sleep, status):
     fake = FakeCwl(status)
     monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
     monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    monkeypatch.setattr(WQ, "get_webacl_name", lambda: "acl")
+    # `_run_cwl` scopes the query to the session WebACL, so the name has to be there. In
+    # production the destination and the name are written together by `get_waf_config`.
+    monkeypatch.setattr(WQ, "get_webacl_name", lambda: "acl")
     rows = WQ._run_cwl("lg", "fields @message", 0, 60, 10)
     return fake, rows
 
@@ -164,6 +168,7 @@ def test_a_completed_cwl_query_still_returns_rows_and_clears_the_count(monkeypat
         "status": "Complete", "results": [[{"field": "ip", "value": "1.2.3.4"}]]}
     monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
     monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    monkeypatch.setattr(WQ, "get_webacl_name", lambda: "acl")
     rows = WQ._run_cwl("lg", "fields @message", 0, 60, 10)
     assert rows == [{"ip": "1.2.3.4"}]
     assert S._state["query_timeouts"] == 0
@@ -423,6 +428,7 @@ def test_a_cwl_poll_timeout_cancels_the_query_and_says_so(monkeypatch, no_sleep)
     fake.stop_query = lambda queryId: {"success": True}
     monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
     monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    monkeypatch.setattr(WQ, "get_webacl_name", lambda: "acl")
     rows = WQ._run_cwl("lg", "fields @message", 0, 60, 10)
     assert "was cancelled" in rows[0]["_error"]
 
@@ -468,6 +474,7 @@ def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(monke
     fake.stop_query = lambda queryId: stops.append(queryId) or {"success": True}
     monkeypatch.setattr(WQ, "get_client", lambda *a, **k: fake)
     monkeypatch.setattr(WQ, "get_logs_region", lambda: "us-east-1")
+    monkeypatch.setattr(WQ, "get_webacl_name", lambda: "acl")
     WQ._run_cwl("lg", "fields @message", 0, 60, 10)
     assert stops == [], "a Failed query has already ended"
 
@@ -588,7 +595,7 @@ def test_a_fanout_timeout_costs_the_detail_not_the_whole_report(monkeypatch):
         monkeypatch.setattr(P, fn, one_hangs)
 
     # The precondition: without the catch this raises concurrent.futures.TimeoutError.
-    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA", "ruleB"])
+    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA", "ruleB"], "acl")
     assert isinstance(details, dict), "the exception must not escape"
 
 
@@ -615,7 +622,7 @@ def test_a_fanout_timeout_returns_at_the_budget_not_after_the_stragglers(monkeyp
         monkeypatch.setattr(P, fn, all_hang)
 
     t0 = time.monotonic()
-    P._get_log_details(object(), "lg", 0, 60, ["a", "b", "c", "d", "e"])
+    P._get_log_details(object(), "lg", 0, 60, ["a", "b", "c", "d", "e"], "acl")
     elapsed = time.monotonic() - t0
     # Fifteen futures over five workers is three waves. Under `wait=True` this returns after
     # all three, so ~9 s; bounded by the batch budget it returns after ~0.3 s plus overhead.

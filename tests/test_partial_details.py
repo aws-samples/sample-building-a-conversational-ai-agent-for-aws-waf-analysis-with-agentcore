@@ -58,7 +58,7 @@ def test_a_budget_exhausted_detail_query_says_so_instead_of_no_rows(no_sleep):
     """The headline defect. `[]` from a still-running query is indistinguishable from a rule that
     matched nothing, in a table whose only purpose is to show what a rule matched."""
     fake = FakeCwl("Running")
-    rows = P._poll_log_query(fake, "lg", 0, 60, "fields @message")
+    rows = P._poll_log_query(fake, "lg", 0, 60, "fields @message", "acl")
     assert rows != []
     assert "_error" in rows[0]
     assert "did not finish" in rows[0]["_error"]
@@ -68,15 +68,15 @@ def test_a_budget_exhausted_detail_query_says_so_instead_of_no_rows(no_sleep):
 
 def test_an_engine_failure_is_distinguished_from_a_budget_timeout(no_sleep):
     """Two causes, two sentences. Both used to be `[]`."""
-    timed_out = P._poll_log_query(FakeCwl("Running"), "lg", 0, 60, "q")[0]["_error"]
-    failed = P._poll_log_query(FakeCwl("Failed"), "lg", 0, 60, "q")[0]["_error"]
+    timed_out = P._poll_log_query(FakeCwl("Running"), "lg", 0, 60, "q", "acl")[0]["_error"]
+    failed = P._poll_log_query(FakeCwl("Failed"), "lg", 0, 60, "q", "acl")[0]["_error"]
     assert timed_out != failed
     assert "Failed" in failed
 
 
 def test_a_terminal_status_is_not_stopped_because_there_is_nothing_to_stop(no_sleep):
     fake = FakeCwl("Cancelled")
-    P._poll_log_query(fake, "lg", 0, 60, "q")
+    P._poll_log_query(fake, "lg", 0, 60, "q", "acl")
     assert fake.stopped == []
 
 
@@ -85,7 +85,7 @@ def test_a_raised_call_says_which_error(no_sleep):
         def start_query(self, **_):
             raise ConnectionError("socket dropped")
 
-    rows = P._poll_log_query(Broken(), "lg", 0, 60, "q")
+    rows = P._poll_log_query(Broken(), "lg", 0, 60, "q", "acl")
     assert "ConnectionError" in rows[0]["_error"]
 
 
@@ -93,7 +93,7 @@ def test_a_completed_detail_query_still_returns_its_rows(no_sleep):
     """The control. The `_error` paths must not have swallowed the success path, which is how a
     fix that returns an error unconditionally would still pass everything above."""
     fake = FakeCwl("Complete", [[{"field": "cnt", "value": "9"}]])
-    assert P._poll_log_query(fake, "lg", 0, 60, "q") == [{"cnt": "9"}]
+    assert P._poll_log_query(fake, "lg", 0, 60, "q", "acl") == [{"cnt": "9"}]
 
 
 # --- the fan-out: a raised future, and a cell that never arrived -----------
@@ -102,7 +102,7 @@ def test_a_completed_detail_query_still_returns_its_rows(no_sleep):
 def test_a_future_that_raised_leaves_a_reason_in_its_own_cell(monkeypatch):
     """Keyed at the cell, not the section: five rules share this table and one failure must not
     speak for the other four."""
-    def one_raises(logs_client, log_group, start, end, rule_name):
+    def one_raises(logs_client, log_group, start, end, rule_name, webacl_name):
         if rule_name == "ruleA":
             raise RuntimeError("boom")
         return [{"ip": "1.2.3.4", "cnt": "9"}]
@@ -110,7 +110,7 @@ def test_a_future_that_raised_leaves_a_reason_in_its_own_cell(monkeypatch):
     for fn in ("_query_top_ips_by_rule", "_query_top_uris_by_rule", "_query_content_by_rule"):
         monkeypatch.setattr(P, fn, one_raises)
 
-    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA", "ruleB"])
+    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA", "ruleB"], "acl")
     assert "_error" in details["ruleA"]["ips"][0]
     assert "RuntimeError" in details["ruleA"]["ips"][0]["_error"]
     # The precondition: the other rule really did succeed, so this is per-cell and not global.
@@ -122,14 +122,14 @@ def test_a_batch_timeout_marks_the_cells_that_never_answered(monkeypatch):
     "this rule matched nothing"."""
     monkeypatch.setattr(P, "MAX_FANOUT_WAIT", 0.2)
 
-    def hangs(logs_client, log_group, start, end, rule_name):
+    def hangs(logs_client, log_group, start, end, rule_name, webacl_name):
         time.sleep(3)  # real sleep: as_completed's timeout is real wall clock
         return [{"ip": "1.2.3.4", "cnt": "9"}]
 
     for fn in ("_query_top_ips_by_rule", "_query_top_uris_by_rule", "_query_content_by_rule"):
         monkeypatch.setattr(P, fn, hangs)
 
-    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA"])
+    details = P._get_log_details(object(), "lg", 0, 60, ["ruleA"], "acl")
     assert details, "the timeout path must still return the cells it knows about"
     reasons = {qtype: rows[0]["_error"] for qtype, rows in details["ruleA"].items()}
     assert set(reasons) == {"ips", "uris", "content"}
@@ -167,7 +167,7 @@ def test_every_detail_query_hands_the_failure_on_instead_of_an_empty_cell(no_sle
     assert loc and loc[1] != "uri", f"{DETAIL_RULE} no longer has a non-uri inspected location"
 
     for fn in (P._query_top_ips_by_rule, P._query_top_uris_by_rule, P._query_content_by_rule):
-        rows = fn(FakeCwl("Failed"), "lg", 0, 60, DETAIL_RULE)
+        rows = fn(FakeCwl("Failed"), "lg", 0, 60, DETAIL_RULE, "acl")
         assert rows, f"{fn.__name__} returned nothing, so a failed query reads as an idle rule"
         assert "_error" in rows[0], f"{fn.__name__} dropped the reason: {rows!r}"
         assert "rather than for lack of matching requests" in rows[0]["_error"]
@@ -180,7 +180,7 @@ def test_a_detail_query_that_answered_still_returns_its_content(no_sleep):
     message = json.dumps({"httpRequest": {"uri": "/login", "args": "id=1%20or%201=1",
                                           "headers": []}})
     fake = FakeCwl("Complete", [[{"field": "@message", "value": message}]])
-    assert P._query_content_by_rule(fake, "lg", 0, 60, DETAIL_RULE) == [
+    assert P._query_content_by_rule(fake, "lg", 0, 60, DETAIL_RULE, "acl") == [
         {"content": "id=1%20or%201=1", "cnt": 1}]
 
 
@@ -230,7 +230,7 @@ def test_the_report_poller_raises_rather_than_return_a_partial_count(no_sleep):
     count that is worse than no number, and raising makes it impossible to mistake."""
     fake = FakeCwl("Running", [[{"field": "cnt", "value": "3"}]])
     with pytest.raises(R.QueryIncomplete) as e:
-        R._poll_log_query(fake, "lg", 0, 60, "q")
+        R._poll_log_query(fake, "lg", 0, 60, "q", "acl")
     assert "did not finish" in str(e.value)
     assert "rather than because the WebACL was idle" in str(e.value)
     assert fake.stopped == ["q-1"]
@@ -238,7 +238,7 @@ def test_the_report_poller_raises_rather_than_return_a_partial_count(no_sleep):
 
 def test_the_report_poller_raises_on_an_engine_failure_too(no_sleep):
     with pytest.raises(R.QueryIncomplete) as e:
-        R._poll_log_query(FakeCwl("Failed"), "lg", 0, 60, "q")
+        R._poll_log_query(FakeCwl("Failed"), "lg", 0, 60, "q", "acl")
     assert "Failed" in str(e.value)
 
 
@@ -246,10 +246,10 @@ def test_the_report_poller_still_answers_a_completed_query(no_sleep):
     """The control, and it covers all three return shapes, since a raise placed one line too
     early would break every caller rather than only the counting one."""
     rows = [[{"field": "cnt", "value": "7"}]]
-    assert R._poll_log_query(FakeCwl("Complete", rows), "lg", 0, 60, "q") == 7
-    assert R._poll_log_query(FakeCwl("Complete", rows), "lg", 0, 60, "q",
+    assert R._poll_log_query(FakeCwl("Complete", rows), "lg", 0, 60, "q", "acl") == 7
+    assert R._poll_log_query(FakeCwl("Complete", rows), "lg", 0, 60, "q", "acl",
                              return_full=True) == {"cnt": "7"}
-    assert R._poll_log_query(FakeCwl("Complete", rows), "lg", 0, 60, "q",
+    assert R._poll_log_query(FakeCwl("Complete", rows), "lg", 0, 60, "q", "acl",
                              return_rows=True) == rows
 
 

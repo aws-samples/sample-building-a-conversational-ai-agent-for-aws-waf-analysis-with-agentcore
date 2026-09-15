@@ -593,7 +593,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             # Event time range + total requests during event
             event_cnt = _poll_log_query(logs_client, log_group, log_start, log_end,
                 "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
-                return_full=True)
+                webacl_name, return_full=True)
 
             if event_cnt and int(event_cnt.get("cnt", 0)) > 0:
                 event_first = event_cnt.get("first", "N/A")
@@ -603,7 +603,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 # Count distinct events by looking for time gaps > 10 min between bins
                 event_count_result = _poll_log_query(logs_client, log_group, log_start, log_end,
                     "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
-                    return_rows=True)
+                    webacl_name, return_rows=True)
                 num_events = 1 if event_count_result else 0
                 prev_ts = None
                 for row in event_count_result or []:
@@ -623,7 +623,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 # DDoS request breakdown by suspicion level
                 ddos_result = _poll_log_query(logs_client, log_group, log_start, log_end,
                     "filter @message like 'anti-ddos:ddos-request' | stats count(*) as total, sum(strcontains(@message, 'high-suspicion')) as high, sum(strcontains(@message, 'medium-suspicion')) as medium, sum(strcontains(@message, 'low-suspicion')) as low",
-                    return_full=True)
+                    webacl_name, return_full=True)
                 ddos_total = int(float(ddos_result.get("total", 0))) if ddos_result else 0
                 ddos_high = int(float(ddos_result.get("high", 0))) if ddos_result else 0
                 ddos_medium = int(float(ddos_result.get("medium", 0))) if ddos_result else 0
@@ -1080,7 +1080,8 @@ class QueryIncomplete(RuntimeError):
     """
 
 
-def _poll_log_query(logs_client, log_group, start, end, query, return_full=False, return_rows=False):
+def _poll_log_query(logs_client, log_group, start, end, query, webacl_name,
+                    return_full=False, return_rows=False):
     """Run a CWL query with polling. Returns count (int), full row (dict), or all rows (list).
 
     The fifth polling site in the product and the one 2.1's collapse missed: it carried its
@@ -1097,6 +1098,9 @@ def _poll_log_query(logs_client, log_group, start, end, query, return_full=False
     the report prints one per section instead of blaming an idle WebACL.
     """
     import time
+    # The report never writes session state either, so it passes the WebACL it was asked about.
+    from tools.waf_query import scope_cwl_query
+    query = scope_cwl_query(query, webacl_name)
     resp = logs_client.start_query(logGroupName=log_group, startTime=start, endTime=end, queryString=query, limit=1000)
     query_id = resp["queryId"]
     deadline = time.monotonic() + MAX_POLL
