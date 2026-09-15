@@ -279,11 +279,20 @@ TEMPLATES = {
         "params": [],
         "description": "Find IPs hitting few URIs at high frequency",
     },
+    # **Groups by the `aws-waf-token` VALUE, not the whole Cookie header.** Measured on a live 7-region
+    # replay 2026-09-15: one solved token, replayed from seven IPs, was undercounted to `ip_count=1` per
+    # row because the earlier query grouped by the entire Cookie header, and a real header carries the
+    # load balancer's own stickiness cookies (`AWSALBTG`, `AWSALBTGCORS`) which differ per backend and per
+    # rotation. So one token fragmented into many groups, one per distinct trailing-cookie combination,
+    # and the cross-IP signal this detection exists for vanished. The synthetic test logs used a bare
+    # cookie value, so no unit test could hold the bug. Both engines now extract only the token: the CWL
+    # parse captures up to the next `;` or `"`, and Athena `regexp_extract`s the same span, keyed
+    # `waf_token` so `_name_is_sensitive` still masks the value on display.
     "token_reuse_ips": {
-        "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
-        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value as cookie, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%token:accepted%') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value ORDER BY ip_count DESC LIMIT {LIMIT}",
+        "query": "filter @message like 'token:accepted' | parse @message /aws-waf-token=(?<waf_token>[^;\"]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by waf_token | sort ip_count desc | limit {limit}",
+        "athena": "SELECT regexp_extract(element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value, 'aws-waf-token=([^;]+)', 1) as waf_token, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%token:accepted%') GROUP BY regexp_extract(element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value, 'aws-waf-token=([^;]+)', 1) ORDER BY ip_count DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Detect token reuse across multiple IPs",
+        "description": "Detect token reuse across multiple IPs (one aws-waf-token seen from many IPs)",
     },
     "host_traffic_profile": {
         "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
