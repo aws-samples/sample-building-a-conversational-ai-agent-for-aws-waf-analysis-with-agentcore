@@ -28,6 +28,56 @@ def reset_table_cache():
     _reset_state()
 
 
+# AWS restricts WebACL names to these characters, which is what lets the filter below be built by
+# interpolation. The same pattern guards the Athena side's `webaclid LIKE`.
+_WEBACL_NAME = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def scope_cwl_query(query: str, webacl_name: str | None) -> str:
+    """`query` with a filter that keeps only one WebACL's records, for CloudWatch Logs Insights.
+
+    **Demonstrated on the deployment account 2026-09-15, through the tool rather than a probe.** Session
+    context on `shield-sample-webacl`, whose destination is the log group `aws-waf-logs-group`;
+    `run_logs_query(query_type="top_blocked_ips", start_time="2024-05-10T06:00", duration_minutes=360)`
+    returned a table of six client IPs and a suggestion to drill into them. Every one of those rows
+    belongs to `test2`, a different WebACL that used to log to the same group, and the `SOURCE:` line on
+    that answer read `shield-sample-webacl`. The provenance channel cannot see this: the record's subject
+    comes from session state and the rows come from the log group, with nothing binding them.
+
+    Every link in that chain is measured. Several WebACLs sharing one destination is supported and
+    documented, and AWS ships centralized WAF logging built on it. This group already holds streams from
+    six WAF sources. Its retention is unset and it stores 19.8 GB, so 2024 records are still there.
+    `MAX_MINUTES` caps the span of a window and not its age: `start_epoch` comes straight from
+    `_parse_start_time` with no lower bound, so a 2024 `start_time` is a legal call.
+
+    **Recent windows are clean, and that is measured rather than assumed**, because tonight's
+    log-versus-metric cross-check rests on it. Every stream that is not this WebACL's ends on or before
+    2025-10-14. Counting by `webaclId` across 2026-05-01 to 2026-09-01, exhaustively rather than by
+    sample: 14,893,856 records, of which 7,446,843 are `shield-sample-webacl`, 7,447,003 are CloudFront
+    access logs sharing the group and carrying no `webaclId` at all, and zero belong to another WebACL.
+
+    **The substring form, mirroring the Athena side.** `webaclId` is the full ARN in WAFv2, so `'/name/'`
+    matches the name as a path segment exactly as `webaclid LIKE '%/name/%'` does. Verified on real
+    records: `filter webaclId like '/test2/'` returns 7 in that window and `'/shield-sample-webacl/'`
+    returns nothing. A regex form works too and needs escaping this one does not.
+
+    **It buys correctness and not bytes**, which is worth stating because the cheaper-looking fix does not
+    exist. `StartQuery` takes no stream parameter, read from the botocore shape, so a restriction can only
+    live in the query string, and measured with and without `filter @logStream`, both runs scanned
+    1,839,012 records and 3.068 GB. Nothing here reduces the scan; the scan is only avoidable by not
+    running the query.
+
+    Raises rather than returning the query unfiltered. An unscoped query on a shared group is the wrong
+    answer this exists to prevent, so there is no degraded mode worth having, and a missing name with a
+    destination set is unreachable in production because `get_waf_config` writes both together.
+    """
+    if not webacl_name or not _WEBACL_NAME.fullmatch(webacl_name):
+        raise RuntimeError(
+            f"cannot scope a CloudWatch Logs query to WebACL {webacl_name!r}: a log group can hold "
+            f"several WebACLs' records, so an unscoped query may answer from another one")
+    return f"filter webaclId like '/{webacl_name}/' | {query.strip()}"
+
+
 def inspection_location(rule_name: str):
     """Map an AWS Managed Rule name to the request component it inspects.
 
@@ -1064,7 +1114,15 @@ def get_log_type() -> str:
 
 
 def _run_cwl(log_group: str, query: str, start_epoch: int, end_epoch: int, limit: int) -> list[dict]:
-    """Execute CWL Insights query."""
+    """Execute CWL Insights query, scoped to the session's WebACL.
+
+    **Scoped here rather than in `query_logs`, so the site that sends the query is the site that scopes
+    it.** A caller added later cannot forget, which is the same reason patrol and the report scope inside
+    their own single executors. `get_webacl_name()` is the right source on this path because the log group
+    came from that WebACL's own logging configuration; patrol and the report pass a name instead, because
+    neither writes session state. See `scope_cwl_query` for the answer this prevents.
+    """
+    query = scope_cwl_query(query, get_webacl_name())
     region = get_logs_region()
     client = get_client("logs", region_name=region)
     with _cwl_semaphore:

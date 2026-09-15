@@ -110,6 +110,9 @@ def cwl(monkeypatch):
 
     monkeypatch.setattr(Q, "_run_cwl", fake_run_cwl)
     monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
+    # `get_waf_config` writes the name and the destination together, so a destination with no
+    # name is not a state production reaches, and the CWL scope filter needs the name.
+    monkeypatch.setattr(Q, "get_webacl_name", lambda: "acl")
     monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
     return seen
 
@@ -236,6 +239,9 @@ def test_the_cloudwatch_query_string_limit_is_rewritten_to_agree(monkeypatch):
     monkeypatch.setattr(Q, "_run_cwl",
                         lambda lg, q, s, e, lim: (seen.update(query=q, limit=lim), [])[1])
     monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
+    # `get_waf_config` writes the name and the destination together, so a destination with no
+    # name is not a state production reaches, and the CWL scope filter needs the name.
+    monkeypatch.setattr(Q, "get_webacl_name", lambda: "acl")
     monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
 
     Q.query_logs("filter x | stats count(*) as c by ip | sort c desc | limit 5", "SELECT 1", 0, 60, 5)
@@ -250,7 +256,14 @@ def test_a_query_with_no_limit_clause_is_left_alone(monkeypatch):
     monkeypatch.setattr(Q, "_run_cwl",
                         lambda lg, q, s, e, lim: (seen.update(query=q), [])[1])
     monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
+    # `get_waf_config` writes the name and the destination together, so a destination with no
+    # name is not a state production reaches, and the CWL scope filter needs the name.
+    monkeypatch.setattr(Q, "get_webacl_name", lambda: "acl")
     monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
 
     Q.query_logs("filter x | stats count(*) as c", "SELECT 1", 0, 60, 5)
-    assert seen["query"] == "filter x | stats count(*) as c"
+    # Ends with the caller's query untouched. The WebACL scope filter is prepended by
+    # `scope_cwl_query`, which is a different property with its own tests, so this asserts the
+    # suffix rather than the whole string: `endswith` still fails on any appended `limit`.
+    assert seen["query"].endswith("filter x | stats count(*) as c"), seen["query"]
+    assert "limit" not in seen["query"], seen["query"]
