@@ -49,14 +49,19 @@ def clean():
     S._state.pop("provenance", None)
     S._state.pop("provenance_subject", None)
     S.set_webacl_context("session-acl", "arn:x", "CLOUDFRONT", "us-east-1")
+    # Bound the way `PreQueryGuard` binds it at `BeforeToolCallEvent`, because the record is keyed by tool
+    # call: a fixture that skips this writes into the slot no hook owns, which is what the old single-slot
+    # version could not tell apart.
+    S.begin_tool_call("t1")
     yield
+    S.begin_tool_call("")
 
 
 def _read(**kwargs) -> dict:
     """One metric read through the real funnel, returning the record the hook would drain."""
     A._RecordingCloudWatch(FakeClient()).get_metric_data(
         MetricDataQueries=[], StartTime=kwargs.get("start", START), EndTime=END)
-    return dict(S._state.get("provenance") or {})
+    return dict((S._state.get("provenance") or {}).get(S.current_tool_call()) or {})
 
 
 def _tools_taking_a_webacl_name() -> dict[str, ast.FunctionDef]:
@@ -165,6 +170,7 @@ def test_the_pin_does_not_outlive_the_tool_call_that_set_it():
     S.declare_query_subject("shield-sample-webacl")
     S.stash_query_provenance("t1")
 
+    S.begin_tool_call("t2")          # the next tool call, which is what must not inherit
     record = _read()
     assert record["webacl"] == "session-acl", (
         f"the second tool call inherited the first's declared subject: {record}")
@@ -178,6 +184,7 @@ def test_a_tool_that_declared_and_then_refused_leaves_nothing_behind():
     inside the guard would leave the subject standing."""
     S.declare_query_subject("shield-sample-webacl")
     assert S.stash_query_provenance("t1") == {}, "a refusal has no record to stash"
+    S.begin_tool_call("t2")
     assert _read()["webacl"] == "session-acl", "the refused tool's subject labelled the next tool's read"
 
 
@@ -186,5 +193,6 @@ def test_the_fallback_drain_clears_the_pin_too():
     line is appended at all, so the pin's only remaining reader is the next tool call's record. The chip
     would then name a WebACL that tool never asked about."""
     S.declare_query_subject("shield-sample-webacl")
-    S.take_query_provenance()
+    S.take_query_provenance("t1")
+    S.begin_tool_call("t2")
     assert _read()["webacl"] == "session-acl", "the pin outlived the fallback drain"

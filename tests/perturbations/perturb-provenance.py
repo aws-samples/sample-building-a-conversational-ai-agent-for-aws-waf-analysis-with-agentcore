@@ -40,7 +40,8 @@ CASES = [
     # The clear on read. Without it the next tool call inherits a window it never queried, which is the
     # 0.24.0 defect in another shape.
     ("the record left behind, so the next tool call inherits this window",
-     [(S, '        return _state.pop("provenance", {})', '        return _state.get("provenance", {})')],
+     [(S, '        return (_state.get("provenance") or {}).pop(tool_use_id or "", {})',
+       '        return (_state.get("provenance") or {}).get(tool_use_id or "", {})')],
      [f"{T}::test_the_record_is_cleared_on_read_so_the_next_tool_cannot_inherit_it"], True),
 
     # The offset read by a guessed key, which is how it first shipped: silently None.
@@ -80,8 +81,8 @@ CASES = [
 
     # The lock. All three merges are read-modify-write and `run_concurrently` reaches them by default.
     ("the lock removed, so concurrent queries lose a count and narrow the window",
-     [(S, "    with _provenance_lock:\n        p = _state.setdefault(\"provenance\", {})",
-       "    if True:\n        p = _state.setdefault(\"provenance\", {})")],
+     [(S, "    with _provenance_lock:\n        slot = current_tool_call()",
+       "    if True:\n        slot = current_tool_call()")],
      [f"{T}::test_concurrent_queries_do_not_lose_a_count_or_narrow_the_window"], True),
 
     # The position of the Athena record. Moved back below `_ensure_athena_table`, a fan-out job stuck in

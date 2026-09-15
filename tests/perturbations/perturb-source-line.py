@@ -37,11 +37,16 @@ CASES = [
        '        content[-1] = {"text": content[-1].get("text", "") + f"\\n{provenance_source_line(record)}"}')],
      [f"{T}::test_every_tool_result_that_queried_carries_the_line"], True),
 
-    # The handoff. The hook drains, so the record has to arrive somewhere the loop can find it.
-    ("the record drained and not stashed, so the chip goes blank",
+    # **The handoff, retargeted 2026-09-15.** With the record keyed by tool call, stashing under the
+    # wrong id no longer loses it: the loop's fallback reads the slot directly. What it does lose is the
+    # reclamation, so the case names the growth bound, which is where the property now lives.
+    ("the record stashed under no id, so a finished tool call's slot is never reclaimed",
      [(A, '        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")',
        '        record = stash_query_provenance("")')],
-     [f"{T}::test_the_hook_hands_the_record_to_the_chip_by_tool_call_id"], True),
+     # Targeted at a test that goes through the hook, because the perturbed line is in the hook: the
+     # harness reported the first attempt INVALID for exactly that, the perturbed line never executing
+     # under a target that calls `stash_query_provenance` directly.
+     [f"{T}::test_every_tool_result_that_queried_carries_the_line"], True),
 
     ("the loop asking for the live record instead of this tool call's",
      [(A, "                _prov = take_query_provenance(payload)",
@@ -75,11 +80,12 @@ CASES = [
        '        p["subject_explicit"] = False')],
      [f"{T}::test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group"], True),
 
-    # The other regression: the CLI path never drained.
-    ("the drain moved back off the per-tool-call path, so a second tool call inherits the first's window",
-     [(S, '        record = _state.pop("provenance", {})',
-       '        record = dict(_state.get("provenance") or {})')],
-     [f"{T}::test_a_second_tool_call_does_not_inherit_the_first_ones_window"], True),
+    # The CLI path never drained, and keying now prevents the inheritance that fixed. The drain still
+    # owes the reclamation, which is what this case names.
+    ("the drain reading instead of popping, so the slot is never reclaimed",
+     [(S, '        record = (_state.get("provenance") or {}).pop(tool_use_id, {})',
+       '        record = dict((_state.get("provenance") or {}).get(tool_use_id) or {})')],
+     ["tests/test_concurrent_tool_provenance.py::test_a_finished_tool_call_leaves_nothing_in_either_slot_dict"], True),
 
     # The old emitter's shape: derive the engine from session state when the line is rendered, which
     # answers "what would a query use now" rather than "what did this one use".

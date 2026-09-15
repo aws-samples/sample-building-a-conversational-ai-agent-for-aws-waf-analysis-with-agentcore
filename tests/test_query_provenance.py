@@ -44,12 +44,18 @@ def _context(name, dest):
                                      "us-east-1", log_destination=dest)
 
 
-def _record(engine, subject=None, start=1000, end=2000):
-    """A fresh record, read straight out of state. Nothing peeks in production: the hook drains."""
+def _record(engine, subject=None, start=1000, end=2000, tool_call="t1"):
+    """A fresh record, read straight out of state. Nothing peeks in production: the hook drains.
+
+    **`begin_tool_call` first, because that is what production does.** The record is keyed by tool call
+    since 2026-09-15, bound by `PreQueryGuard` at `BeforeToolCallEvent`, so a fixture that records without
+    binding writes into the slot that belongs to no tool call and no hook would ever find it. The old
+    fixture did exactly that and passed, because there was one slot for the whole session."""
     session_state._state.pop("provenance", None)
     session_state._state.pop("provenance_stash", None)
+    session_state.begin_tool_call(tool_call)
     session_state.note_query_provenance(engine, start, end, subject=subject)
-    return dict(session_state._state["provenance"])
+    return dict(session_state._state["provenance"][tool_call])
 
 
 class _FakeEvent:
@@ -191,6 +197,7 @@ def test_the_stash_lives_where_the_isolation_fixture_can_clear_it():
     not name a neighbour of the symptom, which is the same lesson as the sweep reporting an unreachable line
     for what was really a stale anchor."""
     _context("shield-sample-webacl", LOG_GROUP_DEST)
+    session_state.begin_tool_call("t1")
     session_state.note_query_provenance(CWL, 1000, 2000)
     session_state.stash_query_provenance("t1")
     assert "provenance_stash" in session_state._state, (
@@ -209,6 +216,7 @@ def test_a_cleared_state_drops_the_stash():
     red, and the only thing hiding it was sharing a function. One `def` turns a gap I had recorded into a
     property that is guarded, with no new case."""
     _context("shield-sample-webacl", LOG_GROUP_DEST)
+    session_state.begin_tool_call("t1")
     session_state.note_query_provenance(CWL, 1000, 2000)
     session_state.stash_query_provenance("t1")
     session_state._state.clear()
@@ -245,6 +253,7 @@ def test_a_second_tool_call_does_not_inherit_the_first_ones_window():
     agent.SourceDisclosure().append_source(first)
 
     _context("webacl-B", LOG_GROUP_DEST)
+    session_state.begin_tool_call("t2")
     session_state.note_query_provenance(CWL, 600_000, 604_600)
     second = _FakeEvent([{"text": "rows from B"}])
     second.tool_use = {"name": "run_logs_query", "toolUseId": "t2"}

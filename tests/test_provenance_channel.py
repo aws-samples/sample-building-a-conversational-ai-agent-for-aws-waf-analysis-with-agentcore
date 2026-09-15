@@ -223,7 +223,9 @@ def test_the_athena_record_lands_before_table_resolution_can_block(monkeypatch):
     worker.start()
     try:
         assert entered.wait(5), "the resolver was never reached, so this test proves nothing"
-        p = S._state.get("provenance") or {}
+        # The record is keyed by tool call since 2026-09-15; this fixture records outside one, so its
+        # slot is the empty string.
+        p = (S._state.get("provenance") or {}).get(S.current_tool_call(), {})
         assert p.get("engines") == ["Athena over S3"], (
             f"the record is not there while table resolution blocks: {p}. A fan-out job stuck here when "
             f"the batch times out would write into the next tool call's record.")
