@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.27.1 (2026-09-15)
+
+### Fixed: an answer said "0 results" for a window it had narrowed from two days to six hours
+
+Measured on the deployed v0.27.0. `run_logs_query(query_type="top_blocked_ips",
+start_time="2026-09-08T00:00", duration_minutes=2880)` queried 360 minutes and said so nowhere. The answer
+was `Query returned 0 results` with three generic reasons: wrong action filter, wrong window, no matching
+traffic. **The six hours it covered were the quiet ones before an attack that produced 566,070 blocks later
+the same day**, so the one true reason, that the request had been narrowed, was the one absent. The model
+noticed the contradiction, could not confirm it, and reconstructed a guess from the tool's documentation.
+
+- `aggregate_logs` already discloses its own clamp, in a header naming the whole request. Three other sites
+  had the same clamp and no header: `run_logs_query`, `analyze_ip` and `investigate_block_fp`. The third one
+  found, `analyze_ip`, is the one users reach first.
+- One shared sentence covers all three, so they cannot word the same limit three ways. It names both
+  numbers, says an empty result says nothing about the rest of the window, and says to split the range.
+- **It says nothing when the window fits.** A note on every answer is noise that trains a reader to skip it.
+
+### Fixed: two tool calls running at once collapsed into one provenance record, naming the wrong WebACL
+
+One question, the BlockedRequests total for `shield-sample-webacl` and for `response-id-on-page` on
+2026-09-08. The stream shows `TOOL_CALL_START, TOOL_CALL_START, TOOL_CALL_END, TOOL_CALL_END`, so the two
+`get_waf_metrics` calls overlap, and exactly one provenance event arrived: `{"webacl":
+"response-id-on-page", "subject_explicit": true, "queries": 2}`. The chip on the shield call named the other
+WebACL and the second call got no chip at all. Two `run_logs_query` calls in the same session produced one
+record whose window spanned 855 days. **This is 0.27.0's own misattribution fix undone by concurrency**: the
+record lived in one slot per session, and its WebACL field is last-writer-wins on a shared slot.
+
+- The record and the declared subject are keyed by tool use id now, bound at `BeforeToolCallEvent` above the
+  existing guard's early return, because every tool needs a slot and that guard speaks for two.
+- **A `ContextVar` and not a thread-local, and that distinction is the whole fix.** Strands runs
+  `asyncio.create_task` per tool use with no thread boundary in the path, no `to_thread` and no
+  `run_in_executor`, so two concurrent tool calls interleave on one thread, where a thread-local hands both
+  of them the same value and reproduces the defect exactly.
+- The reverse failure is the other half. A tool call's own queries fan out to a `ThreadPoolExecutor` and a
+  worker thread starts from an empty context, so each job is submitted through its own `copy_context().run`,
+  one copy per job, because `Context.run` refuses to run one context twice concurrently.
+- **Neither defect was reachable from any test in the suite**, and both were found by invoking the deployed
+  release rather than by reading code.
+
+### Fixed: one perturbation's verdict depended on the machine it ran on
+
+The case that removes the lock around the provenance merges needs its target test to fail, and that test
+raced sixteen threads for a lost update. It caught a lock-free build fifteen times out of fifteen locally,
+then passed on one CI runner and failed on another against identical code, so a green sweep sometimes meant
+the lock was unguarded. The test now stops the first writer between its read and its write, which puts both
+orderings under its own control: paused at the counter, the resuming writer lands its increment on the
+number the other writer already wrote, and paused at the window, it writes its own epoch over a lower one.
+
+1153 tests, 41 perturbation scripts, 506 cases, full sweep 41/41.
+
 ## 0.27.0 (2026-09-15)
 
 ### Fixed: a log query could answer from another WebACL's records and sign the session's name to it
