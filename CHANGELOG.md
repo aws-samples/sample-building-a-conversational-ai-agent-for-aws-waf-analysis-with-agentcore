@@ -12,12 +12,16 @@ override.**
 
 - Measured against the live model in ap-northeast-1: `maxTokens` alone is accepted; `temperature` at 0.0,
   0.5 and 0.9 is refused as deprecated; `temperature=1.0` is accepted; `temperature=1.5` fails the API's
-  own range check, whose maximum is 1.0; `topP=0.9` is refused the same way. So 1.0 is both the ceiling and
-  the model's default, and it is the only value that passes.
-- **No sampling parameter is sent now, rather than one chosen per model name.** A conditional would need a
-  rule like "Claude 5 and later", which is a guess about strings AWS has not published. The cost is stated
-  instead of worked around: a deployer who overrides `ModelId` with an older Claude also loses
-  `temperature=0.0`, which was there for reproducible tool routing and is unavailable on this family.
+  own range check, whose maximum is 1.0; `topP=0.9` is refused the same way; and sending
+  `thinking: disabled` alongside `temperature=0.0` is refused too, so it is not a side effect of thinking
+  being on. 1.0 is both the ceiling and the model's default, and it is the only value that passes.
+- **No sampling parameter is sent now, which is the migration AWS documents.** The Claude Opus 4.7 model
+  card is where the change starts and says to omit these parameters and steer with the prompt. Sonnet 5
+  and Opus 5 inherit it; Sonnet 4.6 and Haiku 4.5 still accept both, so a per-model branch is writable.
+  It is not worth writing: the same page says `temperature = 0` never guaranteed identical responses
+  across invocations, so the branch would buy back a parameter that was not delivering what it was set
+  for. A deployer who overrides `ModelId` with an older Claude loses `temperature=0.0`, and that is the
+  whole cost.
 - **Nothing had exercised the pairing, which is why a release shipped unable to answer.** This project
   verifies by importing the code locally against the real account, and that route drives tools directly
   without ever constructing the model. The first real invocation of the deployed endpoint found it in four

@@ -555,17 +555,24 @@ def _get_model():
     | `temperature` 1.0 | accepted |
     | `temperature` 1.5 | rejected by the API's own range check, max is 1.0 |
     | `topP` 0.9 | `top_p` is deprecated for this model |
+    | `thinking: disabled` plus `temperature` 0.0 | same refusal, so it is not a thinking side effect |
 
     So 1.0 is the maximum and the model's own default, and it is the only value that passes. The
     parameter is not gone, it is pinned, and there is no way to ask this family for low-variance
-    sampling. `temperature=0.0` was here for reproducible tool routing and that is simply unavailable.
+    sampling. `temperature=0.0` was here for reproducible tool routing.
 
-    **Sending nothing rather than keying on the model name.** A conditional would need a rule like
-    "Claude 5 and later", which is a guess about strings AWS has not published yet, and it would be
-    wrong in the quiet direction for the model released after it. Omitting the parameter is correct for
-    every model, at the cost that a deployer who overrides `WAF_AGENT_MODEL_ID` with an older Claude
-    also loses `temperature=0.0`. That cost is stated rather than worked around because working around
-    it means maintaining the list.
+    **Omitting it is AWS's documented migration, and the reason first written here was wrong.** That
+    reason was that a per-family conditional would need a rule like "Claude 5 and later", a guess about
+    model ids AWS has not published. AWS has published the boundary: the Claude Opus 4.7 model card is
+    where the change starts, and it says to omit these parameters and steer with the prompt instead.
+    Sonnet 5 and Opus 5 inherit it; Sonnet 4.6 and Haiku 4.5 still accept both. So a conditional is
+    writable and its list is of old models rather than future ones.
+
+    It stays omitted for a different reason, from the same page: `temperature = 0` "did not guarantee
+    identical responses across invocations" even before the deprecation. A conditional would buy back a
+    parameter whose stated purpose here was never delivered, so the cost of the branch buys nothing. A
+    deployer who overrides `WAF_AGENT_MODEL_ID` with an older Claude loses `temperature=0.0`, and that is
+    the whole cost.
     """
     global _model
     if _model is None:
