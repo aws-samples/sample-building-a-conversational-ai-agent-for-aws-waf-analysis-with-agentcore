@@ -175,6 +175,12 @@ def test_the_two_witnesses_must_be_about_the_same_webacl():
     `response-id-on-page` inside `shield-sample-webacl`'s log group returns 0 rows. Without this guard the
     one cell that speaks fires on that pair and prints a false statement about the log path.
 
+    **The zero is not a query that gave up**, which is the alternative reading worth ruling out. That
+    control scanned 1,291,364 records to return it, and counting the same day by `webaclId` gives 645,682
+    rows with none at all, the CloudFront access logs sharing the group, plus 645,682 for
+    `shield-sample-webacl`. `response-id-on-page` has no rows in that destination on that day, so the
+    control is zero because the records are elsewhere rather than because the query failed.
+
     Refused rather than resolved: running the control for X needs X's own logging configuration, which is
     another API call and a destination this layer cannot query against. The consequence is that a tool
     passing its own name and never writing session state, which is what `patrol_scan` and
