@@ -29,10 +29,11 @@ Measured on the deployed endpoint. A question about country and referer breakdow
 360-minute query cap splits into four windows, ended `| **全天Error: Agent has reached an unrecoverable
 state due to max_tokens limit. For more information see: https://strandsagents.com/...`.
 
-- The model was built with `max_tokens=4096`, three per cent of what it allows. Measured against
-  `global.anthropic.claude-sonnet-5`: 4,096 through 65,536 are accepted and 131,072 is refused with
-  "exceeds the model limit of 128000". It is 32,768 now. A higher ceiling does not make answers longer,
-  because the model stops when it is done; it only decides when a long one gets cut.
+- The model was built with `max_tokens=4096`, which arrived with the initial skeleton on 2026-05-08 and
+  sat untouched for four months. **No output bound is sent at all now, rather than a larger one**: a
+  ceiling chosen in this repository is one the model did not choose. Measured that omitting works, a
+  Converse call with no `inferenceConfig` answers and reports `stopReason: end_turn`, and the service
+  keeps its own limit either way, since 131,072 is refused with "exceeds the model limit of 128000".
 - **The other half stays necessary however high the limit goes.** The error was emitted on the same message
   as the streamed answer with no separator, and its only actionable content was a link to another
   project's documentation. A truncated answer now says that it is incomplete, that everything above the
@@ -109,7 +110,7 @@ The README lists nine supported regions and linked to a six-row table headed "Su
 reader wanting us-east-2, ap-southeast-2 or ap-south-1 did not find their region in the table they were sent
 to. The table now says it is a shortlist of six out of nine and that a region absent from it works.
 
-1132 tests, 39 perturbation scripts, 494 cases.
+1131 tests, 39 perturbation scripts, 494 cases.
 
 ## 0.26.1 (2026-09-15)
 

@@ -539,17 +539,6 @@ _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_l
 MEMORY_ID = os.environ.get("MEMORY_ID", "")
 
 
-# **Measured 2026-09-15 against `global.anthropic.claude-sonnet-5` in ap-northeast-1**, after the deployed
-# agent truncated a real answer: `maxTokens` of 4,096, 8,192, 16,384, 32,768 and 65,536 are all accepted and
-# 131,072 is refused with "exceeds the model limit of 128000". The old value was 4,096, three per cent of
-# what the model allows, and one ordinary question exceeded it: four six-hour windows grouped by country and
-# by referer produced a table that stopped mid-row, with the SDK's `max_tokens` exception glued to the end.
-#
-# A high ceiling does not make answers longer, because the model stops when it is done; it only decides when
-# a long answer gets cut. So this is generous rather than tuned, and well inside the limit.
-MAX_OUTPUT_TOKENS = 32768
-
-
 def _get_model():
     """The model, with no sampling override, because the recommended one refuses every override.
 
@@ -573,7 +562,20 @@ def _get_model():
     parameter is not gone, it is pinned, and there is no way to ask this family for low-variance
     sampling. `temperature=0.0` was here for reproducible tool routing.
 
-    **Omitting it is AWS's documented migration, and the reason first written here was wrong.** That
+    **No output bound either, and this one is the maintainer's standing instruction rather than a
+    measurement.** `max_tokens=4096` arrived with the initial skeleton on 2026-05-08 and sat untouched for
+    four months, until one ordinary question exceeded it on the deployed endpoint: country and referer
+    breakdowns for a day, which the 360-minute query cap splits into four windows, produced a table that
+    stopped mid-row with the SDK's own `max_tokens` exception glued to the last cell. The first fix raised
+    the number, which was the wrong shape: a number picked here is a ceiling the model did not choose.
+
+    Measured that nothing needs to be sent: a Converse call with no `inferenceConfig` at all answers and
+    reports `stopReason: end_turn`, and `BedrockModel` with neither keyword sends `inferenceConfig: {}`. For
+    the record, this model does have a Bedrock ceiling, 131,072 is refused with "exceeds the model limit of
+    128000", but the ceiling is the service's to enforce and not this file's to guess.
+
+    **Omitting the sampling parameter is AWS's documented migration, and the reason first written here was
+    wrong.** That
     reason was that a per-family conditional would need a rule like "Claude 5 and later", a guess about
     model ids AWS has not published. AWS has published the boundary: the Claude Opus 4.7 model card is
     where the change starts, and it says to omit these parameters and steer with the prompt instead.
@@ -591,7 +593,6 @@ def _get_model():
         _model = BedrockModel(
             model_id=MODEL_ID,
             region_name=MODEL_REGION,
-            max_tokens=MAX_OUTPUT_TOKENS,
         )
     return _model
 

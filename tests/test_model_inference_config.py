@@ -47,13 +47,18 @@ def test_no_sampling_parameter_reaches_the_request():
             f"it except the default, so every invocation fails with ValidationException: {cfg}")
 
 
-def test_the_request_still_bounds_its_own_length():
-    """The control. Dropping the whole `inferenceConfig` would satisfy the assertion above and remove the
-    output bound with it, so the one parameter that is still wanted is pinned by name."""
-    # Against the constant rather than a literal: the value moved from 4,096 to 32,768 when a real answer
-    # was truncated, and this test is about the bound existing. `test_output_limit.py` owns the number, so
-    # the two cannot disagree about it.
-    assert _inference_config().get("maxTokens") == agent.MAX_OUTPUT_TOKENS, _inference_config()
+def test_the_request_carries_no_inference_parameters_at_all():
+    """**This was the control for the assertion above and it has inverted.** It used to say the request
+    still bounds its own length, on the reasoning that dropping the whole `inferenceConfig` would remove
+    the output bound along with the refused sampling parameters. `max_tokens` is gone now too, for a
+    different reason: a ceiling picked in this repository is one the model did not choose. So there is
+    nothing left to keep, and the assertion is that the dict is empty.
+
+    That makes the sampling assertion above weaker on its own, which is why it stays: it names the two
+    parameters by name, so a future change that adds one back fails there with the reason attached rather
+    than here with "the dict is not empty"."""
+    assert _inference_config() == {}, (
+        f"the request carries inference parameters this repository chose: {_inference_config()}")
 
 
 def test_the_model_is_constructed_once():

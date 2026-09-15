@@ -15,26 +15,33 @@ accepted and 131,072 is refused with "exceeds the model limit of 128000". And th
 same `messageId` as the streamed answer with no separator, so it read as the next table cell, while the only
 actionable content in it was a link to another project's documentation.
 
-A higher ceiling does not make answers longer, because the model stops when it is done. It only decides when
-a long answer gets cut, which is why the fix is generous rather than tuned. The second half stays necessary
-either way: a limit that is high enough today is still a limit.
+**The fix is to send no bound at all, not a larger one.** The first attempt raised the number, and a number
+picked in this repository is a ceiling the model did not choose; the maintainer's standing instruction is not
+to set one. Measured that omitting works: a Converse call with no `inferenceConfig` answers and reports
+`stopReason: end_turn`. The second half stays necessary either way, because the service has its own ceiling
+and a request can still be cut short by it.
 """
 
 import agent
 
 
-def test_the_output_limit_is_the_one_that_was_measured():
-    """Pinned by value, because the defect was the value. 32,768 is eight times what truncated the answer
-    and a quarter of the 128,000 the model refuses to exceed."""
-    assert agent.MAX_OUTPUT_TOKENS == 32768
-    assert agent.MAX_OUTPUT_TOKENS < 128000, "the model refuses anything above its own limit"
+def test_no_output_bound_reaches_the_request():
+    """**Nothing is sent, rather than a larger number.** The first fix raised 4,096 to 32,768, which is the
+    wrong shape: a number picked in this file is a ceiling the model did not choose, and the maintainer's
+    standing instruction is not to set one.
 
+    Measured that omitting works end to end: a Converse call with no `inferenceConfig` at all answers and
+    reports `stopReason: end_turn`, and `BedrockModel` with neither keyword sends `inferenceConfig: {}`. The
+    service still has its own ceiling, 131,072 is refused with "exceeds the model limit of 128000", and
+    enforcing it is the service's job.
 
-def test_the_limit_reaches_the_request():
-    """The constant is worth nothing if the model is built with something else. Read from the
-    `inferenceConfig` the SDK would send rather than from the constructor's keywords."""
+    Read from the request the SDK would send rather than from the constructor's keywords, because a keyword
+    dropped between the two would satisfy an assertion on the constructor while the request still carried
+    a bound."""
     cfg = agent._get_model()._format_request([{"role": "user", "content": [{"text": "hi"}]}])
-    assert cfg["inferenceConfig"]["maxTokens"] == agent.MAX_OUTPUT_TOKENS
+    assert "maxTokens" not in cfg["inferenceConfig"], cfg["inferenceConfig"]
+    assert cfg["inferenceConfig"] == {}, (
+        f"the request carries inference parameters this file chose: {cfg['inferenceConfig']}")
 
 
 def test_a_truncated_answer_says_so_in_the_reader_s_terms():
