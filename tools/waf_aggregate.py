@@ -57,7 +57,7 @@ import time
 from strands import tool
 
 from tools.query_limits import MAX_MINUTES
-from tools.session_state import is_log_filter_active
+from tools.session_state import is_log_filter_active, note_window_capped
 
 MAX_RESULTS = 25
 # One tuple, two scales. Writing 95 twice is what makes a silent CloudWatch wrong answer
@@ -542,6 +542,9 @@ def aggregate_logs(
         return (f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or "
                 f"YYYY-MM-DDTHH:MM")
     duration = min(duration_minutes, MAX_MINUTES)
+    # `_describe` echoes the window this used, which is a different statement from "your request was
+    # narrowed". The hook makes the second one.
+    note_window_capped(duration_minutes, duration)
     end_epoch = min(start_epoch + duration * 60, int(time.time()))
     if bucket_minutes > duration:
         return (f"Error: bucket_minutes ({bucket_minutes}) is larger than the window "

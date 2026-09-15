@@ -528,15 +528,33 @@ class SourceDisclosure(HookProvider):
         registry.add_callback(AfterToolCallEvent, self.append_source)
 
     def append_source(self, event: AfterToolCallEvent):
-        from tools.session_state import provenance_source_line, stash_query_provenance
-        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")
-        if not record:
+        # **Two disclosures, one append, and the second one is here because per-return appending failed.**
+        # 0.27.1 added the window-cap sentence at each return that seemed to need it and reached three of
+        # five in two tools, missing both returns that answer with content, while four other tools clamp
+        # and said nothing at all. See `note_window_capped`. Appending where the result leaves the tool
+        # call covers every return of every tool, including the ones nobody has written yet.
+        from tools.query_limits import window_capped_note
+        from tools.session_state import provenance_source_line, stash_query_provenance, take_window_cap
+        tool_use_id = (event.tool_use or {}).get("toolUseId") or ""
+        record = stash_query_provenance(tool_use_id)
+        cap = take_window_cap(tool_use_id)
+        # Named for what it holds rather than `notes`, which is what `LogValueDisclosure` above calls its
+        # own accumulator: two identical lines in two hooks make an anchor ambiguous, and the perturbation
+        # sweep reported exactly that.
+        disclosures = []
+        # The cap first, because it changes how the rows above it should be read, and the `SOURCE:` line
+        # is the signature under both.
+        if cap:
+            disclosures.append(window_capped_note(cap["asked"], cap["used"]).lstrip("\n"))
+        if record:
+            disclosures.append(provenance_source_line(record))
+        if not disclosures:
             return
         result = event.result
         if not isinstance(result, dict):
             return
         content = list(result.get("content") or [])
-        content.append({"text": f"\n{provenance_source_line(record)}"})
+        content.append({"text": "\n" + "\n".join(disclosures)})
         event.result = {**result, "content": content}
 
 

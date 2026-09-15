@@ -115,6 +115,20 @@ CASES = [
      [(Q, 'cwl = re.sub(r"\\|\\s*limit\\s+\\d+\\s*$", f"| limit {limit + 1}", query_cwl.strip())',
        'cwl = query_cwl.strip() + f" | limit {limit + 1}"')],
      [f"{T}::test_a_query_with_no_limit_clause_is_left_alone"], True),
+
+    # **The nesting, which is how this feature was half-off from the day it shipped.** The disclosure sat
+    # inside `if interpretation:` in `run_logs_query`, and `_interpret_results` answers for 6 of the 37
+    # templates, so 31 of them rendered a cut-off table as a complete answer. Both halves arrived in
+    # ee73d80 and `analyze_ip` got the unconditional one. No probe: the target reads the source.
+    ("the disclosure nested back inside the interpretation branch",
+     [(L, "    from tools.waf_query import truncation_summary\n"
+          "    _cut = truncation_summary(_notes, _failures)\n"
+          "    if _cut:\n        lines.append(_cut)",
+       "    if interpretation:\n"
+       "        from tools.waf_query import truncation_summary\n"
+       "        _cut = truncation_summary(_notes, _failures)\n"
+       "        if _cut:\n            lines.append(_cut)")],
+     [f"{T}::test_every_tool_that_builds_a_table_appends_the_summary"], False),
 ]
 
 sys.exit(sweep(CASES))

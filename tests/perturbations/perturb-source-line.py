@@ -24,24 +24,28 @@ L = "tools/waf_logs.py"
 T = "tests/test_query_provenance.py"
 
 CASES = [
+    # Retargeted 2026-09-15: the append is shared with the window-cap note now, so the line that can
+    # go missing is the one that puts the `SOURCE:` text into the list, not the append itself.
     ("the line never appended, so a wrong-WebACL answer reads like a right one",
-     [(A, '        content.append({"text": f"\\n{provenance_source_line(record)}"})\n', "")],
+     [(A, '            disclosures.append(provenance_source_line(record))',
+       '            pass')],
      [f"{T}::test_every_tool_result_that_queried_carries_the_line"], True),
 
     ("appended on every tool call, so a config read claims a query it never ran",
-     [(A, "        if not record:\n            return", "        if False:\n            return")],
+     [(A, "        if record:\n            disclosures.append(provenance_source_line(record))",
+       "        if True:\n            disclosures.append(provenance_source_line(record))")],
      [f"{T}::test_every_tool_result_that_queried_carries_the_line"], True),
 
     ("the line merged into the tool's last block, where it can land inside a table",
-     [(A, '        content.append({"text": f"\\n{provenance_source_line(record)}"})',
-       '        content[-1] = {"text": content[-1].get("text", "") + f"\\n{provenance_source_line(record)}"}')],
+     [(A, '        content.append({"text": "\\n" + "\\n".join(disclosures)})',
+       '        content[-1] = {"text": content[-1].get("text", "") + "\\n" + "\\n".join(disclosures)}')],
      [f"{T}::test_every_tool_result_that_queried_carries_the_line"], True),
 
     # **The handoff, retargeted 2026-09-15.** With the record keyed by tool call, stashing under the
     # wrong id no longer loses it: the loop's fallback reads the slot directly. What it does lose is the
     # reclamation, so the case names the growth bound, which is where the property now lives.
     ("the record stashed under no id, so a finished tool call's slot is never reclaimed",
-     [(A, '        record = stash_query_provenance((event.tool_use or {}).get("toolUseId") or "")',
+     [(A, '        record = stash_query_provenance(tool_use_id)',
        '        record = stash_query_provenance("")')],
      # Targeted at a test that goes through the hook, because the perturbed line is in the hook: the
      # harness reported the first attempt INVALID for exactly that, the perturbed line never executing

@@ -4,7 +4,7 @@
 
 import threading
 from strands import tool
-from tools.session_state import get_webacl_name, is_log_filter_active
+from tools.session_state import get_webacl_name, is_log_filter_active, note_window_capped
 from tools.waf_query import query_logs, log_query_error, get_log_type
 from tools.query_limits import MAX_MINUTES
 
@@ -33,6 +33,7 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     """
     from tools.waf_logs import _parse_start_time
     _duration = min(duration_minutes, MAX_MINUTES)
+    note_window_capped(duration_minutes, _duration)
 
     if not get_webacl_name():
         return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
