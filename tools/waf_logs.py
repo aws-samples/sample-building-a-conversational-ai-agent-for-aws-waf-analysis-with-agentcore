@@ -931,7 +931,13 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                 f"This is a query failure, NOT a quiet IP. Say so rather than reporting no "
                 f"activity, and do not re-run it unchanged.")
     if not diversity:
-        return f"No log records found for {ip} in this time window."
+        # ROADMAP 7.7 item 1, group B. No metric dimension covers an IP, so the witness is the different
+        # question "was the log path returning rows at all", which needs two witnesses to avoid flagging
+        # every quiet window. `action=None` because this tool looks at every action.
+        from tools.waf_metrics import log_path_warning
+        from tools.session_state import get_webacl_name
+        warning = log_path_warning(get_webacl_name(), None, start_epoch, end_epoch, narrow_rows=0)
+        return f"No log records found for {ip} in this time window.{warning}"
 
     d = diversity[0]
     ua_count = int(d.get("ua_count", "0"))
