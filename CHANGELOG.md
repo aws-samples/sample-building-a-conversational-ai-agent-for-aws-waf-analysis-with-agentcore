@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.27.0 (2026-09-15)
+
+### Fixed: a log query could answer from another WebACL's records and sign the session's name to it
+
+Demonstrated through the tool on the deployment account. With the session on `shield-sample-webacl`, whose
+destination is the log group `aws-waf-logs-group`, `run_logs_query(query_type="top_blocked_ips",
+start_time="2024-05-10T06:00", duration_minutes=360)` returned a table of six client IPs and a suggestion to
+drill into them. **Every one of those rows belongs to `test2`**, a WebACL that used to log to the same
+group, and the `SOURCE:` line on that answer read `shield-sample-webacl`.
+
+- **No CloudWatch Logs query in this project filtered by WebACL**, and every Athena query already could:
+  the Athena side detects a shared S3 location and adds a `webaclid` filter, and the CWL side had no
+  equivalent. Every log query now carries `filter webaclId like '/<name>/'`, applied inside each of the
+  three executors so the site that sends a query is the site that scopes it.
+- Several WebACLs sharing one destination is supported and documented, and AWS ships centralized WAF
+  logging built on it. This log group already holds streams from six WAF sources.
+- **Recent windows were measured clean rather than assumed**: across 2026-05-01 to 2026-09-01, 14,893,856
+  records, of which 7,446,843 are this WebACL, 7,447,003 are CloudFront access logs sharing the group with
+  no `webaclId` at all, and zero belong to another WebACL. Every stream that is not this WebACL's ends on
+  or before 2025-10-14.
+- The one exception is declared: `run_logs_query(log_group=...)` stays unscoped, because the caller named
+  a destination and the session's WebACL is not the subject of that answer.
+
+### Fixed: a long answer stopped mid-row with an SDK exception glued to its last table cell
+
+Measured on the deployed endpoint. A question about country and referer breakdowns for one day, which the
+360-minute query cap splits into four windows, ended `| **全天Error: Agent has reached an unrecoverable
+state due to max_tokens limit. For more information see: https://strandsagents.com/...`.
+
+- The model was built with `max_tokens=4096`, three per cent of what it allows. Measured against
+  `global.anthropic.claude-sonnet-5`: 4,096 through 65,536 are accepted and 131,072 is refused with
+  "exceeds the model limit of 128000". It is 32,768 now. A higher ceiling does not make answers longer,
+  because the model stops when it is done; it only decides when a long one gets cut.
+- **The other half stays necessary however high the limit goes.** The error was emitted on the same message
+  as the streamed answer with no separator, and its only actionable content was a link to another
+  project's documentation. A truncated answer now says that it is incomplete, that everything above the
+  line is real, and that a narrower question will fit. Every other failure keeps its own message.
+
+### Added: an empty answer about an IP, URI, User-Agent or JA4 is witnessed rather than assumed
+
+No metric dimension covers any of those, so four tools had a branch saying "nothing found" with no way to
+tell that from a log path returning nothing at all: `analyze_ip`, `investigate_block_fp`, `detect_bypass`
+and `aggregate_logs`.
+
+- Two witnesses answer the question that is answerable, "was the log path returning rows in this window":
+  the WebACL-level metric for the action, and one control query with the subject filter removed. Four
+  outcomes, one speaks.
+- **Either witness alone is wrong, and it is measured.** On 2026-09-08 12:00-13:00 UTC the narrow query
+  returned nothing, the control returned nothing and the metric had no datapoints: a genuinely quiet hour,
+  so a control-only check would flag every idle window as a broken path.
+- The one case that speaks has a live example: 2025-08-15 18:00 UTC +6h, metric 476 blocked against a
+  control of zero, where the WebACL was serving and its logs were not landing in that destination.
+- `detect_bypass` asks once for the whole scan rather than once per anomaly section, because six copies of
+  one sentence would be six statements about one fact.
+
+### Added: a partial gap between the metric and the logs is reported
+
+Until now the cross-check spoke only when the log side was exactly zero, which left the more common shape
+unreported. The rule's COUNT matches are now counted ungrouped, with the same filter, so the comparison is
+between two request counts.
+
+- The tool's existing queries could not supply that number: they group by client IP and stop at five, so
+  their row count is a number of distinct clients and summing their hits gives a lower bound that goes
+  silent exactly on the busiest windows.
+- **The threshold is `max(1, 5%)` and both numbers are measured.** Against a rule with 566,070 blocks: a
+  window spanning the traffic gives metric and log counts equal, a boundary cutting through it gives
+  477,480 against 478,880, 0.293% apart, and an unaligned window gives 432,530 against 478,488, 10.63%
+  apart. A window whose unaligned boundary could shift the metric by more than the threshold is refused
+  rather than compared.
+- What the threshold hides is stated: a real gap between 0.3% and 5% cannot be told from boundary skew,
+  while every failure mode this exists for is far above it.
+
+### Fixed: the Anti-DDoS section vanished without saying why, in two of its four states
+
+The section is built from three log queries gated on the rule group being present and the destination being
+a CloudWatch log group. A query failure was reported. The two silences were not: the rule group declared no
+event, and the destination is one these queries cannot read.
+
+Measured on the account: in the week containing a 566,070-request burst, all three queries returned zero
+rows, because the rule group applied `challengeable-request` to 919,476 requests and never emitted
+`event-detected`. The section was absent from a report about the largest attack this account has seen, and
+nothing said anything about it. Each state has its own sentence now, and a WebACL without the rule group
+stays silent because that absence is not a gap.
+
+### Fixed: the weekly report's file was named after a day it does not cover
+
+A report covering 2026-09-08 to 09-14 was written to `waf-weekly-summary-…-20260915.html`. The title was
+fixed in 0.26.0 and the filename went on formatting the window's exclusive end, so the two disagreed about
+the same window. It reads correctly only when the window is capped at the present, which is why a run
+earlier in the same week looked fine. Both go through one derivation now.
+
+### Changed: a release is published weakly and promoted once it has answered
+
+v0.26.0 was published as a full release and could not answer a single question. The check that catches that
+already existed and took four seconds; what was missing was its position in the order, because nothing
+between the tag and the published release required an invocation. A release is now published with
+`--prerelease` and promoted after the deployment answers, so a release nobody smoke-tested looks different
+from one that was.
+
+Also written down: the invocation has to carry what the code sends. For 0.26.0, listing inference profiles
+in all nine regions passed, a policy with `Resource: '*'` passed, and one live model call in the deployment
+region passed, because that call did not include the parameter the agent's own request builds.
+
+### Changed: the region table says it is a shortlist
+
+The README lists nine supported regions and linked to a six-row table headed "Supported regions", so a
+reader wanting us-east-2, ap-southeast-2 or ap-south-1 did not find their region in the table they were sent
+to. The table now says it is a shortlist of six out of nine and that a region absent from it works.
+
+1132 tests, 39 perturbation scripts, 494 cases.
+
 ## 0.26.1 (2026-09-15)
 
 ### Fixed: 0.26.0 could not answer a single question with its own default model
