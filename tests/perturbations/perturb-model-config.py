@@ -19,22 +19,22 @@ A = "agent.py"
 CALL = ('        _model = BedrockModel(\n'
         '            model_id=MODEL_ID,\n'
         '            region_name=MODEL_REGION,\n'
-        '            max_tokens=4096,\n'
+        '            max_tokens=MAX_OUTPUT_TOKENS,\n'
         '        )')
 
 CASES = [
     ("temperature back on the request, which is what v0.26.0 shipped",
-     [(A, CALL, CALL.replace("            max_tokens=4096,\n",
-                             "            max_tokens=4096,\n            temperature=0.0,\n"))],
+     [(A, CALL, CALL.replace("            max_tokens=MAX_OUTPUT_TOKENS,\n",
+                             "            max_tokens=MAX_OUTPUT_TOKENS,\n            temperature=0.0,\n"))],
      [f"{T}::test_no_sampling_parameter_reaches_the_request"], True),
 
     ("top_p reached for instead, refused by the same rule",
-     [(A, CALL, CALL.replace("            max_tokens=4096,\n",
-                             "            max_tokens=4096,\n            top_p=0.9,\n"))],
+     [(A, CALL, CALL.replace("            max_tokens=MAX_OUTPUT_TOKENS,\n",
+                             "            max_tokens=MAX_OUTPUT_TOKENS,\n            top_p=0.9,\n"))],
      [f"{T}::test_no_sampling_parameter_reaches_the_request"], True),
 
     ("the output bound dropped along with the sampling parameters",
-     [(A, CALL, CALL.replace("            max_tokens=4096,\n", ""))],
+     [(A, CALL, CALL.replace("            max_tokens=MAX_OUTPUT_TOKENS,\n", ""))],
      [f"{T}::test_the_request_still_bounds_its_own_length"], True),
 
     ("the model rebuilt on every call, which builds a boto3 client per turn",

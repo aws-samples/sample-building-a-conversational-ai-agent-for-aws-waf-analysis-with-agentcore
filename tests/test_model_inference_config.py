@@ -50,7 +50,10 @@ def test_no_sampling_parameter_reaches_the_request():
 def test_the_request_still_bounds_its_own_length():
     """The control. Dropping the whole `inferenceConfig` would satisfy the assertion above and remove the
     output bound with it, so the one parameter that is still wanted is pinned by name."""
-    assert _inference_config().get("maxTokens") == 4096, _inference_config()
+    # Against the constant rather than a literal: the value moved from 4,096 to 32,768 when a real answer
+    # was truncated, and this test is about the bound existing. `test_output_limit.py` owns the number, so
+    # the two cannot disagree about it.
+    assert _inference_config().get("maxTokens") == agent.MAX_OUTPUT_TOKENS, _inference_config()
 
 
 def test_the_model_is_constructed_once():
