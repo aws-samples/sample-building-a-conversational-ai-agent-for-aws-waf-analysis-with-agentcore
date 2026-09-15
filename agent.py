@@ -424,6 +424,19 @@ class PreQueryGuard(HookProvider):
         registry.add_callback(BeforeToolCallEvent, self.check_prerequisites)
 
     def check_prerequisites(self, event: BeforeToolCallEvent):
+        # **The provenance slot is bound here, for every tool and before the guard's own early return.**
+        # `SourceDisclosure` reads the record back by this id at `AfterToolCallEvent`, and until 2026-09-15
+        # there was one slot for the whole session: two concurrent tool calls wrote into it and the first
+        # hook to fire drained both, so one tool's chip named another tool's WebACL and the other tool got
+        # none. Measured on the deployed v0.27.0 with two `get_waf_metrics` calls for two WebACLs.
+        #
+        # In this hook rather than a fourth one, because a hook that has to be registered is a hook that
+        # can be left unregistered, and `test_log_value_disclosure.py` already pins that every hook defined
+        # here is registered. Above the guard's `return`, because the slot is needed by every tool and the
+        # guard only speaks for two.
+        from tools.session_state import begin_tool_call
+        begin_tool_call((event.tool_use or {}).get("toolUseId") or "")
+
         if event.tool_use["name"] not in self.GUARDED_TOOLS:
             return
         from tools.session_state import get_webacl_name  # lazy: avoid circular import

@@ -17,19 +17,16 @@ from _harness import sweep
 T = "tests/test_concurrent_queries.py"
 PROBE_BLIND = "probe blind"
 TEXTUAL = "textual"
-SERIAL = """    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-    results: dict = {}
-    reasons: dict = {}
-    futures = {executor.submit(job): key for key, job in jobs.items()}"""
+# One line rather than four. The four-line form quoted everything from the executor to the submit, and a
+# comment added between them in 2026-09-15's context-propagation fix broke it; the property this case is
+# about is the worker count.
+SERIAL = "    executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)"
 CASES = [
     (
         "serial again, i.e. the chain whose wall time is the sum",
         "tools/waf_query.py",
         SERIAL,
-        """    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    results: dict = {}
-    reasons: dict = {}
-    futures = {executor.submit(job): key for key, job in jobs.items()}""",
+        "    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)",
         [f"{T}::test_jobs_really_run_at_the_same_time",
          f"{T}::test_the_scan_issues_its_six_queries_concurrently"],
     ),

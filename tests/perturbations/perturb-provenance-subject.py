@@ -36,27 +36,33 @@ CASES = [
        '        p["subject_explicit"] = bool(subject)')],
      [f"{T}::test_the_line_does_not_tell_the_model_to_reload_a_context_the_tool_never_read"], True),
 
-    # Lifetime, three ways it can go wrong.
-    ("the pin never cleared, so the next tool call is labelled with this one's subject",
-     [(S, '        _state.pop("provenance_subject", None)\n        if record and tool_use_id:',
-       "        if record and tool_use_id:")],
-     [f"{T}::test_the_pin_does_not_outlive_the_tool_call_that_set_it",
-      f"{T}::test_a_tool_that_declared_and_then_refused_leaves_nothing_behind"], True),
+    # **Lifetime, and what these three guard changed on 2026-09-15.** Before the record was keyed by tool
+    # call they prevented the next call inheriting this one's subject; keying makes that structural, and the
+    # sweep reported all three HOLLOW, which was right. What removing the drain still changes is that two
+    # dict entries per tool call are never reclaimed, and this runs as a server. So they target the growth
+    # bound now, in the file that owns the keying.
+    ("the pin never cleared, so a finished tool call's slot is never reclaimed",
+     [(S, '        (_state.get("provenance_subject") or {}).pop(tool_use_id, None)\n'
+          "        if record and tool_use_id:", "        if record and tool_use_id:")],
+     ["tests/test_concurrent_tool_provenance.py::test_a_finished_tool_call_leaves_nothing_in_either_slot_dict"], True),
 
-    ("the pin cleared only when a query ran, so a tool that refused leaves its subject standing",
-     [(S, '        _state.pop("provenance_subject", None)\n        if record and tool_use_id:',
-       '        if record and tool_use_id:\n            _state.pop("provenance_subject", None)')],
-     [f"{T}::test_a_tool_that_declared_and_then_refused_leaves_nothing_behind"], True),
+    ("the pin cleared only when a query ran, so a refused tool call's slot is never reclaimed",
+     [(S, '        (_state.get("provenance_subject") or {}).pop(tool_use_id, None)\n'
+          "        if record and tool_use_id:",
+       "        if record and tool_use_id:\n"
+       '            (_state.get("provenance_subject") or {}).pop(tool_use_id, None)')],
+     ["tests/test_concurrent_tool_provenance.py::test_a_finished_tool_call_leaves_nothing_in_either_slot_dict"], True),
 
-    ("the fallback drain leaving the pin, so a hook that never fires mislabels the chip",
-     [(S, '        _state.pop("provenance_subject", None)\n        if tool_use_id is not None:',
-       "        if tool_use_id is not None:")],
-     [f"{T}::test_the_fallback_drain_clears_the_pin_too"], True),
+    ("the fallback drain leaving the pin, so the leak moves to the path that keeps the chip working",
+     [(S, '        (_state.get("provenance_subject") or {}).pop(tool_use_id or "", None)\n'
+          "        if tool_use_id is not None:", "        if tool_use_id is not None:")],
+     ["tests/test_concurrent_tool_provenance.py::test_the_fallback_reader_reclaims_the_slot_too"], True),
 
     # Declaring must not invent a record, or every config-only tool claims a query.
     ("the declaration creating the record, so a tool that queried nothing claims a source",
-     [(S, '        _state["provenance_subject"] = name',
-       '        _state["provenance_subject"] = name\n        _state.setdefault("provenance", {})')],
+     [(S, '        _state.setdefault("provenance_subject", {})[current_tool_call()] = name',
+       '        _state.setdefault("provenance_subject", {})[current_tool_call()] = name\n'
+       '        _state.setdefault("provenance", {}).setdefault(current_tool_call(), {})')],
      [f"{T}::test_declaring_creates_no_record_so_a_tool_that_queries_nothing_stays_silent"], True),
 
     # The invariant that catches the seventh tool. Both remaining cases target tests that read source

@@ -12,7 +12,7 @@ from tools.aws_session import get_client
 from tools.session_state import get_logs_region, get_log_destination, is_log_filter_active, note_query_success
 
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
-from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL,
+from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL, window_capped_note,
                                 poll_timeout_message, query_failed_message, stop_query)
 
 MAX_RESULTS = 25
@@ -497,6 +497,10 @@ def run_logs_query(
         query = query.replace(f"{{{k}}}", str(v))
     # Resolve duration
     _duration = min(duration_minutes, MAX_MINUTES)
+    # **Said in the answer, not only on stderr.** Measured on the deployed v0.27.0: asked for 2,880 minutes,
+    # this clamp used 360, and the answer was "0 results" with three generic reasons for a window covering
+    # the quiet hours before an attack. `aggregate_logs` already discloses its own clamp; this one did not.
+    _cap = window_capped_note(duration_minutes, _duration)
     _log(f"query_type={query_type} start_time={start_time} duration={_duration}min dest={dest or log_group}")
 
     # Execute via unified query layer (routes to CWL or Athena automatically)
@@ -579,7 +583,7 @@ def run_logs_query(
         # and this is the path where the user has nothing else to go on. The resolution
         # block names the table and, on a mixed bucket, the history it cannot reach.
         msg += _table_block()
-        return msg
+        return msg + _cap
 
     # Format as table (results is list[dict] from unified query layer)
     # Mask sensitive field values (cookie/authorization/token/...) before display.
@@ -877,6 +881,9 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         return coarse_err
 
     _duration = min(duration_minutes, MAX_MINUTES)
+    # The same clamp and the same silence, and this is the one users reach most. Its header already prints
+    # `_duration`, which a reader could compare against what they asked for; the note says it outright.
+    _cap = window_capped_note(duration_minutes, _duration)
     start_epoch = _parse_start_time(start_time)
     if start_epoch is None:
         return f"Error: cannot parse start_time '{start_time}'. Use format: YYYY-MM-DD or YYYY-MM-DDTHH:MM"
@@ -937,7 +944,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         from tools.waf_metrics import log_path_warning
         from tools.session_state import get_webacl_name
         warning = log_path_warning(get_webacl_name(), None, start_epoch, end_epoch, narrow_rows=0)
-        return f"No log records found for {ip} in this time window.{warning}"
+        return f"No log records found for {ip} in this time window.{warning}{_cap}"
 
     d = diversity[0]
     ua_count = int(d.get("ua_count", "0"))
@@ -1051,6 +1058,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     # Format output
     lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]
+    if _cap:
+        lines.append(_cap.strip())
 
     # Diversity summary
     lines.append(f"**Diversity**: {ua_count} UAs, {ja4_count} JA4 fingerprints, {total} total requests")

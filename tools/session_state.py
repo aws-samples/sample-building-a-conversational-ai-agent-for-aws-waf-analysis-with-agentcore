@@ -3,6 +3,7 @@
 """Session state — stores current WebACL context for cross-tool coordination."""
 
 # Populated by get_waf_config, consumed by other tools
+import contextvars
 import threading
 
 _state: dict = {}
@@ -165,6 +166,42 @@ def clear_findings():
 
 _provenance_lock = threading.Lock()
 
+# **The provenance record is per tool call, and a single slot was not, which is what broke.** Measured on
+# the deployed v0.27.0: two `get_waf_metrics` calls for two different WebACLs run concurrently, the stream
+# shows `START, START, END, END`, and one provenance event arrived naming the SECOND WebACL with
+# `queries: 2`. So one tool's chip showed another tool's subject and the other tool got none. A second
+# case, two log queries, produced one record whose window spanned 855 days.
+#
+# **A `ContextVar` and not a thread-local, because the concurrency is asyncio and not threads.** Strands'
+# concurrent executor calls `asyncio.create_task` per tool use and invokes the before-tool hook inside that
+# task, so each task gets its own copy of the context and a `set` here is invisible to its siblings. A
+# thread-local would have separated nothing: the tasks share one thread.
+#
+# The empty string is the slot for anything outside a tool call, which is what a direct call from a script
+# or the CLI's own path gets. That keeps those working unchanged rather than making them a special case.
+_current_tool_call: contextvars.ContextVar[str] = contextvars.ContextVar("waf_tool_call", default="")
+
+
+def begin_tool_call(tool_use_id: str):
+    """Bind this tool call's provenance slot. Called from `BeforeToolCallEvent`."""
+    _current_tool_call.set(tool_use_id or "")
+
+
+def current_tool_call() -> str:
+    """The slot this code is recording into. Empty outside a tool call."""
+    return _current_tool_call.get()
+
+
+def copy_call_context():
+    """The current context, for handing to a thread that will record provenance.
+
+    **The fan-out needs this and `ContextVar` does not give it for free.** A tool call's queries run in a
+    `ThreadPoolExecutor`, and a worker thread does not inherit the asyncio task's context, so a record
+    written there would land in the empty slot and the tool's own chip would lose it. `Context.run` is the
+    documented way across that boundary.
+    """
+    return contextvars.copy_context()
+
 
 def declare_query_subject(name: str | None):
     """The WebACL this tool call is reporting on, for a tool that takes its own `webacl_name`.
@@ -200,7 +237,7 @@ def declare_query_subject(name: str | None):
     # stored rather than refused, since the merge's `or` chain already falls through to session state and a
     # guard here would be one no input can reach.
     with _provenance_lock:
-        _state["provenance_subject"] = name
+        _state.setdefault("provenance_subject", {})[current_tool_call()] = name
 
 
 def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject: str | None = None):
@@ -261,8 +298,9 @@ def note_query_provenance(engine: str, start_epoch: int, end_epoch: int, subject
     field, and it fails the same quiet way.
     """
     with _provenance_lock:
-        p = _state.setdefault("provenance", {})
-        declared = _state.get("provenance_subject")
+        slot = current_tool_call()
+        p = _state.setdefault("provenance", {}).setdefault(slot, {})
+        declared = (_state.get("provenance_subject") or {}).get(slot)
         p["webacl"] = subject or declared or get_webacl_name()
         # Which of the two `SOURCE:` texts applies. Carried as a bit rather than inferred from the
         # subject's shape, because "does it start with 'log group'" is a guess about a string and this is
@@ -305,10 +343,10 @@ def stash_query_provenance(tool_use_id: str) -> dict:
     is impossible.
     """
     with _provenance_lock:
-        record = _state.pop("provenance", {})
+        record = (_state.get("provenance") or {}).pop(tool_use_id, {})
         # Unconditional, and before the `if`: a tool that declared a subject and then refused before
         # querying leaves no record, and its subject must not survive into the next tool call.
-        _state.pop("provenance_subject", None)
+        (_state.get("provenance_subject") or {}).pop(tool_use_id, None)
         if record and tool_use_id:
             # **Inside `_state` rather than a module global**, because `tests/conftest.py`'s autouse
             # `_isolate_module_state` clears `_state` and nothing else. A module-level dict here made that
@@ -369,9 +407,9 @@ def take_query_provenance(tool_use_id: str | None = None) -> dict:
         # Draining a record clears the pinned subject, at both drain points rather than only in the hook.
         # A hook that never fires appends no `SOURCE:` line at all, so the pin's only remaining reader is
         # the next tool call's record, and the chip would then name a WebACL that tool never asked about.
-        _state.pop("provenance_subject", None)
+        (_state.get("provenance_subject") or {}).pop(tool_use_id or "", None)
         if tool_use_id is not None:
             record = (_state.get("provenance_stash") or {}).pop(tool_use_id, None)
             if record:
                 return record
-        return _state.pop("provenance", {})
+        return (_state.get("provenance") or {}).pop(tool_use_id or "", {})

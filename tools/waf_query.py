@@ -710,7 +710,12 @@ def run_concurrently(jobs: dict, budget: int = MAX_FANOUT_WAIT,
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
     results: dict = {}
     reasons: dict = {}
-    futures = {executor.submit(job): key for key, job in jobs.items()}
+    # **Each job runs inside a copy of this tool call's context**, because a `ThreadPoolExecutor` worker
+    # does not inherit the asyncio task's `ContextVar` values and a record written there would land in the
+    # slot that belongs to no tool call. One `Context` per job rather than one shared: `Context.run` refuses
+    # to run the same context twice concurrently.
+    from tools.session_state import copy_call_context
+    futures = {executor.submit(copy_call_context().run, job): key for key, job in jobs.items()}
     try:
         # The TimeoutError comes from the iterator, at the `for`, not from inside the body,
         # so it cannot be caught by an except inside the loop. Patrol learned that the
