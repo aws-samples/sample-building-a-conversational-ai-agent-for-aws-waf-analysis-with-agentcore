@@ -35,13 +35,18 @@ CASES = [
      [f"{T}::test_a_negative_offset_moves_the_day_the_other_way"], True),
 
     ("the exclusive end printed, so a seven-day report names an eighth day",
-     [(R, "    last = end - timedelta(seconds=1)", "    last = end")],
-     [f"{T}::test_the_end_date_is_the_last_day_covered_not_the_first_day_after"], True),
+     [(R, "    return (end - timedelta(seconds=1)).astimezone(user_tz).strftime(fmt)",
+       "    return end.astimezone(user_tz).strftime(fmt)")],
+     # The pairing test is deliberately NOT a target here: both sides read the same derivation, so a
+     # derivation that is wrong keeps them agreeing. It catches the two drifting apart, not this.
+     [f"{T}::test_the_end_date_is_the_last_day_covered_not_the_first_day_after",
+      f"{T}::test_the_filename_names_the_last_day_the_report_covers"], True),
 
     # A whole day back is right for an uncapped window and wrong for a capped one, which is the only
     # thing the capped case discriminates.
     ("a whole day stepped back instead of a second, which breaks a window capped at now",
-     [(R, "    last = end - timedelta(seconds=1)", "    last = end - timedelta(days=1)")],
+     [(R, "    return (end - timedelta(seconds=1)).astimezone(user_tz).strftime(fmt)",
+       "    return (end - timedelta(days=1)).astimezone(user_tz).strftime(fmt)")],
      [f"{T}::test_an_end_capped_at_now_names_the_day_it_was_capped_on"], True),
 
     ("the zone dropped from the label, leaving two dates nobody can check",
@@ -66,6 +71,15 @@ CASES = [
     ("the zone named on both halves, which reads as two zones being compared",
      [(R, WHOLE, WHOLE.replace("baseline_start, start, user_tz, ''", "baseline_start, start, user_tz, tz_label"))],
      [f"{T}::test_the_zone_is_named_once_rather_than_on_both_halves"], True),
+
+    # The filename, which stayed wrong for a release after the title was fixed
+    # because each derived the last day for itself.
+
+    ("the filename deriving its own last day again, which is the state that let the two drift",
+     [("tools/report.py",
+       "    output_path = f\"waf-weekly-summary-{webacl_name}-{last_day_covered(end, _user_tz, '%Y%m%d')}.html\"",
+       "    output_path = f\"waf-weekly-summary-{webacl_name}-{end.strftime('%Y%m%d')}.html\"")],
+     [f"{T}::test_the_name_comes_from_the_shared_derivation"], False),
 ]
 
 sys.exit(sweep(CASES))
