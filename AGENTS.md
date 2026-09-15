@@ -80,6 +80,27 @@ CodeBuild path and the commit hash on a local build. If you cannot open a browse
 has a headless invoke you can run instead; **`CREATE_COMPLETE` and a `READY` runtime are not
 verification**, because both happen for an image that cannot serve a request.
 
+## Cutting a release: publish as a prerelease, promote once it has answered
+
+**v0.26.0 was published as a full release at 2026-09-14T15:22Z and could not answer a single question.**
+Its default model refuses the `temperature` value the code sent, so every invocation returned
+`ValidationException` in about four seconds with no tool called. The check that catches it is the verify
+step above. Nothing was missing from the check; what was missing was its position in the order, because
+nothing between the tag and the published release required an invocation.
+
+So the order is: bump the version strings and the CHANGELOG heading, merge, tag the merge commit, publish
+with `gh release create --prerelease`, deploy, run the verify step above, and only then
+`gh release edit vX.Y.Z --prerelease=false`.
+
+**A release nobody smoke-tested has to look different from one that was**, which is why this is a flag on
+the artefact rather than a line in a checklist. A stranger who clones the tag sees the badge; a checklist
+step that was skipped leaves nothing behind.
+
+**The invocation has to carry what the code actually sends.** That the model exists and that IAM permits
+it are different claims from that the request works: for 0.26.0, `list-inference-profiles` across all nine
+regions passed, a policy with `Resource: '*'` passed, and one live call in the deployment region passed,
+because that call did not include the parameter the agent's own request builds.
+
 ## Critical principles (internalize these — they cause the most failures)
 
 1. **Image must be ARM64.** AgentCore only runs ARM64. Always build `--platform linux/arm64`; an

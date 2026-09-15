@@ -247,3 +247,35 @@ def test_the_newest_heading_is_the_highest_version(headings):
     """`vite.config.js` takes the FIRST `## X.Y.Z` it finds, not the greatest, so a section
     inserted in the wrong place would silently set the frontend badge to an older release."""
     assert _v(headings[0]) == max((_v(h) for h in headings)), headings[:3]
+
+
+def test_the_release_process_gates_publication_on_an_invocation():
+    """**A release can be tagged, published and announced without ever having answered a question.** v0.26.0
+    was, at 2026-09-14T15:22Z: its default model refuses the `temperature` the code sent, so every
+    invocation returned `ValidationException` in four seconds. The check that catches it was already
+    written down in `AGENTS.md` and it was not in the order anywhere.
+
+    Asserted on the prose because the prose is the mechanism here: this file's other checks read files
+    that a build consumes, and the release order is consumed by whoever cuts the release. What the prose
+    has to carry is the flag, not the intention, because a prerelease badge is visible to a stranger who
+    clones the tag while a skipped checklist step leaves nothing behind.
+
+    The three assertions are the three halves that were each missing on their own: publish weakly first,
+    promote only after the invocation, and an invocation that carries what the code sends rather than a
+    check that the model exists."""
+    agents = (ROOT / "AGENTS.md").read_text()
+    # `gh release create --prerelease` and not a bare `--prerelease`: the promotion line contains
+    # `--prerelease=false`, so a substring check for the flag alone passes on a process that publishes at
+    # full strength and then demotes nothing. Measured as HOLLOW by the perturbation that drops the flag
+    # from the create command, which is the state this assertion exists to catch.
+    assert "gh release create --prerelease" in agents, (
+        "the release process does not publish weakly; a release that was never smoke-tested then looks "
+        "exactly like one that was")
+    assert "--prerelease=false" in agents, (
+        "nothing says when a prerelease becomes a release, so the weak publish has no exit")
+    assert "actually sends" in agents, (
+        "the process does not say the invocation must carry what the code sends, which is how 0.26.0 "
+        "passed a live model call in the deployment region and still could not answer")
+    assert "not\nverification" in agents or "are not verification" in agents, (
+        "the sentence that CREATE_COMPLETE and a READY runtime are not verification is gone, and it is "
+        "what the release gate points at")
