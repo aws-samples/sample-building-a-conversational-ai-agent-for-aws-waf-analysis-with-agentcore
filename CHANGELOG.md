@@ -1,6 +1,33 @@
 # Changelog
 
+## 0.26.1 (2026-09-15)
+
+### Fixed: 0.26.0 could not answer a single question with its own default model
+
+Every invocation of the deployed 0.26.0 returned `ValidationException: The model returned the following
+errors: `temperature` is deprecated for this model.` The default model became
+`global.anthropic.claude-sonnet-5` during 0.25.0's documentation pass, and the model was still constructed
+with `temperature=0.0`. **Upgrade from 0.26.0, or set `ModelId` to a model that accepts a temperature
+override.**
+
+- Measured against the live model in ap-northeast-1: `maxTokens` alone is accepted; `temperature` at 0.0,
+  0.5 and 0.9 is refused as deprecated; `temperature=1.0` is accepted; `temperature=1.5` fails the API's
+  own range check, whose maximum is 1.0; `topP=0.9` is refused the same way. So 1.0 is both the ceiling and
+  the model's default, and it is the only value that passes.
+- **No sampling parameter is sent now, rather than one chosen per model name.** A conditional would need a
+  rule like "Claude 5 and later", which is a guess about strings AWS has not published. The cost is stated
+  instead of worked around: a deployer who overrides `ModelId` with an older Claude also loses
+  `temperature=0.0`, which was there for reproducible tool routing and is unavailable on this family.
+- **Nothing had exercised the pairing, which is why a release shipped unable to answer.** This project
+  verifies by importing the code locally against the real account, and that route drives tools directly
+  without ever constructing the model. The first real invocation of the deployed endpoint found it in four
+  seconds.
+
+1078 tests, 35 perturbation scripts, 446 cases.
+
 ## 0.26.0 (2026-09-14)
+
+> **Do not deploy this release.** With its own default model it fails every invocation. Use 0.26.1.
 
 ### Fixed: five tools disclosed a WebACL they never queried
 
