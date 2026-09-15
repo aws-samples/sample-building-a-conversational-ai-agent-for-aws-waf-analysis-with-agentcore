@@ -539,13 +539,47 @@ MEMORY_ID = os.environ.get("MEMORY_ID", "")
 
 
 def _get_model():
+    """The model, with no sampling override, because the recommended one refuses every override.
+
+    **Measured 2026-09-15 against `global.anthropic.claude-sonnet-5` in ap-northeast-1, after the
+    deployed agent answered nothing at all.** Every invocation of v0.26.0 returned
+    `ValidationException: The model returned the following errors: `temperature` is deprecated for this
+    model.` The default model became Sonnet 5 in 0.25.0's docs pass and this call still sent
+    `temperature=0.0`, a pairing nothing had exercised: the local verification route drives tools
+    directly and never reaches the model.
+
+    | inferenceConfig | result |
+    |---|---|
+    | `maxTokens` alone | accepted |
+    | `temperature` 0.0, 0.5 or 0.9 | `temperature` is deprecated for this model |
+    | `temperature` 1.0 | accepted |
+    | `temperature` 1.5 | rejected by the API's own range check, max is 1.0 |
+    | `topP` 0.9 | `top_p` is deprecated for this model |
+    | `thinking: disabled` plus `temperature` 0.0 | same refusal, so it is not a thinking side effect |
+
+    So 1.0 is the maximum and the model's own default, and it is the only value that passes. The
+    parameter is not gone, it is pinned, and there is no way to ask this family for low-variance
+    sampling. `temperature=0.0` was here for reproducible tool routing.
+
+    **Omitting it is AWS's documented migration, and the reason first written here was wrong.** That
+    reason was that a per-family conditional would need a rule like "Claude 5 and later", a guess about
+    model ids AWS has not published. AWS has published the boundary: the Claude Opus 4.7 model card is
+    where the change starts, and it says to omit these parameters and steer with the prompt instead.
+    Sonnet 5 and Opus 5 inherit it; Sonnet 4.6 and Haiku 4.5 still accept both. So a conditional is
+    writable and its list is of old models rather than future ones.
+
+    It stays omitted for a different reason, from the same page: `temperature = 0` "did not guarantee
+    identical responses across invocations" even before the deprecation. A conditional would buy back a
+    parameter whose stated purpose here was never delivered, so the cost of the branch buys nothing. A
+    deployer who overrides `WAF_AGENT_MODEL_ID` with an older Claude loses `temperature=0.0`, and that is
+    the whole cost.
+    """
     global _model
     if _model is None:
         _model = BedrockModel(
             model_id=MODEL_ID,
             region_name=MODEL_REGION,
             max_tokens=4096,
-            temperature=0.0,
         )
     return _model
 
