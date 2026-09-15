@@ -260,6 +260,41 @@ def _step_init(rule_name: str = "") -> str:
     return "\n".join(lines)
 
 
+def _count_rule_matches(rule_name: str, start_epoch: int, end_epoch: int) -> int | None:
+    """How many requests this rule COUNTed in this window, ungrouped. `None` when it could not answer.
+
+    **Ungrouped on purpose, and that is the whole reason this exists.** The two queries above are
+    `stats count(*) as hits by httpRequest.clientIp | limit 5`, so neither their row count nor the sum
+    of their `hits` column is the number of requests: the first is a count of distinct IPs and the
+    second is a lower bound truncated at five of them. A cross-check built on either would report a gap
+    on a window with six busy clients and stay silent on a window with six hundred, which inverts what
+    the check is for.
+
+    The filter is the same one both queries use, including the two places a `RuleActionOverride` COUNT
+    entry can appear: the top-level `nonTerminatingMatchingRules` and the per-rule-group one.
+
+    `None` rather than 0 when the query failed, because 0 is a claim about the traffic and a failure is
+    not. `_run_log_query` already returns an `_error` row on every give-up path.
+    """
+    from tools.waf_query import log_query_error
+    cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
+           " | stats count(*) as cnt")
+    athena = (f"SELECT count(*) as cnt FROM {{TABLE}}"
+              f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+              f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}'"
+              f"        AND r.action = 'COUNT')"
+              f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules,"
+              f"        r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))")
+    rows = _run_log_query(cwl, athena, start_epoch, end_epoch, limit=1)
+    if not rows:
+        return 0
+    if log_query_error(rows):
+        return None
+    if "cnt" not in rows[0]:
+        return None
+    return int(rows[0]["cnt"])
+
+
 def _step_analyze_rule(rule_name: str) -> str:
     """Step 4-5: Find peak hour for this rule, then get client distribution.
 
@@ -470,7 +505,15 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     # subject is this question. **This is the tool whose output the user executes against
     # production**, by switching the rule from Count to Block, so a zero here that is really a
     # missed query is the most expensive absence on the list.
-    if not bottom and not top:
+    # **Widened 2026-09-15 to the case where the logs DO hold rows**, which is the more common shape
+    # and was unreported. `bottom` and `top` cannot supply the number: they are
+    # `stats count(*) as hits by httpRequest.clientIp | limit 5`, so their row count is a number of
+    # distinct IPs capped at five, and summing their `hits` column would give a lower bound that goes
+    # silent exactly on windows with many clients, which are the busy ones. One ungrouped count with
+    # the same filter is immune to that by construction rather than corrected for it, at one extra
+    # query per rule.
+    _matched = _count_rule_matches(rule_name, start_epoch, end_epoch)
+    if _matched is not None:
         from tools.waf_metrics import missed_data_warning
         scope = get_scope() or "CLOUDFRONT"
         # **The cross-check is additive, so nothing in it may break the answer it annotates.**
@@ -488,7 +531,8 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
             rules = None
         if rules is not None:
             warning = missed_data_warning(get_webacl_name(), rule_name, rules, start_epoch,
-                                          end_epoch, log_rows=0, metric_name="CountedRequests")
+                                          end_epoch, log_rows=_matched,
+                                          metric_name="CountedRequests")
             if warning:
                 lines.append(warning)
 
