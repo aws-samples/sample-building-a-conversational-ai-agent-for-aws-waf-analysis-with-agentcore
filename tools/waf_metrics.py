@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import declare_query_subject, get_scope, resolve_region
+from tools.session_state import declare_query_subject, get_scope, get_webacl_name, resolve_region
 
 MAX_RESULTS = 25
 
@@ -355,6 +355,147 @@ def missed_action_warning(webacl_name: str, action: str, start_epoch: int, end_e
         return ""
     count, reason = webacl_action_total(webacl_name, metric_name, start_epoch, end_epoch)
     return _missed_data_sentence(count, reason, f"action {action}", webacl_name, metric_name)
+
+
+# The four terminating actions, which are disjoint: a request ends in exactly one of them. `COUNT` is
+# absent on purpose. It is not terminating, so a counted request also ends in one of these four and adding
+# it would double count, and a WAF log record's `action` field never holds `COUNT` anyway.
+_ACTION_METRIC = {"BLOCK": "BlockedRequests", "ALLOW": "AllowedRequests",
+                  "CHALLENGE": "ChallengeRequests", "CAPTCHA": "CaptchaRequests"}
+
+
+def _control_query(action: str | None):
+    """The pair of engine spellings for "did the log path return any row at all in this window".
+
+    Deliberately not a copy of the caller's query with its subject filter removed. What is being asked is
+    whether the path was returning rows, so one shape serves every caller, and a per-tool control is one
+    more query to keep in step with the tool it mirrors.
+    """
+    where = f" AND action = '{action}'" if action else ""
+    cwl = f"filter action = '{action}' | " if action else ""
+    return (f"{cwl}stats count(*) as cnt",
+            f'SELECT count(*) as cnt FROM {{TABLE}} WHERE "timestamp" BETWEEN {{START_MS}} AND '
+            f"{{END_MS}} {{PARTITION_FILTER}}{where}")
+
+
+def control_rows(webacl_name: str, action: str | None, start_epoch: int, end_epoch: int):
+    """How many rows the log path returned for `action` with no subject filter. `(count, reason)`.
+
+    **`webacl_name` is taken and checked rather than trusted, because the two witnesses can otherwise be
+    about different WebACLs.** The metric witness follows its argument; this one follows session state
+    twice over, for the query's WebACL scope and for the log destination it runs against. A caller naming
+    X while the session holds Y would compare X's metric against Y's log group, and the mismatch does not
+    merely risk a wrong answer, it guarantees one: X's records are not in Y's destination, so the control
+    is zero by construction and the one cell that speaks fires every time.
+
+    Refused rather than resolved. Running the control for X needs X's own logging configuration, which is
+    an API call and a second destination this layer has no way to query against. **So a mismatch is
+    silence**, which is what a witness that cannot answer is required to produce. The consequence worth
+    stating: a tool that passes its own name and never writes session state, which is what `patrol_scan`
+    and `generate_weekly_report` do, gets silence from this check rather than a false statement.
+
+    Third of the same family in three days, after `declare_query_subject` and the CloudWatch scope filter.
+    Each one was a subject coming from one place and data from another, with nothing binding them.
+
+    **`None` and `0` are different answers and the caller must not merge them.** A control that could not
+    run is not a control that found nothing, and treating them the same is what would make this check fire
+    on a failed query. `query_logs` returns an `_error` row on every give-up path, so that row is the
+    distinguishing evidence.
+
+    An empty result list is a real zero, measured rather than assumed: `stats count(*) as cnt` over a
+    window with no matching records returns no rows at all on CloudWatch Logs Insights, and returns one row
+    with the count when there are records. A missing `cnt` key is neither, so it refuses; the key is
+    written by `_control_query` two functions up, which is why that state is unreachable rather than
+    handled, and a default of `0` there would have turned an unreachable shape into the firing value.
+    """
+    from tools.waf_query import log_query_error, query_logs
+    session_acl = get_webacl_name()
+    if webacl_name != session_acl:
+        return None, (f"the metric witness is about {webacl_name} and the log destination in session "
+                      f"state belongs to {session_acl!r}, so a control query here would answer about a "
+                      f"different WebACL")
+    cwl, athena = _control_query(action)
+    try:
+        rows = query_logs(cwl, athena, start_epoch, end_epoch, 1)
+    except Exception as exc:
+        return None, f"the control query raised {type(exc).__name__}"
+    if rows is None:
+        return None, "no log destination is configured, so there is no control to run"
+    if log_query_error(rows):
+        return None, "the control query did not complete, so it says nothing about the log path"
+    if not rows:
+        return 0, ""
+    if "cnt" not in rows[0]:
+        return None, f"the control query returned a row with no count in it: {sorted(rows[0])}"
+    return int(rows[0]["cnt"]), ""
+
+
+def log_path_warning(webacl_name: str, action: str | None, start_epoch: int, end_epoch: int,
+                     narrow_rows: int) -> str:
+    """The sentence to add when a tool found nothing for an IP, URI, User-Agent or JA4.
+
+    **No metric has those subjects, so this cross-check asks a different question**: was the log path
+    returning rows at all in this window. Two witnesses answer it together, the WebACL-level metric for the
+    action and one control log query with no subject filter, and neither alone is enough.
+
+    | metric | control | what is said |
+    |---|---|---|
+    | > 0 | > 0 | nothing. The path works, so the narrow zero is genuine |
+    | > 0 | = 0 | **the log path missed data.** The only actionable cell |
+    | = 0 | = 0 | nothing. The window held nothing for anyone, so the narrow zero is genuine |
+    | = 0 | > 0 | one line. Metrics lag or a dimension mismatch, not a verdict |
+
+    **The control alone would flag every quiet hour, which is measured rather than argued.** 2026-09-08
+    12:00 to 13:00 UTC on `shield-sample-webacl`: the narrow query for one IP returned 0 rows, the
+    unfiltered control returned 0 rows, and the WebACL `BlockedRequests` metric returned no datapoints. The
+    hour was genuinely quiet. The hour before it: metric sum 1, log query 1 row, both agree. So a zero
+    control is not evidence of a broken path, and requiring both witnesses is what keeps this check off
+    every idle window.
+
+    **A refusal on either witness is silence**, the rule the sibling checks already follow: a witness that
+    could not answer must never become a claim about the logs.
+
+    `action=None` sums the four terminating actions, which is a presence test rather than a total. Measured
+    on this account for one week: allowed 352,526 plus blocked 566,162 came to 918,688 against 919,495 WAF
+    log records, and challenged and captcha'd were both zero in that window, so the four-way sum is the
+    two-way sum there and the other two can only narrow the 807 difference. Close enough to answer "did
+    anything happen", which is the only question asked of it.
+    """
+    if narrow_rows != 0:
+        return ""
+    metric_names = [_ACTION_METRIC[action]] if action in _ACTION_METRIC else list(_ACTION_METRIC.values())
+    if action is not None and action not in _ACTION_METRIC:
+        return ""
+    total, reason = 0, ""
+    for name in metric_names:
+        count, why = webacl_action_total(webacl_name, name, start_epoch, end_epoch)
+        if count is None:
+            total, reason = None, why
+            break
+        total += count
+    if total is None:
+        print(f"[waf_metrics] no log-path cross-check: {reason}", file=sys.stderr, flush=True)
+        return ""
+
+    control, why = control_rows(webacl_name, action, start_epoch, end_epoch)
+    if control is None:
+        print(f"[waf_metrics] no log-path cross-check: {why}", file=sys.stderr, flush=True)
+        return ""
+
+    subject = f"action {action}" if action else "any action"
+    if total > 0 and control == 0:
+        return (f"\n⚠️  **The log path returned nothing for anyone in this window.** CloudWatch reports "
+                f"{total:,} requests for {subject} on {webacl_name}, and a control query with the subject "
+                f"filter removed returned no rows at all. So this answer's empty result is about the "
+                f"log path and "
+                f"not about the subject asked. Do NOT report it as absence. Likely causes: a Log Filter "
+                f"dropping the action before it reaches the destination, a partition or timezone mismatch "
+                f"on the log table, or a query that failed silently upstream.")
+    if total == 0 and control > 0:
+        return (f"\nNote: the log path returned rows in this window while CloudWatch reports no "
+                f"{subject} requests on {webacl_name}. Metrics can lag by a few minutes, and a dimension "
+                f"mismatch produces the same shape. The log rows are the better evidence here.")
+    return ""
 
 
 def _missed_data_sentence(count, reason: str, subject: str, webacl_name: str,

@@ -143,8 +143,14 @@ def _step_investigate(ip: str, start_epoch: int, end_epoch: int, rule_name: str)
     """Targeted investigation of a specific blocked IP. Orchestrates gather + render."""
     data = _investigate_gather(ip, start_epoch, end_epoch)
     if data is None:
+        # Group B's cross-check. Four causes reach this line and the sentence below names two, so the
+        # third, a log path returning nothing for anyone, is the one a witness can rule in or out.
+        from tools.waf_metrics import log_path_warning
+        from tools.session_state import get_webacl_name
+        warning = log_path_warning(get_webacl_name(), "BLOCK", start_epoch, end_epoch, narrow_rows=0)
         return (f"No BLOCK records found for IP {ip} in this time window.\n"
-                "The IP may not have been blocked during this period, or BLOCK logs are filtered.")
+                f"The IP may not have been blocked during this period, or BLOCK logs are filtered."
+                f"{warning}")
     return _render_investigation(ip, start_epoch, end_epoch, data)
 
 

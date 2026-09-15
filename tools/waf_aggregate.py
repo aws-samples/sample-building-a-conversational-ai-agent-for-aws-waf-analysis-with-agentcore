@@ -577,6 +577,13 @@ def aggregate_logs(
                     "(2) the window or timezone is wrong; (3) the dimension is not populated on "
                     "this upstream — referer and ja4 are absent on some, see "
                     "search_waf_knowledge for field availability.")
+        # Group B's cross-check. The three reasons above are all about the subject or the window; this
+        # witness answers whether the log path was returning rows at all, which none of them can.
+        # `filters` may name an action, and when it does the witness is that action's own metric.
+        from tools.waf_metrics import log_path_warning
+        from tools.session_state import get_webacl_name
+        _action = (filters or {}).get("action") if isinstance(filters, dict) else None
+        msg += log_path_warning(get_webacl_name(), _action, start_epoch, end_epoch, narrow_rows=0)
         return msg + _table_block()
 
     columns = [k for k in max(rows[:MAX_RESULTS], key=lambda r: len(r)).keys()

@@ -75,8 +75,11 @@ CASES = [
      [f"{T}::test_a_failed_metric_query_says_so_instead_of_reporting_zero"], True),
 
     # The other direction: speaking when there is nothing to say.
+    # Anchored through the following line: `log_path_warning` now has its own `if count is None:` at a
+    # deeper indent, which contains this one as a substring, so the bare form matched twice.
     ("a refusal turned into a claim about the logs",
-     [(M, "    if count is None:\n", "    if False:\n")],
+     [(M, '    if count is None:\n        print(f"[waf_metrics] no metric cross-check',
+       '    if False:\n        print(f"[waf_metrics] no metric cross-check')],
      [f"{T}::test_a_metric_that_could_not_answer_never_becomes_a_claim_about_the_logs"], True),
 
     # Anchored through the following line, because `if log_rows != 0` now appears in both

@@ -715,6 +715,17 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             lines.append("### No Obvious Bypass Candidates Found")
             lines.append("No IPs matched the anomaly filters in this time window.")
             lines.append("⚠️  This does NOT guarantee no bypass exists — only that no IP exceeded the detection thresholds.")
+            # ROADMAP 7.7 item 1, group B, and once for the whole scan rather than once per section.
+            # The six sections share one witness, the log path in this window, so six copies of the same
+            # sentence would be six statements about one fact. This branch is the right place: every
+            # section is empty AND no query failed, which is exactly when "the path returned nothing for
+            # anyone" is the reading nothing here can rule out. The subject is ALLOW, which is the traffic
+            # every one of the six sections looks at.
+            from tools.waf_metrics import log_path_warning
+            from tools.session_state import get_webacl_name
+            _warning = log_path_warning(get_webacl_name(), "ALLOW", start_epoch, end_epoch, narrow_rows=0)
+            if _warning:
+                lines.append(_warning.strip())
 
     lines.append("")
     lines.append("---")
