@@ -66,6 +66,29 @@ POLL_INTERVAL = 2
 # told a limit the code does not apply.
 MAX_MINUTES = 360
 
+
+def window_capped_note(asked_minutes: int, used_minutes: int) -> str:
+    """The sentence a tool adds when it queried a shorter window than it was asked for, or "".
+
+    **Measured on the deployed v0.27.0.** Asked for 2,880 minutes, `min(duration_minutes, MAX_MINUTES)` used
+    360, and nothing said so: the answer was "Query returned 0 results" with three generic possible reasons,
+    for a window covering the quiet six hours before an attack that produced 566,070 blocks later the same
+    day. The model spotted the contradiction, could not confirm it, and had to reason from the tool's
+    documentation to guess that its request had been narrowed.
+
+    `aggregate_logs` already discloses this, in the header `_describe` builds, and its docstring gives the
+    reason: "the model chose four parameters and the window was silently clamped to `MAX_MINUTES`, so a
+    header naming the request is how a caller notices it got the aggregation it asked for over the window it
+    did not." Three other sites had the same clamp and no header. One sentence lives here so they cannot
+    word it three ways.
+    """
+    if used_minutes >= asked_minutes:
+        return ""
+    return (f"\n⚠️  **Window narrowed.** You asked for {asked_minutes:,} minutes and this engine caps a "
+            f"single query at {MAX_MINUTES}, so only the first {used_minutes:,} minutes were queried. An "
+            f"empty or small result says nothing about the rest of the window. Split the range into "
+            f"{MAX_MINUTES}-minute queries to cover it.")
+
 # The fan-out budget, which is a different kind of limit and the one that actually governs
 # patrol. `MAX_POLL` bounds ONE query; this bounds a whole batch submitted to a thread pool,
 # in wall clock, and it is what `concurrent.futures.as_completed(timeout=...)` takes.
