@@ -40,7 +40,7 @@ CASES = [
     ("the hourly build declares a minute-level format instead",
      [(A, 'format="yyyy/MM/dd/HH", unit="hours"', 'format="yyyy/MM/dd/HH/mm", unit="minutes"')],
      [f"{T}::test_hourly_choice_on_a_mixed_bucket_builds_the_whole_timeline_table"],
-     False),   # continuation line inside the dict() literal; no statement fits above it
+     True),   # the anchor is on the `hourly = dict(...)` statement's own line, so a probe fits
 
     # The range starts at the minute era's own start rather than the oldest data, so the hourly
     # table stops exactly where the minute one did and the history is still unreachable.
@@ -79,19 +79,34 @@ CASES = [
      [f"{T}::test_tool_hourly_before_resolution_asks_for_a_query_first"],
      True),
 
-    # The self-heal condemns a stale hourly table but stops disclosing the rebuild, so a moved
-    # range and a slow first query after a gap go unexplained.
-    ("the hourly self-heal rebuilds silently, without a note",
-     [(A, "Recreating it for the hourly choice", "done")],
+    # The shared condemn helper stops disclosing the rebuild, so a moved range and a slow first
+    # query after a gap go unexplained on both self-heal paths.
+    ("the self-heal rebuilds silently, without a note",
+     [(A, "Recreating it.", "Rebuilt.")],
      [f"{T}::test_hourly_self_heal_discloses_the_rebuild"],
      False),   # f-string fragment inside the discovery_notes append; no statement fits above it
 
-    # The drop-failed branch stops disclosing, so CREATE keeps the stale table and a zero-row
-    # pre-cutover answer reads as "no traffic" with nothing to explain it.
-    ("a failed drop of the stale hourly table is swallowed silently",
-     [(A, "Could not drop the stale", "Removed the stale")],
-     [f"{T}::test_hourly_self_heal_discloses_a_failed_drop"],
+    # The shared helper stops disclosing a failed drop, so CREATE keeps the stale table and a
+    # zero-row answer reads as "no traffic" on both paths with nothing to explain it.
+    ("a failed drop of a stale table is swallowed silently",
+     [(A, "could not be dropped", "was dropped")],
+     [f"{T}::test_hourly_self_heal_discloses_a_failed_drop",
+      f"{T}::test_minute_self_heal_discloses_a_failed_drop"],
      False),   # f-string fragment inside the discovery_notes append; no statement fits above it
+
+    # The minute self-heal stops calling the shared helper, so its failed drop is silent again,
+    # the pre-diff asymmetry the review flagged.
+    ("the minute self-heal no longer discloses through the shared helper",
+     [(A, "_condemn_scratch_table(meta, problem, region)", "pass")],
+     [f"{T}::test_minute_self_heal_discloses_a_failed_drop"],
+     True),
+
+    # The minute-choice reply keys its "minute-level era" claim on `mixed` instead of the
+    # cutover, so a mixed-but-hourly-newest bucket is told its data is minute-level.
+    ("the minute reply claims minute-level on a bucket keyed only by mixed",
+     [(L, "        if cutover:", "        if mixed:")],
+     [f"{T}::test_tool_minute_message_keys_on_cutover_not_mixed"],
+     True),
 ]
 
 sys.exit(sweep(CASES))

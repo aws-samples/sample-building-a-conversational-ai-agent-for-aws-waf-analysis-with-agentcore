@@ -1099,6 +1099,26 @@ def _named_scratch_meta(table_name: str, region: str) -> dict | None:
     return meta if not isinstance(meta, str) else None
 
 
+def _condemn_scratch_table(meta: dict, problem: str, region: str):
+    """Drop a stale scratch table so `CREATE ... IF NOT EXISTS` rebuilds it, disclosing both
+    the rebuild and, when the drop fails, that a stale table was left in place.
+
+    Shared by both self-heal sites so they disclose the same way. A silent `except: pass`
+    here once let a range-too-late table survive a failed drop and return zero rows read as
+    "no traffic". Both notes lead with the table name so they read under the `Skipped ` prefix
+    `describe_table_resolution` adds, and the failure note carries `problem`, so its direction
+    (too-early wastes planning, too-late hides data) matches the rebuild note rather than
+    assuming one. Dropping an EXTERNAL table never touches S3."""
+    db, name = meta["table"].split(".", 1)
+    _athena_state["discovery_notes"] += (f"{meta['table']} {problem}. Recreating it.",)
+    try:
+        get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=name)
+    except Exception:
+        _athena_state["discovery_notes"] += (
+            f"{meta['table']} could not be dropped ({problem}); until it is removed by hand a "
+            f"query in that range can return zero rows rather than data.",)
+
+
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
                         partition_unit: str, partition_interval: int, region: str, workgroup: str,
                         table_name: str, range_start: str | None = None) -> dict:
@@ -1201,29 +1221,12 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
     # Self-heal a table left by a previous session, the same way the minute scratch table
     # does on the resolve path. If the oldest data has moved since it was built (lifecycle
     # expiry, or a backfill of older logs) the declared range_start no longer matches, and
-    # `CREATE ... IF NOT EXISTS` would keep the stale one. Too-late is the dangerous
-    # direction: a pre-cutover window before the stale start returns zero rows, exactly the
-    # "no traffic" misread this feature exists to prevent. Condemn and rebuild it.
+    # `CREATE ... IF NOT EXISTS` would keep the stale one, so condemn it. `_condemn_scratch_table`
+    # discloses the rebuild and any failed drop, in the direction the mismatch actually took.
     existing = _named_scratch_meta(table_name, region)
     problem = _cross_check_declared(existing, hourly, strict=True) if existing is not None else None
     if problem is not None:
-        # Condemn the stale table so CREATE rebuilds it, and disclose both ways, the way the
-        # minute self-heal above does. A note when it is rebuilt, so a slow first query after a
-        # gap and a moved range are explained. And a note when the drop fails, because CREATE
-        # ... IF NOT EXISTS then keeps the range-too-late table and a pre-cutover window comes
-        # back with zero rows: without the note that reads as "no traffic", the exact failure
-        # this self-heal exists to prevent, silently reinstated. Dropping an EXTERNAL table
-        # never touches S3.
-        _athena_state["discovery_notes"] += (
-            f"{existing['table']} {problem}. Recreating it for the hourly choice.",)
-        try:
-            get_client("glue", region_name=region).delete_table(
-                DatabaseName=TMP_DATABASE, Name=table_name)
-        except Exception:
-            _athena_state["discovery_notes"] += (
-                f"Could not drop the stale {existing['table']}; its projection still starts "
-                f"after the data does, so a pre-cutover window can return zero rows rather "
-                f"than data until it is removed by hand.",)
+        _condemn_scratch_table(existing, problem, region)
     created = _create_named_table(
         s3_path, hourly["storage_template"], hourly["format"], hourly["unit"],
         hourly["interval"], region, "primary", table_name,
@@ -1444,19 +1447,15 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
 
     meta = _find_existing_table(s3_path, region)
     if meta is not None:
-        db, tbl = meta["table"].split(".", 1)
+        db = meta["table"].split(".", 1)[0]
         problem = _cross_check_declared(meta, layout, strict=(db == TMP_DATABASE))
         if problem is None:
             return _record_table(meta)
         if db == TMP_DATABASE:
-            # The agent's own scratch table, now inconsistent with the data under
-            # it. Drop and rebuild; dropping an EXTERNAL table never touches S3.
-            _athena_state["discovery_notes"] += (
-                f"{meta['table']} {problem}. Recreating it.",)
-            try:
-                get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=tbl)
-            except Exception:
-                pass
+            # The agent's own scratch table, now inconsistent with the data under it. Condemn
+            # it; the helper discloses the rebuild and any failed drop, so a stale table left
+            # by a failed drop cannot return zero rows silently.
+            _condemn_scratch_table(meta, problem, region)
         else:
             _athena_state["discovery_notes"] += (
                 f"{meta['table']} {problem}. Building a separate table in "

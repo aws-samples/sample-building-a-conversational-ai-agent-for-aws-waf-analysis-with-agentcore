@@ -527,7 +527,7 @@ def test_hourly_self_heal_discloses_a_failed_drop(catalog, monkeypatch):
     A.set_layout_choice("hourly")
     A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
     notes = " ".join(A._athena_state.get("discovery_notes") or ())
-    assert "Could not drop" in notes and "zero rows" in notes
+    assert "could not be dropped" in notes and "zero rows" in notes
 
 
 # --- the tool that records the choice ---------------------------------------
@@ -558,11 +558,43 @@ def test_tool_refuses_hourly_on_a_single_layout_bucket():
 def test_tool_minute_choice_resets_to_the_default():
     A.reset_table_cache()
     A._athena_state.update({"layout_choice": "hourly", "layout_mixed": True,
+                            "layout_cutover": "2026/01/05",   # minute-newest mixed
                             "partition_format": "yyyy/MM/dd/HH", "table": "x.y"})
     msg = set_log_granularity("minute")
     assert A._athena_state["layout_choice"] is None
     assert A._athena_state["table"] is None
     assert "full precision" in msg
+
+
+def test_tool_minute_message_keys_on_cutover_not_mixed():
+    """Findings 1 and 5: the "recent minute-level era" claim is keyed on the cutover date,
+    which is set only when the newest era is minute-level, not on layout_mixed. A bucket that
+    is mixed but hourly-newest (a reverse minute->hourly switch, cutover=None), like a pure
+    single-layout bucket, must not be told its data is minute-level at full precision."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH", "layout_mixed": True,
+                            "layout_cutover": None})          # mixed, but hourly-newest
+    msg = set_log_granularity("minute")
+    assert "minute-level" not in msg and "full precision" not in msg
+
+
+def test_minute_self_heal_discloses_a_failed_drop(catalog, monkeypatch):
+    """Finding 3: the minute scratch self-heal now discloses a failed drop too, through the
+    shared helper, so a stale table a failed delete leaves behind cannot return zero rows
+    silently the way it did before the diff added disclosure to only the hourly path."""
+    glue = catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
+                                            fmt="yyyy/MM/dd/HH", unit="hours")]},
+                   layout=MINUTE_LAYOUT)   # scratch declares hourly, data is minute: stale
+    monkeypatch.setattr(A, "_create_named_table", lambda *a, **k: A._table_metadata(
+        A.TMP_DATABASE, table("waf_logs_myacl", SCOPED_PATH)))
+
+    def boom(**kwargs):
+        raise RuntimeError("AccessDenied")
+
+    monkeypatch.setattr(glue, "delete_table", boom)
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    notes = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "could not be dropped" in notes
 
 
 def test_tool_rejects_an_unknown_granularity():

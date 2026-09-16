@@ -432,11 +432,15 @@ def set_log_granularity(granularity: str) -> str:
     cutover = _athena_state.get("layout_cutover")
     if granularity == "minute":
         set_layout_choice(None)
-        if mixed:
+        # `cutover` is set only when the newest era is minute-level, which is the only case
+        # where "recent minute-level era" is true. `mixed` alone also covers a pure-hourly
+        # bucket (the Firehose default) and a reverse minute->hourly switch, where the newest
+        # era is hourly and that claim would be false, so key the claim on the cutover.
+        if cutover:
             return ("From the next query the recent minute-level era is read at full "
                     "precision; the pre-cutover history is out of reach this way, ask for "
                     "hourly to read the whole timeline.")
-        return "Minute-level, the default: the recent era at full precision."
+        return "Reading the bucket's own partition layout, the default."
     # hourly
     if not resolved:
         # No table resolved yet, so whether this bucket even holds two layouts is unknown.
