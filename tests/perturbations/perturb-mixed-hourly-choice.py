@@ -78,6 +78,20 @@ CASES = [
      [(L, "    if not resolved:", "    if False:")],
      [f"{T}::test_tool_hourly_before_resolution_asks_for_a_query_first"],
      True),
+
+    # The self-heal condemns a stale hourly table but stops disclosing the rebuild, so a moved
+    # range and a slow first query after a gap go unexplained.
+    ("the hourly self-heal rebuilds silently, without a note",
+     [(A, "Recreating it for the hourly choice", "done")],
+     [f"{T}::test_hourly_self_heal_discloses_the_rebuild"],
+     False),   # f-string fragment inside the discovery_notes append; no statement fits above it
+
+    # The drop-failed branch stops disclosing, so CREATE keeps the stale table and a zero-row
+    # pre-cutover answer reads as "no traffic" with nothing to explain it.
+    ("a failed drop of the stale hourly table is swallowed silently",
+     [(A, "Could not drop the stale", "Removed the stale")],
+     [f"{T}::test_hourly_self_heal_discloses_a_failed_drop"],
+     False),   # f-string fragment inside the discovery_notes append; no statement fits above it
 ]
 
 sys.exit(sweep(CASES))

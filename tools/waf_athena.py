@@ -1082,7 +1082,14 @@ def _safe_table_name(webacl_name: str) -> str:
 def _named_scratch_meta(table_name: str, region: str) -> dict | None:
     """Metadata for one scratch table looked up by exact name, or None if it is absent or
     unusable. Used by the hourly-build self-heal, which needs a specific table rather than
-    the best match `_find_existing_table` ranks for a path."""
+    the best match `_find_existing_table` ranks for a path.
+
+    Collapsing "absent" and "unreadable" into the same None is the safe direction, on purpose.
+    The only caller reads None as "nothing to condemn" and lets `CREATE ... IF NOT EXISTS`
+    proceed: on a table it could not evaluate it therefore skips the drop rather than deleting
+    blind, and CREATE either builds the missing table or no-ops on the existing one. The unsafe
+    direction would be treating a read failure as a mismatch and dropping a table it never
+    understood; this does not."""
     try:
         tbl = get_client("glue", region_name=region).get_table(
             DatabaseName=TMP_DATABASE, Name=table_name)["Table"]
@@ -1198,12 +1205,25 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
     # direction: a pre-cutover window before the stale start returns zero rows, exactly the
     # "no traffic" misread this feature exists to prevent. Condemn and rebuild it.
     existing = _named_scratch_meta(table_name, region)
-    if existing is not None and _cross_check_declared(existing, hourly, strict=True) is not None:
+    problem = _cross_check_declared(existing, hourly, strict=True) if existing is not None else None
+    if problem is not None:
+        # Condemn the stale table so CREATE rebuilds it, and disclose both ways, the way the
+        # minute self-heal above does. A note when it is rebuilt, so a slow first query after a
+        # gap and a moved range are explained. And a note when the drop fails, because CREATE
+        # ... IF NOT EXISTS then keeps the range-too-late table and a pre-cutover window comes
+        # back with zero rows: without the note that reads as "no traffic", the exact failure
+        # this self-heal exists to prevent, silently reinstated. Dropping an EXTERNAL table
+        # never touches S3.
+        _athena_state["discovery_notes"] += (
+            f"{existing['table']} {problem}. Recreating it for the hourly choice.",)
         try:
             get_client("glue", region_name=region).delete_table(
                 DatabaseName=TMP_DATABASE, Name=table_name)
         except Exception:
-            pass
+            _athena_state["discovery_notes"] += (
+                f"Could not drop the stale {existing['table']}; its projection still starts "
+                f"after the data does, so a pre-cutover window can return zero rows rather "
+                f"than data until it is removed by hand.",)
     created = _create_named_table(
         s3_path, hourly["storage_template"], hourly["format"], hourly["unit"],
         hourly["interval"], region, "primary", table_name,

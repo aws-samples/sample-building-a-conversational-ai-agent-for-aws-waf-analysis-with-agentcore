@@ -491,6 +491,45 @@ def test_resolution_block_under_the_hourly_choice_says_the_timeline_is_reachable
     assert "minute-level era only" not in block
 
 
+def _stale_hourly(rng):
+    """A previous session's hourly table declaring `rng` as its projection range."""
+    return A._table_metadata(A.TMP_DATABASE, table(
+        "waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours", rng=rng))
+
+
+def test_hourly_self_heal_discloses_the_rebuild(catalog, monkeypatch):
+    """A stale hourly table from a previous session (its range starts after the data now does)
+    is condemned and rebuilt, and that is disclosed, so a moved range and a slow first query
+    are explained rather than silent."""
+    catalog({}, layout=MIXED_LAYOUT)
+    _record_hourly_builds(monkeypatch)
+    # range_start 2025 is later than data_start 2022/03/07: the dangerous, too-late direction.
+    monkeypatch.setattr(A, "_named_scratch_meta", lambda name, region: _stale_hourly("2025/01/01/00,NOW"))
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    notes = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "waf_logs_myacl_hourly" in notes and "Recreating it" in notes
+
+
+def test_hourly_self_heal_discloses_a_failed_drop(catalog, monkeypatch):
+    """If the stale table cannot be dropped, CREATE IF NOT EXISTS keeps it and a pre-cutover
+    window can come back with zero rows. The failure is disclosed so that answer is not read
+    as 'no traffic' with the stale table silently left in place."""
+    catalog({}, layout=MIXED_LAYOUT)
+    _record_hourly_builds(monkeypatch)
+    monkeypatch.setattr(A, "_named_scratch_meta", lambda name, region: _stale_hourly("2025/01/01/00,NOW"))
+
+    class BoomGlue:
+        def delete_table(self, **kwargs):
+            raise RuntimeError("AccessDenied")
+
+    monkeypatch.setattr(A, "get_client", lambda *a, **k: BoomGlue())
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    notes = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "Could not drop" in notes and "zero rows" in notes
+
+
 # --- the tool that records the choice ---------------------------------------
 
 
