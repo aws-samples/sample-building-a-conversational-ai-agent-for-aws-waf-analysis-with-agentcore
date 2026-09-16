@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.28.0 (2026-09-16)
 
 ### Added: read a mixed bucket's pre-cutover history by building the hourly table for you
 
