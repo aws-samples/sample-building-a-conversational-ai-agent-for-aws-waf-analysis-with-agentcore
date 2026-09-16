@@ -94,6 +94,12 @@ The agent supports 37 predefined log query templates covering IPs, rules, URIs, 
 
 When no template fits, the agent composes an aggregation over any combination of a filter (action, rule, IP, country, method, rule type, label, host, or JA4 fingerprint) and a grouping (client IP, URI, country, method, action, rule, rule type, host, user-agent, referer, label, JA4 fingerprint, or a time bucket). It reports the result as a count, a hit-rate ratio (how many matched a condition out of the total), or a percentile (p95/p99 of per-bucket request volume) — so questions like "which rule fires most by hour" or "the block rate for this path" are answerable without a purpose-built template.
 
+## Older log history (mixed-layout buckets)
+
+> "I need the logs from before I switched to minute-level partitioning"
+
+If a bucket holds both hourly directories (from before a cutover) and minute-level ones (after), the default reads the recent minute-level era at full precision and reports where the older history begins. Ask for it and the agent builds an hourly table over the whole timeline, so the pre-cutover history is queryable, coarser everywhere, which is the trade for reaching it. Switch back to minute-level at any time. You write no DDL; the agent builds and rebuilds the table.
+
 ## Limitations
 
 - Cannot detect credential stuffing or brute-force attacks (request format is valid — recommend AWS WAF ATP)

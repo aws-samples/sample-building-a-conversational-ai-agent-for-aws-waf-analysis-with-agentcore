@@ -160,17 +160,19 @@ def test_the_notice_says_narrowing_below_an_hour_saves_nothing():
     assert "fewer hours rather than fewer minutes" in Q.HOURLY_COST_NOTICE
 
 
-def test_the_mixed_bucket_message_no_longer_claims_hourly_is_unbuildable():
+def test_the_mixed_bucket_message_offers_the_agent_built_hourly_table():
     """3.2 falsified the old sentence "an hourly table, which this agent does not build
-    yet". What stayed true is narrower: the agent builds one table for the newest layout, so
-    the older era needs a second table the user creates."""
+    yet", and then went further: the agent now builds the whole-timeline hourly table
+    itself on request. So the default-choice block offers that build and no longer tells
+    the user to write DDL, while still saying the older era is otherwise out of reach."""
     A._athena_state.update({"layout_mixed": True, "layout_cutover": "2026/05/25",
-                           "layout_data_start": "2022/05/26",
+                           "layout_data_start": "2022/05/26", "layout_choice": None,
                            "partition_format": "yyyy/MM/dd/HH/mm"})
     out = A.describe_table_resolution()
     assert "does not build yet" not in out
-    assert "second, hourly table you create yourself" in out
-    # And it must still say the old era is unreachable, which is the point of the message.
+    assert "you create yourself" not in out
+    assert "the agent will build it" in out
+    # And it must still say the old era is unreachable by default, the point of the message.
     assert "zero rows" in out and "2022/05/26" in out
 
 

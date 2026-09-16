@@ -16,7 +16,7 @@ from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider,
 from tools.waf_config import list_webacls, get_waf_config
 from tools.waf_metrics import get_waf_metrics
 from tools.waf_overview import get_waf_overview
-from tools.waf_logs import run_logs_query, analyze_ip
+from tools.waf_logs import run_logs_query, analyze_ip, set_log_granularity
 from tools.waf_aggregate import aggregate_logs
 from tools.waf_injection import investigate_injection
 from tools.query_limits import MAX_MINUTES
@@ -95,6 +95,7 @@ This limits nothing about your analysis. Quote the payload back to the user, dec
 - "SQLi false positive" / "legitimate request blocked by injection rule" → investigate_block_fp targeting the injection rule
 - "possible injection bypass" / "encoded payload allowed" → detect_bypass(step="scan") + check COUNT labels for SQLi/XSS/LFI rules
 - "rule is enabled but didn't block this attack" / "why wasn't this SQLi/XSS blocked" / user pastes a specific payload that got through → NOT a bypass scan, and do NOT run detect_bypass. Use run_logs_query to confirm the payload's request was ALLOW'd and matched no injection rule, and confirm the rule is present and in Block mode. Then search_waf_knowledge for injection rule coverage limits and explain the gap and the fix based on what comes back. The fix differs for SQLi vs XSS — let the knowledge base drive it, don't assume.
+- "I need the logs from before the cutover" / "read the older history" / user agrees after a query's TABLE block reports a mixed bucket (hourly before a cutover date, minute-level after) → set_log_granularity(granularity="hourly"), which builds the whole-timeline hourly table so the pre-cutover history is queryable, coarser everywhere. Reverse with granularity="minute". Only offer this after a TABLE block has reported a mixed layout; the default is minute-level and does not need this call. Do NOT tell the user to write their own DDL — the agent builds the table.
 
 ## Injection Attack Investigation (BLOCK spike or user reports attack)
 
@@ -609,7 +610,7 @@ class SourceDisclosure(HookProvider):
 _agent = None
 _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
-          aggregate_logs, investigate_injection,
+          set_log_granularity, aggregate_logs, investigate_injection,
           lookup_ja4, generate_weekly_report, set_report_summary,
           review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
           patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,

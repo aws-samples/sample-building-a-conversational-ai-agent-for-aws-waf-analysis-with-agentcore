@@ -18,6 +18,7 @@ group, items are listed roughly in the order we intend to work on them, and that
 | Run log-detail analysis on hourly-partitioned logs (with an up-front note that scans cost more), instead of declining them | 2026-09-10 |
 | Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | 2026-09-09 |
 | Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | 2026-09-09 |
+| Read a mixed bucket's pre-cutover history on request, by building an hourly table over the whole timeline for you, no hand-written DDL | |
 | Work with an existing Athena table whose partition column is not named `log_time`, at minute or hourly granularity | 2026-09-09 |
 | Stop dropping rows at the edges of a query window, where a log record's timestamp and the partition directory it landed in disagree | 2026-09-09 |
 | Detect a non-UTC timezone on Firehose S3 log paths automatically, so queries don't silently miss rows | |

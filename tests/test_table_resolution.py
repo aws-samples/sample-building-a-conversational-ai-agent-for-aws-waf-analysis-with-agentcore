@@ -21,6 +21,7 @@ import re
 import pytest
 
 from tools import waf_athena as A
+from tools.waf_logs import set_log_granularity
 
 
 def _cols_from_ddl():
@@ -377,6 +378,161 @@ def test_the_resolution_block_names_the_history_a_mixed_bucket_hides(catalog):
     assert "minute-level era only" in block
     assert "2026/01/05" in block, "the cutover, so the user knows where the table starts"
     assert "2022/03/07" in block, "the oldest data, so they know how much is out of reach"
+
+
+# --- mixed bucket: the whole-timeline hourly choice (ROADMAP 3.2) ------------
+#
+# Detection, the default, and the trade report already existed; 3.2 added the build. On an
+# explicit hourly choice the agent creates its own hourly table over the same bucket, range
+# from the oldest data to NOW, so an hourly projection reads the whole timeline (Athena lists
+# recursively under the LOCATION, so it finds the minute-nested recent objects too). Its own
+# name so it coexists with the minute table and a change of choice re-resolves.
+
+
+def _record_hourly_builds(monkeypatch):
+    """Stub `_create_named_table` to record the builds and return a valid meta, so these
+    tests exercise resolution routing without a live Athena. Returns the list it fills."""
+    builds = []
+
+    def rec(s3_path, storage_template, partition_format, partition_unit, partition_interval,
+            region, workgroup, table_name, range_start=None):
+        builds.append({"name": table_name, "format": partition_format, "unit": partition_unit,
+                       "interval": partition_interval, "range_start": range_start})
+        return A._table_metadata(A.TMP_DATABASE, table(
+            table_name, s3_path.rstrip("/"), fmt=partition_format, unit=partition_unit,
+            interval=str(partition_interval), rng=f"{range_start},NOW"))
+
+    monkeypatch.setattr(A, "_create_named_table", rec)
+    return builds
+
+
+def test_hourly_choice_on_a_mixed_bucket_builds_the_whole_timeline_table(catalog, monkeypatch):
+    """The build 3.2 added: an hourly table named for the choice, spanning from the oldest
+    data (range_start = data_start plus the hourly suffix) to NOW."""
+    catalog({}, layout=MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+
+    name = A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+
+    assert name == f"{A.TMP_DATABASE}.waf_logs_myacl_hourly"
+    assert builds == [{"name": "waf_logs_myacl_hourly", "format": "yyyy/MM/dd/HH",
+                       "unit": "hours", "interval": 1, "range_start": "2022/03/07/00"}]
+    assert A._athena_state["partition_format"] == "yyyy/MM/dd/HH"
+    assert A._athena_state["temp_created"] is True
+
+
+def test_hourly_choice_overrides_a_minute_table_the_user_maintains(catalog, monkeypatch):
+    """A minute table the user maintains is exactly what cannot answer "show me the history",
+    so the choice builds the agent's hourly table ahead of discovery and leaves theirs alone."""
+    glue = catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+
+    name = A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+
+    assert name.endswith("waf_logs_myacl_hourly")
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"]
+    assert glue.deleted == []
+
+
+def test_hourly_choice_is_ignored_on_a_single_layout_bucket(catalog, monkeypatch):
+    """The branch requires a mixed bucket: a pure layout has no older era to reach, so the
+    choice falls through to the ordinary path rather than coarsening a bucket for nothing.
+    (The tool refuses it earlier; this is the resolver's own guard.)"""
+    catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MINUTE_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+
+    name = A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+
+    assert name == "userdb.waf"
+    assert builds == []
+    assert A._athena_state["partition_format"] == "yyyy/MM/dd/HH/mm"
+
+
+def test_changing_the_choice_rebuilds_on_the_next_resolve(catalog, monkeypatch):
+    """Re-buildable on return: a choice change drops the cached table so the next query
+    resolves against the new choice, and an unchanged choice returns the cache untouched."""
+    catalog({}, layout=MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")   # warm cache, no rebuild
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"]
+
+    A.set_layout_choice(None)                                 # back to the default
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly", "waf_logs_myacl"]
+
+
+def test_resolution_block_by_default_offers_the_agent_built_hourly_table(catalog):
+    """Default (minute) choice: the block says the history is out of reach and offers the
+    agent's build, and it must not tell the user to write DDL. 3.2 retired that recipe."""
+    catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MIXED_LAYOUT)
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    block = A.describe_table_resolution()
+    assert "minute-level era only" in block
+    assert "the agent will build it" in block
+    assert "you create yourself" not in block
+
+
+def test_resolution_block_under_the_hourly_choice_says_the_timeline_is_reachable(catalog, monkeypatch):
+    """Once hourly is chosen, the active table reaches the whole timeline, so the block says
+    the history is queryable rather than warning it is out of reach."""
+    catalog({}, layout=MIXED_LAYOUT)
+    _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    block = A.describe_table_resolution()
+    assert "whole timeline" in block
+    assert "back to 2022/03/07 is queryable" in block
+    assert "minute-level era only" not in block
+
+
+# --- the tool that records the choice ---------------------------------------
+
+
+def test_tool_sets_hourly_choice_on_a_mixed_bucket():
+    """The user has seen the trade in a TABLE block and asked for the history. The tool
+    records the choice and drops the cached table so the next query rebuilds as hourly."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm", "layout_mixed": True,
+                            "layout_data_start": "2022/03/07", "layout_cutover": "2026/01/05"})
+    msg = set_log_granularity("hourly")
+    assert A._athena_state["layout_choice"] == "hourly"
+    assert A._athena_state["table"] is None
+    assert "2022/03/07" in msg and "hour granularity" in msg
+
+
+def test_tool_refuses_hourly_on_a_single_layout_bucket():
+    """Do not silently coarsen a bucket with no older era to reach: nothing to gain and
+    precision to lose, so the choice is left unchanged."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm", "layout_mixed": False})
+    msg = set_log_granularity("hourly")
+    assert A._athena_state["layout_choice"] is None
+    assert "single partition layout" in msg
+
+
+def test_tool_minute_choice_resets_to_the_default():
+    A.reset_table_cache()
+    A._athena_state.update({"layout_choice": "hourly", "layout_mixed": True,
+                            "partition_format": "yyyy/MM/dd/HH", "table": "x.y"})
+    msg = set_log_granularity("minute")
+    assert A._athena_state["layout_choice"] is None
+    assert A._athena_state["table"] is None
+    assert "full precision" in msg
+
+
+def test_tool_rejects_an_unknown_granularity():
+    """A bad argument changes nothing, so a typo cannot silently drop the resolved table."""
+    A.reset_table_cache()
+    before = dict(A._athena_state)
+    msg = set_log_granularity("weekly")
+    assert "must be 'hourly' or 'minute'" in msg
+    assert A._athena_state == before
 
 
 def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):

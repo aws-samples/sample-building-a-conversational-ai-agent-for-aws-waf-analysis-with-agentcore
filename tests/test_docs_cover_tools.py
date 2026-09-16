@@ -40,6 +40,7 @@ USER_FACING = {
     "generate_weekly_report": "weekly report",
     "search_waf_knowledge": "knowledge base of AWS WAF documentation",
     "run_logs_query": "predefined log query templates",
+    "set_log_granularity": "builds an hourly table over the whole timeline",
     "aggregate_logs": "the agent composes an aggregation",
     "lookup_ja4": "decodes a JA4 TLS fingerprint",
 }

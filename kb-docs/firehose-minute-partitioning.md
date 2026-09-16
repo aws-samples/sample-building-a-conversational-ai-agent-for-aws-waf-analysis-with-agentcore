@@ -122,8 +122,8 @@ Replace `YOUR_ACCOUNT_ID`, `YOUR_REGION`, `YOUR_WEBACL_NAME` with actual values.
 - **No downtime** — the stream stays active; new prefix takes effect within a few minutes.
 - **Old data is not moved** — existing files stay at their original hourly paths; only new
   data uses the minute-level prefix, so the saving applies to data written after the change.
-  The agent reads one table per WebACL, for whichever layout your newest data uses, so if you
-  need the older hourly era as well you create a second table over the same bucket yourself.
+  The agent reads the recent minute-level era by default; to read the older hourly era as well,
+  ask it to read the whole timeline as hourly and it builds that table for you over the same bucket.
 - **The agent auto-detects** — on the next query it sees the new minute structure and recreates
   its Athena table automatically. No manual table work needed.
 - **No extra cost** — timestamp-based prefixes are a standard Firehose feature, no per-GB

@@ -140,10 +140,12 @@ CASES = [
     (
         "the prompt routing to a tool nobody registered",
         "agent.py",
-        # Both names, because a second tool joined this line and the one-name anchor then matched
-        # nothing. `aggregate_logs,` on its own appears twice, once here and once in the prose.
-        "          aggregate_logs, investigate_injection,\n",
-        "          investigate_injection,\n",
+        # The whole line, because more than one tool shares it and `aggregate_logs,` on its own
+        # appears twice (here and in the prose). `set_log_granularity` joined it in 3.2, so the
+        # anchor has to carry that prefix or it matches nothing; removing `aggregate_logs` still
+        # leaves the prompt routing to a tool no longer in the registry.
+        "          set_log_granularity, aggregate_logs, investigate_injection,\n",
+        "          set_log_granularity, investigate_injection,\n",
         [f"{R}::test_the_prompt_routes_to_nothing_that_does_not_exist"],
         TEXTUAL,
     ),

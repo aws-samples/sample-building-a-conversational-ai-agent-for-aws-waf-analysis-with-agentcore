@@ -38,8 +38,8 @@ CASES = [
     # the completeness guard. Standing in for the reverse, a NEW tool added and left unclassified, which
     # cannot be written as a text edit because the new tool would have to be importable.
     ("a tool removed from the registry, so the classification set no longer matches",
-     [(AGENT, "          aggregate_logs, investigate_injection,",
-       "          investigate_injection,")],
+     [(AGENT, "          set_log_granularity, aggregate_logs, investigate_injection,",
+       "          set_log_granularity, investigate_injection,")],
      [f"{T}::test_every_registered_tool_is_classified"],
      False),   # textual anchor on the _TOOLS list literal; no statement can be inserted into it
 ]

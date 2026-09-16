@@ -403,6 +403,54 @@ def _table_block() -> str:
 
 
 @tool
+def set_log_granularity(granularity: str) -> str:
+    """Choose which era of a mixed-layout S3 log bucket the agent reads (ROADMAP 3.2).
+
+    Some buckets hold two partition layouts: hourly directories from before a cutover
+    date and minute-level ones after, the result of switching the Firehose S3 prefix to
+    minute-level partway through. A minute-level table reads the recent era at full
+    precision but cannot reach the older hourly history; an hourly table reads the whole
+    timeline but at hour granularity everywhere. The agent defaults to minute-level and
+    reports the trade in the TABLE block of a log query on such a bucket.
+
+    Call this after that report, once the user has decided:
+    - granularity="hourly": read the whole timeline, so the pre-cutover history becomes
+      reachable, accepting hour granularity on every window including the recent era. The
+      agent builds the hourly table itself; the user does not hand-write any DDL.
+    - granularity="minute": go back to the default, the recent era at full precision.
+
+    The choice takes effect on the next log query, which rebuilds the table, and it can
+    be changed again at any time. Only meaningful on a bucket that holds both layouts.
+    """
+    granularity = (granularity or "").strip().lower()
+    if granularity not in ("hourly", "minute"):
+        return "granularity must be 'hourly' or 'minute'."
+    from tools.waf_athena import set_layout_choice, _athena_state
+    resolved = _athena_state.get("partition_format") is not None
+    mixed = bool(_athena_state.get("layout_mixed"))
+    data_start = _athena_state.get("layout_data_start")
+    cutover = _athena_state.get("layout_cutover")
+    if granularity == "minute":
+        set_layout_choice(None)
+        if mixed:
+            return ("From the next query the recent minute-level era is read at full "
+                    "precision. The pre-cutover history is out of reach this way; ask for "
+                    "hourly to read the whole timeline.")
+        return "Reading logs at the layout the bucket uses; there is only one."
+    # hourly
+    if resolved and not mixed:
+        return ("This bucket has a single partition layout, so there is no older era to "
+                "reach by reading it as hourly, only precision to lose. Left unchanged.")
+    set_layout_choice("hourly")
+    span = f" back to {data_start}" if data_start else ""
+    before = f" before {cutover}" if cutover else ""
+    return (f"From the next query the whole timeline{span} is read through an hourly table "
+            f"the agent builds, so the pre-cutover history{before} is queryable. Every "
+            f"window is at hour granularity as a result, including the recent era. Ask for "
+            f"minute-level to switch back.")
+
+
+@tool
 def run_logs_query(
     query_type: str,
     start_time: str,
