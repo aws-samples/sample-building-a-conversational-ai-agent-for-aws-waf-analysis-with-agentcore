@@ -178,7 +178,19 @@ def set_layout_choice(choice: str | None):
     redundant call rebuilds nothing and does not re-derive the log-destination path memo
     (which would re-fire `firehose:DescribeDeliveryStream`, capped at 5/sec and not
     adjustable). Only a real change drops the table; then the next query rebuilds and the
-    memo re-derives once, which is a rare user-initiated action's worth of overhead."""
+    memo re-derives once, which is a rare user-initiated action's worth of overhead.
+
+    Idempotence does drop one lever: re-issuing the same choice used to force a cold rebuild
+    mid-session, which is the only way to notice a table that went stale after resolution. That
+    is safe by direction. The agent's own table goes stale only when the bucket's oldest data
+    moves relative to its declared range, and the ongoing process that moves it, lifecycle
+    expiry of old logs, moves the true start LATER, leaving the table projecting from earlier
+    than the data now begins. `_cross_check_declared` classes that as wasting planning time, the
+    benign half; new logs never make it stale, because the range is open at the recent end. The
+    harmful direction, a declared start later than the data so real rows cannot be addressed,
+    needs older logs BACKFILLED beneath the path mid-session, a deliberate manual action, and a
+    WebACL switch or a process recycle drops the cache and rebuilds either way. So idempotence
+    removes a redundant path to that rebuild, not the only one."""
     if _athena_state.get("layout_choice") == choice:
         return
     reset_table_cache()
@@ -1413,12 +1425,18 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
         _athena_state["layout_cutover"] = layout["cutover"]
         _athena_state["layout_data_start"] = layout["data_start"]
 
-    # ROADMAP 3.2: the user has explicitly chosen to read the whole timeline as hourly.
-    # Only a mixed bucket has a pre-cutover era to reach; a pure layout is already served
-    # correctly by the ordinary path, so the choice falls through there and changes
-    # nothing. Ahead of discovery on purpose: a minute table the user maintains is exactly
-    # what cannot answer "show me the history", so their choice overrides it.
-    if _athena_state.get("layout_choice") == "hourly" and layout is not None and layout["mixed"]:
+    # ROADMAP 3.2: the user has explicitly chosen to read the whole timeline as hourly. Fire the
+    # build for a minute-newest mixed bucket, expressed as the PROPERTY `layout["mixed"]` and a
+    # minute-level newest era (`layout["unit"] == "minutes"`), not as the cutover DATE. The
+    # default minute table on such a bucket starts at the cutover month and cannot reach the
+    # older hourly history, which the hourly build (range from the oldest data) does. The cutover
+    # date is best-effort reporting: `_first_minute_day` returns None for a non-monotone cutover
+    # month, so keying on it would refuse the build on a real minute-newest mixed bucket whose
+    # date could not be pinned. A reverse minute->hourly switch is mixed but hourly-newest, so its
+    # default table already reads the whole timeline (see `_layout_from_years`); a single layout
+    # has no older era. Ahead of discovery on purpose: a minute table the user maintains cannot
+    # answer "show me the history", so the choice overrides it.
+    if _athena_state.get("layout_choice") == "hourly" and layout is not None and layout["mixed"] and layout["unit"] == "minutes":
         return _build_agent_hourly_table(s3_path, region, webacl_name, layout)
 
     meta = _find_existing_table(s3_path, region)

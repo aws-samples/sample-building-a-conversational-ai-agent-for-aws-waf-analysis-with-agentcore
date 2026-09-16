@@ -455,12 +455,29 @@ def set_log_granularity(granularity: str) -> str:
         return ("Run a log query first so I can resolve the table and see whether this "
                 "bucket holds both partition layouts. The hourly choice only applies to a "
                 "mixed bucket, and resolving the table is what reveals one.")
-    if not mixed:
-        return ("This bucket has a single partition layout, so there is no older era to "
-                "reach by reading it as hourly, only precision to lose. Left unchanged.")
-    set_layout_choice("hourly")
+    # An hourly build over the whole timeline reaches history the default table cannot only when
+    # the newest era is minute-level with older directories beneath it: `mixed` and a currently
+    # minute-level table (`partition_interval_unit == "minutes"`). Keyed on that PROPERTY, not on
+    # the cutover DATE, which is best-effort (see waf_athena `_first_minute_day`) and is None for
+    # a non-monotone cutover month even though the older era is real; keying on it would refuse a
+    # genuine mixed bucket and call it single-layer. A reverse minute->hourly switch is mixed but
+    # hourly-newest, and a single layout has no older era; both already read the whole timeline.
     span = f" back to {data_start}" if data_start else ""
     before = f" before {cutover}" if cutover else ""
+    if _athena_state.get("layout_choice") == "hourly":
+        # Already chosen and, once a query ran, built. set_layout_choice is idempotent, so a
+        # re-call rebuilds nothing: say the timeline is already being read, don't imply a build.
+        return (f"Already reading the whole timeline{span} as an hourly table, so the "
+                f"pre-cutover history{before} is queryable at hour granularity. Ask for "
+                f"minute-level to switch back.")
+    if not (mixed and _athena_state.get("partition_interval_unit") == "minutes"):
+        if _athena_state.get("partition_interval_unit") == "minutes":
+            return ("This bucket has a single minute-level layout, so there is no older era "
+                    "to reach by reading it as hourly, only precision to lose. Left unchanged.")
+        return ("The table already reads this bucket's whole timeline at hour granularity, so "
+                "reading it as hourly reaches no older era and loses no finer precision. Left "
+                "unchanged.")
+    set_layout_choice("hourly")
     return (f"From the next query the whole timeline{span} is read through an hourly table "
             f"the agent builds, so the pre-cutover history{before} is queryable. Every "
             f"window is at hour granularity as a result, including the recent era. Ask for "

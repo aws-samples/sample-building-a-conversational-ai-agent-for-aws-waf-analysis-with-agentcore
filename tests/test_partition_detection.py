@@ -269,6 +269,32 @@ def test_an_unreadable_newest_year_is_not_reported_as_mixed(s3_tree):
     assert layout["cutover"] is None
 
 
+def test_cutover_is_set_exactly_for_a_minute_newest_mixed_bucket(s3_tree):
+    """The invariant two call sites lean on, held here in one place instead of by convention at
+    each. `_resolve_log_table_locked`'s hourly-build gate and `set_log_granularity`'s hourly
+    branch both key on the cutover, not on `mixed`, because an hourly build reaches history the
+    default table cannot only when the newest era is minute-level with older hourly directories
+    beneath it, which is exactly when a cutover is set. A reverse minute->hourly switch is mixed
+    too, but its newest era is already hourly, so its default table reads the whole timeline and
+    an hourly build would only duplicate it; a single-layout bucket has no older era at all.
+    Neither may carry a cutover, or those two sites would fire on it, build a redundant table,
+    and tell the user history "becomes queryable" that was never out of reach."""
+    # Minute-newest mixed: hourly history, minute-level recent -> a cutover.
+    s3_tree("2024/05/25/08", "2026/09/08/14/03")
+    layout = A._detect_partitions("s3://bkt")
+    assert layout["mixed"] is True and layout["cutover"] is not None
+
+    # Reverse minute->hourly switch: minute-level history, hourly recent -> mixed, no cutover.
+    s3_tree("2024/05/25/08/03", "2026/09/08/14")
+    layout = A._detect_partitions("s3://bkt")
+    assert layout["mixed"] is True and layout["cutover"] is None
+
+    # Single layout: no older era -> not mixed, no cutover.
+    s3_tree("2026/09/07/14/03")
+    layout = A._detect_partitions("s3://bkt")
+    assert layout["mixed"] is False and layout["cutover"] is None
+
+
 def test_one_detection_never_lists_the_same_prefix_twice(s3_tree, monkeypatch):
     """Measured against real S3 before this held: 34 listings over 19 distinct prefixes.
 
