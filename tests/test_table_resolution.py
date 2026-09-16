@@ -557,6 +557,24 @@ def test_hourly_self_heal_does_not_thrash_on_a_matching_table(catalog, monkeypat
     assert "Recreating it" not in notes and "could not be dropped" not in notes
 
 
+def test_hourly_self_heal_condemns_a_stale_table_through_the_real_lookup(catalog, monkeypatch):
+    """The other side of the real `_named_scratch_meta` path, not monkeypatched: a genuinely
+    stale hourly table (range starting after the data now does) is found through the real Glue
+    get_table and condemned. Without this only the clean side is exercised, so a lookup
+    regression that failed to return the stale table would leave a range-too-late table in
+    place, a pre-cutover window would come back with zero rows read as "no traffic", and the
+    no-thrash test would stay green because it only checks the clean side."""
+    stale = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                  rng="2025/01/01/00,NOW")   # starts after data_start 2022/03/07: too late
+    glue = catalog({A.TMP_DATABASE: [stale]}, layout=MIXED_LAYOUT)
+    _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert f"{A.TMP_DATABASE}.waf_logs_myacl_hourly" in glue.deleted
+    notes = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "Recreating it" in notes
+
+
 # --- the tool that records the choice ---------------------------------------
 
 

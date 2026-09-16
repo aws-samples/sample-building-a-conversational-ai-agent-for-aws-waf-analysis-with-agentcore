@@ -107,6 +107,14 @@ CASES = [
      [(L, "        if cutover:", "        if mixed:")],
      [f"{T}::test_tool_minute_message_keys_on_cutover_not_mixed"],
      True),
+
+    # _named_scratch_meta stops returning the table it found, so a real stale hourly table is
+    # never condemned and a range-too-late table survives. Caught only on the stale side: the
+    # no-thrash test stays green because "no condemn" is what it asserts anyway.
+    ("the scratch-table lookup returns None even when it found the table",
+     [(A, "return meta if not isinstance(meta, str) else None", "return None")],
+     [f"{T}::test_hourly_self_heal_condemns_a_stale_table_through_the_real_lookup"],
+     True),
 ]
 
 sys.exit(sweep(CASES))
