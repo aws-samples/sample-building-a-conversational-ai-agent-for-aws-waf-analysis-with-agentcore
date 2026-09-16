@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.27.2 (2026-09-16)
+
+### Fixed: token_reuse_ips has undercounted token reuse across IPs since the initial release
+
+`token_reuse_ips` answers which WAF session token was used from many IPs, the sign of a token solved once
+and replayed across a botnet. It grouped by the whole `Cookie` header, and a real header carries the load
+balancer's own stickiness cookies (`AWSALBTG`, `AWSALBTGCORS`) after the token, which differ per backend
+and rotate. So one session split into a row per cookie combination, and a user who ran this saw a spread of
+`ip_count=1` rows and read a replayed token as ordinary single-IP traffic. Measured on a live seven-region
+replay: one session that spanned 18 IPs and 253 requests came back as a fragment. The template shipped in
+**0.1.0, the first release** (2026-05-10), so this wrong answer has been in every release, not a recent
+regression.
+
+- **The group key has been wrong twice and changed three times.** It started as `headers.0`, was
+  deliberately moved to the whole `Cookie` header in 0.1.0 (commit `ed61acd`, "group by cookie not
+  headers.0") as a fix to an even worse key, spent an unreleased interim keyed on the extracted
+  `aws-waf-token` value, and is now the `awswaf:managed:token:id` label. Each earlier key carried a
+  per-request-varying component, so it fragmented one session; the label does not.
+- The fix groups by WAF's own session identifier, the `awswaf:managed:token:id` label, which one session
+  carries unchanged across IPs and across re-acquisitions of the token. Grouped that way the same replay is
+  one row, `ip_count=18`.
+- **The intermediate cookie-value key was still wrong**, and re-running against the real endpoint is what
+  caught it: the token re-encrypts on each acquisition, so one session carried five distinct values and
+  only the label is stable across them.
+- Keying on the label removes cookie parsing entirely, which also closes a path where a token sent in the
+  `x-aws-waf-token` header (the JS SDK's cross-origin path) rather than the cookie would have been miscounted.
+
+### Fixed: the window-narrowed disclosure in 0.27.1 reached some return paths and not others
+
+0.27.1 added a sentence when a query's window was clamped and its notes implied that was complete. It was
+not. The sentence reached three of five return paths across `run_logs_query` and `analyze_ip`, and only two
+of the seven tools that clamp the query window disclosed it at all. The two returns it missed are the ones
+that answer with content, which is the wrong half to miss.
+
+- `run_logs_query`'s table stayed silent, so a reader who got 25 rows read them as two days of traffic,
+  while a reader who got zero at least doubted them. `analyze_ip`'s NAT verdict stayed silent too, and it
+  prints `Confidence: HIGH` and "blocking this IP would affect multiple legitimate users" from diversity
+  counts taken over a window that may have been cut from 2,880 minutes to 360.
+- Four tools clamped and never disclosed at all: `aggregate_logs`, `detect_bypass`,
+  `check_challenge_compatibility`, `investigate_injection`. The fix records the clamp at each of the seven
+  sites and appends the sentence once, from the same hook that appends the `SOURCE` line, so it reaches
+  every return of every tool including ones added later.
+- **The count was wrong for the reason the coverage was**: a set counted from the diff just written rather
+  than from the code, and the test that pinned "two tools" turned the gap into a passing assertion. The test
+  now walks every clamp site in the package.
+
+### Fixed: a client-supplied timezone offset crashed the request and outlived it
+
+A request whose `forwardedProps.userTimezoneOffset` fell outside the range a timezone allows returned HTTP
+424 wrapping a 500 whose only content was a pointer to CloudWatch logs. The field is hours; a browser's
+`getTimezoneOffset` returns minutes with the opposite sign, so a value like -480 reached the code, which
+built a `timedelta` of -20 days and raised. The frontend cannot send this, but the documented direct-POST
+path a script or agent uses can.
+
+- The offset was written to session state before the prompt was built, so a rejected value stayed on the
+  microVM and skewed later requests in the same session.
+- The fix validates once, above both the stream and resume paths, refusing a bad value with a 400 that
+  names the field and the unit rather than defaulting to UTC. A silent default would shift every timestamp
+  by hours, the misattribution the provenance channel exists to prevent.
+- **JSON `true` is refused**, because `float(true)` is 1.0 and would otherwise have been accepted as UTC+1.
+
+### Fixed: a truncated table rendered as a complete answer for most query types
+
+`run_logs_query`'s truncation disclosure sat inside a branch that only runs when the query type has a
+deterministic interpretation, which is 6 of 37 query types, so for the other 31 a table cut off at its row
+limit carried no warning. It arrived half-wired in the same commit as its unconditional sibling in
+`analyze_ip` and had been recorded as done since 0.25.0. The fix moves the disclosure to the function body,
+so it runs for every query type.
+
+1199 tests, 43 perturbation scripts, 529 cases, full sweep 43/43.
+
 ## 0.27.1 (2026-09-15)
 
 ### Fixed: an answer said "0 results" for a window it had narrowed from two days to six hours
