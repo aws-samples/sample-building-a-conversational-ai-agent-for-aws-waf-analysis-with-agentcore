@@ -44,6 +44,14 @@ Profiles the IP across all dimensions: frequency, URI diversity, JA4 fingerprint
 
 Lists all URIs/methods being challenged, flags incompatible requests (non-GET, API endpoints), breaks down token failure reasons (TOKEN_MISSING / TOKEN_INVALID / TOKEN_EXPIRED / TOKEN_DOMAIN_MISMATCH / TOKEN_NOT_SOLVED), and explains Challenge technical requirements.
 
+> "What injection attacks were blocked in the last hour?"
+
+The agent investigates SQLi / XSS / LFI activity in one call: it runs the whole sequence in code, so the source-IP profiling step is never skipped, and returns a classification and a recommendation rather than raw tables to interpret. Point it at a rule with a name, or let it survey all injection rules.
+
+> "What client is JA4 t13d1516h2_8daaf6152771_b186095e22b6?"
+
+The agent decodes a JA4 TLS fingerprint's structure — protocol, TLS version, SNI presence, cipher and extension counts — to tell a browser from automation. It does not identify a specific application.
+
 > "We found malicious requests in our backend logs around May 15 14:00"
 
 The agent searches WAF ALLOW logs for suspicious requests in that time window. It can find candidate IPs/URIs as forensic leads, but cannot confirm whether an exploit succeeded — that requires cross-referencing with backend logs.
@@ -76,7 +84,15 @@ The agent searches its knowledge base of AWS WAF documentation and provides spec
 
 > "Show me the request rate for IP 203.0.113.42 over the past 2 hours"
 
-The agent supports 20+ predefined log query templates covering IPs, rules, URIs, labels, countries, host headers, and more.
+The agent supports 37 predefined log query templates covering IPs, rules, URIs, labels, countries, host headers, and more.
+
+> "Break blocked requests down by country and by hour, today"
+
+> "What fraction of requests to /admin matched the SQLi rule in the last 2 hours?"
+
+> "Group blocked requests by JA4 fingerprint, today"
+
+When no template fits, the agent composes an aggregation over any combination of a filter (action, rule, IP, country, method, rule type, label, host, or JA4 fingerprint) and a grouping (client IP, URI, country, method, action, rule, rule type, host, user-agent, referer, label, JA4 fingerprint, or a time bucket). It reports the result as a count, a hit-rate ratio (how many matched a condition out of the total), or a percentile (p95/p99 of per-bucket request volume) — so questions like "which rule fires most by hour" or "the block rate for this path" are answerable without a purpose-built template.
 
 ## Limitations
 
