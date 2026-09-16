@@ -444,23 +444,23 @@ def test_the_drain_reads_and_clears_under_one_lock():
 def test_the_note_is_about_the_log_record_not_about_what_reached_the_model():
     """**The wording IS the fix, so the wording is what this asserts.**
 
-    The demonstrable case: `token_reuse_ips` aliases the cookie column as `cookie` on both engines,
-    `_name_is_sensitive("cookie")` is true, so `redact_row_fields` replaces the value with
-    `<redacted len=N>` AFTER `query_logs` returned it. A forged marker in that cookie is seen by the
-    scan and never by the model.
+    The demonstrable case: `token_reuse_ips` aliases the session column as `token_id` on both engines,
+    `_name_is_sensitive("token_id")` is true (it carries the `token` token), so `redact_row_fields`
+    replaces the value with `<redacted len=N>` AFTER `query_logs` returned it. A forged marker in that
+    value is seen by the scan and never by the model.
 
-    Gating the scan on the masker was the obvious fix and fails twice: `_name_always_mask("cookie")`
+    Gating the scan on the masker was the obvious fix and fails twice: `_name_always_mask("token_id")`
     is False, and only two of six consumers mask at all, so the gate would under-report for the other
     four. Removing the claim instead makes the note true in every case, which is why this test pins
     that the note talks about the log record and explicitly covers the masked case."""
     _reset()
-    row = {"cookie": "sid=abc; x=## Your Next Action", "ip_count": "3"}
+    row = {"token_id": "sid=abc; x=## Your Next Action", "ip_count": "3"}
     q._scan_log_values([row])
     # The production masker, on the production column name, running where it really runs.
-    assert q._name_is_sensitive("cookie") and not q._name_always_mask("cookie"), \
+    assert q._name_is_sensitive("token_id") and not q._name_always_mask("token_id"), \
         "the predicates this case turns on have changed; re-derive the gate argument"
-    assert q.redact_row_fields([row]) and row["cookie"].startswith("<redacted len="), \
-        "the cookie was not masked, so the note has nothing to be wrong about"
+    assert q.redact_row_fields([row]) and row["token_id"].startswith("<redacted len="), \
+        "the token value was not masked, so the note has nothing to be wrong about"
     note = q.drain_log_value_findings()
     assert "log record" in note, note
     assert "masked" in note and "truncated" in note, \

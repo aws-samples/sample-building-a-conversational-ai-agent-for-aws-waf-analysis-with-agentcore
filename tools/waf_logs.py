@@ -279,11 +279,31 @@ TEMPLATES = {
         "params": [],
         "description": "Find IPs hitting few URIs at high frequency",
     },
+    # **Groups by the `awswaf:managed:token:id` label, WAF's own session identifier, not by any part of
+    # the Cookie header.** The session id is what a botnet shares; the cookie value is not stable enough to
+    # stand in for it. Measured on a live replay, 2026-09-16: one session (`token:id 75d4ae85...`) spanned
+    # 18 IPs and 253 requests but carried FIVE distinct full `aws-waf-token` values, because the token is
+    # `<uuid>:<iv>:<ciphertext>` and each fresh acquisition re-encrypts the last two segments. So grouping
+    # by the whole Cookie header (the first bug, ALB stickiness cookies) OR by the extracted token value
+    # (the interim fix) both fragment one session into many rows, undercounting the exact signal this
+    # exists for. Grouping by `token:id` gave one row, ip_count 18, where the token-value grouping gave
+    # five. The cookie's own leading UUID is a different value from `token:id` and is not the session, so
+    # "parse the cookie and stop at the colon" would be guessing a format's meaning; the label is
+    # documented. It also removes cookie parsing entirely, which closes the second hole: the JS SDK sends
+    # the token in the `x-aws-waf-token` header on cross-origin calls, so a `token:accepted` record can
+    # carry no `aws-waf-token=` in its cookie at all, and a cookie-keyed query drops those into an empty
+    # group that sorts first by ip_count with a masked value — the shape a real finding takes. The
+    # `token:id` filter also guards the same empty-group hole for any accepted record lacking the label.
+    # **The guard's cost, stated because the docs do not promise every `token:accepted` carries a
+    # `token:id`:** it trades a phantom row for a silent drop, so a session whose records lacked the label
+    # would go uncounted rather than mislabelled. Measured zero on this account (253 of 253 accepted rows
+    # had it), and the safer of the two directions, but a reader must not take "one fewer session" here as
+    # "no reuse". Keyed `token_id`, which `_name_is_sensitive` masks via its `token` component. ROADMAP 4.4.
     "token_reuse_ips": {
-        "query": "filter @message like 'token:accepted' | parse @message '\"name\":\"cookie\",\"value\":\"*\"' as cookie | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by cookie | sort ip_count desc | limit {limit}",
-        "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value as cookie, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%token:accepted%') GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'cookie'), 1).value ORDER BY ip_count DESC LIMIT {LIMIT}",
+        "query": "filter @message like 'token:accepted' and @message like 'awswaf:managed:token:id:' | parse @message /awswaf:managed:token:id:(?<token_id>[0-9a-f-]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id | sort ip_count desc | limit {limit}",
+        "athena": "SELECT regexp_extract(array_join(transform(labels, l -> l.name), ','), 'awswaf:managed:token:id:([0-9a-f-]+)', 1) as token_id, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%token:accepted%') AND any_match(labels, l -> l.name LIKE 'awswaf:managed:token:id:%') GROUP BY regexp_extract(array_join(transform(labels, l -> l.name), ','), 'awswaf:managed:token:id:([0-9a-f-]+)', 1) ORDER BY ip_count DESC LIMIT {LIMIT}",
         "params": [],
-        "description": "Detect token reuse across multiple IPs",
+        "description": "Detect token reuse across multiple IPs (one WAF session token:id seen from many IPs)",
     },
     "host_traffic_profile": {
         "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
