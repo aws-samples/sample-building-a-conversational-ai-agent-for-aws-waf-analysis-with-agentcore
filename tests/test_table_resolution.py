@@ -499,80 +499,79 @@ def test_resolution_block_under_the_hourly_choice_says_the_timeline_is_reachable
     assert "minute-level era only" not in block
 
 
-def _stale_hourly(rng):
-    """A previous session's hourly table declaring `rng` as its projection range."""
-    return A._table_metadata(A.TMP_DATABASE, table(
-        "waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours", rng=rng))
+# The projection self-heal lives in `_create_named_table` now (ROADMAP 3.2 review): the one
+# get_table that decides a location drop also decides a range/format drop, so there is no
+# separate lookup that can fail transiently and leave a range-stale table in place returning
+# zero rows read as "no traffic". These drive the real `_create_named_table` against FakeGlue's
+# get_table with `_run_athena_ddl` captured, so the drop/create decisions are observable.
 
 
-def test_hourly_self_heal_discloses_the_rebuild(catalog, monkeypatch):
-    """A stale hourly table from a previous session (its range starts after the data now does)
-    is condemned and rebuilt, and that is disclosed, so a moved range and a slow first query
-    are explained rather than silent."""
-    catalog({}, layout=MIXED_LAYOUT)
-    _record_hourly_builds(monkeypatch)
-    # range_start 2025 is later than data_start 2022/03/07: the dangerous, too-late direction.
-    monkeypatch.setattr(A, "_named_scratch_meta", lambda name, region: _stale_hourly("2025/01/01/00,NOW"))
-    A.set_layout_choice("hourly")
-    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+def _capture_ddl(monkeypatch):
+    """Record the SQL `_run_athena_ddl` is asked to run."""
+    sqls = []
+    monkeypatch.setattr(A, "_run_athena_ddl",
+                        lambda sql, region, workgroup="primary": sqls.append(sql))
+    return sqls
+
+
+def _build_hourly(range_start="2022/03/07/00"):
+    """Call the real `_create_named_table` with the hourly-build arguments."""
+    return A._create_named_table(SCOPED_PATH, "s3://bkt/${log_time}", "yyyy/MM/dd/HH", "hours",
+                                 1, "us-east-1", "primary", "waf_logs_myacl_hourly",
+                                 range_start=range_start)
+
+
+def _dropped(sqls):
+    return [s for s in sqls if s.strip().upper().startswith("DROP TABLE")]
+
+
+def test_create_named_table_rebuilds_a_range_stale_scratch_table(catalog, monkeypatch):
+    """A same-location scratch table whose declared range no longer matches the data is dropped
+    and rebuilt, and disclosed. This is the finding-1 case: without it, `CREATE ... IF NOT
+    EXISTS` keeps a range-too-late table and a window before its start returns zero rows read
+    as "no traffic". The drop decision comes from the same get_table that reads the location,
+    so no separate lookup can miss it."""
+    stale = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                  rng="2025/01/01/00,NOW")   # starts after the wanted 2022/03/07: too late
+    catalog({A.TMP_DATABASE: [stale]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert _dropped(sqls), "a range-stale table must be dropped before CREATE"
     notes = " ".join(A._athena_state.get("discovery_notes") or ())
     assert "waf_logs_myacl_hourly" in notes and "Recreating it" in notes
 
 
-def test_hourly_self_heal_discloses_a_failed_drop(catalog, monkeypatch):
-    """If the stale table cannot be dropped, CREATE IF NOT EXISTS keeps it and a pre-cutover
-    window can come back with zero rows. The failure is disclosed so that answer is not read
-    as 'no traffic' with the stale table silently left in place."""
-    catalog({}, layout=MIXED_LAYOUT)
-    _record_hourly_builds(monkeypatch)
-    monkeypatch.setattr(A, "_named_scratch_meta", lambda name, region: _stale_hourly("2025/01/01/00,NOW"))
-
-    class BoomGlue:
-        def delete_table(self, **kwargs):
-            raise RuntimeError("AccessDenied")
-
-    monkeypatch.setattr(A, "get_client", lambda *a, **k: BoomGlue())
-    A.set_layout_choice("hourly")
-    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
-    notes = " ".join(A._athena_state.get("discovery_notes") or ())
-    assert "could not be dropped" in notes and "still in place" in notes
-    assert "Recreating it" not in notes, "a failed drop must not also claim a rebuild"
-
-
-def test_hourly_self_heal_does_not_thrash_on_a_matching_table(catalog, monkeypatch):
-    """The real `_named_scratch_meta` success path (not monkeypatched here): a freshly built
-    hourly table, re-read on a cold resolve, cross-checks clean against the same synthetic
-    hourly layout and is NOT re-condemned, so there is no drop/rebuild thrash. This exercises
-    the Glue get_table lookup and the `_table_metadata` conversion the other self-heal tests
-    stub past, and pins the round-trip that keeps a rebuilt table from being condemned again."""
-    # An hourly table already declaring range_start = data_start (2022/03/07) + the hourly suffix.
+def test_create_named_table_does_not_drop_a_matching_scratch_table(catalog, monkeypatch):
+    """The round-trip that prevents thrash: a table already declaring the wanted range is left
+    in place, so a freshly rebuilt table is not condemned again on the next cold resolve."""
     healthy = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
                     rng="2022/03/07/00,NOW")
-    glue = catalog({A.TMP_DATABASE: [healthy]}, layout=MIXED_LAYOUT)
-    _record_hourly_builds(monkeypatch)
-    A.set_layout_choice("hourly")
-    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
-    assert glue.deleted == [], "a matching hourly table must not be dropped"
-    notes = " ".join(A._athena_state.get("discovery_notes") or ())
-    assert "Recreating it" not in notes and "could not be dropped" not in notes
+    catalog({A.TMP_DATABASE: [healthy]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert not _dropped(sqls), "a matching table must not be dropped"
+    assert not (A._athena_state.get("discovery_notes") or ()), "and nothing disclosed"
 
 
-def test_hourly_self_heal_condemns_a_stale_table_through_the_real_lookup(catalog, monkeypatch):
-    """The other side of the real `_named_scratch_meta` path, not monkeypatched: a genuinely
-    stale hourly table (range starting after the data now does) is found through the real Glue
-    get_table and condemned. Without this only the clean side is exercised, so a lookup
-    regression that failed to return the stale table would leave a range-too-late table in
-    place, a pre-cutover window would come back with zero rows read as "no traffic", and the
-    no-thrash test would stay green because it only checks the clean side."""
-    stale = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
-                  rng="2025/01/01/00,NOW")   # starts after data_start 2022/03/07: too late
-    glue = catalog({A.TMP_DATABASE: [stale]}, layout=MIXED_LAYOUT)
-    _record_hourly_builds(monkeypatch)
-    A.set_layout_choice("hourly")
-    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
-    assert f"{A.TMP_DATABASE}.waf_logs_myacl_hourly" in glue.deleted
-    notes = " ".join(A._athena_state.get("discovery_notes") or ())
-    assert "Recreating it" in notes
+def test_create_named_table_rebuilds_a_location_changed_table(catalog, monkeypatch):
+    """The location half: a same-named table built over a different S3 path is dropped and
+    rebuilt (a delivery-method change moved the data), and disclosed."""
+    moved = table("waf_logs_myacl_hourly", "s3://bkt/OLD/path", fmt="yyyy/MM/dd/HH",
+                  unit="hours", rng="2022/03/07/00,NOW")
+    catalog({A.TMP_DATABASE: [moved]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert _dropped(sqls)
+    assert "waf_logs_myacl_hourly" in " ".join(A._athena_state.get("discovery_notes") or ())
+
+
+def test_create_named_table_builds_cleanly_when_absent(catalog, monkeypatch):
+    """No existing table: no DROP, no note, just CREATE."""
+    catalog({})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert not _dropped(sqls)
+    assert not (A._athena_state.get("discovery_notes") or ())
 
 
 # --- the tool that records the choice ---------------------------------------
@@ -623,25 +622,6 @@ def test_tool_minute_message_keys_on_cutover_not_mixed():
     assert "minute-level" not in msg and "full precision" not in msg
 
 
-def test_minute_self_heal_discloses_a_failed_drop(catalog, monkeypatch):
-    """Finding 3: the minute scratch self-heal now discloses a failed drop too, through the
-    shared helper, so a stale table a failed delete leaves behind cannot return zero rows
-    silently the way it did before the diff added disclosure to only the hourly path."""
-    glue = catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
-                                            fmt="yyyy/MM/dd/HH", unit="hours")]},
-                   layout=MINUTE_LAYOUT)   # scratch declares hourly, data is minute: stale
-    monkeypatch.setattr(A, "_create_named_table", lambda *a, **k: A._table_metadata(
-        A.TMP_DATABASE, table("waf_logs_myacl", SCOPED_PATH)))
-
-    def boom(**kwargs):
-        raise RuntimeError("AccessDenied")
-
-    monkeypatch.setattr(glue, "delete_table", boom)
-    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
-    notes = " ".join(A._athena_state.get("discovery_notes") or ())
-    assert "could not be dropped" in notes
-
-
 def test_tool_rejects_an_unknown_granularity():
     """A bad argument changes nothing, so a typo cannot silently drop the resolved table."""
     A.reset_table_cache()
@@ -661,6 +641,16 @@ def test_tool_hourly_before_resolution_asks_for_a_query_first():
     assert "query first" in msg
 
 
+def test_tool_hourly_recall_before_resolution_says_the_choice_is_recorded():
+    """The 'already recorded' branch: calling hourly again before a query has resolved a table,
+    when the choice is already hourly (a prior call reset the cache), acknowledges the recorded
+    choice rather than implying nothing was chosen with the generic 'run a query first'."""
+    A.reset_table_cache()
+    A._athena_state["layout_choice"] = "hourly"   # chosen, but the cache was reset -> unresolved
+    msg = set_log_granularity("hourly")
+    assert "already recorded" in msg
+
+
 def test_set_layout_choice_is_idempotent(catalog, monkeypatch):
     """Setting the choice to what it already is must not drop the resolved table or wipe the
     path memo, so a redundant call rebuilds nothing and fires no rate-limited describe. Only
@@ -677,12 +667,14 @@ def test_set_layout_choice_is_idempotent(catalog, monkeypatch):
 
 
 def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
-    """The scratch table is stale, so it is dropped and rebuilt. That used to walk the
-    whole S3 tree twice: once for the cross-check that condemned it, once to build its
-    replacement. One walk at the top of resolution serves both."""
-    glue = catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
-                                           fmt="yyyy/MM/dd/HH", unit="hours")]},
-                   layout=MIXED_LAYOUT)
+    """A stale scratch table is rebuilt on ONE S3 walk, not two. The walk at the top of
+    resolution serves both the cross-check that finds it stale and the rebuild. The drop of
+    the stale table now happens inside `_create_named_table` (its own tests cover that), so
+    here that build is stubbed and the test pins the walk count plus that resolution took the
+    rebuild path rather than returning the stale table as-is."""
+    catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
+                                    fmt="yyyy/MM/dd/HH", unit="hours")]},
+            layout=MIXED_LAYOUT)
     walks = []
 
     def counted(path):
@@ -694,10 +686,9 @@ def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
         A.TMP_DATABASE, table("waf_logs_myacl", SCOPED_PATH)))
 
     A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
-    # The precondition: the stale table really was dropped, so this is the two-walk
-    # path and not the ordinary create path.
-    assert glue.deleted == [f"{A.TMP_DATABASE}.waf_logs_myacl"]
     assert len(walks) == 1
+    # The stale scratch table was not returned as-is: resolution took the rebuild path.
+    assert A._athena_state["temp_created"] is True
 
 
 def test_an_empty_bucket_still_resolves_an_existing_table(catalog, monkeypatch):

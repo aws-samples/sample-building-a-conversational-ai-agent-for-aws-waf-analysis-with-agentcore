@@ -1079,56 +1079,6 @@ def _safe_table_name(webacl_name: str) -> str:
     return "waf_logs_" + re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
 
 
-def _named_scratch_meta(table_name: str, region: str) -> dict | None:
-    """Metadata for one scratch table looked up by exact name, or None if it is absent or
-    unusable. Used by the hourly-build self-heal, which needs a specific table rather than
-    the best match `_find_existing_table` ranks for a path.
-
-    Collapsing "absent" and "unreadable" into the same None is the safe direction, on purpose.
-    The only caller reads None as "nothing to condemn" and lets `CREATE ... IF NOT EXISTS`
-    proceed: on a table it could not evaluate it therefore skips the drop rather than deleting
-    blind, and CREATE either builds the missing table or no-ops on the existing one. The unsafe
-    direction would be treating a read failure as a mismatch and dropping a table it never
-    understood; this does not.
-
-    Known low-severity asymmetry: a genuinely stale table that Glue *transiently* fails to
-    return is skipped silently, with no note, whereas a failed *drop* of one that was read is
-    disclosed. Leaving it unnoted is deliberate here rather than overlooked: distinguishing a
-    transient error from an absent table would couple this to botocore's exception shapes, and
-    for the stale table to actually survive, `_create_named_table`'s own `get_table` would have
-    to fail in the same window too. Narrow enough that the coupling costs more than it buys."""
-    try:
-        tbl = get_client("glue", region_name=region).get_table(
-            DatabaseName=TMP_DATABASE, Name=table_name)["Table"]
-    except Exception:
-        return None
-    meta = _table_metadata(TMP_DATABASE, tbl)
-    return meta if not isinstance(meta, str) else None
-
-
-def _condemn_scratch_table(meta: dict, problem: str, region: str):
-    """Drop a stale scratch table so `CREATE ... IF NOT EXISTS` rebuilds it, disclosing what
-    happened. Shared by both self-heal sites so they disclose the same way.
-
-    The drop is attempted first and the note follows the outcome, because the two are not
-    both true. On success the table is gone and CREATE will rebuild it, so the note says so.
-    On failure `CREATE ... IF NOT EXISTS` no-ops on the surviving table, so claiming a rebuild
-    would be false; the note says the stale table is still in place instead. Neither note
-    names a consequence of its own: `problem` already states the direction-correct one (too
-    early wastes planning, too late hides data), and an added "zero rows" tail contradicted it
-    for the too-early case. Both notes lead with the table name so they read under the
-    `Skipped ` prefix `describe_table_resolution` adds. Dropping an EXTERNAL table never
-    touches S3, and a silent `except: pass` here once let a stale table survive unremarked."""
-    db, name = meta["table"].split(".", 1)
-    try:
-        get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=name)
-        _athena_state["discovery_notes"] += (f"{meta['table']} {problem}. Recreating it.",)
-    except Exception:
-        _athena_state["discovery_notes"] += (
-            f"{meta['table']} is stale ({problem}) but could not be dropped, so it is still "
-            f"in place; remove it by hand.",)
-
-
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
                         partition_unit: str, partition_interval: int, region: str, workgroup: str,
                         table_name: str, range_start: str | None = None) -> dict:
@@ -1147,34 +1097,57 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
         range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
     target_location = s3_path.rstrip("/")
 
-    # A same-named table can linger with an outdated LOCATION after the WAF log
-    # delivery method changes (e.g. Vended Logs -> Firehose moves data from
-    # AWSLogs/.../{webacl}/ to a custom bucket-root prefix). _find_existing_table
-    # only matches tables whose location is an ancestor of the resolved path, so
-    # a stale child-location table is invisible to it. We must replace it.
+    # A same-named table can linger, stale in one of two ways, and the ONE get_table here
+    # decides the drop for both so there is no window between reading it and acting.
     #
-    # But DROP unconditionally would open a window where a concurrent query on
-    # the other code path (query_logs vs patrol_scan) sees the table missing
-    # between DROP and CREATE. So we DROP only when an existing table actually
-    # points at a DIFFERENT location; when the location already matches (the
-    # common/steady case, and the case where another thread just created it),
-    # we skip the DROP entirely and let CREATE ... IF NOT EXISTS be a no-op.
-    # The whole check-then-act is held under _create_lock so the two paths
-    # cannot interleave. Dropping an EXTERNAL table never touches S3 data.
+    #   LOCATION: the WAF log delivery method changed (e.g. Vended Logs -> Firehose moves
+    #   data from AWSLogs/.../{webacl}/ to a custom bucket-root prefix). _find_existing_table
+    #   only matches an ancestor-or-equal location, so a stale child-location table is
+    #   invisible to it and must be replaced here.
+    #
+    #   PROJECTION: same location, but the declared range/format no longer matches what the
+    #   data needs (the oldest data moved by lifecycle expiry or a backfill, or a prior build
+    #   used a different granularity). CREATE ... IF NOT EXISTS would keep the stale table, and
+    #   a range that starts too late returns zero rows for a window before it, read as "no
+    #   traffic". This is the self-heal both the minute and hourly builds used to do with a
+    #   separate get_table + _cross_check_declared in front; folding it here removes that
+    #   second lookup and the window where a transient error on it left the stale table in
+    #   place with no disclosure.
+    #
+    # DROP only when one of those holds: an unconditional DROP would open a gap where a
+    # concurrent query on the other path sees the table missing between DROP and CREATE. The
+    # whole check-then-act is under _create_lock so the paths cannot interleave, and a failed
+    # DROP raises here rather than leaving a stale table to answer silently. Dropping an
+    # EXTERNAL table never touches S3 data. The note is written only after the DROP succeeds,
+    # so it never claims a rebuild that did not happen.
     with _create_lock:
-        needs_drop = False
+        needs_drop, stale_note = False, None
         try:
             glue = get_client("glue", region_name=region)
-            existing = glue.get_table(DatabaseName=TMP_DATABASE, Name=table_name)
-            existing_loc = existing["Table"]["StorageDescriptor"].get("Location", "").rstrip("/")
+            existing = glue.get_table(DatabaseName=TMP_DATABASE, Name=table_name)["Table"]
+            existing_loc = existing["StorageDescriptor"].get("Location", "").rstrip("/")
             if existing_loc and existing_loc != target_location:
                 needs_drop = True
+                stale_note = (f"{TMP_DATABASE}.{table_name} was built over {existing_loc}, "
+                              f"not {target_location}. Recreating it.")
+            else:
+                meta = _table_metadata(TMP_DATABASE, existing)
+                if not isinstance(meta, str):
+                    problem = _cross_check_declared(meta, {
+                        "format": partition_format, "unit": partition_unit,
+                        "interval": partition_interval, "range_start": range_start},
+                        strict=True)
+                    if problem is not None:
+                        needs_drop = True
+                        stale_note = f"{meta['table']} {problem}. Recreating it."
         except Exception:
-            # Table absent (EntityNotFoundException) or Glue error → nothing to drop.
+            # Table absent (EntityNotFoundException) or a Glue read error → nothing to drop.
             needs_drop = False
 
         if needs_drop:
             _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
+            if stale_note:
+                _athena_state["discovery_notes"] += (stale_note,)
 
         ddl = DDL_TEMPLATE.format(
             database=TMP_DATABASE, table=table_name,
@@ -1220,28 +1193,20 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
     the minute name always sorts first, so a later default resolve is deterministic.
     Built directly rather than through `_find_existing_table`, because the user asked for
     the agent's hourly table specifically, and a minute table they maintain themselves is
-    exactly what cannot answer the question they just asked."""
+    exactly what cannot answer the question they just asked.
+
+    A stale `_hourly` table left by a previous session (its range no longer matching the
+    data) is condemned by `_create_named_table` itself, from the same get_table that decides
+    the location drop, so there is no separate lookup to fail transiently and leave it in
+    place."""
     if not _validate_waf_log(s3_path):
         raise RuntimeError(
             f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
             f"destination is correct.")
-    table_name = _safe_table_name(webacl_name) + "_hourly"
-    hourly = dict(layout, format="yyyy/MM/dd/HH", unit="hours", interval=1,
-                  range_start=layout["data_start"] + _RANGE_START_SUFFIX["hours"])
-    # Self-heal a table left by a previous session, the same way the minute scratch table
-    # does on the resolve path. If the oldest data has moved since it was built (lifecycle
-    # expiry, or a backfill of older logs) the declared range_start no longer matches, and
-    # `CREATE ... IF NOT EXISTS` would keep the stale one, so condemn it. `_condemn_scratch_table`
-    # discloses the rebuild and any failed drop, in the direction the mismatch actually took.
-    existing = _named_scratch_meta(table_name, region)
-    if existing is not None:
-        problem = _cross_check_declared(existing, hourly, strict=True)
-        if problem is not None:
-            _condemn_scratch_table(existing, problem, region)
     created = _create_named_table(
-        s3_path, hourly["storage_template"], hourly["format"], hourly["unit"],
-        hourly["interval"], region, "primary", table_name,
-        range_start=hourly["range_start"])
+        s3_path, layout["storage_template"], "yyyy/MM/dd/HH", "hours", 1,
+        region, "primary", _safe_table_name(webacl_name) + "_hourly",
+        range_start=layout["data_start"] + _RANGE_START_SUFFIX["hours"])
     return _record_table(created, created=True)
 
 
@@ -1462,12 +1427,11 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
         problem = _cross_check_declared(meta, layout, strict=(db == TMP_DATABASE))
         if problem is None:
             return _record_table(meta)
-        if db == TMP_DATABASE:
-            # The agent's own scratch table, now inconsistent with the data under it. Condemn
-            # it; the helper discloses the rebuild and any failed drop, so a stale table left
-            # by a failed drop cannot return zero rows silently.
-            _condemn_scratch_table(meta, problem, region)
-        else:
+        if db != TMP_DATABASE:
+            # A table the user maintains, stale for the data under it. Leave it untouched and
+            # build a separate scratch table below. (Our own stale scratch table needs no note
+            # here: `_create_named_table` drops and rebuilds it, disclosing, from the same
+            # get_table that decides the location drop.)
             _athena_state["discovery_notes"] += (
                 f"{meta['table']} {problem}. Building a separate table in "
                 f"{TMP_DATABASE} instead and leaving yours untouched.",)

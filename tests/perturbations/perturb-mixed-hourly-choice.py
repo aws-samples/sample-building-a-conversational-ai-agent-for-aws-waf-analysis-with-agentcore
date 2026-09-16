@@ -38,9 +38,9 @@ CASES = [
     # The agent builds a MINUTE table under the hourly choice, which cannot reach the hourly
     # pre-cutover era it was chosen to read.
     ("the hourly build declares a minute-level format instead",
-     [(A, 'format="yyyy/MM/dd/HH", unit="hours"', 'format="yyyy/MM/dd/HH/mm", unit="minutes"')],
+     [(A, '"yyyy/MM/dd/HH", "hours", 1,', '"yyyy/MM/dd/HH/mm", "minutes", 1,')],
      [f"{T}::test_hourly_choice_on_a_mixed_bucket_builds_the_whole_timeline_table"],
-     True),   # the anchor is on the `hourly = dict(...)` statement's own line, so a probe fits
+     False),   # continuation line inside the _create_named_table call; no statement fits above it
 
     # The range starts at the minute era's own start rather than the oldest data, so the hourly
     # table stops exactly where the minute one did and the history is still unreachable.
@@ -79,27 +79,30 @@ CASES = [
      [f"{T}::test_tool_hourly_before_resolution_asks_for_a_query_first"],
      True),
 
-    # The shared condemn helper stops disclosing the rebuild, so a moved range and a slow first
-    # query after a gap go unexplained on both self-heal paths.
-    ("the self-heal rebuilds silently, without a note",
-     [(A, "Recreating it.", "Rebuilt.")],
-     [f"{T}::test_hourly_self_heal_discloses_the_rebuild"],
-     False),   # f-string fragment inside the discovery_notes append; no statement fits above it
+    # _create_named_table stops dropping a range/format-stale scratch table, so CREATE IF NOT
+    # EXISTS keeps a range-too-late table and a window before its start returns zero rows read
+    # as "no traffic" (the finding-1 silent-wrong-answer).
+    ("a range-stale scratch table is not dropped before CREATE",
+     [(A, "                    if problem is not None:", "                    if False:")],
+     [f"{T}::test_create_named_table_rebuilds_a_range_stale_scratch_table"],
+     False),   # anchor is inside _create_named_table's try/except Exception, which swallows an
+               # inserted raise, so reachability cannot be probed here; the edit still changes
+               # the drop decision the target asserts on
 
-    # The shared helper stops disclosing a failed drop, so CREATE keeps the stale table and a
-    # zero-row answer reads as "no traffic" on both paths with nothing to explain it.
-    ("a failed drop of a stale table is swallowed silently",
-     [(A, "could not be dropped", "was dropped")],
-     [f"{T}::test_hourly_self_heal_discloses_a_failed_drop",
-      f"{T}::test_minute_self_heal_discloses_a_failed_drop"],
-     False),   # f-string fragment inside the discovery_notes append; no statement fits above it
-
-    # The minute self-heal stops calling the shared helper, so its failed drop is silent again,
-    # the pre-diff asymmetry the review flagged.
-    ("the minute self-heal no longer discloses through the shared helper",
-     [(A, "_condemn_scratch_table(meta, problem, region)", "pass")],
-     [f"{T}::test_minute_self_heal_discloses_a_failed_drop"],
+    # The staleness rebuild is no longer disclosed, so a moved range and a slow first query
+    # after a gap go unexplained.
+    ("the scratch-table rebuild is dropped silently, without a note",
+     [(A, "            if stale_note:", "            if False:")],
+     [f"{T}::test_create_named_table_rebuilds_a_range_stale_scratch_table"],
      True),
+
+    # The staleness gate inverts, so a table already matching the data is dropped and rebuilt on
+    # every cold resolve: drop/rebuild thrash.
+    ("a matching scratch table is dropped anyway, thrashing",
+     [(A, "                    if problem is not None:", "                    if True:")],
+     [f"{T}::test_create_named_table_does_not_drop_a_matching_scratch_table"],
+     False),   # same try/except as above swallows an inserted raise; the edit still forces the
+               # drop the target asserts against
 
     # The minute-choice reply keys its "minute-level era" claim on `mixed` instead of the
     # cutover, so a mixed-but-hourly-newest bucket is told its data is minute-level.
@@ -108,12 +111,11 @@ CASES = [
      [f"{T}::test_tool_minute_message_keys_on_cutover_not_mixed"],
      True),
 
-    # _named_scratch_meta stops returning the table it found, so a real stale hourly table is
-    # never condemned and a range-too-late table survives. Caught only on the stale side: the
-    # no-thrash test stays green because "no condemn" is what it asserts anyway.
-    ("the scratch-table lookup returns None even when it found the table",
-     [(A, "return meta if not isinstance(meta, str) else None", "return None")],
-     [f"{T}::test_hourly_self_heal_condemns_a_stale_table_through_the_real_lookup"],
+    # The "already recorded" sub-branch is dropped, so a re-call before a query implies the
+    # hourly choice was not recorded when it was.
+    ("a pending hourly choice is not acknowledged on a re-call before a query",
+     [(L, '        if _athena_state.get("layout_choice") == "hourly":', "        if False:")],
+     [f"{T}::test_tool_hourly_recall_before_resolution_says_the_choice_is_recorded"],
      True),
 ]
 
