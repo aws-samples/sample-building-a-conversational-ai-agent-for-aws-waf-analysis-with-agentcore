@@ -174,8 +174,13 @@ def set_layout_choice(choice: str | None):
     minute-level era. Full reset, then set the choice: the detected layout is
     re-derived by the next resolve anyway, so nothing is lost, and this reuses the one
     place that cannot forget a key rather than a hand-listed clear that would drift.
-    The only cost is one re-derivation of the log-destination path memo on the next
-    query, which is a deliberate, rare, user-initiated action's worth of overhead."""
+    Idempotent: setting the choice to what it already is returns without a reset, so a
+    redundant call rebuilds nothing and does not re-derive the log-destination path memo
+    (which would re-fire `firehose:DescribeDeliveryStream`, capped at 5/sec and not
+    adjustable). Only a real change drops the table; then the next query rebuilds and the
+    memo re-derives once, which is a rare user-initiated action's worth of overhead."""
+    if _athena_state.get("layout_choice") == choice:
+        return
     reset_table_cache()
     _athena_state["layout_choice"] = choice
 
@@ -1063,6 +1068,30 @@ def _ensure_database(region: str, workgroup: str):
     _run_athena_ddl(sql, region, workgroup)
 
 
+def _safe_table_name(webacl_name: str) -> str:
+    """The scratch-table base name for a WebACL, sanitised to Athena-legal characters.
+
+    One derivation, used by both scratch tables, so the minute table (`waf_logs_<name>`)
+    and the hourly one (`waf_logs_<name>_hourly`) always share a base. `_find_existing_table`
+    ranks the minute name first purely by sort order, and that determinism only holds while
+    the two correspond, so a second copy of this expression that later drifts would break
+    which table a default resolve picks."""
+    return "waf_logs_" + re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
+
+
+def _named_scratch_meta(table_name: str, region: str) -> dict | None:
+    """Metadata for one scratch table looked up by exact name, or None if it is absent or
+    unusable. Used by the hourly-build self-heal, which needs a specific table rather than
+    the best match `_find_existing_table` ranks for a path."""
+    try:
+        tbl = get_client("glue", region_name=region).get_table(
+            DatabaseName=TMP_DATABASE, Name=table_name)["Table"]
+    except Exception:
+        return None
+    meta = _table_metadata(TMP_DATABASE, tbl)
+    return meta if not isinstance(meta, str) else None
+
+
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
                         partition_unit: str, partition_interval: int, region: str, workgroup: str,
                         table_name: str, range_start: str | None = None) -> dict:
@@ -1159,11 +1188,26 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
         raise RuntimeError(
             f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
             f"destination is correct.")
-    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
+    table_name = _safe_table_name(webacl_name) + "_hourly"
+    hourly = dict(layout, format="yyyy/MM/dd/HH", unit="hours", interval=1,
+                  range_start=layout["data_start"] + _RANGE_START_SUFFIX["hours"])
+    # Self-heal a table left by a previous session, the same way the minute scratch table
+    # does on the resolve path. If the oldest data has moved since it was built (lifecycle
+    # expiry, or a backfill of older logs) the declared range_start no longer matches, and
+    # `CREATE ... IF NOT EXISTS` would keep the stale one. Too-late is the dangerous
+    # direction: a pre-cutover window before the stale start returns zero rows, exactly the
+    # "no traffic" misread this feature exists to prevent. Condemn and rebuild it.
+    existing = _named_scratch_meta(table_name, region)
+    if existing is not None and _cross_check_declared(existing, hourly, strict=True) is not None:
+        try:
+            get_client("glue", region_name=region).delete_table(
+                DatabaseName=TMP_DATABASE, Name=table_name)
+        except Exception:
+            pass
     created = _create_named_table(
-        s3_path, layout["storage_template"], "yyyy/MM/dd/HH", "hours", 1,
-        region, "primary", f"waf_logs_{safe_name}_hourly",
-        range_start=layout["data_start"] + _RANGE_START_SUFFIX["hours"])
+        s3_path, hourly["storage_template"], hourly["format"], hourly["unit"],
+        hourly["interval"], region, "primary", table_name,
+        range_start=hourly["range_start"])
     return _record_table(created, created=True)
 
 
@@ -1404,10 +1448,9 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
             f"destination is correct.")
     if layout is None:
         raise layout_error
-    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
     created = _create_named_table(
         s3_path, layout["storage_template"], layout["format"], layout["unit"],
-        layout["interval"], region, "primary", f"waf_logs_{safe_name}",
+        layout["interval"], region, "primary", _safe_table_name(webacl_name),
         range_start=layout["range_start"])
     return _record_table(created, created=True)
 

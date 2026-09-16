@@ -434,11 +434,19 @@ def set_log_granularity(granularity: str) -> str:
         set_layout_choice(None)
         if mixed:
             return ("From the next query the recent minute-level era is read at full "
-                    "precision. The pre-cutover history is out of reach this way; ask for "
+                    "precision; the pre-cutover history is out of reach this way, ask for "
                     "hourly to read the whole timeline.")
-        return "Reading logs at the layout the bucket uses; there is only one."
+        return "Minute-level, the default: the recent era at full precision."
     # hourly
-    if resolved and not mixed:
+    if not resolved:
+        # No table resolved yet, so whether this bucket even holds two layouts is unknown.
+        # Promising the whole timeline here would be a guess, and on a single-layout bucket
+        # the resolver ignores the hourly choice, so the promise would be false. Ask for the
+        # query that reveals the layout instead of setting a choice on no information.
+        return ("Run a log query first so I can resolve the table and see whether this "
+                "bucket holds both partition layouts. The hourly choice only applies to a "
+                "mixed bucket, and resolving the table is what reveals one.")
+    if not mixed:
         return ("This bucket has a single partition layout, so there is no older era to "
                 "reach by reading it as hourly, only precision to lose. Left unchanged.")
     set_layout_choice("hourly")

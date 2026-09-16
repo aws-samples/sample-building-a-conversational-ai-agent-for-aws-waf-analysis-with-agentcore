@@ -535,6 +535,31 @@ def test_tool_rejects_an_unknown_granularity():
     assert A._athena_state == before
 
 
+def test_tool_hourly_before_resolution_asks_for_a_query_first():
+    """The tool cannot promise the whole timeline before a query has revealed whether the
+    bucket is even mixed, so it asks for a query rather than setting a choice the resolver
+    may ignore and relaying a false promise to the user."""
+    A.reset_table_cache()                        # partition_format is None, so unresolved
+    msg = set_log_granularity("hourly")
+    assert A._athena_state.get("layout_choice") is None, "no choice set on no information"
+    assert "query first" in msg
+
+
+def test_set_layout_choice_is_idempotent(catalog, monkeypatch):
+    """Setting the choice to what it already is must not drop the resolved table or wipe the
+    path memo, so a redundant call rebuilds nothing and fires no rate-limited describe. Only
+    a real change rebuilds."""
+    catalog({}, layout=MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"]
+    A.set_layout_choice("hourly")                # same choice
+    assert A._athena_state.get("table") is not None, "the cached table must survive an unchanged choice"
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"], "no rebuild on an unchanged choice"
+
+
 def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
     """The scratch table is stale, so it is dropped and rebuilt. That used to walk the
     whole S3 tree twice: once for the cross-check that condemned it, once to build its

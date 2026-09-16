@@ -38,9 +38,9 @@ CASES = [
     # The agent builds a MINUTE table under the hourly choice, which cannot reach the hourly
     # pre-cutover era it was chosen to read.
     ("the hourly build declares a minute-level format instead",
-     [(A, '"yyyy/MM/dd/HH", "hours", 1,', '"yyyy/MM/dd/HH/mm", "minutes", 1,')],
+     [(A, 'format="yyyy/MM/dd/HH", unit="hours"', 'format="yyyy/MM/dd/HH/mm", unit="minutes"')],
      [f"{T}::test_hourly_choice_on_a_mixed_bucket_builds_the_whole_timeline_table"],
-     False),   # continuation line inside the _create_named_table call; no statement fits above it
+     False),   # continuation line inside the dict() literal; no statement fits above it
 
     # The range starts at the minute era's own start rather than the oldest data, so the hourly
     # table stops exactly where the minute one did and the history is still unreachable.
@@ -58,11 +58,25 @@ CASES = [
      [f"{T}::test_resolution_block_by_default_offers_the_agent_built_hourly_table"],
      False),   # f-string fragment inside a lines.append call; no statement fits above it
 
-    # The tool's guard inverts, so an hourly choice on a single-layout bucket coarsens it rather
-    # than being refused.
+    # The tool's guard for a single-layout bucket is dropped, so an hourly choice coarsens it
+    # rather than being refused. (Guard is `if not mixed`, after the resolved check.)
     ("the tool no longer refuses hourly on a single-layout bucket",
-     [(L, "    if resolved and not mixed:", "    if resolved and mixed:")],
+     [(L, "    if not mixed:", "    if False:")],
      [f"{T}::test_tool_refuses_hourly_on_a_single_layout_bucket"],
+     True),
+
+    # set_layout_choice loses its idempotence, so setting the choice to what it already is
+    # still resets and drops the cached table, firing the rate-limited describe the memo avoids.
+    ("set_layout_choice is no longer idempotent, so an unchanged choice still rebuilds",
+     [(A, 'if _athena_state.get("layout_choice") == choice:', "if False:")],
+     [f"{T}::test_set_layout_choice_is_idempotent"],
+     True),
+
+    # The hourly branch drops its "resolve first" precondition, so calling it before any query
+    # sets the choice and relays a whole-timeline promise the resolver may silently ignore.
+    ("the tool promises the whole timeline before the layout is even known",
+     [(L, "    if not resolved:", "    if False:")],
+     [f"{T}::test_tool_hourly_before_resolution_asks_for_a_query_first"],
      True),
 ]
 
