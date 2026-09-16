@@ -89,8 +89,20 @@ step above. Nothing was missing from the check; what was missing was its positio
 nothing between the tag and the published release required an invocation.
 
 So the order is: bump the version strings and the CHANGELOG heading, merge, tag the merge commit, publish
-with `gh release create --prerelease`, deploy, run the verify step above, and only then
-`gh release edit vX.Y.Z --prerelease=false`.
+with `gh release create --prerelease`, deploy, run the verify step above, and only then promote, which is
+**two commands, not one**:
+
+```
+gh release edit vX.Y.Z --prerelease=false
+gh release edit vX.Y.Z --latest
+```
+
+The second is not optional. Editing the prerelease flag does not move GitHub's "Latest" pointer: GitHub
+fixes "Latest" when a release is published, and a release published `--prerelease` was never a candidate,
+so clearing the flag later leaves the pointer on the previous full release. Measured 2026-09-15: v0.27.1
+was promoted with only the first command and `/releases/latest` served v0.26.1 for ~18 hours, which is a
+build with neither of that release's fixes. After promoting, confirm with
+`gh api repos/<owner>/<repo>/releases/latest --jq .tag_name`; it must name the release you just promoted.
 
 **A release nobody smoke-tested has to look different from one that was**, which is why this is a flag on
 the artefact rather than a line in a checklist. A stranger who clones the tag sees the badge; a checklist
