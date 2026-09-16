@@ -112,6 +112,12 @@ _ATHENA_STATE_DEFAULTS = {
                              # whichever era it is in. Only interesting when the
                              # layout is mixed, where it is the far edge of the
                              # history the resolved table cannot reach.
+    "layout_choice": None,   # the user's explicit granularity choice on a mixed
+                             # bucket (ROADMAP 3.2): None means the default, the
+                             # newest (minute) era at full precision; "hourly" means
+                             # the whole timeline through an hourly table, coarser but
+                             # reaching the pre-cutover history. Reset per WebACL, so a
+                             # choice about one WebACL's bucket never leaks to another.
     "table_choice": None,    # one line naming the resolved table, for tool output
     "discovery_notes": (),   # why candidate tables were rejected, for tool output
     "schema_note": None,     # optional columns the resolved table lacks, and the
@@ -158,6 +164,20 @@ def reset_table_cache():
     WebACL switch."""
     _athena_state.clear()
     _athena_state.update(_ATHENA_STATE_DEFAULTS)
+
+
+def set_layout_choice(choice: str | None):
+    """Record the user's mixed-bucket granularity choice and drop the resolved table so
+    the next query rebuilds on it (ROADMAP 3.2).
+
+    `choice` is "hourly" for the whole-timeline hourly table or None for the default
+    minute-level era. Full reset, then set the choice: the detected layout is
+    re-derived by the next resolve anyway, so nothing is lost, and this reuses the one
+    place that cannot forget a key rather than a hand-listed clear that would drift.
+    The only cost is one re-derivation of the log-destination path memo on the next
+    query, which is a deliberate, rare, user-initiated action's worth of overhead."""
+    reset_table_cache()
+    _athena_state["layout_choice"] = choice
 
 
 # Java SimpleDateFormat tokens (used by Athena partition projection 'date' type)
@@ -1118,6 +1138,35 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     }
 
 
+def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layout: dict) -> str:
+    """The ROADMAP 3.2 "read the whole timeline as hourly" choice, on a mixed bucket.
+
+    The newest-era minute table cannot reach the pre-cutover history; an hourly one can.
+    Athena lists recursively under the LOCATION, so an hourly projection reads the
+    minute-nested objects of the recent era as well as the hourly pre-cutover ones. The
+    range runs from the oldest data in the bucket to NOW, so the whole timeline is
+    queryable, coarser everywhere, which is the trade the user accepted when they chose
+    this over the default minute table. This is what the manual recipe in
+    docs/hourly-vs-minute-partitioning.md used to make the user build by hand.
+
+    Its own name (the `_hourly` suffix) so it coexists with the minute table: switching
+    the choice back re-resolves to the other one rather than dropping and rebuilding, and
+    the minute name always sorts first, so a later default resolve is deterministic.
+    Built directly rather than through `_find_existing_table`, because the user asked for
+    the agent's hourly table specifically, and a minute table they maintain themselves is
+    exactly what cannot answer the question they just asked."""
+    if not _validate_waf_log(s3_path):
+        raise RuntimeError(
+            f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
+            f"destination is correct.")
+    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
+    created = _create_named_table(
+        s3_path, layout["storage_template"], "yyyy/MM/dd/HH", "hours", 1,
+        region, "primary", f"waf_logs_{safe_name}_hourly",
+        range_start=layout["data_start"] + _RANGE_START_SUFFIX["hours"])
+    return _record_table(created, created=True)
+
+
 def _cross_check_declared(meta: dict, layout: dict | None, strict: bool) -> str | None:
     """Compare a table's declared projection against the real S3 layout.
 
@@ -1321,6 +1370,14 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
         _athena_state["layout_cutover"] = layout["cutover"]
         _athena_state["layout_data_start"] = layout["data_start"]
 
+    # ROADMAP 3.2: the user has explicitly chosen to read the whole timeline as hourly.
+    # Only a mixed bucket has a pre-cutover era to reach; a pure layout is already served
+    # correctly by the ordinary path, so the choice falls through there and changes
+    # nothing. Ahead of discovery on purpose: a minute table the user maintains is exactly
+    # what cannot answer "show me the history", so their choice overrides it.
+    if _athena_state.get("layout_choice") == "hourly" and layout is not None and layout["mixed"]:
+        return _build_agent_hourly_table(s3_path, region, webacl_name, layout)
+
     meta = _find_existing_table(s3_path, region)
     if meta is not None:
         db, tbl = meta["table"].split(".", 1)
@@ -1439,14 +1496,15 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
             # actively wrong: the pre-cutover directories are hourly, so a wider
             # minute-level projection generates paths that do not exist and returns
             # nothing, which looks like the advice was followed and the data is gone.
-            # Second copy of the sentence 3.2 falsified, and the sweep that corrected the one
-            # in `describe_table_resolution` missed it. Hourly tables ARE queryable now; what
-            # stays true is that the agent builds one table per WebACL, for the newest layout,
-            # so the older era needs a second one the user creates.
+            # This branch is only reached under the default (minute) choice: the hourly
+            # choice builds a table whose range starts at the oldest data, so a
+            # pre-cutover window is in range and never lands here. ROADMAP 3.2 retired the
+            # "build it yourself" recipe, so the offer now is for the agent to build it.
             problem += (f"{mixed} Widening the range would not help, because the paths a "
                         f"minute-level projection generates are not there before the "
-                        f"cutover. Query a window after it, or read the older era with a "
-                        f"second, hourly table you create yourself over the same bucket.")
+                        f"cutover. Query a window after it, or ask to read the whole "
+                        f"timeline as an hourly table, coarser everywhere, and the agent "
+                        f"will build it over the same bucket.")
         else:
             problem += (f"Widen the table's projection.{part_col}.range or query a "
                         f"later window.")
@@ -1488,26 +1546,31 @@ def describe_table_resolution() -> str:
     mixed = _mixed_layout_sentence()
     if mixed:
         # `projection.<col>.format` holds one value, so one table cannot describe two
-        # granularities, and the pre-cutover era is unreachable rather than merely
-        # coarse. Say so here rather than only when a query happens to ask for it: a
-        # user who switched prefixes months ago has no reason to suspect the older
-        # objects are invisible, and Athena's answer for them is zero rows.
-        # The last sentence used to read "an hourly table, which this agent does not build
-        # yet", and 3.2 made that false: the agent now declares hourly when the newest data
-        # is hourly, and hourly log queries run. What is still true is narrower, so say the
-        # narrower thing. The agent builds ONE table, for the layout the newest data uses,
-        # and reading the older era needs a SECOND table over the same bucket that it does
-        # not build. That is also why the manual second-table recipe in
-        # docs/hourly-vs-minute-partitioning.md stays: it is still the only way to read a
-        # pre-cutover era, which 3.2 was expected to change and did not.
-        lines.append(
-            f"{mixed} This table covers the minute-level era only. Logs from "
-            f"{_athena_state.get('layout_data_start')} up to the cutover are in the "
-            f"bucket, but no minute-level table can address them, and Athena reports "
-            f"that as zero rows rather than as an error. Hourly tables are queryable "
-            f"now, but the agent builds one table per WebACL, for the newest layout, so "
-            f"reading the older era needs a second, hourly table you create yourself over "
-            f"the same bucket. The cutover date is best-effort.")
+        # granularities. Say the trade here rather than only when a query happens to hit
+        # it: a user who switched prefixes months ago has no reason to suspect the older
+        # objects are out of reach, and Athena's answer for them is zero rows.
+        #
+        # ROADMAP 3.2: the agent now builds the whole-timeline hourly table itself, so the
+        # message depends on which one is active. Under the default (minute) choice the
+        # pre-cutover era is unreachable and the agent offers to build the hourly table;
+        # once the user has chosen hourly the active table reaches the whole timeline and
+        # the note says so. Either way this retires the "build a second table yourself"
+        # recipe that used to live here and in docs/hourly-vs-minute-partitioning.md.
+        if _athena_state.get("layout_choice") == "hourly":
+            lines.append(
+                f"{mixed} You chose to read the whole timeline as an hourly table, so the "
+                f"history back to {_athena_state.get('layout_data_start')} is queryable. "
+                f"Every window is at hour granularity as a result, including the recent "
+                f"era, which loses the minute-level precision the minute table gives. Ask "
+                f"for minute-level to switch back. The cutover date is best-effort.")
+        else:
+            lines.append(
+                f"{mixed} This table covers the minute-level era only. Logs from "
+                f"{_athena_state.get('layout_data_start')} up to the cutover are in the "
+                f"bucket, but no minute-level table can address them, and Athena reports "
+                f"that as zero rows rather than as an error. To reach that history, ask to "
+                f"read the whole timeline as an hourly table, coarser everywhere, and the "
+                f"agent will build it over the same bucket. The cutover date is best-effort.")
     # 3.3's cost notice. Here rather than per query because it is a property of the table:
     # once per resolved table is information, once per query is noise the model learns to
     # skip. Fires for hourly only; daily and coarser are refused outright and say so at the

@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Added: read a mixed bucket's pre-cutover history by building the hourly table for you
+
+When an S3 log bucket holds both hourly directories (from before a Firehose prefix change) and
+minute-level ones (after), the default still reads the recent minute-level era at full precision and
+reports where the older history begins. On request the agent now builds the hourly table itself over the
+same bucket, spanning the whole timeline, so the pre-cutover history is queryable without hand-written
+DDL. An hourly projection reads the minute-nested recent objects as well as the hourly pre-cutover ones,
+so one table reaches everything, at hour granularity throughout.
+
+- A `set_log_granularity` tool records the choice. The agent offers it in the query output when it detects
+  a mixed bucket, and calls it when you ask for the history. Ask for minute-level to switch back.
+- The choice is per WebACL and re-buildable: take minute-level today and return for the history later, and
+  the agent builds the hourly table then.
+- This retires the manual "build a second table yourself" recipe that
+  `docs/hourly-vs-minute-partitioning.md` and the knowledge base used to carry.
+
+### Fixed: the docs claimed hourly log-detail queries are refused, stale since hourly was enabled on 2026-09-10
+
+`docs/athena-table-detection.md`, its Chinese twin, and `docs/roadmap_zh.md` still said hourly and coarser
+tables are refused for log-detail queries and that only minute-level tables run them. That stopped being
+true on 2026-09-10, when the coarse-partition gate moved to block only daily and coarser, so hourly runs
+with a note that one scan covers a whole hour. The mixed-bucket change above put "ask the agent to build an
+hourly table" on the same pages, which made the stale claim contradict the new one, so it is corrected here
+rather than left for its own release. Both languages now say daily and coarser are refused while hourly and
+minute-level both run.
+
 ## 0.27.2 (2026-09-16)
 
 ### Fixed: token_reuse_ips has undercounted token reuse across IPs since the initial release

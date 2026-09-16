@@ -120,27 +120,21 @@ query outright. It now reads such a bucket as minute-level, so recent windows wo
 before the cutover comes back with an explanation instead of rows: the date the table's partition
 projection starts, the cutover date, and why widening that projection will not help (the directories
 back there are hourly, so a minute-level projection generates paths that do not exist in them).
-To read that history, build a second table
-over the old range with an hourly `projection.<col>.format`, because an hourly table can read
-minute-nested objects while a minute-level one cannot read hourly ones.
+**Since 2026-09-16 you can read that older history without leaving the agent.** Ask WAF Analyst to
+read the whole timeline as hourly and it builds the hourly table itself, over the same bucket. You
+write no DDL. An hourly table reaches everything because Athena lists recursively under the table's
+location, so an hourly projection reads the minute-nested recent objects as well as the hourly
+pre-cutover ones. The trade is granularity: every window is then read by the hour, the recent era
+included, which gives up the minute-level precision you switched to get. The default stays
+minute-level, so you opt into this per WebACL and only when you want the history.
 
-Two things about that table, and both matter more than they look:
+**The choice is reversible.** Ask for minute-level to switch back to the recent era at full precision.
+Take minute-level today and return for the history next month and the agent builds the hourly table
+then. Nothing is decided once.
 
-- **End its `projection.<col>.range` at the cutover, not at `NOW`.** A closed end in the past is
-  deliberate here. WAF Analyst refuses to resolve a table whose projected range has already stopped,
-  and that refusal is what keeps the history table from shadowing your minute-level one. A history
-  table ending at `NOW` sits at the same S3 location as the minute-level table, wins discovery because
-  a table you maintain outranks the agent's own, and then every log-detail query is declined on
-  hourly scan cost, including the recent windows that worked before you added it.
-- **Query the history table in the Athena console**, not through WAF Analyst. Following from the
-  above, the agent will not resolve it, and it will say so: the query output lists the table with
-  `projection range ends at ..., already in the past` as the reason it was passed over. That note is
-  expected, not a misconfiguration.
-
-The query output names the cutover date, so you can see where one table's coverage ends and the other's
-begins, and it names the oldest data in the bucket, which is how far back the history table has to
-reach. The cutover day is best-effort: it comes from a search inside the month of the switch and assumes
-the layout changed once. Give the history table a day of slack at that end.
+The query output names the cutover date, where one era's coverage meets the other, and the oldest data
+in the bucket, which is how far back the history reaches. The cutover day is best-effort: it comes from
+a search inside the month of the switch and assumes the layout changed once, so give it a day of slack.
 
 ## External factor
 

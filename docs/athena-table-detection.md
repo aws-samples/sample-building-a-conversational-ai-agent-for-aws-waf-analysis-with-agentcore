@@ -73,8 +73,8 @@ letting an empty result stand for it.
 The projection start is floored to the first of the month the switch falls in, which keeps it from ever
 landing later than your minute-level data. The cutover *day* is best-effort: it comes from a search
 inside that month and assumes the layout changed once, so a bucket that alternates can report a day
-that is slightly late. To read the older era, see
-[Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md).
+that is slightly late. To read the older era, ask the agent to read the whole timeline as hourly and
+it builds that table for you; see [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md).
 
 This means:
 - No partition management needed — new time slots are automatically included
@@ -134,7 +134,7 @@ Ties between two equally specific tables in different databases resolve alphabet
 - Resolved path: calls `DescribeDeliveryStream` → extracts S3 bucket + static prefix (dynamic expressions like `!{timestamp:...}` are stripped)
 - Partition format: detected from S3 directory structure — hourly (`yyyy/MM/dd/HH`) or minute-level (`yyyy/MM/dd/HH/mm`)
 
-**Important:** If your Firehose uses hourly partitions (default), the agent blocks log-detail queries because they time out on production traffic. When this happens the agent retrieves the fix from its knowledge base and explains the cause and the one-time Firehose change to you inline. See the [Firehose Optimization Guide](firehose-minute-partitioning.md) for the same steps.
+**Important:** If your Firehose uses hourly partitions (default), log-detail queries run, and the query output notes that a scan covers a whole hour so you know it costs more. Switching to a minute-level prefix is an optional one-time change that lowers per-query scan cost; the agent retrieves the steps from its knowledge base and explains them inline. See the [Firehose Optimization Guide](firehose-minute-partitioning.md).
 
 ## Partition-Path Timezone
 
@@ -164,9 +164,9 @@ Resolution precedence: `WAF_AGENT_PARTITION_TZ` env → detected Firehose `Custo
 
 1. **No way to name a table in chat.** You cannot tell the agent "use my table X in database Y." It resolves the table from your logging configuration, so the way to steer it is to make your table qualify.
 
-2. **Hourly and coarser tables are still refused for log-detail queries.** Detection accepts them, then the query is blocked on scan cost. Only minute-level tables can run log details today.
+2. **Daily and coarser tables are refused for log-detail queries.** Detection accepts them, then the query is blocked on scan cost. Hourly and minute-level both run log details today; on hourly the query output notes that a scan covers a whole hour.
 
-3. **On a bucket that changed layout, the pre-cutover logs are out of reach.** The agent reads the minute era and tells you where it starts. Reaching the hourly era needs a table you build yourself, because the agent will not build an hourly one while log-detail queries on hourly are refused.
+3. **On a bucket that changed layout, the pre-cutover history is out of reach by default.** The agent reads the recent minute era and tells you where it starts. To reach the older hourly era, ask it to read the whole timeline as hourly and it builds that table for you over the same bucket, coarser everywhere. The default stays minute-level.
 
 4. **Custom S3 prefix on Vended Logs is invisible.** If you configured a custom key prefix via the API (not console), the agent may not resolve the correct path because `GetLoggingConfiguration` doesn't return the prefix.
 
