@@ -88,7 +88,8 @@ def table(name, location, col="log_time", fmt="yyyy/MM/dd/HH/mm", interval="1",
 
 
 class FakeGlue:
-    """Only the three Glue operations resolution uses, paginated two per page.
+    """The Glue operations resolution uses: the two paginated list calls (two per page) plus
+    get_table and delete_table for the self-heal.
 
     Small pages on purpose: a single-page fake would pass even if the pagination
     were removed, which is one of the things being tested.
@@ -122,6 +123,13 @@ class FakeGlue:
 
     def delete_table(self, DatabaseName, Name):
         self.deleted.append(f"{DatabaseName}.{Name}")
+
+    def get_table(self, DatabaseName, Name):
+        for t in self.catalog.get(DatabaseName, []):
+            if t["Name"] == Name:
+                return {"Table": t}
+        # Stands in for Glue's EntityNotFoundException; callers catch it as "table absent".
+        raise Exception(f"EntityNotFoundException: {DatabaseName}.{Name}")
 
 
 @pytest.fixture
@@ -527,7 +535,26 @@ def test_hourly_self_heal_discloses_a_failed_drop(catalog, monkeypatch):
     A.set_layout_choice("hourly")
     A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
     notes = " ".join(A._athena_state.get("discovery_notes") or ())
-    assert "could not be dropped" in notes and "zero rows" in notes
+    assert "could not be dropped" in notes and "still in place" in notes
+    assert "Recreating it" not in notes, "a failed drop must not also claim a rebuild"
+
+
+def test_hourly_self_heal_does_not_thrash_on_a_matching_table(catalog, monkeypatch):
+    """The real `_named_scratch_meta` success path (not monkeypatched here): a freshly built
+    hourly table, re-read on a cold resolve, cross-checks clean against the same synthetic
+    hourly layout and is NOT re-condemned, so there is no drop/rebuild thrash. This exercises
+    the Glue get_table lookup and the `_table_metadata` conversion the other self-heal tests
+    stub past, and pins the round-trip that keeps a rebuilt table from being condemned again."""
+    # An hourly table already declaring range_start = data_start (2022/03/07) + the hourly suffix.
+    healthy = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                    rng="2022/03/07/00,NOW")
+    glue = catalog({A.TMP_DATABASE: [healthy]}, layout=MIXED_LAYOUT)
+    _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert glue.deleted == [], "a matching hourly table must not be dropped"
+    notes = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "Recreating it" not in notes and "could not be dropped" not in notes
 
 
 # --- the tool that records the choice ---------------------------------------

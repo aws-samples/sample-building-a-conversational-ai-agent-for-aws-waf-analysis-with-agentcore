@@ -446,7 +446,12 @@ def set_log_granularity(granularity: str) -> str:
         # No table resolved yet, so whether this bucket even holds two layouts is unknown.
         # Promising the whole timeline here would be a guess, and on a single-layout bucket
         # the resolver ignores the hourly choice, so the promise would be false. Ask for the
-        # query that reveals the layout instead of setting a choice on no information.
+        # query that reveals the layout instead of setting a choice on no information. If the
+        # hourly choice is already recorded (a previous call reset the cache), say that rather
+        # than implying nothing was chosen.
+        if _athena_state.get("layout_choice") == "hourly":
+            return ("The hourly choice is already recorded; run a log query and I will build "
+                    "the whole-timeline table if this bucket holds both layouts.")
         return ("Run a log query first so I can resolve the table and see whether this "
                 "bucket holds both partition layouts. The hourly choice only applies to a "
                 "mixed bucket, and resolving the table is what reveals one.")

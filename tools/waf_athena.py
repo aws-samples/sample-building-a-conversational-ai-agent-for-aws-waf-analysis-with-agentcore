@@ -1089,7 +1089,14 @@ def _named_scratch_meta(table_name: str, region: str) -> dict | None:
     proceed: on a table it could not evaluate it therefore skips the drop rather than deleting
     blind, and CREATE either builds the missing table or no-ops on the existing one. The unsafe
     direction would be treating a read failure as a mismatch and dropping a table it never
-    understood; this does not."""
+    understood; this does not.
+
+    Known low-severity asymmetry: a genuinely stale table that Glue *transiently* fails to
+    return is skipped silently, with no note, whereas a failed *drop* of one that was read is
+    disclosed. Leaving it unnoted is deliberate here rather than overlooked: distinguishing a
+    transient error from an absent table would couple this to botocore's exception shapes, and
+    for the stale table to actually survive, `_create_named_table`'s own `get_table` would have
+    to fail in the same window too. Narrow enough that the coupling costs more than it buys."""
     try:
         tbl = get_client("glue", region_name=region).get_table(
             DatabaseName=TMP_DATABASE, Name=table_name)["Table"]
@@ -1100,23 +1107,26 @@ def _named_scratch_meta(table_name: str, region: str) -> dict | None:
 
 
 def _condemn_scratch_table(meta: dict, problem: str, region: str):
-    """Drop a stale scratch table so `CREATE ... IF NOT EXISTS` rebuilds it, disclosing both
-    the rebuild and, when the drop fails, that a stale table was left in place.
+    """Drop a stale scratch table so `CREATE ... IF NOT EXISTS` rebuilds it, disclosing what
+    happened. Shared by both self-heal sites so they disclose the same way.
 
-    Shared by both self-heal sites so they disclose the same way. A silent `except: pass`
-    here once let a range-too-late table survive a failed drop and return zero rows read as
-    "no traffic". Both notes lead with the table name so they read under the `Skipped ` prefix
-    `describe_table_resolution` adds, and the failure note carries `problem`, so its direction
-    (too-early wastes planning, too-late hides data) matches the rebuild note rather than
-    assuming one. Dropping an EXTERNAL table never touches S3."""
+    The drop is attempted first and the note follows the outcome, because the two are not
+    both true. On success the table is gone and CREATE will rebuild it, so the note says so.
+    On failure `CREATE ... IF NOT EXISTS` no-ops on the surviving table, so claiming a rebuild
+    would be false; the note says the stale table is still in place instead. Neither note
+    names a consequence of its own: `problem` already states the direction-correct one (too
+    early wastes planning, too late hides data), and an added "zero rows" tail contradicted it
+    for the too-early case. Both notes lead with the table name so they read under the
+    `Skipped ` prefix `describe_table_resolution` adds. Dropping an EXTERNAL table never
+    touches S3, and a silent `except: pass` here once let a stale table survive unremarked."""
     db, name = meta["table"].split(".", 1)
-    _athena_state["discovery_notes"] += (f"{meta['table']} {problem}. Recreating it.",)
     try:
         get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=name)
+        _athena_state["discovery_notes"] += (f"{meta['table']} {problem}. Recreating it.",)
     except Exception:
         _athena_state["discovery_notes"] += (
-            f"{meta['table']} could not be dropped ({problem}); until it is removed by hand a "
-            f"query in that range can return zero rows rather than data.",)
+            f"{meta['table']} is stale ({problem}) but could not be dropped, so it is still "
+            f"in place; remove it by hand.",)
 
 
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
@@ -1224,9 +1234,10 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
     # `CREATE ... IF NOT EXISTS` would keep the stale one, so condemn it. `_condemn_scratch_table`
     # discloses the rebuild and any failed drop, in the direction the mismatch actually took.
     existing = _named_scratch_meta(table_name, region)
-    problem = _cross_check_declared(existing, hourly, strict=True) if existing is not None else None
-    if problem is not None:
-        _condemn_scratch_table(existing, problem, region)
+    if existing is not None:
+        problem = _cross_check_declared(existing, hourly, strict=True)
+        if problem is not None:
+            _condemn_scratch_table(existing, problem, region)
     created = _create_named_table(
         s3_path, hourly["storage_template"], hourly["format"], hourly["unit"],
         hourly["interval"], region, "primary", table_name,
