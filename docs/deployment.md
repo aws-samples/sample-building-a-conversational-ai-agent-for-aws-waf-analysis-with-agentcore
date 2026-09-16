@@ -408,7 +408,7 @@ new CognitoUser({Username: process.env.EMAIL, Pool}).authenticateUser(
 ### "Unrecognized resource types" during backend deploy
 
 The correct CloudFormation type is `AWS::BedrockAgentCore::Runtime`. If you see this error, ensure:
-1. You're deploying to a [supported region](#supported-regions-cloudformation--agentcore--claude-sonnet-46)
+1. You're deploying to a [supported region](#region-selection)
 2. Your AWS CLI is up to date (`aws --version` should be 2.x)
 
 ### AgentCore Runtime stuck in CREATING
