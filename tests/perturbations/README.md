@@ -100,7 +100,7 @@ cannot stay on it. If that test sends you there, re-anchor the case on the whole
 ## What CI runs
 
 On every push, `tests/test_perturbation_harness.py` unit-tests the harness guards and statically
-re-checks that all 561 cases still anchor to code that exists and still name tests that exist. It
+re-checks that all 562 cases still anchor to code that exists and still name tests that exist. It
 takes under a second, and anchor drift is silent, so that is where drift gets caught.
 
 The sweep itself is `.github/workflows/perturbations.yml`, on every pull request, and it installs the

@@ -469,5 +469,9 @@ def test_an_analyze_ip_batch_timeout_says_so_not_no_rows(monkeypatch):
         out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
     finally:
         release.set()
-    assert "the query for this section failed" in out, out
+    # All FIVE phase-2 sections must say they timed out, not four: query_strings was the one label
+    # with no disclosure site, so its section vanished on a timeout instead of saying so. `in`
+    # passed on the first of the other four; the count is what pins every section.
+    assert out.count("the query for this section failed") == 5, out
     assert "(no requests in this window)" not in out
+    assert "(no query strings sent)" not in out, "the timeout must not read as an IP that sent none"

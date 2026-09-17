@@ -1258,7 +1258,15 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                 lines.append(f"  [{row.get('hits', '?')} hits] {red[:200]}")
         if _qs_masked:
             lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
-        lines.append("")
+    else:
+        # `if query_strings:` with no else erased the whole section, so a query that failed or was
+        # cut off by the batch budget read as an IP that sent no query strings. That absence is
+        # itself a signal in QUERYARGUMENTS analysis, so it must not be conflated with a query that
+        # did not answer. Discloses with its own reason (not the empty none_text) the way the four
+        # sections above do; this was the fifth phase-2 label with no disclosure site.
+        lines.append("**Top query strings**:")
+        lines.append(_empty_reason(failures, "query_strings", "  (no query strings sent)"))
+    lines.append("")
 
     # Confidence assessment
     lines.append("---")

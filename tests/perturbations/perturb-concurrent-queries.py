@@ -178,6 +178,15 @@ CASES = [
         "    results, reasons = run_concurrently(jobs)",
         [f"{T}::test_an_analyze_ip_batch_timeout_says_so_not_no_rows"],
     ),
+    (
+        # The fifth label's disclosure site, the one that was missing: without it a failed or
+        # timed-out query_strings query vanishes rather than saying it failed.
+        "the query_strings section back to vanishing when its query does not answer",
+        "tools/waf_logs.py",
+        '        lines.append(_empty_reason(failures, "query_strings", "  (no query strings sent)"))',
+        '        lines.append("")',
+        [f"{T}::test_an_analyze_ip_batch_timeout_says_so_not_no_rows"],
+    ),
 ]
 
 # A case with no marker gets the reachability probe: a bare raise goes in above the anchor's line
