@@ -1149,16 +1149,6 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"{ATHENA_EXCLUDE_STATIC}"
     )
 
-    # Run queries (sequential via unified layer — each is fast with IP filter)
-    cross = _safe_query(cross_cwl, cross_athena, start_epoch, end_epoch, limit=15,
-                        failures=failures, label="actions", notes=notes)
-    rate = _safe_query(rate_cwl, rate_athena, start_epoch, end_epoch, limit=1,
-                       failures=failures, label="request_rate", notes=notes)
-    ja4 = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5,
-                      failures=failures, label="ja4", notes=notes)
-    uri_div = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1,
-                          failures=failures, label="uri_diversity", notes=notes)
-
     # Query strings this IP sent — the content that triggers QUERYARGUMENTS rules
     # (XSS/SQLi/LFI payloads show up here). Sensitive params are redacted below.
     qs_cwl = (
@@ -1171,8 +1161,38 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" AND httprequest.clientip = '{safe_ip}' AND httprequest.args <> ''"
         f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
-    query_strings = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8,
-                                failures=failures, label="query_strings", notes=notes)
+
+    # ROADMAP 4.6: phase 2's five queries are independent (none reads another's output), so they
+    # run in one concurrent wave rather than serially, the same non-destructive latency lever the
+    # bypass scan already uses. Phase 1 (the diversity check, and the NAT `ua_list` above) stays
+    # sequential, because it gates whether phase 2 runs at all. Each query is registered as a thunk
+    # over `_safe_query`, which never raises and records its own reason under its own label, so the
+    # workers write distinct keys of `failures`/`notes`; distinct-key dict assignment is atomic
+    # under the GIL, so no lock is needed. `run_concurrently` runs each job in a copy of this tool
+    # call's context (a `ThreadPoolExecutor` worker does not inherit the asyncio task's ContextVar
+    # values), so the window-cap note and provenance land in the right slot. `reasons` carries any
+    # label the batch budget cut off, folded into `failures` so a batch timeout renders as a
+    # section note rather than "(none found)", the emptiness distinction 0.17.0 established.
+    from tools.waf_query import run_concurrently
+    jobs: dict[str, object] = {}
+
+    def _later(label, cwl, athena, limit):
+        jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
+                                          failures=failures, label=label, notes=notes)
+
+    _later("actions", cross_cwl, cross_athena, 15)
+    _later("request_rate", rate_cwl, rate_athena, 1)
+    _later("ja4", ja4_cwl, ja4_athena, 5)
+    _later("uri_diversity", uri_cwl, uri_athena, 1)
+    _later("query_strings", qs_cwl, qs_athena, 8)
+
+    results, reasons = run_concurrently(jobs)
+    failures.update(reasons)
+    cross = results.get("actions", [])
+    rate = results.get("request_rate", [])
+    ja4 = results.get("ja4", [])
+    uri_div = results.get("uri_diversity", [])
+    query_strings = results.get("query_strings", [])
 
     # Format output
     lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]

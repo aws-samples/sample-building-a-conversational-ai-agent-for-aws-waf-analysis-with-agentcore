@@ -371,3 +371,103 @@ def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
     assert set(order[:5]) == set(ONLY_IN), f"the wave is not the first five: {order}"
     assert order.index("sub") > 4, f"the sub-rule query ran inside the wave: {order}"
     assert data["sub_rule"] == "SubRule"
+
+
+# --- analyze_ip, the third 4.6 target --------------------------------------
+#
+# `analyze_ip` runs a diversity check first (phase 1), which decides whether the IP is a shared
+# NAT and whether phase 2 runs at all, so it stays sequential. Phase 2's five queries are
+# independent and run in one wave. The mock keeps diversity low (ua_count/ja4_count <= 3) so the
+# NAT branch is skipped and phase 2 is reached; the diversity query is the only one carrying
+# `ua_count`, so it is easy to tell apart from the wave.
+
+# Fields the five phase-2 queries' rows are read by, in one dict so any of them can return it.
+AIP_ROW = {"action": "ALLOW", "terminatingRuleId": "r", "cnt": "9", "avg_rpm": "1",
+           "peak_rpm": "1", "active_minutes": "1", "ja4Fingerprint": "t13d1516h2",
+           "unique_uris": "1", "total_non_static": "1", "args": "?a=1", "hits": "1"}
+AIP_PHASE2 = {"actions", "request_rate", "ja4", "uri_diversity", "query_strings"}
+
+
+def _analyze_offline(monkeypatch):
+    """Patch the query layer analyze_ip reaches. Both names are imported inside the function from
+    `waf_query`, so the module attribute there is the patch point (patching `waf_logs` misses it)."""
+    from tools import waf_query as WQ
+    monkeypatch.setattr(WQ, "get_log_type", lambda: "cwl")
+    monkeypatch.setattr(WQ, "check_coarse_partition_block", lambda: None)
+
+
+def _is_diversity(cwl, athena):
+    return "ua_count" in cwl or "ua_count" in athena
+
+
+def test_analyze_ip_registers_its_five_phase_two_queries(monkeypatch):
+    """The wave is exactly phase 2's five independent queries. A query dropped from it is one paid
+    for serially or not at all; the diversity check and the NAT ua_list are phase 1 and must not be
+    in the wave. Asserted as a set, so either direction of drift is caught."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+    _analyze_offline(monkeypatch)
+
+    def q(cwl, athena, start, end, limit=25, **kw):
+        if _is_diversity(cwl, athena):
+            return [{"ua_count": "1", "ja4_count": "1", "total": "9"}]
+        return [dict(AIP_ROW)]
+    monkeypatch.setattr(WQ, "query_logs", q)
+    seen = {}
+    real = WQ.run_concurrently
+    monkeypatch.setattr(WQ, "run_concurrently",
+                        lambda jobs, **k: (seen.update({"k": set(jobs)}), real(jobs, **k))[1])
+    L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+    assert seen.get("k") == AIP_PHASE2, seen.get("k")
+
+
+def test_analyze_ip_runs_its_phase_two_queries_concurrently(monkeypatch):
+    """Five phase-2 queries in flight at once. Gated to five arrivals, and the diversity query is
+    excluded from the barrier, so run serially the first phase-2 query would wait alone until the
+    barrier's timeout and this would exceed the margin."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+    _analyze_offline(monkeypatch)
+
+    gate = threading.Barrier(5, timeout=10)
+
+    def q(cwl, athena, start, end, limit=25, **kw):
+        if _is_diversity(cwl, athena):
+            return [{"ua_count": "1", "ja4_count": "1", "total": "9"}]
+        gate.wait()
+        return [dict(AIP_ROW)]
+    monkeypatch.setattr(WQ, "query_logs", q)
+    began = time.monotonic()
+    out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+    assert "## IP Analysis" in out
+    assert time.monotonic() - began < 5, "the barrier released late, so five never overlapped"
+
+
+def test_an_analyze_ip_batch_timeout_says_so_not_no_rows(monkeypatch):
+    """The new way to have no rows a fan-out introduces. When the batch budget expires with the
+    phase-2 queries still outstanding, the labels land in `reasons`; folding them into `failures`
+    is what makes a section render the timeout rather than `_empty_reason`'s "(no requests)". Drop
+    the fold and a timed-out query reads as a quiet window, the 0.17.0 defect under a speed heading."""
+    from tools import waf_logs as L
+    from tools import waf_query as WQ
+    _analyze_offline(monkeypatch)
+
+    release = threading.Event()
+
+    def q(cwl, athena, start, end, limit=25, **kw):
+        if _is_diversity(cwl, athena):
+            return [{"ua_count": "1", "ja4_count": "1", "total": "9"}]
+        release.wait(timeout=30)
+        return [dict(AIP_ROW)]
+    monkeypatch.setattr(WQ, "query_logs", q)
+    # Capture the real one before patching, so the lambda does not call itself: analyze_ip imports
+    # run_concurrently from `waf_query`, which is the same module object as Q, so patching it and
+    # then calling Q.run_concurrently inside the patch would recurse.
+    real = Q.run_concurrently
+    monkeypatch.setattr(WQ, "run_concurrently", lambda jobs, **k: real(jobs, budget=1))
+    try:
+        out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
+    finally:
+        release.set()
+    assert "the query for this section failed" in out, out
+    assert "(no requests in this window)" not in out
