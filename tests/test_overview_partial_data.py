@@ -39,7 +39,17 @@ END = START + timedelta(hours=1)
 class FakeMetricCW:
     """Answers `_has_mitigated_traffic`'s MetricStat queries from a `{(rule, metric_name): total}`
     map, keyed on what the query actually asks for rather than a fixed shape, so a case can tell
-    "this rule/metric is genuinely zero" apart from "something else in the WebACL is not"."""
+    "this rule/metric is genuinely zero" apart from "something else in the WebACL is not".
+
+    **This cannot fail loud if the query it receives ever stops carrying a `Rule` dimension.**
+    `_has_mitigated_traffic` wraps its whole `get_metric_data` call in a bare `except Exception:
+    return False`, so whatever this raises, including an explicit `assert`, is caught there and read
+    as "no traffic" rather than surfaced. The asymmetry is real but partial: the two disclosure-
+    direction tests below would still go red (they need a `True` this can no longer produce), so the
+    break is not silent everywhere, only on the clean-zero-direction tests, which would keep passing
+    for the wrong reason. `next(..., None)` plus an assert would raise a clearer exception than a bare
+    `StopIteration`, but not a louder one, so it is written as an explicit default and comment rather
+    than a false claim of having fixed that."""
 
     def __init__(self, values: dict):
         self.values = values
@@ -49,7 +59,7 @@ class FakeMetricCW:
         for q in kw["MetricDataQueries"]:
             metric = q["MetricStat"]["Metric"]
             name = metric["MetricName"]
-            rule = next(d["Value"] for d in metric["Dimensions"] if d["Name"] == "Rule")
+            rule = next((d["Value"] for d in metric["Dimensions"] if d["Name"] == "Rule"), None)
             out.append({"Id": q["Id"], "Values": [self.values.get((rule, name), 0)]})
         return {"MetricDataResults": out}
 
@@ -100,6 +110,16 @@ def test_a_configured_rate_rule_with_nothing_anywhere_is_a_clean_zero(rate_limit
     out = rate_limits({})
     assert "no triggers in this period" in out, out
     assert "PARTIAL DATA" not in out
+
+
+def test_a_count_mode_rate_rule_that_fired_is_not_missed(rate_limits):
+    """A rate-limit rule configured with a COUNT action never blocks, challenges or CAPTCHAs, so it
+    only ever shows up in `CountedRequests`. Checking just the other three would make a COUNT rule
+    that genuinely fired, but whose SEARCH breakdown missed it, indistinguishable from one that never
+    fired at all -- the same shape this whole fix removes, just for the fourth metric."""
+    out = rate_limits({("RateLimit200", "CountedRequests"): 40})
+    assert "PARTIAL DATA" in out and "14 days" in out, out
+    assert "no triggers in this period" not in out
 
 
 @pytest.fixture

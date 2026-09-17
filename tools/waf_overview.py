@@ -576,11 +576,15 @@ def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", regio
         if rate_rule_names:
             # Per-rule, not WebACL-wide: a rate-limit rule that is quiet while OTHER rules mitigate
             # heavily is the common case, and a WebACL-wide check would call that "unavailable" on
-            # every quiet day. Each name gets its own direct, index-immune MetricStat.
-            if any(_has_mitigated_traffic(cw, webacl_name, start, end, scope, region, rule=name)
+            # every quiet day. Each name gets its own direct, index-immune MetricStat, including
+            # CountedRequests: a rate-limit rule with a COUNT action never blocks, challenges or
+            # CAPTCHAs, so the default three metrics alone would miss it having fired at all.
+            if any(_has_mitigated_traffic(cw, webacl_name, start, end, scope, region, rule=name,
+                                           metric_names=("BlockedRequests", "ChallengeRequests",
+                                                          "CaptchaRequests", "CountedRequests"))
                    for name in rate_rule_names):
                 lines.append("  ⚠️ PARTIAL DATA: Rate-limit rule trigger counts unavailable (CloudWatch only retains per-rule index for 14 days).")
-                lines.append("  ACTION: Tell the user that per-rule rate-limit trigger counts are unavailable for this time range, but mitigated traffic exists overall in this WebACL. Then call top_rules to show totals, and offer to query logs for rate-limit-specific IP/URI details.")
+                lines.append("  ACTION: Tell the user that per-rule rate-limit trigger counts are unavailable for this time range, but this rate-limit rule has triggered recently. Then call top_rules to show totals, and offer to query logs for rate-limit-specific IP/URI details.")
             else:
                 lines.append("  Rate-limit rules deployed but no triggers in this period.")
         else:
