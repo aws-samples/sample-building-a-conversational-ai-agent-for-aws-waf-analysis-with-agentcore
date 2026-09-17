@@ -107,6 +107,14 @@ _ATHENA_STATE_DEFAULTS = {
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
     "layout_mixed": False,   # bucket holds both hourly and minute-level eras
+    "layout_newest_unit": None,  # the DETECTED layout's newest-era unit ("minutes"/
+                             # "hours"/"days"), independent of which table is resolved.
+                             # This is what "minute-newest mixed" keys on, not the
+                             # resolved table's partition_interval_unit (which becomes
+                             # "hours" once the agent's hourly table is built, and is
+                             # "hours" for a user's own hourly table over the bucket) and
+                             # not the best-effort cutover date (None for a non-monotone
+                             # cutover month the search could not pin).
     "layout_cutover": None,  # 'yyyy/MM/dd' the minute era begins, best-effort
     "layout_data_start": None,  # 'yyyy/MM/dd' of the OLDEST data in the bucket,
                              # whichever era it is in. Only interesting when the
@@ -195,6 +203,24 @@ def set_layout_choice(choice: str | None):
         return
     reset_table_cache()
     _athena_state["layout_choice"] = choice
+
+
+def _is_minute_newest_mixed() -> bool:
+    """Is the bucket a minute-newest mixed layout: older hourly directories, a minute-level
+    newest era? That is the one layout whose default minute table cannot reach the pre-cutover
+    history and whose whole-timeline hourly table can, so it is the property every mixed-bucket
+    decision keys on: the build gate, the `set_log_granularity` tool, and the two user-facing
+    messages (`_mixed_layout_sentence`, the minute-choice reply).
+
+    Keyed on the DETECTED layout's newest-era unit, published to state on every resolve,
+    because the two nearby values each fail this test. The resolved table's
+    `partition_interval_unit` becomes "hours" once the agent's hourly table is built and is
+    "hours" for a user's own hourly table over the same bucket, so it cannot tell "the newest
+    era is minute-level" from "the resolved table is hourly". The cutover DATE is best-effort
+    reporting and is None for a non-monotone cutover month, so it drops a genuine mixed bucket.
+    One definition here so the four sites cannot drift apart (they did: two keyed on the layout,
+    two on the date, and disagreed on an undated bucket)."""
+    return bool(_athena_state.get("layout_mixed") and _athena_state.get("layout_newest_unit") == "minutes")
 
 
 # Java SimpleDateFormat tokens (used by Athena partition projection 'date' type)
@@ -1122,9 +1148,9 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
     #   used a different granularity). CREATE ... IF NOT EXISTS would keep the stale table, and
     #   a range that starts too late returns zero rows for a window before it, read as "no
     #   traffic". This is the self-heal both the minute and hourly builds used to do with a
-    #   separate get_table + _cross_check_declared in front; folding it here removes that
-    #   second lookup and the window where a transient error on it left the stale table in
-    #   place with no disclosure.
+    #   separate get_table + _cross_check_declared in front; folding it here removes that second
+    #   lookup. The one get_table left decides both drops, and a transient error on it raises
+    #   (see the except below) rather than being read as "absent" and leaving the stale table.
     #
     # DROP only when one of those holds: an unconditional DROP would open a gap where a
     # concurrent query on the other path sees the table missing between DROP and CREATE. The
@@ -1152,8 +1178,19 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
                     if problem is not None:
                         needs_drop = True
                         stale_note = f"{meta['table']} {problem}. Recreating it."
-        except Exception:
-            # Table absent (EntityNotFoundException) or a Glue read error → nothing to drop.
+        except Exception as e:
+            # EntityNotFoundException means the table is absent: nothing to drop, and CREATE will
+            # make it. Any OTHER Glue error (a throttle, a transient read failure) must NOT be
+            # swallowed, or CREATE ... IF NOT EXISTS keeps a table this block could not verify, and
+            # a range-too-late one returns zero rows read as "no traffic", the silent-wrong-answer
+            # this fold exists to close. Fail loudly instead; a retry re-reads the table cleanly.
+            # Matched on the exception's CLASS name (botocore's typed exception and the test double
+            # both name their class this), never on the message, so the swallow path cannot be
+            # reached by an unrelated error that merely mentions the name: this check decides
+            # swallow-vs-raise, and the swallow side's failure is a silent wrong answer, so it
+            # defaults to raising.
+            if type(e).__name__ != "EntityNotFoundException":
+                raise
             needs_drop = False
 
         if needs_drop:
@@ -1422,21 +1459,19 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
             f"than return rows, so check the WebACL's logging destination.") from exc
     if layout is not None:
         _athena_state["layout_mixed"] = layout["mixed"]
+        _athena_state["layout_newest_unit"] = layout["unit"]
         _athena_state["layout_cutover"] = layout["cutover"]
         _athena_state["layout_data_start"] = layout["data_start"]
 
     # ROADMAP 3.2: the user has explicitly chosen to read the whole timeline as hourly. Fire the
-    # build for a minute-newest mixed bucket, expressed as the PROPERTY `layout["mixed"]` and a
-    # minute-level newest era (`layout["unit"] == "minutes"`), not as the cutover DATE. The
-    # default minute table on such a bucket starts at the cutover month and cannot reach the
-    # older hourly history, which the hourly build (range from the oldest data) does. The cutover
-    # date is best-effort reporting: `_first_minute_day` returns None for a non-monotone cutover
-    # month, so keying on it would refuse the build on a real minute-newest mixed bucket whose
-    # date could not be pinned. A reverse minute->hourly switch is mixed but hourly-newest, so its
-    # default table already reads the whole timeline (see `_layout_from_years`); a single layout
-    # has no older era. Ahead of discovery on purpose: a minute table the user maintains cannot
-    # answer "show me the history", so the choice overrides it.
-    if _athena_state.get("layout_choice") == "hourly" and layout is not None and layout["mixed"] and layout["unit"] == "minutes":
+    # build for a minute-newest mixed bucket (`_is_minute_newest_mixed`, reading the layout just
+    # published above), the one layout whose default minute table starts at the cutover month and
+    # cannot reach the older hourly history that the hourly build (range from the oldest data)
+    # does. A reverse minute->hourly switch is mixed but hourly-newest, so its default table
+    # already reads the whole timeline; a single layout has no older era. Ahead of discovery on
+    # purpose: a minute table the user maintains cannot answer "show me the history", so the
+    # choice overrides it.
+    if _athena_state.get("layout_choice") == "hourly" and layout is not None and _is_minute_newest_mixed():
         return _build_agent_hourly_table(s3_path, region, webacl_name, layout)
 
     meta = _find_existing_table(s3_path, region)
@@ -1572,21 +1607,26 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
 
 
 def _mixed_layout_sentence() -> str | None:
-    """One sentence naming the layout switch, or None if the bucket has a single layout.
+    """One sentence naming the layout switch, or None if the bucket is not minute-newest mixed.
 
     Two messages need this fact and neither owns it: the table-resolution block, which
     explains what the table can reach, and `partition_predicate`'s out-of-range
     problem, which explains why widening the range would not help. One function so the
     cutover date cannot be described two ways.
 
-    Returns None when the newest era is hourly, which is `layout_cutover is None`. That
-    table reads the whole timeline, so there is no unreachable history to warn about,
-    and every query against it is already refused by the coarse-partition gate with its
-    own explanation."""
-    if not (_athena_state.get("layout_mixed") and _athena_state.get("layout_cutover")):
+    Gated on `_is_minute_newest_mixed`, the same property the build gate and the tool use, NOT on
+    the cutover date being known. `_first_minute_day` returns None for a non-monotone cutover
+    month, and gating on the date suppressed this whole sentence on a genuine mixed bucket: the
+    resolution block then never offered the hourly build, and `partition_predicate` fell through
+    to "widen the range", the advice it itself calls actively wrong on a mixed bucket. So fire on
+    the property and word the unknown-date case here."""
+    if not _is_minute_newest_mixed():
         return None
-    return (f"This bucket holds two partition layouts: hourly directories up to about "
-            f"{_athena_state['layout_cutover']}, minute-level ones after.")
+    cutover = _athena_state.get("layout_cutover")
+    where = (f"up to about {cutover}" if cutover
+             else "up to a cutover date this run could not pin down")
+    return (f"This bucket holds two partition layouts: hourly directories {where}, "
+            f"minute-level ones after.")
 
 
 def describe_table_resolution() -> str:

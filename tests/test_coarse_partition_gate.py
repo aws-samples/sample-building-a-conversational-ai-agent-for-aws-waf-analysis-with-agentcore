@@ -165,7 +165,8 @@ def test_the_mixed_bucket_message_offers_the_agent_built_hourly_table():
     yet", and then went further: the agent now builds the whole-timeline hourly table
     itself on request. So the default-choice block offers that build and no longer tells
     the user to write DDL, while still saying the older era is otherwise out of reach."""
-    A._athena_state.update({"layout_mixed": True, "layout_cutover": "2026/05/25",
+    A._athena_state.update({"layout_mixed": True, "layout_newest_unit": "minutes",
+                           "layout_cutover": "2026/05/25",
                            "layout_data_start": "2022/05/26", "layout_choice": None,
                            "partition_format": "yyyy/MM/dd/HH/mm"})
     out = A.describe_table_resolution()
