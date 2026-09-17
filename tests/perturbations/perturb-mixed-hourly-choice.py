@@ -100,6 +100,22 @@ CASES = [
      [f"{T}::test_resolution_block_by_default_offers_the_agent_built_hourly_table"],
      False),   # f-string fragment inside a lines.append call; no statement fits above it
 
+    # partition_predicate's out-of-range advice ignores the hourly choice, so once the hourly table
+    # is the active one a window before the oldest data still tells the user to build what they have.
+    ("the out-of-range advice ignores the hourly choice, re-offering a build already made",
+     [(A, '        if mixed and _athena_state.get("layout_choice") == "hourly":',
+       '        if mixed and False:')],
+     [f"{T}::test_partition_predicate_under_hourly_choice_points_before_the_oldest_data_not_at_a_build"],
+     True),
+
+    # The "best-effort" tail fires regardless of whether a cutover date is known, so an undated
+    # bucket is told the date is best-effort a third time, after the sentence already said it is unknown.
+    ("the best-effort tail fires without a cutover date, repeating the uncertainty",
+     [(A, '" The cutover date is best-effort." if _athena_state.get("layout_cutover") else ""',
+       '" The cutover date is best-effort."')],
+     [f"{T}::test_undated_mixed_bucket_still_warns_and_offers_hourly"],
+     True),
+
     # --- the tool consults the property, not the date or the resolved table's unit ---
 
     # The tool's decline drops to bare `layout_mixed`, so a reverse minute->hourly switch is
@@ -209,7 +225,7 @@ CASES = [
     # The staleness rebuild is no longer disclosed, so a moved range and a slow first query
     # after a gap go unexplained.
     ("the scratch-table rebuild is dropped silently, without a note",
-     [(A, "            if stale_note:", "            if False:")],
+     [(A, "        if stale_note:", "        if False:")],
      [f"{T}::test_create_named_table_rebuilds_a_range_stale_scratch_table"],
      True),
 
@@ -225,6 +241,22 @@ CASES = [
     ("a transient get_table error is swallowed, keeping a possibly stale table",
      [(A, 'if type(e).__name__ != "EntityNotFoundException":', "if False:")],
      [f"{T}::test_create_named_table_raises_on_a_transient_glue_error_not_keeps_a_stale_table"],
+     True),
+
+    # The StorageDescriptor read (now scoped outside the get_table try) drops its `.get` guard, so a
+    # foreign object with no StorageDescriptor at the scratch name raises a KeyError that aborts the
+    # build instead of being read as "" and disclosed.
+    ("the StorageDescriptor read drops its .get guard, crashing on a foreign object",
+     [(A, 'existing.get("StorageDescriptor", {}).get("Location", "")',
+       'existing["StorageDescriptor"].get("Location", "")')],
+     [f"{T}::test_create_named_table_discloses_an_unreadable_table_at_its_name"],
+     True),
+
+    # The unreadable-object disclosure is dropped, so a foreign table at the scratch name is left in
+    # place with nothing said: the one path that would keep a table this block could not verify silent.
+    ("the unreadable-object disclosure is dropped, leaving a foreign table unmentioned",
+     [(A, "already exists but could not be", "already exists and reads fine, nothing said for")],
+     [f"{T}::test_create_named_table_discloses_an_unreadable_table_at_its_name"],
      True),
 ]
 

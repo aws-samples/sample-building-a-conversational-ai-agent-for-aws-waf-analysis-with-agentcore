@@ -648,6 +648,22 @@ def test_create_named_table_raises_on_a_transient_glue_error_not_keeps_a_stale_t
         _build_hourly(range_start="2022/03/07/00")
 
 
+def test_create_named_table_discloses_an_unreadable_table_at_its_name(catalog, monkeypatch):
+    """F2 and its disclosure, one scenario: a foreign object squatting the agent's scratch name,
+    here a Glue row with no StorageDescriptor. Scoping the try to get_table means the `.get` guard
+    below reads that row without the KeyError that would abort the build (F2's narrowing). It can be
+    neither verified nor safely dropped (dropping what it cannot identify could destroy someone
+    else's object), so CREATE ... IF NOT EXISTS no-ops on it. That would be the one path leaving a
+    table this block could not verify silent, so resolution discloses it instead."""
+    foreign = {"Name": "waf_logs_myacl_hourly", "Parameters": {}, "PartitionKeys": []}
+    catalog({A.TMP_DATABASE: [foreign]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")   # must not raise: the .get guard reads the row
+    assert not _dropped(sqls), "an object it cannot identify is not dropped"
+    note = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "waf_logs_myacl_hourly" in note and "could not be read" in note
+
+
 # --- the tool that records the choice ---------------------------------------
 
 
@@ -1182,12 +1198,31 @@ def test_undated_mixed_bucket_still_warns_and_offers_hourly(catalog):
     block = A.describe_table_resolution()
     assert "two partition layouts" in block, "the mixed-layout notice still fires without a date"
     assert "the agent will build it" in block, "and still offers the hourly build"
+    assert "best-effort" not in block, "no third mention of the date; the sentence already said it is unknown"
     _, problem = A.partition_predicate(
         dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
         dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc))
     assert problem is not None
     assert "Widen the table's projection" not in problem, "not the advice it calls actively wrong"
     assert "hourly table" in problem, "the mixed explanation is given instead"
+
+
+def test_partition_predicate_under_hourly_choice_points_before_the_oldest_data_not_at_a_build(catalog):
+    """Once the whole-timeline hourly table is active, an out-of-range window is before the bucket's
+    oldest data (a typo, or a date older than any data), not a reachable era waiting on a build.
+    partition_predicate keys the advice on the choice, so it does not tell the user to build the
+    table they already have, and the branch is no longer "only reached under the default choice"."""
+    _resolve(catalog, table("h", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                            rng="2022/03/07/00,NOW"))
+    A._athena_state.update({"layout_mixed": True, "layout_newest_unit": "minutes",
+                            "layout_cutover": "2026/01/05", "layout_data_start": "2022/03/07",
+                            "layout_choice": "hourly"})
+    _, problem = A.partition_predicate(
+        dt.datetime(2019, 1, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2019, 1, 2, tzinfo=dt.timezone.utc))
+    assert problem is not None
+    assert "before anything the bucket holds" in problem
+    assert "the agent will build it" not in problem, "the user already built it; do not re-offer"
 
 
 def test_unsupported_interval_unit_is_rejected(catalog):
