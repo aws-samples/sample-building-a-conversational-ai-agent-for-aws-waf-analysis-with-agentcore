@@ -972,7 +972,7 @@ wheels = [
 
 [[package]]
 name = "waf-agent"
-version = "0.28.1"
+version = "0.29.0"
 source = { editable = "." }
 dependencies = [
     { name = "bedrock-agentcore", extra = ["strands-agents"] },

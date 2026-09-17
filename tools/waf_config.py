@@ -4,7 +4,7 @@
 
 from strands import tool
 from tools.aws_session import get_client
-from tools.session_state import set_webacl_context, set_capabilities
+from tools.session_state import set_webacl_context, set_capabilities, refuse_if_regional
 
 
 @tool
@@ -18,6 +18,9 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
     Returns:
         Numbered list of WebACL names. If only one exists, hint to use it directly.
     """
+    if (msg := refuse_if_regional(scope)):
+        return msg
+
     if scope == "CLOUDFRONT":
         region = "us-east-1"
 
@@ -38,7 +41,6 @@ def list_webacls(scope: str = "CLOUDFRONT", region: str = "us-east-1") -> str:
         lines.append("- Which WebACL? (give the numbered list above)")
         lines.append("- Time range? (e.g., 'May 9 afternoon', 'last 6 hours')")
         lines.append("- Specific domain/host affected?")
-        lines.append("- CloudFront or ALB/regional?")
 
     return "\n".join(lines)
 
@@ -58,6 +60,9 @@ def get_waf_config(webacl_name: str, scope: str = "CLOUDFRONT", region: str = "u
     Returns:
         WebACL rule summary and logging configuration, or error with available names.
     """
+    if (msg := refuse_if_regional(scope)):
+        return msg
+
     if scope == "CLOUDFRONT":
         region = "us-east-1"
 

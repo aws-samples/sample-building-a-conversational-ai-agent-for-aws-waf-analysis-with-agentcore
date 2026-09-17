@@ -442,7 +442,9 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     Returns:
         Path to the generated HTML file, or error message.
     """
-    from tools.session_state import declare_query_subject
+    from tools.session_state import declare_query_subject, refuse_if_regional
+    if (msg := refuse_if_regional(scope)):
+        return msg
     declare_query_subject(webacl_name)
 
     if not start_time:

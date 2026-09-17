@@ -9,6 +9,15 @@
 >
 > WAF Analyst 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 5。
 
+> [!IMPORTANT]
+> **部署之前先确认三件事。每一件都会让 agent 不可用，或者悄悄给出错的结果，而且三件都在[路线图](docs/roadmap_zh.md)上。**
+>
+> 1. **你的 WebACL 在 CloudFront 上。**REGIONAL WebACL（ALB、API Gateway、AppSync）不支持：agent 一选它就拒绝、并说明原因，不会去分析它，更不会返回一份标签、攻击、Bot、国家、Anti-DDoS 段落悄悄读成 0 的报告。如果你的 WAF 只保护 regional 资源，这个工具分析不了。
+> 2. **WAF 日志落在你部署的同一个 AWS 账号里。**跨账号投递两种摆法都不支持：从 WAF 账号看，桶缺了这里不会替你建的授权所以读不到；从日志账号看，那边没有 WebACL 可选，CloudWatch 指标也在另一个账号。
+> 3. **Parquet 只在日志目的地本身生效。**你的 WAF 日志以 Parquet 形式投递时，agent 能查（2026-09-17 实测，含 camelCase 字段）。另放在别的前缀里、和 JSON 并存的 Parquet 副本读不到：agent 按日志路径匹配表，没法被指到别处。
+>
+> 三条的实测数据和对应代码都在[已知局限](docs/limitations_zh.md)里。
+
 ## 功能
 
 ![WAF Analyst 截图](docs/screenshot.png)

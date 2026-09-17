@@ -57,6 +57,9 @@ def review_waf_rules_deep(webacl_name: str, scope: str = "CLOUDFRONT", region: s
         region: AWS region (for REGIONAL scope)
         lang: Report language — 'zh' for Chinese, 'en' for English. Detect from user's message language.
     """
+    from tools.session_state import refuse_if_regional
+    if (msg := refuse_if_regional(scope)):
+        return msg
     # Declared even though this tool queries nothing, because the rule is per parameter rather than per
     # behaviour: a criterion like "only the tools that read metrics" goes stale the day this one does.
     from tools.session_state import declare_query_subject

@@ -6,6 +6,51 @@ What this agent cannot do, or cannot do without a cost you should know about. Re
 
 **Two rules govern this file, and they are here because a limitations list rots in the dangerous direction.** A limitation that has since been fixed is worse than no list at all: you read "it cannot do X", stop trying X, and never find out. So every entry below either points at the code that makes it true, or carries the date it was measured, and an entry that stops being true gets deleted rather than softened. Entries describe the design. What a particular deployment happens to be running is not here.
 
+## Not supported yet
+
+These three are support boundaries rather than trade-offs. Each one is on the [roadmap](roadmap.md).
+
+**CloudFront WebACLs only. A REGIONAL WebACL, on an ALB, API Gateway or AppSync, is not supported.** The
+agent declines one at the point you select it: every tool that takes a scope refuses `scope="REGIONAL"`
+and returns a fixed message saying so, and it cites [`kb-docs/regional-alb-and-parquet.md`](../kb-docs/regional-alb-and-parquet.md)
+for the reason. It refuses rather than analysing because the report it would return looks populated: the
+allowed, blocked and per-rule totals come back correct, while everything derived from labels, attacks,
+bots, countries and the anti-DDoS rule group reads as zero. That is, in the weekly report, the anti-DDoS
+section, the bot analytics and the country breakdown; in the patrol, the attack chart, the targeted signals
+and the bot names; in the overview, the attack-type breakdown, the bot names, the targeted signals and the
+top labels. The cause is a dimension. A REGIONAL WAF metric carries `Region` and a CloudFront one does not,
+`GetMetricData` matches a metric by its complete dimension set, and 22 of the 22 literal `SEARCH` schemas in
+[`tools/report.py`](../tools/report.py), [`tools/waf_patrol.py`](../tools/waf_patrol.py) and
+[`tools/waf_overview.py`](../tools/waf_overview.py) omit it. Measured 2026-09-17 on a real REGIONAL WebACL:
+the same label metric returns eight datapoints with `Region` present and zero with it absent. A report that
+looks whole while those sections are silently empty is worse than declining, so the agent declines.
+
+**The agent has to run in the account that owns the WebACL, and that account has to be able to read the
+log bucket.** WAF will deliver logs to an S3 bucket in a different account, and that arrangement is not
+supported here, in either placement. Run the agent in the WAF account and the log bucket is remote, so
+reads need a bucket policy and, under SSE-KMS, a key grant that nothing in
+[`deploy/backend.yaml`](../deploy/backend.yaml) creates; the resulting `AccessDenied` surfaces as "the log
+path was not detected" rather than as a permissions error. Run it in the log account instead and there is
+no WebACL there at all, so [`tools/waf_config.py`](../tools/waf_config.py) cannot resolve one and nothing
+downstream starts, while the CloudWatch metrics stay behind in the WAF account. The agent assumes no role
+in any other account, anywhere in its code. This applies to a CloudFront WebACL exactly as it does to a
+REGIONAL one: logs delivered outside the deployment account are out of scope for now.
+
+**Parquet WAF logs work only when the log destination itself holds Parquet; a Parquet copy you keep in a
+separate prefix is not read.** The SQL is written against the WAF schema (the nested `httprequest` struct,
+the `labels` array) independent of storage format, and Athena's Parquet reader case-folds field names, so a
+Parquet table is queried like a JSON one, camelCase nested fields (`httpRequest.clientIp`) included, verified
+2026-09-17 with every query shape returning real values. The constraint is where the table points. The agent
+adopts an existing table only when its `LOCATION` is the log path the WebACL resolves to, or an ancestor of
+it (`_path_covers` in `tools/waf_athena.py`). So Parquet works when your logs are delivered as Parquet to
+that destination **and you already have a Glue table over it**: the agent adopts an existing table, it does
+not create one over Parquet the way it does over JSON, so a Parquet destination with no table yet finds no
+`.gz` objects either and raises rather than reading your logs. It does not work if you keep JSON there and
+convert a second copy to a side prefix: that
+table's `LOCATION` is a child of the log path, so the agent never matches it and answers from a JSON table it
+builds instead, and there is no tool to point the agent at a table by name or path. Over a bucket with no
+table it looks for `.gz`, so it will not auto-build over Parquet either.
+
 ## What WAF logs can and cannot tell you
 
 **A log proves a request arrived and which rule matched it. It does not show what your application did with it.** The agent will not tell you an exploit succeeded, because the data cannot support that. Settling it needs your origin logs, response codes or application errors ([`tools/waf_injection.py`](../tools/waf_injection.py) states this in the finding it produces).

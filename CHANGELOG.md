@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.29.0 (2026-09-17)
+
+### Added: the agent refuses a REGIONAL-scope WebACL instead of half-analysing it
+
+WAF Analyst supports CLOUDFRONT-scope WebACLs. It does not support REGIONAL scope: a WebACL
+protecting an Application Load Balancer, API Gateway, AppSync, App Runner, Cognito user pool, or
+Verified Access instance. A REGIONAL WebACL publishes its CloudWatch metrics with an extra `Region`
+dimension that this tool's metric queries do not carry, and CloudWatch matches a metric by its exact
+dimension set, so those queries return empty. The request counts (allowed, blocked, per-rule totals)
+would still look correct while the bot analysis, DDoS detection, attack-type breakdown, and label
+views all silently read as zero. A report that looks whole while whole sections are empty is worse
+than a clear refusal, so every scope-taking tool now refuses at the point the WebACL is selected and
+says why, instead of running and handing back that half-right report.
+
+- `list_webacls`, `get_waf_config`, `generate_weekly_report`, `patrol_scan`, `get_waf_overview`, and
+  `review_waf_rules_deep` all refuse `scope="REGIONAL"` via a shared `refuse_if_regional` check in
+  `tools/session_state.py`.
+- New knowledge base article, `kb-docs/regional-alb-and-parquet.md`. README and
+  `docs/limitations.md` (and their Chinese twins) carry this as a pre-deploy warning.
+
+### Fixed: docs overclaimed that Parquet WAF logs are not supported at all
+
+The agent's SQL and table-resolution logic never inspected storage format, and Athena's Parquet
+reader matches AWS WAF's original camelCase field names case-insensitively, so a Parquet WAF log
+table already worked with no code change needed. Verified against a hand-built Parquet table using
+AWS WAF's original camelCase nested fields, such as `httpRequest.clientIp`: every query shape
+returned real values.
+
+The constraint that remains: the agent selects a table only when its location is the WebACL's actual
+log destination, or an ancestor of it. Parquet delivered directly to that destination is read. A
+Parquet copy converted and kept in a separate side prefix, with JSON still at the real destination,
+is not, because that table sits below the log path and there is no way to point the agent at a table
+by name or path. `docs/limitations.md`, the README, and `docs/roadmap.md` are corrected to say this
+precisely instead of a blanket "not supported." The error raised when no `.gz` WAF log objects are
+found under a log path now names Parquet explicitly and tells the user to point the agent at a table
+they created themselves.
+
+### Changed: docs/roadmap.md rewritten to list only what is not yet done
+
+The roadmap previously mixed unshipped items with already-shipped ones carrying a ship date, so most
+of what a reader saw there was already built. It is now forward-looking only: what the agent already
+does lives in `docs/capabilities.md`, and where that has an edge, `docs/limitations.md`, not the
+roadmap. The dated two-column table is gone in favor of plain bullet lists grouped by area. The
+Chinese twin is rewritten to match, and the roadmap-parity test now compares item counts between the
+two languages instead of date cells, since neither carries dates anymore.
+
 ## 0.28.1 (2026-09-17)
 
 0.28.0 was published as a prerelease and never deployed. 0.28.1 is the first release of the

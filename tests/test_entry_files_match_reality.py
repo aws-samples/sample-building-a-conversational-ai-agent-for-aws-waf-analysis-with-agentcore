@@ -163,24 +163,20 @@ def test_both_guides_say_stack_success_is_not_readiness(doc, heading):
         f"not evidence the agent answers, and this is the only place a reader learns that in time.")
 
 
-def test_the_two_roadmaps_agree_on_what_has_shipped():
-    """The roadmap states its own convention: a date on the right means shipped **and verified against
-    a real environment**. So a date present in one language and absent in the other is not a wording
-    difference, it is two different promises. Found one on 2026-09-12: the hourly-partition row read
-    2026-09-10 in English and blank in Chinese."""
-    def rows(name):
-        out = []
-        for line in _read(name).splitlines():
-            if line.startswith("|") and not re.match(r"^\|[\s\-]+\|", line):
-                cells = [c.strip() for c in line.strip().strip("|").split("|")]
-                if len(cells) == 2 and cells[0]:
-                    out.append(cells)
-        return out
+def test_the_two_roadmaps_list_the_same_planned_items():
+    """The roadmap is forward-looking: it lists only work not yet done, as bullet items grouped by
+    area, and carries no dates, because shipped work moves to the CHANGELOG. The twins must list the
+    same number of items, since a plan present in one language and absent in the other shows a
+    Chinese-reading reader a different roadmap. This replaces an earlier date-cell agreement check,
+    retired on 2026-09-17 when the roadmap dropped its dated two-column tables for a plain plan list;
+    that check caught a real drift once (the hourly-partition row read 2026-09-10 in English and blank
+    in Chinese on 2026-09-12), and the surviving risk it guarded, the twins drifting apart, is now a
+    count mismatch."""
+    def items(name):
+        return [ln for ln in _read(name).splitlines() if ln.startswith("- ")]
 
-    en, zh = rows("docs/roadmap.md"), rows("docs/roadmap_zh.md")
-    assert en and zh, "no roadmap rows parsed, so this test proves nothing"
+    en, zh = items("docs/roadmap.md"), items("docs/roadmap_zh.md")
+    assert en and zh, "no roadmap items parsed, so this test proves nothing"
     assert len(en) == len(zh), (
-        f"docs/roadmap.md has {len(en)} rows, docs/roadmap_zh.md has {len(zh)}; one gained or lost an "
-        f"item without the other")
-    disagree = [(i, a[1], b[1]) for i, (a, b) in enumerate(zip(en, zh)) if a[1] != b[1]]
-    assert not disagree, f"date cells disagree at rows {disagree}"
+        f"docs/roadmap.md lists {len(en)} items, docs/roadmap_zh.md lists {len(zh)}; one gained or "
+        f"lost an item without the other")

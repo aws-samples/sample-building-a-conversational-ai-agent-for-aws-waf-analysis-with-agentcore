@@ -96,9 +96,9 @@
 
 不会编造数据，不会给出无法验证的结论。
 
-### 6. 多 WebACL 支持
+### 6. 一次一个 WebACL，账号内全量发现
 
-自动发现 CLOUDFRONT + REGIONAL scope 的所有 WebACL，支持跨区域分析。巡检报告覆盖全部 WebACL。
+CloudFront WebACL 是全局的，所以一次调用就能列出账号里全部 CLOUDFRONT scope 的 WebACL。每个会话只对一个 WebACL 生效，切换到另一个会重置会话状态（日志目的地、能力、发现记录），结果不会跨 WebACL 混在一起。REGIONAL scope（ALB、API Gateway、AppSync）不支持。
 
 ## 技术架构优势
 

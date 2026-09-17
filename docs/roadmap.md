@@ -2,71 +2,32 @@
 
 English | [中文](roadmap_zh.md)
 
-What we plan to support or fix from here. Already-shipped work is in the
-[CHANGELOG](../CHANGELOG.md), not here.
+What we plan to support or fix from here. For what the agent already does, and where it stops, see
+[Capabilities](capabilities.md) and [Known Limitations](limitations.md).
 
-A date on the right means the item has shipped **and** been verified against a real environment. An
-empty cell means one of those two is missing, so it covers both "not built yet" and "built, not yet
-verified" without distinguishing them. We would rather under-claim than date something we have only
-seen pass a test. Either way an empty cell carries no promise about when it will change. Within a
-group, items are listed roughly in the order we intend to work on them, and that order can change.
+Items are listed roughly in the order we intend to work on them, and that can change.
 
-## Log querying and partitioning
+## Scope: which WebACLs, and which account
 
-| | |
-|---|---|
-| Run log-detail analysis on hourly-partitioned logs (with an up-front note that scans cost more), instead of declining them | 2026-09-10 |
-| Detect minute-level partitioning correctly on a bucket whose prefix layout changed partway through | 2026-09-09 |
-| Tell you the date from which minute-level log querying is available, when a bucket holds both layouts | 2026-09-09 |
-| Read a mixed bucket's pre-cutover history on request, by building an hourly table over the whole timeline for you, no hand-written DDL | 2026-09-17 |
-| Work with an existing Athena table whose partition column is not named `log_time`, at minute or hourly granularity | 2026-09-09 |
-| Stop dropping rows at the edges of a query window, where a log record's timestamp and the partition directory it landed in disagree | 2026-09-09 |
-| Detect a non-UTC timezone on Firehose S3 log paths automatically, so queries don't silently miss rows | |
-| Show query result times consistently in your session timezone across all data sources | 2026-09-09 |
-| Read a Parquet WAF log table you converted yourself | |
+The three shapes the agent does not fully support. The agent declines a regional WebACL at selection and
+says why; a cross-account log bucket, and a Parquet table kept in a prefix beside your JSON logs, both fail
+less clearly, which is why [Known Limitations](limitations.md#not-supported-yet) states each and the README
+warns before you deploy.
 
-See [Hourly vs Minute Partitioning](hourly-vs-minute-partitioning.md) for the trade-off and the measurements behind accepting hourly.
+- Analyse a REGIONAL WebACL (ALB, API Gateway, AppSync) as completely as a CloudFront one; today it is declined at selection, because its label-, attack-, bot-, country- and anti-DDoS-derived sections would read as zero
+- Read WAF logs from an S3 bucket in a different AWS account from the one the agent runs in, rather than requiring the WebACL, the metrics and the logs to share an account
+- Read a Parquet copy you keep in a prefix beside your JSON logs; today only Parquet delivered to the log destination itself is read, because the agent matches a table by the log path and a side copy sits below it, with no way to point it at a table by name or path
 
 ## Long-running queries
 
-| | |
-|---|---|
-| Keep the connection alive and show scan progress while a large query runs | |
-| Say plainly when a question needs a wider scan than one turn allows, and what to ask instead | 2026-09-09 |
-| Enforce the query time-window limit in code, not only as guidance | |
-| Offer the deepest bypass-scan drill-down as candidates you pick from, instead of running the whole chain automatically | |
-| A stop button that actually cancels the Athena query, not just the browser request | |
-| Say when a report section was skipped, instead of leaving it blank | |
+- A stop button that actually cancels the Athena query, not just the browser request
 
 ## Analysis
 
-| | |
-|---|---|
-| One general log-aggregation query that combines any supported filter with any supported grouping | |
-| Rule and endpoint hit rate, including false-positive rate after a Count to Block switch | |
-| A guided SQL injection investigation, the way false-positive and bypass investigations already work | |
-| Detect one WAF token replayed across many IPs | |
-| Country, referer, and network (ASN) concentration as additional dimensions | |
-| A cross-WebACL summary in the patrol report | |
+- Network (ASN) concentration as an analysis dimension, alongside the country and referer breakdowns that already ship
+- A cross-WebACL summary in the patrol report
 
 ## Security and privacy
 
-| | |
-|---|---|
-| Keep log content as data and never as instructions, even when a log field contains one | |
-| Escape all report fields on render | |
-| Automated tests that an attack payload the agent quotes back renders as text and cannot execute | 2026-09-13 |
-| Automated tests for prompt-injection resistance | |
-
-## Deployment
-
-| | |
-|---|---|
-| Build the container image on AWS, so no container tool is needed on your own machine ([#8](https://github.com/aws-samples/sample-building-a-conversational-ai-agent-for-aws-waf-analysis-with-agentcore/issues/8)) | 2026-09-12 |
-| Move a deployment to a newer release by updating one stack parameter | 2026-09-12 |
-
-## Documentation
-
-| | |
-|---|---|
-| A published list of known limitations | 2026-09-12 |
+- Escape all report fields on render
+- Automated tests for prompt-injection resistance
