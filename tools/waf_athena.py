@@ -1814,16 +1814,6 @@ def _resolve_output_location(region: str, workgroup: str) -> str:
                     return f"s3://{bucket}/athena-results/"
             except Exception:
                 pass
-    # Fallback 2: find any athena results bucket
-    s3 = get_client("s3", region_name=region)
-    try:
-        buckets = s3.list_buckets().get("Buckets", [])
-        for b in buckets:
-            name = b["Name"]
-            if "athena" in name and "result" in name:
-                return f"s3://{name}/"
-    except Exception:
-        pass
     raise RuntimeError(
         "No Athena output location found. Either:\n"
         "1. Configure an output location in the Athena 'primary' workgroup, or\n"

@@ -316,7 +316,7 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     visible_mitigated = sum(r[0] for r in rows[:15])
     if total_mitigated > 0 and visible_mitigated < total_mitigated * 0.5:
         gap = total_mitigated - visible_mitigated
-        lines.append(f"\n⚠️ {gap:,} mitigated requests ({gap*100//total_mitigated}%) not attributed to visible rules — likely from managed rule group sub-rules (e.g., AMR ChallengeAllDuringEvent). Use ip_cross_query on top IPs to identify the actual terminating rule.")
+        lines.append(f"\n⚠️ {gap:,} mitigated requests ({gap*100//total_mitigated}%) not attributed to visible rules. Likely causes: managed rule group sub-rules that don't publish their own per-rule metric (e.g., AMR ChallengeAllDuringEvent), or a rule whose per-rule metric CloudWatch's SEARCH-based discovery has not indexed in the last 14 days. Use ip_cross_query on top IPs to identify the actual terminating rule.")
 
     # Time-series breakdown
     timestamps = all_data.get("timestamps", [])
@@ -566,7 +566,11 @@ def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", regio
             found = True
     if not found:
         if rate_rule_names:
-            lines.append("  Rate-limit rules deployed but no triggers in this period.")
+            if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+                lines.append("  ⚠️ PARTIAL DATA: Rate-limit rule trigger counts unavailable (CloudWatch only retains per-rule index for 14 days).")
+                lines.append("  ACTION: Tell the user that per-rule rate-limit trigger counts are unavailable for this time range, but mitigated traffic exists overall in this WebACL. Then call top_rules to show totals, and offer to query logs for rate-limit-specific IP/URI details.")
+            else:
+                lines.append("  Rate-limit rules deployed but no triggers in this period.")
         else:
             lines.append("  No rate-limit rules detected in WebACL config.")
     return "\n".join(lines)
@@ -590,6 +594,12 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     lines.append(f"  CAPTCHAs issued:    {tot_cap:>10,}")
     lines.append(f"  CAPTCHAs solved:    {cas:>10,}" + (f"  ({cas*100//tot_cap}% solve rate)" if tot_cap > 0 else ""))
     lines.append("")
+    if tot_ch == 0 and tot_cap == 0:
+        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+            lines.append("  ⚠️ PARTIAL DATA: Challenge/CAPTCHA issued counts unavailable (CloudWatch only retains this index for 14 days), though this WebACL has mitigated traffic in this window.")
+            lines.append("  ACTION: Tell the user challenge/CAPTCHA-specific counts are unavailable for this time range, but mitigated traffic exists overall. Then call top_rules to show totals.")
+        else:
+            lines.append("  No challenges or CAPTCHAs issued in this period.")
     if tot_ch > 0 and cs > 0:
         rate = cs * 100 // tot_ch
         if rate > 80:
