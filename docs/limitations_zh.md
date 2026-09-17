@@ -14,7 +14,7 @@
 
 **agent 必须跑在拥有这个 WebACL 的账号里，而且这个账号得读得到日志桶。** WAF 是可以把日志投到另一个账号的 S3 桶的，这种布局这里两种摆法都不支持。跑在 WAF 账号，桶在别人家，读它要一条桶策略，用了 SSE-KMS 还要一个密钥授权，而 [`deploy/backend.yaml`](../deploy/backend.yaml) 不会替你建；拿到的 `AccessDenied` 最后显示成「没检测到日志路径」，不是权限错误。改成跑在日志账号，那边根本没有 WebACL，[`tools/waf_config.py`](../tools/waf_config.py) 解析不出来，后面什么都起不来，而 CloudWatch 指标还留在 WAF 账号那边。agent 的代码里任何地方都不会去 assume 别的账号的角色。CloudFront 的 WebACL 和 REGIONAL 的一样受这条限制：日志投到部署账号之外，暂时不在支持范围内。
 
-**只有当日志目的地本身就是 Parquet 时，Parquet 才能用；你另放在别的前缀里的 Parquet 副本读不到。** SQL 按 WAF 结构写（嵌套的 `httprequest` 结构体、`labels` 数组），和存储格式无关，Athena 的 Parquet reader 又对字段名大小写不敏感，所以 Parquet 表和 JSON 表一样能查，连保留了 WAF 原始 camelCase 的嵌套字段（`httpRequest.clientIp`）也读得到；2026-09-17 实测，每种查询形状都返回真实值。约束在于表指向哪里：agent 只采用 LOCATION 正好是 WebACL 解析出的日志路径、或其祖先的表（`tools/waf_athena.py` 的 `_path_covers`）。所以你的日志以 Parquet 形式投到那个目的地时能用；但你要是在目的地保留 JSON、另把一份转成 Parquet 放到侧前缀，那张表的 LOCATION 是日志路径的子目录，agent 永远匹配不上，会改用它自己建的 JSON 表来回答，而且没有任何工具能按名字或路径把 agent 指到某张表。桶里没有现成表时它找 `.gz`，所以也不会在 Parquet 上自动建表。
+**只有当日志目的地本身就是 Parquet 时，Parquet 才能用；你另放在别的前缀里的 Parquet 副本读不到。** SQL 按 WAF 结构写（嵌套的 `httprequest` 结构体、`labels` 数组），和存储格式无关，Athena 的 Parquet reader 又对字段名大小写不敏感，所以 Parquet 表和 JSON 表一样能查，连保留了 WAF 原始 camelCase 的嵌套字段（`httpRequest.clientIp`）也读得到；2026-09-17 实测，每种查询形状都返回真实值。约束在于表指向哪里：agent 只采用 LOCATION 正好是 WebACL 解析出的日志路径、或其祖先的表（`tools/waf_athena.py` 的 `_path_covers`）。所以你的日志以 Parquet 形式投到那个目的地、**并且那上面已经有一张 Glue 表**时能用：agent 只会采用现成的表，不会像对 JSON 那样自己在 Parquet 上建表，日志目的地是 Parquet 但还没建表，一样找不到 `.gz`，一样报错，读不到你的日志。但你要是在目的地保留 JSON、另把一份转成 Parquet 放到侧前缀，那张表的 LOCATION 是日志路径的子目录，agent 永远匹配不上，会改用它自己建的 JSON 表来回答，而且没有任何工具能按名字或路径把 agent 指到某张表。桶里没有现成表时它找 `.gz`，所以也不会在 Parquet 上自动建表。
 
 ## WAF 日志能告诉你什么，不能告诉你什么
 

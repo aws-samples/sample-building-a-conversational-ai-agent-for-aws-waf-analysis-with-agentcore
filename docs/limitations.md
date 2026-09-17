@@ -43,7 +43,10 @@ Parquet table is queried like a JSON one, camelCase nested fields (`httpRequest.
 2026-09-17 with every query shape returning real values. The constraint is where the table points. The agent
 adopts an existing table only when its `LOCATION` is the log path the WebACL resolves to, or an ancestor of
 it (`_path_covers` in `tools/waf_athena.py`). So Parquet works when your logs are delivered as Parquet to
-that destination. It does not work if you keep JSON there and convert a second copy to a side prefix: that
+that destination **and you already have a Glue table over it**: the agent adopts an existing table, it does
+not create one over Parquet the way it does over JSON, so a Parquet destination with no table yet finds no
+`.gz` objects either and raises rather than reading your logs. It does not work if you keep JSON there and
+convert a second copy to a side prefix: that
 table's `LOCATION` is a child of the log path, so the agent never matches it and answers from a JSON table it
 builds instead, and there is no tool to point the agent at a table by name or path. Over a bucket with no
 table it looks for `.gz`, so it will not auto-build over Parquet either.

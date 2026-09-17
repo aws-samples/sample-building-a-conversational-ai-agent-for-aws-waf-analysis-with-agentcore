@@ -96,9 +96,9 @@ When a WebACL has no logging configured, the agent explicitly states capability 
 
 Never fabricates data or provides unverifiable conclusions.
 
-### 6. Multi-WebACL Support
+### 6. Single-WebACL Focus, Account-Wide Discovery
 
-Automatically discovers all WebACLs across CLOUDFRONT + REGIONAL scopes, supports cross-region analysis. Patrol reports cover all WebACLs.
+Finds every CLOUDFRONT-scope WebACL in the account with one call, since CloudFront WebACLs are global. Works on one WebACL per session; switching to another resets session state (log destination, capabilities, findings) so results are never mixed across WebACLs. REGIONAL-scope WebACLs (ALB, API Gateway, AppSync) are not supported.
 
 ## Architecture Advantages
 

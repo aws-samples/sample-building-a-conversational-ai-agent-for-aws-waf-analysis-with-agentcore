@@ -24,10 +24,10 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 2. **容器工具，可选。** 装了 [Docker Desktop](https://docs.docker.com/get-docker/)（含 buildx）或 [finch](https://github.com/runfinch/finch)（见[附录](#替代方案使用-finch)），镜像就在你本机构建。两个都没有，就[在 AWS 上构建](#在-aws-上构建不需要-docker)。不要为了部署专门去装一个。
 3. **Node.js 18+**（构建前端）
 4. 已开启 AWS WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
-5. **一个 CloudFront 的 WebACL，日志以 JSON 落在同一个账号里。** 有三种情况还不支持，其中两种不报错、只是静默给错结果。花时间部署之前先把三条都确认掉：
-   - **范围。**`aws wafv2 list-web-acls --scope CLOUDFRONT --region us-east-1` 应该能列出你要分析的那个 WebACL。REGIONAL 的（ALB、API Gateway、AppSync）跑出来的报告总数是对的，但标签、攻击、Bot、国家、Anti-DDoS 相关的段落全是 0。
+5. **一个 CloudFront 的 WebACL，日志落在同一个账号里。** 有三种情况还不支持，其中只有一种不报错、静默给错结果。花时间部署之前先把三条都确认掉：
+   - **范围。**`aws wafv2 list-web-acls --scope CLOUDFRONT --region us-east-1` 应该能列出你要分析的那个 WebACL。REGIONAL 的（ALB、API Gateway、AppSync）直接拒绝：每个带 scope 参数的 tool 一遇到 `scope="REGIONAL"` 就拒绝并说明原因，不会跑出一份标签、攻击、Bot、国家、Anti-DDoS 相关段落全部静默归零的报告。
    - **账号。**`aws wafv2 get-logging-configuration --resource-arn <webacl-arn>` 能看到投递目标。桶、投递流或日志组属于另一个账号，就到此为止：部署在 WAF 账号读不到桶，部署在日志账号没有 WebACL 可选、指标还在对面。agent 不会 assume 任何跨账号角色。
-   - **格式。**JSON，也就是 WAF 自己写出来的格式。你自己转换好的 Parquet 表还不支持。
+   - **格式。**JSON（WAF 自己写出来的格式）能用，直接投到日志目的地本身的 Parquet 也能用。你自己转换、另放一个前缀的 Parquet 副本读不到：agent 按日志路径匹配表，不是按名字。
 
    每一条背后的实测数据见[已知局限](limitations_zh.md#还不支持)。
 
