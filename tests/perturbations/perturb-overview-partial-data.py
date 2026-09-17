@@ -16,24 +16,22 @@ from _harness import sweep
 T = "tests/test_overview_partial_data.py"
 CASES = [
     (
-        "rate_limits' mitigated-traffic check is inverted, so a real gap reads as a clean zero and a genuine zero reads as unexplained",
+        "rate_limits checks the whole WebACL again instead of the specific rate-limit rule, reintroducing the false positive a reviewer caught",
         "tools/waf_overview.py",
-        "            if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):\n"
-        "                lines.append(\"  ⚠️ PARTIAL DATA: Rate-limit rule trigger counts unavailable (CloudWatch only retains per-rule index for 14 days).\")",
-        "            if not _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):\n"
-        "                lines.append(\"  ⚠️ PARTIAL DATA: Rate-limit rule trigger counts unavailable (CloudWatch only retains per-rule index for 14 days).\")",
-        [f"{T}::test_a_configured_rate_rule_with_no_search_rows_but_real_mitigation_discloses_partial_data",
-         f"{T}::test_a_configured_rate_rule_with_no_search_rows_and_no_mitigation_is_a_clean_zero"],
+        "            if any(_has_mitigated_traffic(cw, webacl_name, start, end, scope, region, rule=name)\n"
+        "                   for name in rate_rule_names):",
+        "            if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):",
+        [f"{T}::test_the_specific_rate_rule_being_genuinely_idle_is_a_clean_zero_even_with_other_traffic",
+         f"{T}::test_a_direct_query_on_the_specific_rule_finding_real_traffic_discloses_partial_data"],
     ),
     (
-        "challenge_solve_rate's mitigated-traffic check is inverted the same way",
+        "challenge_solve_rate sums Blocked back in, reintroducing the same false positive",
         "tools/waf_overview.py",
-        "        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):\n"
-        "            lines.append(\"  ⚠️ PARTIAL DATA: Challenge/CAPTCHA issued counts unavailable",
-        "        if not _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):\n"
-        "            lines.append(\"  ⚠️ PARTIAL DATA: Challenge/CAPTCHA issued counts unavailable",
-        [f"{T}::test_zero_issued_with_real_mitigation_discloses_partial_data",
-         f"{T}::test_zero_issued_with_no_mitigation_is_a_clean_zero"],
+        "        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region,\n"
+        "                                   metric_names=(\"ChallengeRequests\", \"CaptchaRequests\")):",
+        "        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):",
+        [f"{T}::test_blocked_only_traffic_is_a_clean_zero_not_partial_data",
+         f"{T}::test_a_direct_query_finding_real_challenge_traffic_discloses_partial_data"],
     ),
     (
         "top_rules' gap-detection line drops the 14-day SEARCH-discovery cause, back to naming only sub-rules",

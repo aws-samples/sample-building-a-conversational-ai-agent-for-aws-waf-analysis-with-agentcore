@@ -154,17 +154,25 @@ def _fmt_window(minutes: int) -> str:
         return f"{minutes}min"
 
 
-def _has_mitigated_traffic(cw, webacl_name, start, end, scope="CLOUDFRONT", region="") -> bool:
-    """Quick MetricStat check: did this WebACL have any blocked/challenged/captcha'd traffic?"""
-    _dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+def _has_mitigated_traffic(cw, webacl_name, start, end, scope="CLOUDFRONT", region="", rule="ALL",
+                            metric_names=("BlockedRequests", "ChallengeRequests", "CaptchaRequests")) -> bool:
+    """Direct MetricStat check, immune to SEARCH's 14-day discovery window: did `rule` (the whole
+    WebACL by default) have any traffic in `metric_names`?
+
+    **The metric set has to match the claim being checked, or a real zero reads as unavailable.**
+    `_challenge_solve_rate` learned this the hard way: checking Blocked+Challenge+Captcha to decide
+    whether a Challenge/CAPTCHA count of zero is suspicious means a WebACL that only ever blocks (no
+    Challenge or CAPTCHA action configured anywhere) reports "unavailable" on every single call, since
+    Blocked alone makes the default sum positive. Pass only the metric(s) the caller's claim is about.
+    """
+    _dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": rule}]
     if scope == "REGIONAL" and region:
         _dims.append({"Name": "Region", "Value": region})
     try:
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "b", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}},
-                {"Id": "c", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}},
-                {"Id": "p", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}},
+                {"Id": f"m{i}", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": name, "Dimensions": _dims}, "Period": int((end - start).total_seconds()), "Stat": "Sum"}}
+                for i, name in enumerate(metric_names)
             ],
             StartTime=start, EndTime=end,
         )
@@ -566,7 +574,11 @@ def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", regio
             found = True
     if not found:
         if rate_rule_names:
-            if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+            # Per-rule, not WebACL-wide: a rate-limit rule that is quiet while OTHER rules mitigate
+            # heavily is the common case, and a WebACL-wide check would call that "unavailable" on
+            # every quiet day. Each name gets its own direct, index-immune MetricStat.
+            if any(_has_mitigated_traffic(cw, webacl_name, start, end, scope, region, rule=name)
+                   for name in rate_rule_names):
                 lines.append("  ⚠️ PARTIAL DATA: Rate-limit rule trigger counts unavailable (CloudWatch only retains per-rule index for 14 days).")
                 lines.append("  ACTION: Tell the user that per-rule rate-limit trigger counts are unavailable for this time range, but mitigated traffic exists overall in this WebACL. Then call top_rules to show totals, and offer to query logs for rate-limit-specific IP/URI details.")
             else:
@@ -595,7 +607,8 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     lines.append(f"  CAPTCHAs solved:    {cas:>10,}" + (f"  ({cas*100//tot_cap}% solve rate)" if tot_cap > 0 else ""))
     lines.append("")
     if tot_ch == 0 and tot_cap == 0:
-        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region):
+        if _has_mitigated_traffic(cw, webacl_name, start, end, scope, region,
+                                   metric_names=("ChallengeRequests", "CaptchaRequests")):
             lines.append("  ⚠️ PARTIAL DATA: Challenge/CAPTCHA issued counts unavailable (CloudWatch only retains this index for 14 days), though this WebACL has mitigated traffic in this window.")
             lines.append("  ACTION: Tell the user challenge/CAPTCHA-specific counts are unavailable for this time range, but mitigated traffic exists overall. Then call top_rules to show totals.")
         else:
