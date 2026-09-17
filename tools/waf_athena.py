@@ -107,6 +107,14 @@ _ATHENA_STATE_DEFAULTS = {
     "temp_created": False,
     "webacl_scoped": True,   # True if table location is specific to one WebACL
     "layout_mixed": False,   # bucket holds both hourly and minute-level eras
+    "layout_newest_unit": None,  # the DETECTED layout's newest-era unit ("minutes"/
+                             # "hours"/"days"), independent of which table is resolved.
+                             # This is what "minute-newest mixed" keys on, not the
+                             # resolved table's partition_interval_unit (which becomes
+                             # "hours" once the agent's hourly table is built, and is
+                             # "hours" for a user's own hourly table over the bucket) and
+                             # not the best-effort cutover date (None for a non-monotone
+                             # cutover month the search could not pin).
     "layout_cutover": None,  # 'yyyy/MM/dd' the minute era begins, best-effort
     "layout_data_start": None,  # 'yyyy/MM/dd' of the OLDEST data in the bucket,
                              # whichever era it is in. Only interesting when the
@@ -174,10 +182,45 @@ def set_layout_choice(choice: str | None):
     minute-level era. Full reset, then set the choice: the detected layout is
     re-derived by the next resolve anyway, so nothing is lost, and this reuses the one
     place that cannot forget a key rather than a hand-listed clear that would drift.
-    The only cost is one re-derivation of the log-destination path memo on the next
-    query, which is a deliberate, rare, user-initiated action's worth of overhead."""
+    Idempotent: setting the choice to what it already is returns without a reset, so a
+    redundant call rebuilds nothing and does not re-derive the log-destination path memo
+    (which would re-fire `firehose:DescribeDeliveryStream`, capped at 5/sec and not
+    adjustable). Only a real change drops the table; then the next query rebuilds and the
+    memo re-derives once, which is a rare user-initiated action's worth of overhead.
+
+    Idempotence does drop one lever: re-issuing the same choice used to force a cold rebuild
+    mid-session, which is the only way to notice a table that went stale after resolution. That
+    is safe by direction. The agent's own table goes stale only when the bucket's oldest data
+    moves relative to its declared range, and the ongoing process that moves it, lifecycle
+    expiry of old logs, moves the true start LATER, leaving the table projecting from earlier
+    than the data now begins. `_cross_check_declared` classes that as wasting planning time, the
+    benign half; new logs never make it stale, because the range is open at the recent end. The
+    harmful direction, a declared start later than the data so real rows cannot be addressed,
+    needs older logs BACKFILLED beneath the path mid-session, a deliberate manual action, and a
+    WebACL switch or a process recycle drops the cache and rebuilds either way. So idempotence
+    removes a redundant path to that rebuild, not the only one."""
+    if _athena_state.get("layout_choice") == choice:
+        return
     reset_table_cache()
     _athena_state["layout_choice"] = choice
+
+
+def _is_minute_newest_mixed() -> bool:
+    """Is the bucket a minute-newest mixed layout: older hourly directories, a minute-level
+    newest era? That is the one layout whose default minute table cannot reach the pre-cutover
+    history and whose whole-timeline hourly table can, so it is the property every mixed-bucket
+    decision keys on: the build gate, the `set_log_granularity` tool, and the two user-facing
+    messages (`_mixed_layout_sentence`, the minute-choice reply).
+
+    Keyed on the DETECTED layout's newest-era unit, published to state on every resolve,
+    because the two nearby values each fail this test. The resolved table's
+    `partition_interval_unit` becomes "hours" once the agent's hourly table is built and is
+    "hours" for a user's own hourly table over the same bucket, so it cannot tell "the newest
+    era is minute-level" from "the resolved table is hourly". The cutover DATE is best-effort
+    reporting and is None for a non-monotone cutover month, so it drops a genuine mixed bucket.
+    One definition here so the four sites cannot drift apart (they did: two keyed on the layout,
+    two on the date, and disagreed on an undated bucket)."""
+    return bool(_athena_state.get("layout_mixed") and _athena_state.get("layout_newest_unit") == "minutes")
 
 
 # Java SimpleDateFormat tokens (used by Athena partition projection 'date' type)
@@ -1063,6 +1106,17 @@ def _ensure_database(region: str, workgroup: str):
     _run_athena_ddl(sql, region, workgroup)
 
 
+def _safe_table_name(webacl_name: str) -> str:
+    """The scratch-table base name for a WebACL, sanitised to Athena-legal characters.
+
+    One derivation, used by both scratch tables, so the minute table (`waf_logs_<name>`)
+    and the hourly one (`waf_logs_<name>_hourly`) always share a base. `_find_existing_table`
+    ranks the minute name first purely by sort order, and that determinism only holds while
+    the two correspond, so a second copy of this expression that later drifts would break
+    which table a default resolve picks."""
+    return "waf_logs_" + re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
+
+
 def _create_named_table(s3_path: str, storage_template: str, partition_format: str,
                         partition_unit: str, partition_interval: int, region: str, workgroup: str,
                         table_name: str, range_start: str | None = None) -> dict:
@@ -1081,34 +1135,85 @@ def _create_named_table(s3_path: str, storage_template: str, partition_format: s
         range_start = "2020/01/01/00/00" if "mm" in partition_format else "2020/01/01/00"
     target_location = s3_path.rstrip("/")
 
-    # A same-named table can linger with an outdated LOCATION after the WAF log
-    # delivery method changes (e.g. Vended Logs -> Firehose moves data from
-    # AWSLogs/.../{webacl}/ to a custom bucket-root prefix). _find_existing_table
-    # only matches tables whose location is an ancestor of the resolved path, so
-    # a stale child-location table is invisible to it. We must replace it.
+    # A same-named table can linger, stale or unreadable in one of three ways, and the ONE
+    # get_table here decides the outcome for all of them so there is no window between reading it
+    # and acting.
     #
-    # But DROP unconditionally would open a window where a concurrent query on
-    # the other code path (query_logs vs patrol_scan) sees the table missing
-    # between DROP and CREATE. So we DROP only when an existing table actually
-    # points at a DIFFERENT location; when the location already matches (the
-    # common/steady case, and the case where another thread just created it),
-    # we skip the DROP entirely and let CREATE ... IF NOT EXISTS be a no-op.
-    # The whole check-then-act is held under _create_lock so the two paths
-    # cannot interleave. Dropping an EXTERNAL table never touches S3 data.
+    #   LOCATION: the WAF log delivery method changed (e.g. Vended Logs -> Firehose moves
+    #   data from AWSLogs/.../{webacl}/ to a custom bucket-root prefix). _find_existing_table
+    #   only matches an ancestor-or-equal location, so a stale child-location table is
+    #   invisible to it and must be replaced here.
+    #
+    #   PROJECTION: same location, but the declared range/format no longer matches what the
+    #   data needs (the oldest data moved by lifecycle expiry or a backfill, or a prior build
+    #   used a different granularity). CREATE ... IF NOT EXISTS would keep the stale table, and
+    #   a range that starts too late returns zero rows for a window before it, read as "no
+    #   traffic". This is the self-heal both the minute and hourly builds used to do with a
+    #   separate get_table + _cross_check_declared in front; folding it here removes that second
+    #   lookup. The one get_table left decides both drops, and a transient error on it raises
+    #   (see the except below) rather than being read as "absent" and leaving the stale table.
+    #
+    #   UNREADABLE: something is at the scratch name that _table_metadata cannot read (a view, a
+    #   foreign object). It is neither replaced (CREATE ... IF NOT EXISTS no-ops on it) nor safe to
+    #   drop, since dropping what this code cannot identify could destroy someone else's object, so
+    #   it is left in place and DISCLOSED. Without the note it would be the one path that leaves a
+    #   table this block could not verify with nothing said; the query fails loud against it either
+    #   way, now with the reason on record rather than as a bare schema error.
+    #
+    # DROP only for LOCATION/PROJECTION: an unconditional DROP would open a gap where a concurrent
+    # query on the other path sees the table missing between DROP and CREATE. The whole
+    # check-then-act is under _create_lock so the paths cannot interleave, and a failed DROP raises
+    # here rather than leaving a stale table to answer silently. Dropping an EXTERNAL table never
+    # touches S3 data. A note that claims a rebuild is written only after the DROP succeeds; the
+    # UNREADABLE note claims no rebuild ("left as-is"), so it is safe to write without one.
     with _create_lock:
-        needs_drop = False
+        needs_drop, stale_note = False, None
+        glue = get_client("glue", region_name=region)
+        # Only the get_table call is inside the try: it is the one that can raise a transient Glue
+        # error, and scoping the try to it means the reads below cannot be swallowed either. On a
+        # miss it re-raises anything but EntityNotFoundException, so a throttle fails loudly (a
+        # silent swallow would let CREATE ... IF NOT EXISTS keep a table this block could not
+        # verify, and a range-too-late one returns zero rows read as "no traffic"). Matched on the
+        # exception's CLASS name, never on the message, so an unrelated error that merely mentions
+        # the name cannot reach the absent path; botocore's typed exception and the test double
+        # both name their class this. `existing is None` means absent.
         try:
-            glue = get_client("glue", region_name=region)
-            existing = glue.get_table(DatabaseName=TMP_DATABASE, Name=table_name)
-            existing_loc = existing["Table"]["StorageDescriptor"].get("Location", "").rstrip("/")
+            existing = glue.get_table(DatabaseName=TMP_DATABASE, Name=table_name)["Table"]
+        except Exception as e:
+            if type(e).__name__ != "EntityNotFoundException":
+                raise
+            existing = None
+        if existing is not None:
+            # `.get` guards, the same as `_table_metadata`: a malformed row (a view, another tool's
+            # table at this name) yields "" rather than a KeyError that would abort the build.
+            existing_loc = existing.get("StorageDescriptor", {}).get("Location", "").rstrip("/")
             if existing_loc and existing_loc != target_location:
                 needs_drop = True
-        except Exception:
-            # Table absent (EntityNotFoundException) or Glue error → nothing to drop.
-            needs_drop = False
+                stale_note = (f"{TMP_DATABASE}.{table_name} was built over {existing_loc}, "
+                              f"not {target_location}. Recreating it.")
+            else:
+                meta = _table_metadata(TMP_DATABASE, existing)
+                if not isinstance(meta, str):
+                    problem = _cross_check_declared(meta, {
+                        "format": partition_format, "unit": partition_unit,
+                        "interval": partition_interval, "range_start": range_start},
+                        strict=True)
+                    if problem is not None:
+                        needs_drop = True
+                        stale_note = f"{meta['table']} {problem}. Recreating it."
+                else:
+                    # UNREADABLE (see above): _table_metadata rejected whatever is at the name, so
+                    # it is left in place and disclosed rather than dropped or silently kept.
+                    stale_note = (f"{TMP_DATABASE}.{table_name} already exists but could not be "
+                                  f"read ({meta}); left as-is, so queries may fail against it.")
 
         if needs_drop:
             _run_athena_ddl(f"DROP TABLE IF EXISTS `{TMP_DATABASE}`.`{table_name}`", region, workgroup)
+        # After the DROP (which raises on failure), so a note claiming a rebuild never appears when
+        # the DROP did not happen. The UNREADABLE note sets no needs_drop and claims no rebuild, so
+        # it discloses without one.
+        if stale_note:
+            _athena_state["discovery_notes"] += (stale_note,)
 
         ddl = DDL_TEMPLATE.format(
             database=TMP_DATABASE, table=table_name,
@@ -1154,15 +1259,19 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
     the minute name always sorts first, so a later default resolve is deterministic.
     Built directly rather than through `_find_existing_table`, because the user asked for
     the agent's hourly table specifically, and a minute table they maintain themselves is
-    exactly what cannot answer the question they just asked."""
+    exactly what cannot answer the question they just asked.
+
+    A stale `_hourly` table left by a previous session (its range no longer matching the
+    data) is condemned by `_create_named_table` itself, from the same get_table that decides
+    the location drop, so there is no separate lookup to fail transiently and leave it in
+    place."""
     if not _validate_waf_log(s3_path):
         raise RuntimeError(
             f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
             f"destination is correct.")
-    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
     created = _create_named_table(
         s3_path, layout["storage_template"], "yyyy/MM/dd/HH", "hours", 1,
-        region, "primary", f"waf_logs_{safe_name}_hourly",
+        region, "primary", _safe_table_name(webacl_name) + "_hourly",
         range_start=layout["data_start"] + _RANGE_START_SUFFIX["hours"])
     return _record_table(created, created=True)
 
@@ -1367,33 +1476,39 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
             f"than return rows, so check the WebACL's logging destination.") from exc
     if layout is not None:
         _athena_state["layout_mixed"] = layout["mixed"]
+        _athena_state["layout_newest_unit"] = layout["unit"]
         _athena_state["layout_cutover"] = layout["cutover"]
         _athena_state["layout_data_start"] = layout["data_start"]
+    # No `else` to clear these on `layout is None`: a stale-True carried into a later resolve is
+    # unreachable in production. `resolve_log_table` returns the cached table without re-entering
+    # here, so the only way back in is after `reset_table_cache`, which restores every key from the
+    # defaults (layout_mixed False, the rest None) in the same step it clears the table. So on an
+    # emptied bucket these are already default here, and `_is_minute_newest_mixed()` is False.
+    # (Round-7 review noted the asymmetry; adding the clear would guard a state the cache guard
+    # already makes unreachable.)
 
-    # ROADMAP 3.2: the user has explicitly chosen to read the whole timeline as hourly.
-    # Only a mixed bucket has a pre-cutover era to reach; a pure layout is already served
-    # correctly by the ordinary path, so the choice falls through there and changes
-    # nothing. Ahead of discovery on purpose: a minute table the user maintains is exactly
-    # what cannot answer "show me the history", so their choice overrides it.
-    if _athena_state.get("layout_choice") == "hourly" and layout is not None and layout["mixed"]:
+    # ROADMAP 3.2: the user has explicitly chosen to read the whole timeline as hourly. Fire the
+    # build for a minute-newest mixed bucket (`_is_minute_newest_mixed`, reading the layout just
+    # published above), the one layout whose default minute table starts at the cutover month and
+    # cannot reach the older hourly history that the hourly build (range from the oldest data)
+    # does. A reverse minute->hourly switch is mixed but hourly-newest, so its default table
+    # already reads the whole timeline; a single layout has no older era. Ahead of discovery on
+    # purpose: a minute table the user maintains cannot answer "show me the history", so the
+    # choice overrides it.
+    if _athena_state.get("layout_choice") == "hourly" and layout is not None and _is_minute_newest_mixed():
         return _build_agent_hourly_table(s3_path, region, webacl_name, layout)
 
     meta = _find_existing_table(s3_path, region)
     if meta is not None:
-        db, tbl = meta["table"].split(".", 1)
+        db = meta["table"].split(".", 1)[0]
         problem = _cross_check_declared(meta, layout, strict=(db == TMP_DATABASE))
         if problem is None:
             return _record_table(meta)
-        if db == TMP_DATABASE:
-            # The agent's own scratch table, now inconsistent with the data under
-            # it. Drop and rebuild; dropping an EXTERNAL table never touches S3.
-            _athena_state["discovery_notes"] += (
-                f"{meta['table']} {problem}. Recreating it.",)
-            try:
-                get_client("glue", region_name=region).delete_table(DatabaseName=db, Name=tbl)
-            except Exception:
-                pass
-        else:
+        if db != TMP_DATABASE:
+            # A table the user maintains, stale for the data under it. Leave it untouched and
+            # build a separate scratch table below. (Our own stale scratch table needs no note
+            # here: `_create_named_table` drops and rebuilds it, disclosing, from the same
+            # get_table that decides the location drop.)
             _athena_state["discovery_notes"] += (
                 f"{meta['table']} {problem}. Building a separate table in "
                 f"{TMP_DATABASE} instead and leaving yours untouched.",)
@@ -1404,10 +1519,9 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
             f"destination is correct.")
     if layout is None:
         raise layout_error
-    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", webacl_name or "unknown").lower()
     created = _create_named_table(
         s3_path, layout["storage_template"], layout["format"], layout["unit"],
-        layout["interval"], region, "primary", f"waf_logs_{safe_name}",
+        layout["interval"], region, "primary", _safe_table_name(webacl_name),
         range_start=layout["range_start"])
     return _record_table(created, created=True)
 
@@ -1491,15 +1605,21 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
                    f"far back, so rows before that point cannot be returned no matter "
                    f"what the data contains. ")
         mixed = _mixed_layout_sentence()
-        if mixed:
-            # "Widen the range" is the obvious advice and on a mixed bucket it is
-            # actively wrong: the pre-cutover directories are hourly, so a wider
-            # minute-level projection generates paths that do not exist and returns
-            # nothing, which looks like the advice was followed and the data is gone.
-            # This branch is only reached under the default (minute) choice: the hourly
-            # choice builds a table whose range starts at the oldest data, so a
-            # pre-cutover window is in range and never lands here. ROADMAP 3.2 retired the
-            # "build it yourself" recipe, so the offer now is for the agent to build it.
+        if mixed and _athena_state.get("layout_choice") == "hourly":
+            # The hourly choice is active, so the whole-timeline table already starts at the
+            # oldest data. A window out of range under it is before anything the bucket holds
+            # (a typo, or a date older than the data), not a reachable era waiting on a build,
+            # so do not offer the build the user already made.
+            problem += (f"{mixed} You are reading it as a whole-timeline hourly table, which "
+                        f"already starts at the oldest data, so this window is before anything "
+                        f"the bucket holds.")
+        elif mixed:
+            # Default (minute) choice, whose table starts at the cutover month. "Widen the range"
+            # is the obvious advice and here it is actively wrong: the pre-cutover directories are
+            # hourly, so a wider minute-level projection generates paths that do not exist and
+            # returns nothing, which looks like the advice was followed and the data is gone.
+            # ROADMAP 3.2 retired the "build it yourself" recipe, so the offer is for the agent to
+            # build the whole-timeline hourly table.
             problem += (f"{mixed} Widening the range would not help, because the paths a "
                         f"minute-level projection generates are not there before the "
                         f"cutover. Query a window after it, or ask to read the whole "
@@ -1517,21 +1637,26 @@ def partition_predicate(start_dt, end_dt) -> tuple[str, str | None]:
 
 
 def _mixed_layout_sentence() -> str | None:
-    """One sentence naming the layout switch, or None if the bucket has a single layout.
+    """One sentence naming the layout switch, or None if the bucket is not minute-newest mixed.
 
     Two messages need this fact and neither owns it: the table-resolution block, which
     explains what the table can reach, and `partition_predicate`'s out-of-range
     problem, which explains why widening the range would not help. One function so the
     cutover date cannot be described two ways.
 
-    Returns None when the newest era is hourly, which is `layout_cutover is None`. That
-    table reads the whole timeline, so there is no unreachable history to warn about,
-    and every query against it is already refused by the coarse-partition gate with its
-    own explanation."""
-    if not (_athena_state.get("layout_mixed") and _athena_state.get("layout_cutover")):
+    Gated on `_is_minute_newest_mixed`, the same property the build gate and the tool use, NOT on
+    the cutover date being known. `_first_minute_day` returns None for a non-monotone cutover
+    month, and gating on the date suppressed this whole sentence on a genuine mixed bucket: the
+    resolution block then never offered the hourly build, and `partition_predicate` fell through
+    to "widen the range", the advice it itself calls actively wrong on a mixed bucket. So fire on
+    the property and word the unknown-date case here."""
+    if not _is_minute_newest_mixed():
         return None
-    return (f"This bucket holds two partition layouts: hourly directories up to about "
-            f"{_athena_state['layout_cutover']}, minute-level ones after.")
+    cutover = _athena_state.get("layout_cutover")
+    where = (f"up to about {cutover}" if cutover
+             else "up to a cutover date this run could not pin down")
+    return (f"This bucket holds two partition layouts: hourly directories {where}, "
+            f"minute-level ones after.")
 
 
 def describe_table_resolution() -> str:
@@ -1556,13 +1681,16 @@ def describe_table_resolution() -> str:
         # once the user has chosen hourly the active table reaches the whole timeline and
         # the note says so. Either way this retires the "build a second table yourself"
         # recipe that used to live here and in docs/hourly-vs-minute-partitioning.md.
+        # Only worth saying the date is best-effort when a date is shown; when it is None the
+        # sentence above already says it could not be pinned, so this would be a third mention.
+        best_effort = " The cutover date is best-effort." if _athena_state.get("layout_cutover") else ""
         if _athena_state.get("layout_choice") == "hourly":
             lines.append(
                 f"{mixed} You chose to read the whole timeline as an hourly table, so the "
                 f"history back to {_athena_state.get('layout_data_start')} is queryable. "
                 f"Every window is at hour granularity as a result, including the recent "
                 f"era, which loses the minute-level precision the minute table gives. Ask "
-                f"for minute-level to switch back. The cutover date is best-effort.")
+                f"for minute-level to switch back.{best_effort}")
         else:
             lines.append(
                 f"{mixed} This table covers the minute-level era only. Logs from "
@@ -1570,7 +1698,7 @@ def describe_table_resolution() -> str:
                 f"bucket, but no minute-level table can address them, and Athena reports "
                 f"that as zero rows rather than as an error. To reach that history, ask to "
                 f"read the whole timeline as an hourly table, coarser everywhere, and the "
-                f"agent will build it over the same bucket. The cutover date is best-effort.")
+                f"agent will build it over the same bucket.{best_effort}")
     # 3.3's cost notice. Here rather than per query because it is a property of the table:
     # once per resolved table is information, once per query is noise the model learns to
     # skip. Fires for hourly only; daily and coarser are refused outright and say so at the

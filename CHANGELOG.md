@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.28.1 (2026-09-17)
+
+0.28.0 was published as a prerelease and never deployed. 0.28.1 is the first release of the
+mixed-bucket hourly build described below, corrected across seven rounds of review, and it also
+finishes the concurrent-query work.
+
+### Added: analyze_ip runs its per-IP queries concurrently
+
+analyze_ip issued its five per-IP queries (action breakdown, request rate, JA4 fingerprints, URI
+diversity, query strings) one after another, so its wall time was their sum. They are independent,
+so they now run in one wave, the same non-destructive fan-out that already shortened the bypass scan
+and the block investigation. The diversity check runs first and stays sequential, because it decides
+whether the rest run at all. A query cut off by the batch budget renders as a section note, not as a
+quiet window.
+
+### Fixed: a mixed bucket whose cutover date could not be pinned was read as single-layout
+
+Four places decide whether a bucket is minute-level after an older hourly era: the build gate, the
+`set_log_granularity` tool, and the two notices that describe a mixed bucket (the table-resolution
+block and the out-of-range query message). Two of them keyed that decision on the cutover date,
+which is best-effort and comes back empty when the switch month is non-monotone. Such a bucket then
+dropped out of those decisions and was told it had a single layout, with no offer to reach its
+pre-cutover history. A third keyed on the resolved table's own granularity, which reads hourly once
+the agent's table is built and for a user who keeps their own hourly table over the bucket. All four
+now read one predicate for the minute-level newest era, taken from the detected S3 layout.
+
+- **The resolved-table case was a functional regression.** A user with their own hourly table over
+  a mixed bucket, asking for the whole timeline, was told the table already reads it and the build
+  was refused, which is the one case the build exists for.
+- **The cutover date is display-only now.** The two notices word the case where the switch date
+  could not be pinned rather than falling silent, so the offer to build the hourly table still
+  appears.
+
+### Fixed: a transient Glue error could leave a stale table in place, read as no traffic
+
+Before creating its table the agent reads any table already at that name. A Glue error other than
+"table not found" now raises instead of being read as absence, so a transient throttle no longer
+leaves a range-stale table whose window before its declared start returns zero rows, which reads as
+no traffic on real logs. A foreign object at the agent's table name, one the build can neither
+verify nor safely drop, is now named in the table notice rather than left unmentioned while queries
+fail against it.
+
 ## 0.28.0 (2026-09-16)
 
 ### Added: read a mixed bucket's pre-cutover history by building the hourly table for you

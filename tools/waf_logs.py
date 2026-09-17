@@ -425,25 +425,66 @@ def set_log_granularity(granularity: str) -> str:
     granularity = (granularity or "").strip().lower()
     if granularity not in ("hourly", "minute"):
         return "granularity must be 'hourly' or 'minute'."
-    from tools.waf_athena import set_layout_choice, _athena_state
+    from tools.waf_athena import set_layout_choice, _athena_state, _is_minute_newest_mixed
     resolved = _athena_state.get("partition_format") is not None
-    mixed = bool(_athena_state.get("layout_mixed"))
+    # The one property every mixed-bucket decision keys on (build gate, both messages here):
+    # mixed with a minute-level newest era, so the default minute table cannot reach the older
+    # hourly history and the whole-timeline hourly build can. Snapshot it now, before the minute
+    # branch's set_layout_choice(None) resets the cache: that branch still needs to know this was
+    # a mixed bucket to point the user at hourly.
+    minute_newest_mixed = _is_minute_newest_mixed()
     data_start = _athena_state.get("layout_data_start")
     cutover = _athena_state.get("layout_cutover")
     if granularity == "minute":
         set_layout_choice(None)
-        if mixed:
+        # Point at hourly only on a minute-newest mixed bucket, where the recent minute-level era
+        # is read at full precision but the older hourly history is genuinely out of reach.
+        # Keyed on the snapshotted property, not on the cutover date, so an undated minute-newest
+        # bucket still gets the pointer; a pure-hourly bucket, a reverse minute->hourly switch, and
+        # a single minute layout all fall to the neutral reply.
+        if minute_newest_mixed:
             return ("From the next query the recent minute-level era is read at full "
-                    "precision. The pre-cutover history is out of reach this way; ask for "
+                    "precision; the pre-cutover history is out of reach this way, ask for "
                     "hourly to read the whole timeline.")
-        return "Reading logs at the layout the bucket uses; there is only one."
+        return "Reading the bucket's own partition layout, the default."
     # hourly
-    if resolved and not mixed:
-        return ("This bucket has a single partition layout, so there is no older era to "
-                "reach by reading it as hourly, only precision to lose. Left unchanged.")
-    set_layout_choice("hourly")
+    if not resolved:
+        # No table resolved yet, so whether this bucket even holds two layouts is unknown.
+        # Promising the whole timeline here would be a guess, and on a single-layout bucket
+        # the resolver ignores the hourly choice, so the promise would be false. Ask for the
+        # query that reveals the layout instead of setting a choice on no information. If the
+        # hourly choice is already recorded (a previous call reset the cache), say that rather
+        # than implying nothing was chosen.
+        if _athena_state.get("layout_choice") == "hourly":
+            return ("The hourly choice is already recorded; run a log query and I will build "
+                    "the whole-timeline table if this bucket holds both layouts.")
+        return ("Run a log query first so I can resolve the table and see whether this "
+                "bucket holds both partition layouts. The hourly choice only applies to a "
+                "mixed bucket, and resolving the table is what reveals one.")
+    # Every mixed-bucket decision keys on `minute_newest_mixed` (snapshotted from
+    # `_is_minute_newest_mixed`): mixed with a minute-level newest era. NOT on the resolved
+    # table's partition_interval_unit (which is "hours" once the agent's hourly table is built and
+    # "hours" for a user's own hourly table over the bucket, so it would wrongly decline the build
+    # there) and NOT on the best-effort cutover date. Only a minute-newest mixed bucket has an
+    # older era the hourly build reaches; a reverse minute->hourly switch and a single layout
+    # already read the whole timeline.
     span = f" back to {data_start}" if data_start else ""
     before = f" before {cutover}" if cutover else ""
+    if minute_newest_mixed and _athena_state.get("layout_choice") == "hourly":
+        # Already chosen and, once a query ran, built. set_layout_choice is idempotent, so a
+        # re-call rebuilds nothing: say the timeline is already being read, don't imply a build.
+        # Gated on minute_newest_mixed too: if the bucket stopped being one (its hourly era aged
+        # out via lifecycle), the stale choice must not claim the table is still whole-timeline.
+        return (f"Already reading the whole timeline{span} as an hourly table, so the "
+                f"pre-cutover history{before} is queryable at hour granularity. Ask for "
+                f"minute-level to switch back.")
+    if not minute_newest_mixed:
+        if _athena_state.get("partition_interval_unit") == "minutes":
+            return ("This bucket has a single minute-level layout, so there is no older era "
+                    "to reach by reading it as hourly, only precision to lose. Left unchanged.")
+        return ("The table already reads this bucket's whole timeline, so reading it as hourly "
+                "reaches no older era. Left unchanged.")
+    set_layout_choice("hourly")
     return (f"From the next query the whole timeline{span} is read through an hourly table "
             f"the agent builds, so the pre-cutover history{before} is queryable. Every "
             f"window is at hour granularity as a result, including the recent era. Ask for "
@@ -1108,16 +1149,6 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"{ATHENA_EXCLUDE_STATIC}"
     )
 
-    # Run queries (sequential via unified layer — each is fast with IP filter)
-    cross = _safe_query(cross_cwl, cross_athena, start_epoch, end_epoch, limit=15,
-                        failures=failures, label="actions", notes=notes)
-    rate = _safe_query(rate_cwl, rate_athena, start_epoch, end_epoch, limit=1,
-                       failures=failures, label="request_rate", notes=notes)
-    ja4 = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=5,
-                      failures=failures, label="ja4", notes=notes)
-    uri_div = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1,
-                          failures=failures, label="uri_diversity", notes=notes)
-
     # Query strings this IP sent — the content that triggers QUERYARGUMENTS rules
     # (XSS/SQLi/LFI payloads show up here). Sensitive params are redacted below.
     qs_cwl = (
@@ -1130,8 +1161,38 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f" AND httprequest.clientip = '{safe_ip}' AND httprequest.args <> ''"
         f" GROUP BY httprequest.args ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
-    query_strings = _safe_query(qs_cwl, qs_athena, start_epoch, end_epoch, limit=8,
-                                failures=failures, label="query_strings", notes=notes)
+
+    # ROADMAP 4.6: phase 2's five queries are independent (none reads another's output), so they
+    # run in one concurrent wave rather than serially, the same non-destructive latency lever the
+    # bypass scan already uses. Phase 1 (the diversity check, and the NAT `ua_list` above) stays
+    # sequential, because it gates whether phase 2 runs at all. Each query is registered as a thunk
+    # over `_safe_query`, which never raises and records its own reason under its own label, so the
+    # workers write distinct keys of `failures`/`notes`; distinct-key dict assignment is atomic
+    # under the GIL, so no lock is needed. `run_concurrently` runs each job in a copy of this tool
+    # call's context (a `ThreadPoolExecutor` worker does not inherit the asyncio task's ContextVar
+    # values), so the window-cap note and provenance land in the right slot. `reasons` carries any
+    # label the batch budget cut off, folded into `failures` so a batch timeout renders as a
+    # section note rather than "(none found)", the emptiness distinction 0.17.0 established.
+    from tools.waf_query import run_concurrently
+    jobs: dict[str, object] = {}
+
+    def _later(label, cwl, athena, limit):
+        jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
+                                          failures=failures, label=label, notes=notes)
+
+    _later("actions", cross_cwl, cross_athena, 15)
+    _later("request_rate", rate_cwl, rate_athena, 1)
+    _later("ja4", ja4_cwl, ja4_athena, 5)
+    _later("uri_diversity", uri_cwl, uri_athena, 1)
+    _later("query_strings", qs_cwl, qs_athena, 8)
+
+    results, reasons = run_concurrently(jobs)
+    failures.update(reasons)
+    cross = results.get("actions", [])
+    rate = results.get("request_rate", [])
+    ja4 = results.get("ja4", [])
+    uri_div = results.get("uri_diversity", [])
+    query_strings = results.get("query_strings", [])
 
     # Format output
     lines = [f"## IP Analysis: {ip}", f"Time window: {_duration}min from {start_time}", ""]
@@ -1197,7 +1258,15 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                 lines.append(f"  [{row.get('hits', '?')} hits] {red[:200]}")
         if _qs_masked:
             lines.append(f"  HINT: {PRIVACY_MASK_HINT}")
-        lines.append("")
+    else:
+        # `if query_strings:` with no else erased the whole section, so a query that failed or was
+        # cut off by the batch budget read as an IP that sent no query strings. That absence is
+        # itself a signal in QUERYARGUMENTS analysis, so it must not be conflated with a query that
+        # did not answer. Discloses with its own reason (not the empty none_text) the way the four
+        # sections above do; this was the fifth phase-2 label with no disclosure site.
+        lines.append("**Top query strings**:")
+        lines.append(_empty_reason(failures, "query_strings", "  (no query strings sent)"))
+    lines.append("")
 
     # Confidence assessment
     lines.append("---")

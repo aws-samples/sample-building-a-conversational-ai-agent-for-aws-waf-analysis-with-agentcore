@@ -60,6 +60,19 @@ HOURLY_LAYOUT = _layout("yyyy/MM/dd/HH", "hours")
 MIXED_LAYOUT = _layout("yyyy/MM/dd/HH/mm", "minutes", mixed=True,
                        cutover="2026/01/05", data_start="2022/03/07",
                        range_start="2026/01/01/00/00")
+# A reverse minute->hourly switch: mixed, but the newest era is hourly, so the default table
+# already reads the whole timeline and an hourly build would only duplicate it. The gate and the
+# tool exclude it by requiring the newest era to be minute-level (unit == "minutes"), not by the
+# cutover.
+REVERSE_MIXED_LAYOUT = _layout("yyyy/MM/dd/HH", "hours", mixed=True, cutover=None,
+                               data_start="2022/03/07", range_start="2022/03/07/00")
+# A minute-newest mixed bucket whose cutover DATE could not be pinned: `_first_minute_day` is
+# best-effort and returns None for a non-monotone cutover month. Still mixed, still minute-newest
+# (unit "minutes"), so its minute table starts at the cutover month and the older hourly history
+# is unreachable, exactly as in the dated case. The build must fire; keying on the date would
+# refuse it.
+UNDATED_MIXED_LAYOUT = _layout("yyyy/MM/dd/HH/mm", "minutes", mixed=True, cutover=None,
+                               data_start="2022/03/07", range_start="2026/01/01/00/00")
 
 
 def table(name, location, col="log_time", fmt="yyyy/MM/dd/HH/mm", interval="1",
@@ -87,8 +100,16 @@ def table(name, location, col="log_time", fmt="yyyy/MM/dd/HH/mm", interval="1",
     }
 
 
+class EntityNotFoundException(Exception):
+    """Stands in for botocore's `glue.exceptions.EntityNotFoundException`. A real class named this,
+    not a plain Exception carrying the name in its message, so `_create_named_table` can match on
+    the class name and its swallow-vs-raise check cannot be satisfied by an unrelated error that
+    happens to mention the string."""
+
+
 class FakeGlue:
-    """Only the three Glue operations resolution uses, paginated two per page.
+    """The Glue operations resolution uses: the two paginated list calls (two per page) plus
+    get_table and delete_table for the self-heal.
 
     Small pages on purpose: a single-page fake would pass even if the pagination
     were removed, which is one of the things being tested.
@@ -122,6 +143,13 @@ class FakeGlue:
 
     def delete_table(self, DatabaseName, Name):
         self.deleted.append(f"{DatabaseName}.{Name}")
+
+    def get_table(self, DatabaseName, Name):
+        for t in self.catalog.get(DatabaseName, []):
+            if t["Name"] == Name:
+                return {"Table": t}
+        # Stands in for Glue's EntityNotFoundException; callers catch it as "table absent".
+        raise EntityNotFoundException(f"{DatabaseName}.{Name}")
 
 
 @pytest.fixture
@@ -357,6 +385,7 @@ def test_mixed_layout_is_published_when_a_table_already_exists(catalog):
     assert A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl") == "userdb.waf"
     assert glue.deleted == []
     assert A._athena_state["layout_mixed"] is True
+    assert A._athena_state["layout_newest_unit"] == "minutes"
     assert A._athena_state["layout_cutover"] == "2026/01/05"
     assert A._athena_state["layout_data_start"] == "2022/03/07"
 
@@ -437,9 +466,9 @@ def test_hourly_choice_overrides_a_minute_table_the_user_maintains(catalog, monk
 
 
 def test_hourly_choice_is_ignored_on_a_single_layout_bucket(catalog, monkeypatch):
-    """The branch requires a mixed bucket: a pure layout has no older era to reach, so the
-    choice falls through to the ordinary path rather than coarsening a bucket for nothing.
-    (The tool refuses it earlier; this is the resolver's own guard.)"""
+    """The gate keys on the cutover: a single (here minute-level) layout has no cutover and no
+    older era to reach, so the choice falls through to the ordinary path rather than coarsening
+    a bucket for nothing. (The tool refuses it earlier; this is the resolver's own guard.)"""
     catalog({"userdb": [table("waf", SCOPED_PATH)]}, layout=MINUTE_LAYOUT)
     builds = _record_hourly_builds(monkeypatch)
     A.set_layout_choice("hourly")
@@ -449,6 +478,41 @@ def test_hourly_choice_is_ignored_on_a_single_layout_bucket(catalog, monkeypatch
     assert name == "userdb.waf"
     assert builds == []
     assert A._athena_state["partition_format"] == "yyyy/MM/dd/HH/mm"
+
+
+def test_hourly_choice_does_not_rebuild_a_reverse_switch_bucket(catalog, monkeypatch):
+    """A reverse minute->hourly switch is mixed but hourly-newest, so its cutover is None and
+    its default table already reads the whole timeline. The build gate keys on the cutover, not
+    on `mixed`, so the hourly choice falls through to the ordinary path rather than building a
+    redundant `_hourly` table beside an already-whole-timeline one. Keying it on `mixed` was the
+    finding: same bucket, a duplicate build and a false "history becomes queryable" message."""
+    catalog({"userdb": [table("waf", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours")]},
+            layout=REVERSE_MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+
+    name = A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+
+    assert name == "userdb.waf", "the default hourly table already reads the whole timeline"
+    assert builds == [], "no redundant _hourly build on a bucket the default already covers"
+
+
+def test_hourly_choice_builds_on_a_minute_newest_mixed_bucket_without_a_cutover_date(catalog, monkeypatch):
+    """The build gate keys on the property "mixed and minute-newest" (`layout["mixed"]` and
+    `layout["unit"] == "minutes"`), not on the cutover DATE. `_first_minute_day` is best-effort
+    and returns None for a non-monotone cutover month, so a genuine minute-newest mixed bucket can
+    carry cutover=None while its minute table still cannot reach the pre-cutover history. The
+    hourly build must fire regardless; keying on the date would refuse it and lose the feature on
+    that bucket."""
+    catalog({}, layout=UNDATED_MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+
+    name = A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+
+    assert name == f"{A.TMP_DATABASE}.waf_logs_myacl_hourly"
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"]
+    assert builds[0]["range_start"] == "2022/03/07/00", "range from the oldest data, not the cutover"
 
 
 def test_changing_the_choice_rebuilds_on_the_next_resolve(catalog, monkeypatch):
@@ -491,6 +555,115 @@ def test_resolution_block_under_the_hourly_choice_says_the_timeline_is_reachable
     assert "minute-level era only" not in block
 
 
+# The projection self-heal lives in `_create_named_table` now (ROADMAP 3.2 review): the one
+# get_table that decides a location drop also decides a range/format drop, so there is no
+# separate lookup that can fail transiently and leave a range-stale table in place returning
+# zero rows read as "no traffic". These drive the real `_create_named_table` against FakeGlue's
+# get_table with `_run_athena_ddl` captured, so the drop/create decisions are observable.
+
+
+def _capture_ddl(monkeypatch):
+    """Record the SQL `_run_athena_ddl` is asked to run."""
+    sqls = []
+    monkeypatch.setattr(A, "_run_athena_ddl",
+                        lambda sql, region, workgroup="primary": sqls.append(sql))
+    return sqls
+
+
+def _build_hourly(range_start="2022/03/07/00"):
+    """Call the real `_create_named_table` with the hourly-build arguments."""
+    return A._create_named_table(SCOPED_PATH, "s3://bkt/${log_time}", "yyyy/MM/dd/HH", "hours",
+                                 1, "us-east-1", "primary", "waf_logs_myacl_hourly",
+                                 range_start=range_start)
+
+
+def _dropped(sqls):
+    return [s for s in sqls if s.strip().upper().startswith("DROP TABLE")]
+
+
+def test_create_named_table_rebuilds_a_range_stale_scratch_table(catalog, monkeypatch):
+    """A same-location scratch table whose declared range no longer matches the data is dropped
+    and rebuilt, and disclosed. This is the finding-1 case: without it, `CREATE ... IF NOT
+    EXISTS` keeps a range-too-late table and a window before its start returns zero rows read
+    as "no traffic". The drop decision comes from the same get_table that reads the location,
+    so no separate lookup can miss it."""
+    stale = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                  rng="2025/01/01/00,NOW")   # starts after the wanted 2022/03/07: too late
+    catalog({A.TMP_DATABASE: [stale]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert _dropped(sqls), "a range-stale table must be dropped before CREATE"
+    notes = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "waf_logs_myacl_hourly" in notes and "Recreating it" in notes
+
+
+def test_create_named_table_does_not_drop_a_matching_scratch_table(catalog, monkeypatch):
+    """The round-trip that prevents thrash: a table already declaring the wanted range is left
+    in place, so a freshly rebuilt table is not condemned again on the next cold resolve."""
+    healthy = table("waf_logs_myacl_hourly", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                    rng="2022/03/07/00,NOW")
+    catalog({A.TMP_DATABASE: [healthy]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert not _dropped(sqls), "a matching table must not be dropped"
+    assert not (A._athena_state.get("discovery_notes") or ()), "and nothing disclosed"
+
+
+def test_create_named_table_rebuilds_a_location_changed_table(catalog, monkeypatch):
+    """The location half: a same-named table built over a different S3 path is dropped and
+    rebuilt (a delivery-method change moved the data), and disclosed."""
+    moved = table("waf_logs_myacl_hourly", "s3://bkt/OLD/path", fmt="yyyy/MM/dd/HH",
+                  unit="hours", rng="2022/03/07/00,NOW")
+    catalog({A.TMP_DATABASE: [moved]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert _dropped(sqls)
+    assert "waf_logs_myacl_hourly" in " ".join(A._athena_state.get("discovery_notes") or ())
+
+
+def test_create_named_table_builds_cleanly_when_absent(catalog, monkeypatch):
+    """No existing table: no DROP, no note, just CREATE."""
+    catalog({})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")
+    assert not _dropped(sqls)
+    assert not (A._athena_state.get("discovery_notes") or ())
+
+
+def test_create_named_table_raises_on_a_transient_glue_error_not_keeps_a_stale_table(catalog, monkeypatch):
+    """A get_table error that is NOT EntityNotFoundException (a throttle, a transient read
+    failure) must raise, not be read as "table absent". The broad except used to set
+    needs_drop=False on any error, so CREATE ... IF NOT EXISTS kept a possibly range-stale table
+    and a window before its start returned zero rows read as "no traffic" -- the silent-wrong-
+    answer the fold exists to close. Fail loudly; a retry re-reads cleanly. (EntityNotFound still
+    takes the absent path, covered by _builds_cleanly_when_absent above.)"""
+    glue = catalog({})
+    _capture_ddl(monkeypatch)
+
+    def throttle(DatabaseName, Name):
+        raise Exception("ThrottlingException: Rate exceeded")
+
+    monkeypatch.setattr(glue, "get_table", throttle)
+    with pytest.raises(Exception, match="ThrottlingException"):
+        _build_hourly(range_start="2022/03/07/00")
+
+
+def test_create_named_table_discloses_an_unreadable_table_at_its_name(catalog, monkeypatch):
+    """F2 and its disclosure, one scenario: a foreign object squatting the agent's scratch name,
+    here a Glue row with no StorageDescriptor. Scoping the try to get_table means the `.get` guard
+    below reads that row without the KeyError that would abort the build (F2's narrowing). It can be
+    neither verified nor safely dropped (dropping what it cannot identify could destroy someone
+    else's object), so CREATE ... IF NOT EXISTS no-ops on it. That would be the one path leaving a
+    table this block could not verify silent, so resolution discloses it instead."""
+    foreign = {"Name": "waf_logs_myacl_hourly", "Parameters": {}, "PartitionKeys": []}
+    catalog({A.TMP_DATABASE: [foreign]})
+    sqls = _capture_ddl(monkeypatch)
+    _build_hourly(range_start="2022/03/07/00")   # must not raise: the .get guard reads the row
+    assert not _dropped(sqls), "an object it cannot identify is not dropped"
+    note = " ".join(A._athena_state.get("discovery_notes") or ())
+    assert "waf_logs_myacl_hourly" in note and "could not be read" in note
+
+
 # --- the tool that records the choice ---------------------------------------
 
 
@@ -499,31 +672,142 @@ def test_tool_sets_hourly_choice_on_a_mixed_bucket():
     records the choice and drops the cached table so the next query rebuilds as hourly."""
     A.reset_table_cache()
     A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm", "layout_mixed": True,
-                            "layout_data_start": "2022/03/07", "layout_cutover": "2026/01/05"})
+                            "layout_newest_unit": "minutes", "layout_data_start": "2022/03/07",
+                            "layout_cutover": "2026/01/05"})
     msg = set_log_granularity("hourly")
     assert A._athena_state["layout_choice"] == "hourly"
     assert A._athena_state["table"] is None
     assert "2022/03/07" in msg and "hour granularity" in msg
 
 
-def test_tool_refuses_hourly_on_a_single_layout_bucket():
-    """Do not silently coarsen a bucket with no older era to reach: nothing to gain and
-    precision to lose, so the choice is left unchanged."""
+def test_tool_refuses_hourly_on_a_single_minute_layout_bucket():
+    """A pure minute-level bucket has no older era to reach, so reading it as hourly is only
+    precision lost, and the choice is left unchanged. The "only precision to lose" phrase is
+    correct HERE because the current table is minute-level; on an already-hourly bucket it
+    would be false, which the next test covers."""
     A.reset_table_cache()
-    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm", "layout_mixed": False})
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm",
+                            "partition_interval_unit": "minutes", "layout_mixed": False,
+                            "layout_newest_unit": "minutes"})
     msg = set_log_granularity("hourly")
     assert A._athena_state["layout_choice"] is None
-    assert "single partition layout" in msg
+    assert "only precision to lose" in msg
+
+
+def test_tool_declines_hourly_when_the_table_already_reads_the_whole_timeline():
+    """A bucket whose table already reads the whole timeline is declined, keyed on the
+    minute-newest property (layout_mixed and layout_newest_unit=='minutes'), NOT on `mixed`
+    alone or on the resolved table's unit. Two states reach here, both with a hourly newest era
+    (layout_newest_unit='hours'): a pure-hourly single layout (not mixed), and a reverse
+    minute->hourly switch (mixed but hourly-newest). The message no longer claims "only precision
+    to lose" (false when hourly is already the finest era) nor hardcodes "hour granularity" (wrong
+    for a daily bucket that also lands here)."""
+    for state in (
+        {"partition_format": "yyyy/MM/dd/HH", "partition_interval_unit": "hours",
+         "layout_mixed": False, "layout_newest_unit": "hours"},   # pure hourly, single layout
+        {"partition_format": "yyyy/MM/dd/HH", "partition_interval_unit": "hours",
+         "layout_mixed": True, "layout_newest_unit": "hours"},    # reverse switch, hourly-newest
+    ):
+        A.reset_table_cache()
+        A._athena_state.update(state)
+        msg = set_log_granularity("hourly")
+        assert A._athena_state["layout_choice"] is None, "a whole-timeline table is not coarsened"
+        assert "only precision to lose" not in msg, "there is no finer precision than hourly to lose"
+        assert "already reads this bucket's whole timeline" in msg and "no older era" in msg
+
+
+def test_tool_hourly_recall_after_the_build_does_not_imply_a_fresh_build():
+    """Finding 3. Once hourly is chosen and the table built, calling hourly again must not imply
+    a fresh build: `set_layout_choice` is idempotent, so nothing is rebuilt. The reply says the
+    whole timeline is already being read rather than that the agent "builds" it, the sibling of
+    the "already recorded" branch on the not-yet-resolved path."""
+    A.reset_table_cache()
+    # partition_interval_unit is 'hours' (the built hourly table), but the LAYOUT is still
+    # minute-newest mixed, so layout_newest_unit stays 'minutes': that is what the tool keys on.
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH", "partition_interval_unit": "hours",
+                            "layout_mixed": True, "layout_newest_unit": "minutes",
+                            "layout_cutover": "2026/01/05", "layout_data_start": "2022/03/07",
+                            "layout_choice": "hourly", "table": "tmp.waf_logs_myacl_hourly"})
+    msg = set_log_granularity("hourly")
+    # Only the message discriminates the recall regression: the perturbation (drop the F3 branch)
+    # falls through to a path that also leaves `table` untouched, so a table-survives assertion
+    # would be hollow. What must hold is the wording.
+    assert "already reading" in msg.lower()
+    assert "the agent builds" not in msg
+
+
+def test_tool_hourly_recall_does_not_claim_hourly_after_the_bucket_stopped_being_mixed():
+    """The 'already reading as hourly' reply is gated on the minute-newest property, not on the
+    stale choice alone. If the bucket's hourly era ages out via lifecycle between choosing hourly
+    and re-calling, the next resolve builds a plain minute table but leaves layout_choice=='hourly';
+    a re-call must not claim the table is still whole-timeline hourly. It declines instead."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm", "partition_interval_unit": "minutes",
+                            "layout_mixed": False, "layout_newest_unit": "minutes",
+                            "layout_choice": "hourly"})   # stale choice; bucket now single minute
+    msg = set_log_granularity("hourly")
+    assert "already reading" not in msg.lower(), "the bucket is no longer minute-newest mixed"
+    assert "only precision to lose" in msg
+
+
+def test_tool_offers_hourly_on_a_minute_newest_mixed_bucket_even_without_a_cutover_date():
+    """The tool keys the offer on the minute-newest property (`layout_mixed` and
+    `layout_newest_unit == "minutes"`, the DETECTED layout), not on the cutover DATE.
+    `_first_minute_day` is best-effort (waf_athena's own docstring says so) and returns None for a
+    non-monotone cutover month, so a genuine minute-newest mixed bucket can have cutover=None. Its
+    minute table still starts at the cutover month, so the pre-cutover history is unreachable and
+    the hourly build DOES reach it. Keying on the date would decline and call it "a single
+    minute-level layout", which is false: the older era is there, only its date is not pinned."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH/mm",
+                            "partition_interval_unit": "minutes", "layout_mixed": True,
+                            "layout_newest_unit": "minutes", "layout_cutover": None,
+                            "layout_data_start": "2022/03/07"})
+    msg = set_log_granularity("hourly")
+    assert A._athena_state["layout_choice"] == "hourly", "a minute-newest mixed bucket still builds"
+    assert "single minute-level layout" not in msg, "it has an older era; the date just is not pinned"
+    assert "whole timeline" in msg
+
+
+def test_tool_offers_hourly_even_when_a_user_hourly_table_is_resolved_over_a_mixed_bucket():
+    """The functional regression the round keyed on: `_find_existing_table` prefers a user's own
+    table, so on a minute-newest mixed bucket a user-maintained hourly table (partition_interval_
+    unit='hours', a range that misses the pre-cutover era) can be the resolved one. The tool must
+    still offer the agent's whole-timeline build, because it keys on the DETECTED layout
+    (layout_newest_unit='minutes'), not on the resolved table's unit. Keying on the resolved unit
+    ('hours' here) wrongly declined it as 'already reads the whole timeline'."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH", "partition_interval_unit": "hours",
+                            "layout_mixed": True, "layout_newest_unit": "minutes",
+                            "layout_cutover": "2026/01/05", "layout_data_start": "2022/03/07"})
+    msg = set_log_granularity("hourly")
+    assert A._athena_state["layout_choice"] == "hourly", "the agent's build is offered, not declined"
+    assert "whole timeline" in msg
 
 
 def test_tool_minute_choice_resets_to_the_default():
     A.reset_table_cache()
     A._athena_state.update({"layout_choice": "hourly", "layout_mixed": True,
-                            "partition_format": "yyyy/MM/dd/HH", "table": "x.y"})
+                            "layout_newest_unit": "minutes", "layout_cutover": "2026/01/05",
+                            "partition_format": "yyyy/MM/dd/HH", "table": "x.y"})   # minute-newest mixed
     msg = set_log_granularity("minute")
     assert A._athena_state["layout_choice"] is None
     assert A._athena_state["table"] is None
     assert "full precision" in msg
+
+
+def test_tool_minute_message_keys_on_the_minute_newest_property_not_bare_mixed():
+    """The "recent minute-level era, ask for hourly" claim is keyed on the minute-newest property
+    (layout_mixed and layout_newest_unit=='minutes'), not on layout_mixed alone. A bucket that is
+    mixed but hourly-newest (a reverse minute->hourly switch, layout_newest_unit='hours') already
+    reads the whole timeline, so it must get the neutral default reply rather than a minute-level
+    claim. Asserts the positive message too, so an empty or error string cannot pass on absence."""
+    A.reset_table_cache()
+    A._athena_state.update({"partition_format": "yyyy/MM/dd/HH", "layout_mixed": True,
+                            "layout_newest_unit": "hours"})   # mixed, but hourly-newest
+    msg = set_log_granularity("minute")
+    assert "minute-level" not in msg and "full precision" not in msg
+    assert "Reading the bucket's own partition layout, the default." in msg
 
 
 def test_tool_rejects_an_unknown_granularity():
@@ -535,13 +819,50 @@ def test_tool_rejects_an_unknown_granularity():
     assert A._athena_state == before
 
 
+def test_tool_hourly_before_resolution_asks_for_a_query_first():
+    """The tool cannot promise the whole timeline before a query has revealed whether the
+    bucket is even mixed, so it asks for a query rather than setting a choice the resolver
+    may ignore and relaying a false promise to the user."""
+    A.reset_table_cache()                        # partition_format is None, so unresolved
+    msg = set_log_granularity("hourly")
+    assert A._athena_state.get("layout_choice") is None, "no choice set on no information"
+    assert "query first" in msg
+
+
+def test_tool_hourly_recall_before_resolution_says_the_choice_is_recorded():
+    """The 'already recorded' branch: calling hourly again before a query has resolved a table,
+    when the choice is already hourly (a prior call reset the cache), acknowledges the recorded
+    choice rather than implying nothing was chosen with the generic 'run a query first'."""
+    A.reset_table_cache()
+    A._athena_state["layout_choice"] = "hourly"   # chosen, but the cache was reset -> unresolved
+    msg = set_log_granularity("hourly")
+    assert "already recorded" in msg
+
+
+def test_set_layout_choice_is_idempotent(catalog, monkeypatch):
+    """Setting the choice to what it already is must not drop the resolved table or wipe the
+    path memo, so a redundant call rebuilds nothing and fires no rate-limited describe. Only
+    a real change rebuilds."""
+    catalog({}, layout=MIXED_LAYOUT)
+    builds = _record_hourly_builds(monkeypatch)
+    A.set_layout_choice("hourly")
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"]
+    A.set_layout_choice("hourly")                # same choice
+    assert A._athena_state.get("table") is not None, "the cached table must survive an unchanged choice"
+    A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
+    assert [b["name"] for b in builds] == ["waf_logs_myacl_hourly"], "no rebuild on an unchanged choice"
+
+
 def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
-    """The scratch table is stale, so it is dropped and rebuilt. That used to walk the
-    whole S3 tree twice: once for the cross-check that condemned it, once to build its
-    replacement. One walk at the top of resolution serves both."""
-    glue = catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
-                                           fmt="yyyy/MM/dd/HH", unit="hours")]},
-                   layout=MIXED_LAYOUT)
+    """A stale scratch table is rebuilt on ONE S3 walk, not two. The walk at the top of
+    resolution serves both the cross-check that finds it stale and the rebuild. The drop of
+    the stale table now happens inside `_create_named_table` (its own tests cover that), so
+    here that build is stubbed and the test pins the walk count plus that resolution took the
+    rebuild path rather than returning the stale table as-is."""
+    catalog({A.TMP_DATABASE: [table("waf_logs_myacl", SCOPED_PATH,
+                                    fmt="yyyy/MM/dd/HH", unit="hours")]},
+            layout=MIXED_LAYOUT)
     walks = []
 
     def counted(path):
@@ -553,10 +874,9 @@ def test_the_self_heal_path_walks_s3_once(catalog, monkeypatch):
         A.TMP_DATABASE, table("waf_logs_myacl", SCOPED_PATH)))
 
     A.resolve_log_table(SCOPED_PATH, "us-east-1", "myacl")
-    # The precondition: the stale table really was dropped, so this is the two-walk
-    # path and not the ordinary create path.
-    assert glue.deleted == [f"{A.TMP_DATABASE}.waf_logs_myacl"]
     assert len(walks) == 1
+    # The stale scratch table was not returned as-is: resolution took the rebuild path.
+    assert A._athena_state["temp_created"] is True
 
 
 def test_an_empty_bucket_still_resolves_an_existing_table(catalog, monkeypatch):
@@ -855,8 +1175,8 @@ def test_mixed_bucket_is_not_told_to_widen_the_range(catalog):
     the advice therefore looks like confirmation that the data is gone.
     """
     _resolve(catalog, table("t", SCOPED_PATH, rng="2026/01/01/00/00,NOW"))
-    A._athena_state.update({"layout_mixed": True, "layout_cutover": "2026/01/05",
-                            "layout_data_start": "2022/03/07"})
+    A._athena_state.update({"layout_mixed": True, "layout_newest_unit": "minutes",
+                            "layout_cutover": "2026/01/05", "layout_data_start": "2022/03/07"})
     _, problem = A.partition_predicate(
         dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
         dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc))
@@ -864,6 +1184,45 @@ def test_mixed_bucket_is_not_told_to_widen_the_range(catalog):
     assert problem is not None
     assert "2026/01/05" in problem
     assert "Widen the table's projection" not in problem
+
+
+def test_undated_mixed_bucket_still_warns_and_offers_hourly(catalog):
+    """The display half of the finding: an undated minute-newest mixed bucket (cutover=None from a
+    non-monotone month) must not fall silent. `_mixed_layout_sentence` keys on the property, so the
+    resolution block still offers the hourly build and partition_predicate still explains why
+    widening the minute range fails, instead of dropping to the 'widen the range' advice the code
+    itself calls actively wrong on a mixed bucket (and which waf_query raises as a fatal error)."""
+    _resolve(catalog, table("t", SCOPED_PATH, rng="2026/01/01/00/00,NOW"))
+    A._athena_state.update({"layout_mixed": True, "layout_newest_unit": "minutes",
+                            "layout_cutover": None, "layout_data_start": "2022/03/07"})
+    block = A.describe_table_resolution()
+    assert "two partition layouts" in block, "the mixed-layout notice still fires without a date"
+    assert "the agent will build it" in block, "and still offers the hourly build"
+    assert "best-effort" not in block, "no third mention of the date; the sentence already said it is unknown"
+    _, problem = A.partition_predicate(
+        dt.datetime(2025, 6, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2025, 6, 2, tzinfo=dt.timezone.utc))
+    assert problem is not None
+    assert "Widen the table's projection" not in problem, "not the advice it calls actively wrong"
+    assert "hourly table" in problem, "the mixed explanation is given instead"
+
+
+def test_partition_predicate_under_hourly_choice_points_before_the_oldest_data_not_at_a_build(catalog):
+    """Once the whole-timeline hourly table is active, an out-of-range window is before the bucket's
+    oldest data (a typo, or a date older than any data), not a reachable era waiting on a build.
+    partition_predicate keys the advice on the choice, so it does not tell the user to build the
+    table they already have, and the branch is no longer "only reached under the default choice"."""
+    _resolve(catalog, table("h", SCOPED_PATH, fmt="yyyy/MM/dd/HH", unit="hours",
+                            rng="2022/03/07/00,NOW"))
+    A._athena_state.update({"layout_mixed": True, "layout_newest_unit": "minutes",
+                            "layout_cutover": "2026/01/05", "layout_data_start": "2022/03/07",
+                            "layout_choice": "hourly"})
+    _, problem = A.partition_predicate(
+        dt.datetime(2019, 1, 1, tzinfo=dt.timezone.utc),
+        dt.datetime(2019, 1, 2, tzinfo=dt.timezone.utc))
+    assert problem is not None
+    assert "before anything the bucket holds" in problem
+    assert "the agent will build it" not in problem, "the user already built it; do not re-offer"
 
 
 def test_unsupported_interval_unit_is_rejected(catalog):

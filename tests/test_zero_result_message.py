@@ -28,7 +28,7 @@ def zero_rows(monkeypatch):
     A._athena_state.update({
         "table": "userdb.waf", "partition_format": "yyyy/MM/dd/HH/mm",
         "table_choice": "Using userdb.waf.",
-        "layout_mixed": True, "layout_cutover": "2026/01/05",
+        "layout_mixed": True, "layout_newest_unit": "minutes", "layout_cutover": "2026/01/05",
         "layout_data_start": "2022/03/07",
     })
     yield

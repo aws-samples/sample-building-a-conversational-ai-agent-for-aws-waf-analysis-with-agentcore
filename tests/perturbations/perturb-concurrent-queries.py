@@ -28,7 +28,8 @@ CASES = [
         SERIAL,
         "    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)",
         [f"{T}::test_jobs_really_run_at_the_same_time",
-         f"{T}::test_the_scan_issues_its_six_queries_concurrently"],
+         f"{T}::test_the_scan_issues_its_six_queries_concurrently",
+         f"{T}::test_analyze_ip_runs_its_phase_two_queries_concurrently"],
     ),
     (
         "the worker cap removed, i.e. a whole chain submitted against Athena's DML quota",
@@ -161,6 +162,30 @@ CASES = [
         "    multi_results_unused = None",
         [f"{T}::test_the_investigation_registers_exactly_the_independent_queries",
          f"{T}::test_the_investigation_runs_its_five_queries_concurrently"],
+    ),
+    (
+        "one analyze_ip phase-2 query dropped from the wave and left unrun",
+        "tools/waf_logs.py",
+        '    _later("ja4", ja4_cwl, ja4_athena, 5)',
+        "    ja4_unused = None",
+        [f"{T}::test_analyze_ip_registers_its_five_phase_two_queries",
+         f"{T}::test_analyze_ip_runs_its_phase_two_queries_concurrently"],
+    ),
+    (
+        "analyze_ip discarding the batch reasons, i.e. a timed-out query reads as a quiet window",
+        "tools/waf_logs.py",
+        "    results, reasons = run_concurrently(jobs)\n    failures.update(reasons)",
+        "    results, reasons = run_concurrently(jobs)",
+        [f"{T}::test_an_analyze_ip_batch_timeout_says_so_not_no_rows"],
+    ),
+    (
+        # The fifth label's disclosure site, the one that was missing: without it a failed or
+        # timed-out query_strings query vanishes rather than saying it failed.
+        "the query_strings section back to vanishing when its query does not answer",
+        "tools/waf_logs.py",
+        '        lines.append(_empty_reason(failures, "query_strings", "  (no query strings sent)"))',
+        '        lines.append("")',
+        [f"{T}::test_an_analyze_ip_batch_timeout_says_so_not_no_rows"],
     ),
 ]
 
