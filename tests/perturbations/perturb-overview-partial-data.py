@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: MIT-0
 """Can `tests/test_overview_partial_data.py` fail?
 
-Four cases, one per new disclosure or per metric it has to cover. Each inverts or drops the exact
-clause the matching test exists to pin, not the surrounding scaffolding.
+Five cases, one per new disclosure or metric it has to cover, plus one on the test fixture's own
+misuse-detection flag. Each inverts or drops the exact clause the matching test exists to pin, not
+the surrounding scaffolding.
 
 Run from the repo root. Restores every touched file on any exit path.
 """
@@ -58,9 +59,17 @@ CASES = [
         [f"{T}::test_top_rules_gap_detection_names_both_possible_causes"],
         False,  # its target reads the source text rather than running `_top_rules`
     ),
+    (
+        "the fake's misuse flag stops being set, so a malformed query goes unflagged",
+        "tests/test_overview_partial_data.py",
+        "            if rule is None:\n"
+        "                self.misused = True",
+        "            pass",
+        [f"{T}::test_the_fake_itself_flags_a_malformed_query"],
+    ),
 ]
 
-# Cases 1 and 3 anchor on a full `if` statement the matching fixture actually reaches, so they get
-# the reachability probe. Case 2's anchor is a continuation line inside a multi-line call, and case
-# 4's target reads source rather than running `_top_rules`; both pass probe=False, per case above.
+# Cases 1, 3 and 5 anchor on a full statement the matching test actually reaches, so they get the
+# reachability probe. Case 2's anchor is a continuation line inside a multi-line call, and case 4's
+# target reads source rather than running `_top_rules`; both pass probe=False, per case above.
 sys.exit(sweep([(c[0], [(c[1], c[2], c[3])], c[4], c[5] if len(c) > 5 else True) for c in CASES]))

@@ -41,18 +41,21 @@ class FakeMetricCW:
     map, keyed on what the query actually asks for rather than a fixed shape, so a case can tell
     "this rule/metric is genuinely zero" apart from "something else in the WebACL is not".
 
-    **This cannot fail loud if the query it receives ever stops carrying a `Rule` dimension.**
+    **A query with no `Rule` dimension is recorded on `self.misused`, not raised.**
     `_has_mitigated_traffic` wraps its whole `get_metric_data` call in a bare `except Exception:
-    return False`, so whatever this raises, including an explicit `assert`, is caught there and read
-    as "no traffic" rather than surfaced. The asymmetry is real but partial: the two disclosure-
-    direction tests below would still go red (they need a `True` this can no longer produce), so the
-    break is not silent everywhere, only on the clean-zero-direction tests, which would keep passing
-    for the wrong reason. `next(..., None)` plus an assert would raise a clearer exception than a bare
-    `StopIteration`, but not a louder one, so it is written as an explicit default and comment rather
-    than a false claim of having fixed that."""
+    return False`, so raising here, an `assert` included, would be caught there and read as "no
+    traffic" instead of surfaced -- confirmed, not assumed: an `AssertionError` inside that try
+    disappears the same way a bare `next()`'s `StopIteration` would. A flag set here and asserted by
+    the caller after the call never goes through that exception path at all, so nothing catches it.
+    The fixtures below assert `not fake.misused` right after every call. The asymmetry this closes was
+    real but partial even before the flag: the two disclosure-direction tests need a `True` a broken
+    query can no longer produce, so they would still go red; only the clean-zero-direction tests would
+    have kept passing for the wrong reason. See `test_the_fake_itself_flags_a_malformed_query` for
+    proof the flag actually fires."""
 
     def __init__(self, values: dict):
         self.values = values
+        self.misused = False
 
     def get_metric_data(self, **kw):
         out = []
@@ -60,6 +63,8 @@ class FakeMetricCW:
             metric = q["MetricStat"]["Metric"]
             name = metric["MetricName"]
             rule = next((d["Value"] for d in metric["Dimensions"] if d["Name"] == "Rule"), None)
+            if rule is None:
+                self.misused = True
             out.append({"Id": q["Id"], "Values": [self.values.get((rule, name), 0)]})
         return {"MetricDataResults": out}
 
@@ -85,7 +90,10 @@ def rate_limits(monkeypatch):
         # genuinely never fired" shape `_has_mitigated_traffic` exists to disambiguate.
         monkeypatch.setattr(P, "_get_all_rules_metrics_search",
                             lambda cw, name, s, e, period=86400, scope="CLOUDFRONT", region="": {})
-        return O._rate_limits(FakeMetricCW(values), "acl", START, END, 1440)
+        fake = FakeMetricCW(values)
+        out = O._rate_limits(fake, "acl", START, END, 1440)
+        assert not fake.misused, "a query to the fake had no Rule dimension"
+        return out
     return run
 
 
@@ -130,7 +138,10 @@ def challenge_solve_rate(monkeypatch):
         monkeypatch.setattr(P, "_get_all_rules_metrics_search",
                             lambda cw, name, s, e, period=86400, scope="CLOUDFRONT", region="": {})
         monkeypatch.setattr(P, "_get_challenge_solved", lambda cw, name, scope, region, s, e: (0, 0))
-        return O._challenge_solve_rate(FakeMetricCW(values), "acl", "CLOUDFRONT", "", START, END, 1440)
+        fake = FakeMetricCW(values)
+        out = O._challenge_solve_rate(fake, "acl", "CLOUDFRONT", "", START, END, 1440)
+        assert not fake.misused, "a query to the fake had no Rule dimension"
+        return out
     return run
 
 
@@ -155,6 +166,20 @@ def test_nothing_anywhere_is_a_clean_zero(challenge_solve_rate):
     out = challenge_solve_rate({})
     assert "No challenges or CAPTCHAs issued" in out, out
     assert "PARTIAL DATA" not in out
+
+
+def test_the_fake_itself_flags_a_malformed_query():
+    """The two fixtures assert `not fake.misused` after every call, which only means something if
+    the flag actually fires on a query with no `Rule` dimension. Exercised directly against
+    `FakeMetricCW`, the one place this can be proven without going through `_has_mitigated_traffic`'s
+    exception-swallowing try block, which is exactly what the flag exists to not need."""
+    fake = FakeMetricCW({})
+    fake.get_metric_data(MetricDataQueries=[
+        {"Id": "m0", "MetricStat": {"Metric": {
+            "MetricName": "BlockedRequests",
+            "Dimensions": [{"Name": "WebACL", "Value": "acl"}]}}},
+    ])
+    assert fake.misused, "a query with no Rule dimension went unflagged"
 
 
 def test_top_rules_gap_detection_names_both_possible_causes():
