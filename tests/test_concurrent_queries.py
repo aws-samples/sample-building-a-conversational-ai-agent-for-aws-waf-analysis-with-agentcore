@@ -462,16 +462,22 @@ def test_an_analyze_ip_batch_timeout_says_so_not_no_rows(monkeypatch):
     monkeypatch.setattr(WQ, "query_logs", q)
     # Capture the real one before patching, so the lambda does not call itself: analyze_ip imports
     # run_concurrently from `waf_query`, which is the same module object as Q, so patching it and
-    # then calling Q.run_concurrently inside the patch would recurse.
+    # then calling Q.run_concurrently inside the patch would recurse. Capture the wave's job keys
+    # too, so the count below is checked against the size of the wave rather than a literal 5.
+    seen: dict = {}
     real = Q.run_concurrently
-    monkeypatch.setattr(WQ, "run_concurrently", lambda jobs, **k: real(jobs, budget=1))
+    monkeypatch.setattr(WQ, "run_concurrently",
+                        lambda jobs, **k: (seen.update({"k": set(jobs)}), real(jobs, budget=1))[1])
     try:
         out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
     finally:
         release.set()
-    # All FIVE phase-2 sections must say they timed out, not four: query_strings was the one label
-    # with no disclosure site, so its section vanished on a timeout instead of saying so. `in`
-    # passed on the first of the other four; the count is what pins every section.
-    assert out.count("the query for this section failed") == 5, out
+    # Every phase-2 section must say it timed out: query_strings was the one label with no
+    # disclosure site, so its section vanished on a timeout instead of saying so. `in` passed on
+    # the first of the other four; the count pins every section. Checked against the wave's own
+    # size, not the literal 5, so a sixth query added later without a disclosure site fails here
+    # rather than passing because 5 still happens to match its five disclosures.
+    assert seen.get("k"), "phase 2 never ran, so this proves nothing"
+    assert out.count("the query for this section failed") == len(seen["k"]), out
     assert "(no requests in this window)" not in out
     assert "(no query strings sent)" not in out, "the timeout must not read as an IP that sent none"
