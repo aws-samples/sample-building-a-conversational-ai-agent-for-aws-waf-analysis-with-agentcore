@@ -1267,8 +1267,9 @@ def _build_agent_hourly_table(s3_path: str, region: str, webacl_name: str, layou
     place."""
     if not _validate_waf_log(s3_path):
         raise RuntimeError(
-            f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
-            f"destination is correct.")
+            f"No .gz WAF log objects found under {s3_path}. The agent auto-builds a table over "
+            f"JSON (.gz) logs only; if these are Parquet logs, create an Athena table over them "
+            f"and point the agent at that table, which it queries directly.")
     created = _create_named_table(
         s3_path, layout["storage_template"], "yyyy/MM/dd/HH", "hours", 1,
         region, "primary", _safe_table_name(webacl_name) + "_hourly",
@@ -1515,8 +1516,9 @@ def _resolve_log_table_locked(s3_path: str, region: str, webacl_name: str) -> st
 
     if not _validate_waf_log(s3_path):
         raise RuntimeError(
-            f"S3 path does not contain valid AWS WAF logs: {s3_path}. Verify the log "
-            f"destination is correct.")
+            f"No .gz WAF log objects found under {s3_path}. The agent auto-builds a table over "
+            f"JSON (.gz) logs only; if these are Parquet logs, create an Athena table over them "
+            f"and point the agent at that table, which it queries directly.")
     if layout is None:
         raise layout_error
     created = _create_named_table(

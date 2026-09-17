@@ -9,6 +9,37 @@ import threading
 _state: dict = {}
 
 
+# WAF Analyst supports CLOUDFRONT scope only. A REGIONAL WebACL (ALB, API Gateway, and other
+# regional resources) is refused at every tool that takes a scope, rather than analysed with
+# silently-empty metric sections. The message is engine-authored: the agent relays it and cites
+# the knowledge base. See kb-docs/regional-alb-and-parquet.md and design/audit-non-us-east-1-webacl.md.
+REGIONAL_UNSUPPORTED_MESSAGE = (
+    "WAF Analyst analyses CloudFront-scope WebACLs only. REGIONAL scope (Application Load "
+    "Balancer, API Gateway, AppSync, App Runner, Cognito user pools, Verified Access) is not "
+    "supported, and this is a deliberate limitation rather than a tool failure.\n\n"
+    "A REGIONAL WebACL publishes its CloudWatch metrics with a Region dimension that this tool's "
+    "metric queries do not carry, so its bot, DDoS, attack-type and label analysis would read as "
+    "empty while the request counts still looked complete. A report that looks whole while "
+    "silently dropping whole sections is worse than a clear answer of no.\n\n"
+    "Relay this to the user in plain language: state that REGIONAL / ALB WAF is not supported and "
+    "give the reason above. Do not retry under CLOUDFRONT scope and do not fall back to it."
+)
+
+
+def refuse_if_regional(scope: str | None) -> str | None:
+    """Return the refusal message when the scope is REGIONAL, else None.
+
+    The scope is normalised (stripped, upper-cased) before the check. This guard exists to not
+    trust the model, so a model that passes "regional" or " REGIONAL" must not slip through it. A
+    tool whose scope defaults to "" resolves it from session state first (get_scope), and session
+    state never holds REGIONAL, because get_waf_config refuses before it would call
+    set_webacl_context, so checking the passed value is enough with no separate session check to keep
+    in sync. Normalising here also settles a latent disagreement between callers, where `_dims` reads
+    `scope != "CLOUDFRONT"` and `_has_mitigated_traffic` reads `scope == "REGIONAL"`: an unnormalised
+    odd-case value never reaches either, because it is refused first."""
+    return REGIONAL_UNSUPPORTED_MESSAGE if (scope or "").strip().upper() == "REGIONAL" else None
+
+
 def set_webacl_context(name: str, arn: str, scope: str, region: str, log_destination: str | None = None,
                        log_filter_active: bool = False, log_filter_default: str | None = None,
                        redacted_fields: tuple = ()):

@@ -9,6 +9,15 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 >
 > WAF Analyst analyzes security logs, blocked requests, SQLi/XSS rule matches, bypass candidates, and bot/DDoS indicators. With GPT-family models on Bedrock, this defensive WAF analysis can be silently blocked by upstream cyber-safety checks and appear as if the agent stopped responding. The recommended model is Claude Sonnet 5.
 
+> [!IMPORTANT]
+> **Check three things before you deploy. Each one makes the agent unusable or quietly wrong, and each is on the [roadmap](docs/roadmap.md).**
+>
+> 1. **Your WebACL is on CloudFront.** A REGIONAL WebACL (ALB, API Gateway, AppSync) is not supported: the agent declines it at selection and explains why, rather than analysing it and returning a report whose label-, attack-, bot-, country- and anti-DDoS-derived sections silently read as zero. If your WAF only protects regional resources, this tool cannot analyse it.
+> 2. **Your WAF logs land in the same AWS account you deploy into.** Cross-account log delivery is not supported in either placement: from the WAF account the bucket is unreadable without grants nothing here creates, and from the log account there is no WebACL to select and the CloudWatch metrics are in the other account.
+> 3. **Parquet works only at the log destination itself.** If your WAF logs are delivered as Parquet, the agent queries them (verified 2026-09-17, camelCase fields included). A Parquet copy kept in a separate prefix beside your JSON is not read: the agent matches a table by the log path and cannot be pointed elsewhere.
+>
+> [Known Limitations](docs/limitations.md) has the measurements and the code behind all three.
+
 ## What It Does
 
 ![WAF Analyst Screenshot](docs/screenshot.png)

@@ -876,7 +876,9 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
         hours: Duration in hours from start_time (default 24, max 24). For weekly overview use 24 and check WoW comparison in the report.
         lang: Language for report — "zh" (Chinese) or "en" (English). Match user's language.
     """
-    from tools.session_state import declare_query_subject
+    from tools.session_state import declare_query_subject, refuse_if_regional
+    if (msg := refuse_if_regional(scope)):
+        return msg
     declare_query_subject(webacl_name)
 
     # Validate start_time

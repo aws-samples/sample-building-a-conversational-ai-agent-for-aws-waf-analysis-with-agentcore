@@ -56,7 +56,9 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
     _log(f"query_type={query_type} webacl={webacl_name} minutes={minutes} start_time={start_time}")
     if not scope:
         scope = get_scope() or "CLOUDFRONT"
-    from tools.session_state import resolve_region
+    from tools.session_state import resolve_region, refuse_if_regional
+    if (msg := refuse_if_regional(scope)):
+        return msg
     region = resolve_region(scope)
     if region is None:
         return ("Error: REGIONAL scope requires get_waf_config to be called first "

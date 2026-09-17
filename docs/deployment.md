@@ -24,6 +24,19 @@ WAF Analyst deploys as up to four CloudFormation stacks:
 2. **A container tool, optional.** [Docker Desktop](https://docs.docker.com/get-docker/) with buildx, or [finch](https://github.com/runfinch/finch) (see [appendix](#alternative-using-finch)), builds the image on your own machine. With neither, [build in AWS](#alternative-build-in-aws-no-docker-required) instead. Do not install one just to deploy.
 3. **Node.js 18+** (for building the frontend)
 4. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
+5. **A CloudFront WebACL whose logs land in this same account, in JSON.** Three shapes are not supported
+   yet, and two of them fail quietly rather than with an error. Confirm all three before you spend a
+   deployment on it:
+   - **Scope.** `aws wafv2 list-web-acls --scope CLOUDFRONT --region us-east-1` should list the WebACL you
+     mean. A REGIONAL WebACL (ALB, API Gateway, AppSync) produces a report whose totals are right and whose
+     label, attack, bot, country and anti-DDoS sections are all zero.
+   - **Account.** `aws wafv2 get-logging-configuration --resource-arn <webacl-arn>` gives the destination.
+     If the bucket, delivery stream or log group belongs to another account, stop here. Deploying into the
+     WAF account leaves the bucket unreadable; deploying into the log account leaves no WebACL to select and
+     the metrics in the other account. The agent assumes no cross-account role.
+   - **Format.** JSON, which is what WAF writes. A Parquet table you converted yourself is not supported.
+
+   [Known Limitations](limitations.md#not-supported-yet) has the measurements behind each one.
 
 ## Region Selection
 
@@ -125,7 +138,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.28.1 \
+  --parameter-overrides ReleaseTag=v0.29.0 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
