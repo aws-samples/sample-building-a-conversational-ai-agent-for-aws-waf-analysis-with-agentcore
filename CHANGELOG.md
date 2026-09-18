@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.30.0 (2026-09-18)
+
+### Added: rate_limits and challenge_solve_rate disclose the same CloudWatch 14-day discovery gap the other overview sections already do
+
+`get_waf_overview`'s four other per-rule/per-label sections (`attack_types`, `bot_names`,
+`targeted_signals`, `top_labels`) already distinguish "no traffic of this type" from "CloudWatch's
+SEARCH-based metric discovery has not indexed this specific metric in the last 14 days, though the
+WebACL has other mitigated traffic." The second case reads exactly like the first unless flagged.
+`rate_limits` and `challenge_solve_rate` now make the same distinction. `rate_limits` checks each
+configured rate-limit rule directly by name, a MetricStat query immune to the 14-day discovery
+window, covering Blocked, Challenge, CAPTCHA and Counted actions, since a rate-limit rule configured
+to only Count never produces the first three. `challenge_solve_rate` checks Challenge and CAPTCHA
+specifically at the WebACL level. Both now report "unavailable, not zero" rather than a silent clean
+zero when that specific signal, and only that signal, could not be confirmed. `_bot_summary` is
+unaffected: it already queries CloudWatch with explicit dimensions rather than a SEARCH expression, so
+it was never exposed to this gap. `top_rules`' existing note about mitigated traffic not attributable
+to any visible rule now names CloudWatch's 14-day discovery window as a second possible cause,
+alongside managed rule group sub-rules that don't publish their own per-rule metric.
+
+### Fixed: removed a dead Athena output-location fallback; corrected an overclaim about WebACL discovery
+
+Removed a fallback in the Athena query-result-location resolver that scanned every S3 bucket in the
+account looking for one named like an Athena results bucket. This account-wide `s3:ListBuckets` call
+is not permitted by this project's own deployed IAM role, so it always failed and fell through to the
+error message below it anyway; removing it is a cleanup with no behavior change. `docs/why-waf-agent.md`
+(and its Chinese translation) said the agent discovers "every" CloudFront-scope WebACL in the account
+with one call. `list_webacls` does not paginate through AWS WAF's `ListWebACLs` API, so that is not
+something the tool currently guarantees; reworded to state only what the tool does, listing the
+account's CloudFront-scope WebACLs in one call.
+
 ## 0.29.0 (2026-09-17)
 
 ### Added: the agent refuses a REGIONAL-scope WebACL instead of half-analysing it
