@@ -124,7 +124,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.30.0 \
+  --parameter-overrides ReleaseTag=v0.30.1 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -455,6 +455,11 @@ aws cloudformation deploy \
 ```
 
 > **注意**：已有会话继续运行旧代码，新会话使用更新后的镜像。
+
+> **注意**：这些操作都不会改变界面左下角的版本号。那个号是第 6 步构建前端时，从 `CHANGELOG.md`
+> 最新的标题行读出来、烧进打包好的 JS 里的，跟这里重建的 backend 容器无关。硬刷浏览器也修不了，不是浏览器缓存旧了，
+> 是 CloudFront 上那份文件本身就没变过，没有什么可以被刷掉。想让版本号（或者 SPA 里任何别的东西）跟上新版本，
+> 第 6 步也要重新做一遍。
 
 ## 替代方案：使用 finch
 

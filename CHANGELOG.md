@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.30.1 (2026-09-18)
+
+### Fixed: "Updating the Agent" didn't mention the frontend's version badge is a separate build
+
+The version badge in the bottom-left corner of the UI is baked into the frontend bundle at build
+time, read from this file's newest heading, independent of the backend container. Rebuilding and
+redeploying only the backend, as "Updating the Agent" walks through, leaves the badge showing
+whatever it last read, and no browser refresh fixes that: the file CloudFront serves genuinely
+has not changed. AGENTS.md and both languages of `docs/deployment.md` now say this at the point
+where an agent or a person following that section would otherwise hit it, and say to redo the
+frontend build step if the badge should move too.
+
 ## 0.30.0 (2026-09-18)
 
 ### Added: rate_limits and challenge_solve_rate disclose the same CloudWatch 14-day discovery gap the other overview sections already do
