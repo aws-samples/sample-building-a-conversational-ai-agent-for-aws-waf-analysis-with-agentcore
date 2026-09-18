@@ -141,7 +141,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.30.0 \
+  --parameter-overrides ReleaseTag=v0.30.1 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -478,6 +478,13 @@ aws cloudformation deploy \
 ```
 
 > **Note**: Existing sessions continue running old code. New sessions will use the updated image.
+
+> **Note**: The version badge in the bottom-left corner of the UI does not change from any of this.
+> It is baked into the frontend bundle at build time (Step 6), read from `CHANGELOG.md`'s newest
+> heading, independent of the backend container this section rebuilds. Hard-refreshing the browser
+> will not fix a stale badge, because the bundle CloudFront is serving genuinely has not changed;
+> there is nothing stale to evict. Redo Step 6 as well if the badge, or anything else in the SPA,
+> should reflect the new version.
 
 ## Alternative: Using finch
 

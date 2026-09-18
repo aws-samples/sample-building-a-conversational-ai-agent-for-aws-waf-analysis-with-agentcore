@@ -175,6 +175,11 @@ predates it.
 - **Update the agent:** rebuild with a new commit tag, redeploy backend re-passing all non-default
   params (principles 3 & 4). Exact commands: [`docs/deployment.md` → Updating the Agent](docs/deployment.md#updating-the-agent).
   Existing sessions finish on old code; new sessions pick up the new image.
+- **The frontend's version badge does not follow the backend.** It is baked into the built JS at
+  Step 6 from `CHANGELOG.md`'s newest heading, so redeploying only the backend leaves the UI showing
+  whatever it last read there. No browser refresh fixes it, because the file being served genuinely
+  has not changed. If `CHANGELOG.md` changed and you want the badge (or anything else in the SPA) to
+  reflect it, redo Step 6 too.
 - **Tear down (only when explicitly asked):** buckets must be emptied before their stack deletes, and
   order matters. Follow [`docs/deployment.md` → Cleanup](docs/deployment.md#cleanup). The agent also left external Athena tables in
   a `waf_analysis_tmp` Glue database (no data copied) — drop with `DROP DATABASE waf_analysis_tmp CASCADE`.
