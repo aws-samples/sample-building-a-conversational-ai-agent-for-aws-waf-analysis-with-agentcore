@@ -141,7 +141,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.29.0 \
+  --parameter-overrides ReleaseTag=v0.30.0 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
