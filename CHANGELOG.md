@@ -23,6 +23,39 @@ evaluation does the same, and no longer files a rule with no metric under "0 hit
 a zero is confirmed first, and a rule with metrics off, or whose read failed, gets its own section.
 Step 3 is now actually ranked by hit volume.
 
+### Fixed: the overview showed nothing for a window more than 15 days old
+
+For 2026-09-08 04:00, an hour in which the SQLi rule blocked 120 requests, `get_waf_overview(top_rules)`
+said "No metrics data ... Verify the WebACL name and time range". It had two causes. Like patrol, it
+read rules only through SEARCH, and it now reads each rule in the WebACL's configuration directly. And
+every query type chose its period from the window's length, so a one-hour window asked for one-minute
+points. CloudWatch keeps those for 15 days and after that answers zeros with status Complete. The
+period is now never finer than what CloudWatch still holds: five minutes up to 63 days, one hour up to
+455, and an older window is refused with that reason. The same hour now shows 120 SQLi blocks and
+1,923 allowed requests.
+
+### Fixed: overview figures read from a query that could not mean what it printed
+
+Before saying a breakdown is empty, the overview checks whether the WebACL mitigated anything, using
+the window's length in seconds as the period. A window cut off at the present is not a whole number of
+minutes, CloudWatch rejects that period, and the failure printed "No attack data in this period". The
+check now uses a valid period, and a failed check says it failed. The Challenge and CAPTCHA solved
+counts used a one-week period, which reads past the end of a shorter window: one hour three days ago
+read 130,678 requests against 1,896 for the hour itself, so the solve rate set days of solves against
+an hour of challenges. `rate_limits` looked rate rules up by rule name, but their metrics are keyed by
+metric name, so a rule whose two names differ never appeared. It also left out CAPTCHA and Count, and
+said there were no rate-limit rules when the WebACL configuration could not be read.
+
+### Fixed: bot, label and attack-type breakdowns misread CloudWatch's labels
+
+The default label on a SEARCH result changes shape with how many series come back and what else is in
+the same call. On a WebACL with one bot, that bot came back labelled `AllowedRequests`, so the
+overview and patrol listed a bot called "AllowedRequests", and the weekly report's verified-bot chart
+and Advanced Bot Detection card were empty for that WebACL. A label with two metrics was listed twice
+in `top_labels`. Every SEARCH query now sets its own label format. Label and signal counts also stop
+adding rule-match metrics, which count rule matches rather than requests: one LFI label had 34 matches
+for 17 blocked requests.
+
 ### Fixed: verdicts reached from a query that failed or did not parse
 
 `analyze_ip` read a failed User-Agent query as "NAT, Confidence: HIGH", and a failed URI query plus a

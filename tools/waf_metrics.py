@@ -194,6 +194,25 @@ def _period_for_window(start_epoch: int) -> int | None:
     return None
 
 
+def search_label(*dims: str) -> str:
+    """A `Label` for a SEARCH query: the named dimensions, then the metric name, joined by `|`.
+
+    **A SEARCH result's default label is not a fixed format.** Measured 2026-10-15, bot names on
+    two WebACLs: three bots came back labelled `go_http`, `googlebot` and `route53_health_check`,
+    and a WebACL with one bot came back labelled `AllowedRequests`, which is its metric name. One
+    geo label with two metrics came back as `AllowRuleMatch` and `AllowedRequests`, with no label
+    name at all. A parser of the default label reads one of those shapes as the other. A template
+    gives the same shape on every call, and `|` is not a legal character in any of these values.
+    """
+    return "|".join([*(f"${{PROP('Dim.{d}')}}" for d in dims), "${PROP('MetricName')}"])
+
+
+# The four terminal outcomes a label or attack-type metric records, which are disjoint per
+# request. The `*RuleMatch` metrics count rule matches instead and can exceed them: measured
+# 2026-10-15, `LFI_URIPath` had BlockRuleMatch 34 and BlockedRequests 17 over the same 13 days.
+REQUEST_METRICS = ("AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests")
+
+
 def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
                              end_epoch: int, metric_name: str = "BlockedRequests"):
     """What CloudWatch says this rule terminated in this window. `(count, reason)`, never raises.

@@ -302,8 +302,9 @@ def _step_volume_anomaly() -> str:
     start = end - timedelta(days=7)
     prev_start = start - timedelta(days=7)
 
-    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region)
-    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=7 * 86400, scope=scope, region=region)
+    # Only the `ALL` series is used, and `rules=[]` reads it directly rather than through SEARCH.
+    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region, rules=[])
+    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=7 * 86400, scope=scope, region=region, rules=[])
 
     # Extract totals
     tw_all = this_week.get("ALL", {})
@@ -444,8 +445,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(days=7)
         prev_dt = start_dt - timedelta(days=7)
-        tw = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=7*86400, scope=scope, region=region)
-        lw = _get_all_rules_metrics_search(cw, webacl_name, prev_dt, start_dt, period=7*86400, scope=scope, region=region)
+        tw = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=7*86400, scope=scope, region=region, rules=[])
+        lw = _get_all_rules_metrics_search(cw, webacl_name, prev_dt, start_dt, period=7*86400, scope=scope, region=region, rules=[])
         tw_a = sum(tw.get("ALL", {}).get("allowed", []))
         lw_a = sum(lw.get("ALL", {}).get("allowed", []))
         wow = tw_a / max(lw_a, 1)

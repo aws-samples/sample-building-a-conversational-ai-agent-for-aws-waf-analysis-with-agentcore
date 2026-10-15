@@ -112,8 +112,8 @@ CASES = [
     (
         "waf_overview reaching the log layer",
         "tools/waf_overview.py",
-        "def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope=\"CLOUDFRONT\", region=\"\"):",
-        "def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope=\"CLOUDFRONT\", region=\"\"):\n"
+        "               rules=None, rules_error=\"\"):",
+        "               rules=None, rules_error=\"\"):\n"
         "    from tools.waf_query import query_logs\n"
         "    query_logs('a', 'b', 0, 1)",
         [f"{T}::test_no_new_log_query_path_was_added_beside_the_primitive"],

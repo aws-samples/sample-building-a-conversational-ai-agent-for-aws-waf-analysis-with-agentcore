@@ -27,9 +27,15 @@ JSON text with lowercased keys, which is why the search spells `exclusiontype` (
 `waf_aggregate._RULE_ATHENA`). No record on this account has one, so that branch is
 exercised by construction only.
 
-**Not covered, and the old predicates did not cover it either:** a whole rule group set to
-`OverrideAction: Count`. Neither test WebACL has one, so where its sub-rule is recorded was
-not measured, and guessing a shape would write an unmeasured claim into a query.
+**A whole rule group set to `OverrideAction: Count` is covered, by the first branch, measured
+2026-10-15.** `AWSManagedRulesAdminProtectionRuleSet` was added to both test WebACLs as rule
+`ptest-admin-group-count` with the group overridden to Count, and five `/admin` requests sent. Both
+engines logged the same shape: top-level `action` ALLOW, a top-level non-terminating entry
+`{"ruleId":"ptest-admin-group-count","action":"COUNT"}` named for the WebACL rule, and inside
+`ruleGroupList` a `terminatingRule` of `AdminProtection_URIPATH` with its native action, BLOCK, and
+no COUNT anywhere in the group's own entry. This predicate matched all five on Athena, and
+`CountedRequests` for `Rule=ptest-admin-group-count` read 5. An earlier version of this note said
+the shape was unmeasured and probably not covered; it was both measurable and covered.
 """
 
 EXCLUDED_ATHENA = ("any_match(rulegrouplist, rg -> strpos(rg.excludedrules,"

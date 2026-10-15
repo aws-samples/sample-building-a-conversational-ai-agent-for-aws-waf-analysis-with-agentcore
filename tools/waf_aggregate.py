@@ -194,8 +194,10 @@ class _Filter:
 # **The rule filter names all four places a match can be recorded**, which is the nested-COUNT
 # trap ROADMAP 2.6 owns. A `RuleActionOverrides` Count lands in
 # `rulegrouplist[].nonterminatingmatchingrules[]`, a group-level `OverrideAction: Count` writes
-# the sub-rule to `rulegrouplist[].terminatingrule` paired with its native action, a top-level
-# Count lands in `nonterminatingmatchingrules`, and a rate-based rule is a fourth shape. The
+# the sub-rule to `rulegrouplist[].terminatingrule` paired with its native action AND a top-level
+# `nonterminatingmatchingrules` entry named for the WebACL rule with action COUNT (measured
+# 2026-10-15, see tools/counted.py), a top-level Count lands in `nonterminatingmatchingrules`, and
+# a rate-based rule is a fourth shape. The
 # existing `rule_uri_prefix` template covers three of the four, so a filter copied from it would
 # silently miss exactly the case a COUNT investigation is looking for.
 #

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.query_limits import MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL, stop_query
+from tools.waf_metrics import REQUEST_METRICS, search_label
 
 _latest_patrol_html: str | None = None
 
@@ -303,6 +304,31 @@ def _detect_ddos_windows(cw, webacl_name: str, start, end) -> list[int]:
 
 
 
+def _metric_data(cw, queries: list, start, end) -> list:
+    """Every result for `queries`, in calls of at most 500 queries and across every page.
+
+    Measured 2026-10-15: 501 queries is a `ValidationError`, and five metrics per configured rule
+    reaches that at 99 rules. AWS documents a page as at most 100,800 datapoints, the rest behind
+    a `NextToken`, and 100 rules at 14 days of hourly points is 168,000. A page continues a series,
+    so results are joined on (Id, Label): one SEARCH Id answers with a series per rule.
+    """
+    joined = {}
+    for i in range(0, len(queries), 500):
+        kw = {"MetricDataQueries": queries[i:i + 500], "StartTime": start, "EndTime": end,
+              "ScanBy": "TimestampAscending"}
+        while True:
+            resp = cw.get_metric_data(**kw)
+            for r in resp.get("MetricDataResults", []):
+                cur = joined.setdefault((r["Id"], r.get("Label", "")),
+                                        {"Id": r["Id"], "Label": r.get("Label", ""), "Values": [], "Timestamps": []})
+                cur["Values"] += r.get("Values", [])
+                cur["Timestamps"] += r.get("Timestamps", [])
+            if not resp.get("NextToken"):
+                break
+            kw["NextToken"] = resp["NextToken"]
+    return list(joined.values())
+
+
 def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int = 86400,
                                    scope: str = "CLOUDFRONT", region: str = "",
                                    rules: list | None = None) -> dict:
@@ -352,16 +378,14 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
     else:
         stat_queries = []
 
-    resp = cw.get_metric_data(
-        MetricDataQueries=[*stat_queries,
-            {"Id": "blocked", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', {period})"},
-            {"Id": "counted", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CountedRequests\"', 'Sum', {period})"},
-            {"Id": "challenge", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', {period})"},
-            {"Id": "captcha", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CaptchaRequests\"', 'Sum', {period})"},
-            {"Id": "allowed", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"AllowedRequests\"', 'Sum', {period})"},
-        ],
-        StartTime=start, EndTime=end, ScanBy="TimestampAscending",
-    )
+    label = search_label("Rule")  # the default label changes shape with what shares the call
+    results = _metric_data(cw, [*stat_queries,
+            {"Id": "blocked", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', {period})", "Label": label},
+            {"Id": "counted", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CountedRequests\"', 'Sum', {period})", "Label": label},
+            {"Id": "challenge", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', {period})", "Label": label},
+            {"Id": "captcha", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CaptchaRequests\"', 'Sum', {period})", "Label": label},
+            {"Id": "allowed", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"AllowedRequests\"', 'Sum', {period})", "Label": label},
+        ], start, end)
 
     rules = {}  # {rule_name: {blocked: [...], counted: [...], challenge: [...], captcha: [...], allowed: [], timestamps: []}}
     metric_map = {"blocked": "blocked", "counted": "counted", "challenge": "challenge", "captcha": "captcha", "allowed": "allowed"}
@@ -373,7 +397,7 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
 
     _raw = {}  # {rule_name: {metric: {ts_str: value}}}
     found = {}  # explicit reads; where SEARCH also answered, both read the same metric
-    for r in resp.get("MetricDataResults", []):
+    for r in results:
         qid = r["Id"]
         values = [int(v) for v in r.get("Values", [])]
         timestamps = [t.astimezone(_user_tz).isoformat() for t in r.get("Timestamps", [])]
@@ -382,9 +406,7 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
             continue
         if qid not in metric_map:
             continue
-        label = r.get("Label", "")
-        parts = label.rsplit(" ", 1)
-        rule_name = parts[0] if len(parts) == 2 else label
+        rule_name = r.get("Label", "").split("|")[0]
 
         if rule_name not in _raw:
             _raw[rule_name] = {}
@@ -408,28 +430,33 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
 
 
 def _get_challenge_solved(cw, webacl_name: str, scope: str, region: str, start, end) -> tuple[int, int]:
-    """Get ChallengesSolved and CaptchasSolved (WebACL level). Returns (challenge_solved, captcha_solved)."""
+    """Get ChallengesSolved and CaptchasSolved (WebACL level). Returns (challenge_solved, captcha_solved).
+    Raises when the read fails, so a failure is never a count of 0.
+
+    **The period is the finest CloudWatch keeps, and the points are summed.** It was a week, and a
+    period longer than the window reads past the window's end. Measured 2026-10-15: a one-hour
+    window three days old answered 1,896 allowed at `Period=3600` and 130,678 at `Period=604800`.
+    """
+    from tools.waf_metrics import _period_for_window
     dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
     if scope != "CLOUDFRONT":
         dims.append({"Name": "Region", "Value": region})
-    try:
-        resp = cw.get_metric_data(
-            MetricDataQueries=[
-                {"Id": "cs", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengesSolved", "Dimensions": dims}, "Period": 604800, "Stat": "Sum"}},
-                {"Id": "cas", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchasSolved", "Dimensions": dims}, "Period": 604800, "Stat": "Sum"}},
-            ],
-            StartTime=start, EndTime=end,
-        )
-        cs = cas = 0
-        for r in resp.get("MetricDataResults", []):
-            val = int(sum(r.get("Values", [])))
-            if r["Id"] == "cs":
-                cs = val
-            elif r["Id"] == "cas":
-                cas = val
-        return cs, cas
-    except Exception:
-        return 0, 0
+    period = _period_for_window(int(start.timestamp())) or 3600
+    resp = cw.get_metric_data(
+        MetricDataQueries=[
+            {"Id": "cs", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengesSolved", "Dimensions": dims}, "Period": period, "Stat": "Sum"}},
+            {"Id": "cas", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchasSolved", "Dimensions": dims}, "Period": period, "Stat": "Sum"}},
+        ],
+        StartTime=start, EndTime=end,
+    )
+    cs = cas = 0
+    for r in resp.get("MetricDataResults", []):
+        val = int(sum(r.get("Values", [])))
+        if r["Id"] == "cs":
+            cs = val
+        elif r["Id"] == "cas":
+            cas = val
+    return cs, cas
 
 
 
@@ -1000,7 +1027,10 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, end_last, period=3600, scope=scope, region=region, rules=acl_rules)
 
     # 5. Challenge/Captcha solved
-    challenge_solved, captcha_solved = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
+    try:
+        challenge_solved, captcha_solved = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
+    except Exception:
+        challenge_solved = captcha_solved = None
 
     # 6. DDoS event detection + Action Items
     ddos_windows = _detect_ddos_windows(cw, webacl_name, start, end)
@@ -1097,7 +1127,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
     try:
         chart_resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
+                {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)",
+                 "Label": search_label("Attack")},
                 {"Id": "rb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
                 {"Id": "rc", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
                 {"Id": "rp", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
@@ -1114,8 +1145,7 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 labels = [t.astimezone(_tz_user).strftime("%m/%d %H:%M") for t in r.get("Timestamps", [])]
                 total_values = [int(v) for v in r.get("Values", [])]
             elif r["Id"] == "attacks":
-                raw_label = r.get("Label", "Unknown")
-                atype = raw_label.split(" ")[0] if any(raw_label.endswith(m) for m in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests")) else raw_label
+                atype = r.get("Label", "Unknown").split("|")[0]
                 if atype not in attack_raw:
                     attack_raw[atype] = {}
                 for t, v in zip(r.get("Timestamps", []), r.get("Values", [])):
@@ -1174,12 +1204,13 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 "unverified_captchaed": u_captchaed,
             }
             # Targeted bot: query rule-level TGT_ labels + signals via SEARCH
+            tgt_label = search_label("LabelNamespace", "LabelName")
             try:
                 tgt_resp = cw.get_metric_data(MetricDataQueries=[
-                    {"Id": "tgt_rules", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {int(hours*3600)})"},
-                    {"Id": "tgt_sig", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal\"', 'Sum', {int(hours*3600)})"},
-                    {"Id": "tgt_csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\"', 'Sum', {int(hours*3600)})"},
-                    {"Id": "tgt_vol", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\"', 'Sum', {int(hours*3600)})"},
+                    {"Id": "tgt_rules", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
+                    {"Id": "tgt_sig", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
+                    {"Id": "tgt_csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
+                    {"Id": "tgt_vol", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
                 ], StartTime=start, EndTime=end)
                 # Parse: group by LabelName, aggregate by action type
                 targeted_signals = {}  # {label_name: {metric: count}}
@@ -1187,17 +1218,14 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                     val = int(sum(r.get("Values", [])))
                     if val == 0:
                         continue
-                    label_str = r.get("Label", "")
-                    # Label format: "LabelName LabelNamespace MetricName"
-                    parts = label_str.split(" ")
-                    if len(parts) >= 3:
-                        lbl_name, _, metric_name = parts[0], parts[1], parts[2]
-                    else:
+                    parts = r.get("Label", "").split("|")
+                    if len(parts) != 3:
                         continue
+                    namespace, lbl_name, metric_name = parts
                     # Skip low-severity informational signals (only show medium/high)
                     if lbl_name.endswith("Low") or lbl_name == "TGT_TokenAbsent":
                         continue
-                    if lbl_name.startswith("TGT_") or lbl_name.startswith("Signal") or lbl_name in ("token_absent", "non_browser_user_agent") or parts[1].endswith("cloud_service_provider"):
+                    if lbl_name.startswith("TGT_") or lbl_name.startswith("Signal") or lbl_name in ("token_absent", "non_browser_user_agent") or namespace.endswith("cloud_service_provider"):
                         if lbl_name not in targeted_signals:
                             targeted_signals[lbl_name] = {}
                         targeted_signals[lbl_name][metric_name] = targeted_signals[lbl_name].get(metric_name, 0) + val
@@ -1211,16 +1239,13 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
             # Bot categories: use SEARCH to discover all bot names dynamically
             try:
                 cat_resp = cw.get_metric_data(MetricDataQueries=[
-                    {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {int(hours*3600)})"},
+                    {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
                 ], StartTime=start, EndTime=end)
                 bot_names = {}
                 for r in cat_resp.get("MetricDataResults", []):
-                    label = r.get("Label", "")
-                    # Format: "LabelName LabelNamespace MetricName"
-                    parts = label.split(" ")
-                    bot_name = parts[0] if len(parts) >= 3 else label
+                    _, bot_name, metric = (r.get("Label", "").split("|") + ["", "", ""])[:3]
                     val = int(sum(r.get("Values", [])))
-                    if val > 0:
+                    if val > 0 and metric in REQUEST_METRICS:
                         bot_names[bot_name] = bot_names.get(bot_name, 0) + val
                 if bot_names:
                     bot_data["bot_names"] = bot_names

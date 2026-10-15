@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.query_limits import MAX_POLL, POLL_INTERVAL, stop_query
+from tools.waf_metrics import search_label
 
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
@@ -734,7 +735,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             targeted_challenged = 0
             targeted_counted = 0
             tgt_resp = cw.get_metric_data(
-                MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"}],
+                MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)",
+                                    "Label": search_label("LabelName")}],
                 StartTime=start_this_week, EndTime=end,
             )
             tgt_rules = {}  # {rule_name: {blocked, challenged, captchaed, counted}}
@@ -742,8 +744,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 total = int(sum(r.get("Values", [])))
                 if total <= 0:
                     continue
-                parts = r.get("Label", "").split()
-                if len(parts) < 2 or not parts[0].startswith("TGT_"):
+                parts = r.get("Label", "").split("|")
+                if len(parts) != 2 or not parts[0].startswith("TGT_"):
                     continue
                 rule_name = parts[0]
                 metric = parts[1]
@@ -764,12 +766,13 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 targeted_counted += d["counted"]
 
             # 3. Free Bot Visibility (sampled) — per-bot classification
+            fbv_label = search_label("BotCategory", "BotName", "Intent", "Organization", "VerificationStatus")
             fbv_resp = cw.get_metric_data(
                 MetricDataQueries=[
-                    {"Id": "ba", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleAllowedRequest\"', 'Sum', 604800)"},
-                    {"Id": "bb", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleBlockedRequest\"', 'Sum', 604800)"},
-                    {"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleChallengeRequest\"', 'Sum', 604800)"},
-                    {"Id": "bd", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleCaptchaRequest\"', 'Sum', 604800)"},
+                    {"Id": "ba", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleAllowedRequest\"', 'Sum', 604800)", "Label": fbv_label},
+                    {"Id": "bb", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleBlockedRequest\"', 'Sum', 604800)", "Label": fbv_label},
+                    {"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleChallengeRequest\"', 'Sum', 604800)", "Label": fbv_label},
+                    {"Id": "bd", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleCaptchaRequest\"', 'Sum', 604800)", "Label": fbv_label},
                 ],
                 StartTime=start_this_week, EndTime=end,
             )
@@ -778,8 +781,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 total = int(sum(r.get("Values", [])))
                 if total <= 0:
                     continue
-                parts = r.get("Label", "").split()
-                if len(parts) < 6:
+                parts = r.get("Label", "").split("|")
+                if len(parts) != 6:
                     continue
                 bot_name = parts[1]
                 if bot_name in ("ALL_BOTS", "NON_BOT"):
@@ -1250,7 +1253,8 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
                          {"Name": "LabelName", "Value": "challengeable-request"}]
         resp = cw.get_metric_data(
             MetricDataQueries=[
-                {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)"},
+                {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', 900)",
+                 "Label": search_label("Attack")},
                 {"Id": "rb", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "BlockedRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
                 {"Id": "rc", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
                 {"Id": "rp", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "CaptchaRequests", "Dimensions": _dims_rule}, "Period": 900, "Stat": "Sum"}, "ReturnData": False},
@@ -1277,9 +1281,7 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
                     ddos_values.append(int(val))
             elif r["Id"] == "attacks":
-                raw_label = r.get("Label", "Unknown")
-                # Strip trailing MetricName if present (e.g. "BadBots BlockedRequests" → "BadBots")
-                attack_type = raw_label.split(" ")[0] if any(raw_label.endswith(m) for m in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests")) else raw_label
+                attack_type = r.get("Label", "Unknown").split("|")[0]
                 if attack_type not in attack_raw:
                     attack_raw[attack_type] = {}
                 for ts, val in zip(r.get("Timestamps", []), r.get("Values", [])):
@@ -1404,9 +1406,9 @@ def _get_top_countries(cw, webacl_name: str, start, end) -> list:
         return []
     resp = cw.get_metric_data(
         MetricDataQueries=[
-            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-            {"Id": "challenged", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"ChallengeRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
-            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"CaptchaRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)"},
+            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)", "Label": search_label("Country")},
+            {"Id": "challenged", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"ChallengeRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)", "Label": search_label("Country")},
+            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"CaptchaRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)", "Label": search_label("Country")},
         ],
         StartTime=start, EndTime=end,
     )
@@ -1415,12 +1417,7 @@ def _get_top_countries(cw, webacl_name: str, start, end) -> list:
         total = sum(r.get("Values", []))
         if total <= 0:
             continue
-        label = r.get("Label", "")
-        # Label format: "{CountryCode} {MetricName}"
-        parts = label.split(" ")
-        country = parts[0] if parts else label
-        if country in ("BlockedRequests", "ChallengeRequests", "CaptchaRequests"):
-            continue
+        country = r.get("Label", "").split("|")[0]
         country_totals[country] = country_totals.get(country, 0) + int(total)
     sorted_countries = sorted(country_totals.items(), key=lambda x: x[1], reverse=True)
     return [{"country": c, "count": cnt} for c, cnt in sorted_countries[:10]]
@@ -1444,29 +1441,20 @@ def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", 
             f"MetricName=\"{action}\" WebACL=\"{webacl_name}\"{extra_filter}', 'Sum', 604800)"
         )
         resp = cw.get_metric_data(
-            MetricDataQueries=[{"Id": f"rules_{action}", "Expression": expression}],
+            MetricDataQueries=[{"Id": f"rules_{action}", "Expression": expression, "Label": search_label("Rule")}],
             StartTime=start,
             EndTime=end,
         )
         for r in resp.get("MetricDataResults", []):
             total = sum(r.get("Values", []))
             if total > 0:
-                label = r.get("Label", "")
-                rule = _extract_dimension_from_label(label, "Rule") or label
+                rule = r.get("Label", "").split("|")[0]
                 if rule == "ALL":
                     continue
                 act_map = {"BlockedRequests": "BLOCK", "CountedRequests": "COUNT", "ChallengeRequests": "CHALLENGE"}
                 results.append({"rule": rule, "count": int(total), "action": act_map.get(action, "?")})
 
     return sorted(results, key=lambda x: x["count"], reverse=True)
-
-
-def _extract_dimension_from_label(label: str, dimension: str) -> str:
-    """Extract dimension value from CloudWatch metric label string."""
-    for part in label.split():
-        if part.startswith(f"{dimension}="):
-            return part.split("=", 1)[1]
-    return ""
 
 
 @tool

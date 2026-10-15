@@ -80,7 +80,9 @@ class _CW:
         from datetime import datetime, timezone
         ts = [datetime(2026, 9, 8, 4, tzinfo=timezone.utc)]
         self.ids = [q["Id"] for q in MetricDataQueries]
-        out = [{"Id": "allowed", "Label": "ALL AllowedRequests", "Values": [1923], "Timestamps": ts}]
+        from tests.test_overview_old_window import render_label
+        q = next(q for q in MetricDataQueries if q["Id"] == "allowed")
+        out = [{"Id": "allowed", "Label": render_label(q, {"Rule": "ALL"}, "AllowedRequests", 1), "Values": [1923], "Timestamps": ts}]
         for q in MetricDataQueries:
             stat = q.get("MetricStat")
             if stat and stat["Metric"]["MetricName"] == "BlockedRequests":
