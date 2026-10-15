@@ -61,7 +61,7 @@ def investigate_block_fp(step: str = "investigate", ip: str = "", start_time: st
         step: "investigate" (targeted) or "scan" (proactive audit).
         ip: Client IP address (required for investigate).
         start_time: Start time for log query (required).
-        duration_minutes: Duration in minutes (default 60, max 360 for CWL, 60 for Athena).
+        duration_minutes: Duration in minutes (default 60, max 360, both engines).
         rule_name: Optional — only used by step="scan" to filter the audit to one rule; ignored by step="investigate".
     """
     from tools.waf_logs import _parse_start_time
@@ -508,13 +508,20 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     lines.append("## Directional Judgment")
     lines.append("")
 
-    # Auto-judge only on strong quantifiable signals
+    # Auto-judge only on strong quantifiable signals. An unknown peak blocks both directions: it
+    # was 0, which is the human-speed condition of the FP-candidate branch, while the evidence
+    # table above printed "Unknown".
     try:
         peak_val = float(peak_rpm)
     except (ValueError, TypeError):
-        peak_val = 0
+        peak_val = None
 
-    if allow_count == 0 and peak_val > 200 and rules_triggered >= 3:
+    if peak_val is None:
+        lines.append("**CANNOT DETERMINE** — the request frequency is unknown "
+                     f"(the query returned {peak_rpm!r}), and both directional verdicts turn on it.")
+        lines.append("→ Re-run with a window that contains this IP's blocked requests, or ask the user "
+                     "whether the blocked URIs are legitimate business paths.")
+    elif allow_count == 0 and peak_val > 200 and rules_triggered >= 3:
         lines.append("**HIGH CONFIDENCE: Not a false positive.**")
         lines.append("Evidence: zero ALLOW, machine-speed frequency, multi-rule scanning pattern.")
     elif allow_count > 0 and allow_count / max(block_count, 1) > 10 and peak_val < 10 and rules_triggered == 1:

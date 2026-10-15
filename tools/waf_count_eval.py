@@ -87,7 +87,7 @@ def evaluate_count_rules(step: str = "init", rule_name: str = "", start_time: st
         step: Workflow step to execute.
         rule_name: Rule name (required for analyze_rule and check_low_volume_clients).
         start_time: Start time for log queries (required for check_low_volume_clients).
-        duration_minutes: Duration in minutes (default 60, max 360 for CWL, 60 for Athena).
+        duration_minutes: Duration in minutes (default 60, max 360, both engines).
     """
     if not get_webacl_name():
         return ("Error: No WebACL selected. Call get_waf_config(webacl_name='...') first, "
@@ -139,7 +139,8 @@ def _step_init(rule_name: str = "") -> str:
     webacl_name = get_webacl_name()
     scope = get_scope()
     region = resolve_region(scope)
-    all_count_rules = _get_all_count_rules(region, scope)
+    webacl_rules = _get_webacl_rules(region, scope)
+    all_count_rules = _get_all_count_rules(region, scope, webacl_rules)
 
     # Filter to target rules if specified
     if target_rules:
@@ -156,13 +157,24 @@ def _step_init(rule_name: str = "") -> str:
     cw = get_client("cloudwatch", region_name=region)
     end_dt = dt.now(tz.utc)
     start_dt = end_dt - timedelta(days=14)
-    metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=14 * 86400, scope=scope, region=region)
+    metrics = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=14 * 86400, scope=scope, region=region, rules=webacl_rules)
 
-    # Build hit count map from metrics
+    # Build hit count map from metrics. A rule SEARCH did not count is confirmed with an explicit
+    # MetricStat before it may be called zero: WAF publishes only non-zero values and SEARCH only
+    # discovers series with data in the last 14 days, so absent there is "matched nothing",
+    # "metrics off" or "the lookup did not answer", and only the first is safe to switch.
+    from tools.waf_metrics import rule_blocked_per_metrics
+    start_epoch, end_epoch = int(start_dt.timestamp()), int(end_dt.timestamp())
     found_rules = {}
+    no_metric = {}
     for rule_id in all_count_rules:
-        rule_metrics = metrics.get(rule_id, {})
-        counted = sum(rule_metrics.get("counted", []))
+        counted = sum(metrics.get(rule_id, {}).get("counted", []))
+        if not counted:
+            counted, reason = rule_blocked_per_metrics(webacl_name, rule_id, webacl_rules, start_epoch,
+                                                       end_epoch, metric_name="CountedRequests")
+            if counted is None:
+                no_metric[rule_id] = reason
+                continue
         found_rules[rule_id] = counted
 
     # Classify rules
@@ -172,7 +184,9 @@ def _step_init(rule_name: str = "") -> str:
     needs_analysis = []
 
     for rule_id in all_count_rules:
-        hits = found_rules.get(rule_id, 0)
+        if rule_id in no_metric:
+            continue
+        hits = found_rules[rule_id]
         if rule_id in PERMANENT_COUNT_RULES:
             permanent_count.append((rule_id, hits))
         elif hits == 0:
@@ -181,6 +195,9 @@ def _step_init(rule_name: str = "") -> str:
             low_fp_nonzero.append((rule_id, hits))
         else:
             needs_analysis.append((rule_id, hits))
+    # Ranked, which the heading below and the "highest volume" recommendation always claimed; the
+    # list stayed in WebACL order, and the peak hour is computed for element 0 only.
+    needs_analysis.sort(key=lambda rh: rh[1], reverse=True)
 
     # For top rule needing analysis, find peak hour via CloudWatch Metrics (works for all log types)
     peak_info = ""
@@ -215,6 +232,13 @@ def _step_init(rule_name: str = "") -> str:
             lines.append(f"  - {r} — 0 hits in 14 days, safe to switch")
     else:
         lines.append("  (all COUNT rules had at least 1 hit)")
+
+    if no_metric:
+        lines.append("")
+        lines.append("### No metric to judge from (NOT safe to switch on this evidence)")
+        for r, why in no_metric.items():
+            lines.append(f"  - {r} — {why}")
+        lines.append("  Judge these from the logs instead: evaluate_count_rules(step='analyze_rule', rule_name=...).")
 
     lines.append("")
     lines.append("### Step 2: Low-FP Rules with Hits (safe to switch based on rule-type prior)")
@@ -277,6 +301,10 @@ def _count_rule_matches(rule_name: str, start_epoch: int, end_epoch: int) -> int
     not. `_run_log_query` already returns an `_error` row on every give-up path.
     """
     from tools.waf_query import log_query_error
+    # Adjacent keys on purpose. WAF writes a rule entry as {"ruleId":..,"action":..,
+    # "overriddenAction":..}; measured 2026-10-15 on shield-sample-webacl, 14 days: 34 records match
+    # this form and 34 match the two keys searched separately. The separate form would also pair one
+    # entry's ruleId with another entry's COUNT, so it is the less precise of the two, not a fix.
     cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
            " | stats count(*) as cnt")
     athena = (f"SELECT count(*) as cnt FROM {{TABLE}}"
@@ -629,9 +657,9 @@ def _get_webacl_rules(waf_region: str, scope: str) -> list[dict]:
     return resp["WebACL"].get("Rules", [])
 
 
-def _get_all_count_rules(waf_region: str, scope: str) -> list[str]:
+def _get_all_count_rules(waf_region: str, scope: str, rules: list | None = None) -> list[str]:
     """Get all rule IDs that are in COUNT mode from the WebACL config."""
-    rules = _get_webacl_rules(waf_region, scope)
+    rules = _get_webacl_rules(waf_region, scope) if rules is None else rules
 
     count_rules = []
     for r in rules:

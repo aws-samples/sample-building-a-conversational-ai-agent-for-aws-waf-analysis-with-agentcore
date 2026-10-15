@@ -14,6 +14,15 @@ from tools.waf_query import query_logs, log_query_error, get_log_type, run_concu
 from tools.query_limits import MAX_MINUTES
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
 
+# Every label test on CloudWatch reads the parsed `labels` array, never the raw record. A bare
+# `@message not like 'bot:verified'` also dropped any request carrying that text in its URI or
+# User-Agent: measured 2026-10-15, three probe requests with no such label but the words in the
+# path and UA were excluded from every section, and kept once the test read `lbls`. Evidence for the
+# `not ispresent(lbls)` branch: 46,040 of 46,040 WAF records on `aws-waf-logs-group` carried a labels
+# key (the Anti-DDoS AMR labels every request), so a record without one is unmeasured here. It keeps
+# such a record rather than dropping it, which is right whichever way an unlabelled record is shaped.
+from tools.waf_aggregate import _LABELS_ARRAY
+
 
 def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
                 failures: dict | None = None, label: str = "",
@@ -75,6 +84,13 @@ def _empty_reason(failures: dict, label: str, none_text: str = "  (none found)")
         return f"  UNKNOWN, the query for this section failed: {first}"
     return none_text
 
+# Automation User-Agents, one list for the scan and the investigation. They were two lists, and the
+# investigation's lacked libwww-perl, so an IP the scan surfaced for it was not an automation UA once
+# investigated; the scan's said python-requests, so Python-urllib and httpx were never surfaced.
+AUTOMATION_UA_TOKENS = ("curl", "python", "wget", "httpie", "go-http", "java/", "okhttp", "libwww-perl")
+AUTOMATION_UA_CWL = "ua like /(?i)(" + "|".join(t.replace("/", "\\/") for t in AUTOMATION_UA_TOKENS) + ")/"
+AUTOMATION_UA_ATHENA = "'(?i)(" + "|".join(AUTOMATION_UA_TOKENS) + ")'"
+
 CONFIDENCE_RULES = """\
 ## Confidence Rules
 - HIGH: automation UA + ALLOW, data-center IP + high freq + no bot labels → state directly
@@ -112,7 +128,7 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "",
         ip: Client IP (required for investigate_ip).
         ja4: JA4 fingerprint (required for ja4_ips), copied from the scan's JA4 table.
         start_time: Start time for log queries (required for scan and investigate_ip).
-        duration_minutes: Duration in minutes (default 180, max 360 for CWL, 60 for Athena).
+        duration_minutes: Duration in minutes (default 180, max 360, both engines).
     """
     from tools.waf_logs import _parse_start_time
 
@@ -228,9 +244,9 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
                 f"underscores only. Copy one from the scan's JA4 table without editing it.")
 
     cwl = (
-        f"filter action = 'ALLOW' and ja4Fingerprint = '{safe_ja4}'"
+        _LABELS_ARRAY + " | " f"filter action = 'ALLOW' and ja4Fingerprint = '{safe_ja4}'"
         f"{CWL_EXCLUDE_STATIC}"
-        " and @message not like 'bot:verified'"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 10"
     )
@@ -441,9 +457,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
 
     # 1. Run anomaly filters (exclusions built into queries)
     crawlers_cwl = (
-        "filter action = 'ALLOW'"
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW'"
         f"{CWL_EXCLUDE_STATIC}"
-        " and @message not like 'bot:verified'"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
         " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"
         " | filter unique_uris > 50"
         " | sort unique_uris desc | limit 10"
@@ -462,9 +478,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
 
     repeaters_cwl = (
-        "filter action = 'ALLOW'"
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW'"
         f"{CWL_EXCLUDE_STATIC}"
-        " and @message not like 'bot:verified'"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
         " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"
         " | filter total > 200 and unique_uris < 10"
         " | sort total desc | limit 10"
@@ -484,8 +500,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
 
     # Data-center IPs not caught by Bot Control
     datacenter_cwl = (
-        "filter action = 'ALLOW' and @message like 'known_bot_data_center'"
-        " and @message not like 'bot:verified' and @message not like 'bot:unverified'"
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW' and lbls like 'known_bot_data_center'"
+        " and not (lbls like 'bot:verified') and not (lbls like 'bot:unverified')"
         " | stats count(*) as total by httpRequest.clientIp"
         " | filter total > 50"
         " | sort total desc | limit 10"
@@ -510,7 +526,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     auto_ua_cwl = (
         "filter action = 'ALLOW'"
         " | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/"
-        " | filter ua like /(?i)(curl|python-requests|wget|httpie|go-http-client|java\\/|okhttp|libwww-perl)/"
+        " | filter " + AUTOMATION_UA_CWL +
         " | stats count(*) as total by httpRequest.clientIp, ua"
         " | filter total > 10"
         " | sort total desc | limit 10"
@@ -523,7 +539,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
         " AND action = 'ALLOW'"
         " AND regexp_like(element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value,"
-        " '(?i)(curl|python-requests|wget|httpie|go-http-client|java/|okhttp|libwww-perl)')"
+        " " + AUTOMATION_UA_ATHENA + ")"
         " GROUP BY httprequest.clientip,"
         " element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
         " HAVING count(*) > 10"
@@ -534,9 +550,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # Single tool distributed across many IPs (JA4 aggregation)
     # Require high URI diversity per JA4 to filter out normal browser traffic sharing common fingerprints
     distributed_cwl = (
-        "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
         f"{CWL_EXCLUDE_STATIC}"
-        " and @message not like 'bot:verified'"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
         " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips,"
         " count_distinct(httpRequest.uri) as unique_uris by ja4Fingerprint"
         " | filter unique_ips > 10 and total > 500 and unique_uris > 50"
@@ -572,8 +588,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # Keep unique_ips low to avoid flagging large NAT/CDN egress points that
     # legitimately share a JA4 across many real users.
     ua_rotation_cwl = (
-        "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
-        " and @message not like 'bot:verified'"
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
         " | parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/"
         " | stats count(*) as total, count_distinct(ua) as unique_uas,"
         " count_distinct(httpRequest.clientIp) as unique_ips by ja4Fingerprint"
@@ -838,7 +854,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
 
     # 4. Labels (bot detection)
     labels_cwl = (
-        f"filter httpRequest.clientIp = '{ip}' and @message like 'labels'"
+        f"filter httpRequest.clientIp = '{ip}' and @message like '\"labels\":['"
         " | parse @message '\"labels\":[*]' as Labels"
         " | filter ispresent(Labels)"
         " | stats count(*) as cnt by Labels"
@@ -901,7 +917,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
 
     # 8. COUNT rules triggered (nonTerminatingMatchingRules)
     count_rules_cwl = (
-        f"filter httpRequest.clientIp = '{ip}' and @message like 'COUNT'"
+        f"filter httpRequest.clientIp = '{ip}' and @message like '\"action\":\"COUNT\"'"
         " | parse @message /\"nonTerminatingMatchingRules\":\\[\\{\"ruleId\":\"(?<rule>[^\"]+)\",\"action\":\"COUNT\"/"
         " | filter ispresent(rule)"
         " | stats count(*) as hits by rule"
@@ -940,7 +956,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         for r in ua_data:
             ua = r.get("ua", "?")
             lines.append(f"  {ua} ({r.get('hits', '?')} requests)")
-            if any(t in ua.lower() for t in ("curl", "python", "wget", "httpie", "go-http", "java/", "okhttp")):
+            if any(t in ua.lower() for t in AUTOMATION_UA_TOKENS):
                 is_automation_ua = True
     else:
         lines.append(_empty_reason(failures, "user_agent", "  (not available)"))
@@ -1006,14 +1022,17 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     lines.append("## Directional Judgment")
     lines.append("")
 
-    try:
-        peak_val = float(peak_rpm)
-    except (ValueError, TypeError):
-        peak_val = 0
-    try:
-        uri_val = int(unique_uris)
-    except (ValueError, TypeError):
-        uri_val = 0
+    def _num(text, cast):
+        """The value, or None when it does not parse. A failed query arrives as "?", so this one
+        test covers both; None used to be 0, and every rung read a failed query as a quiet IP."""
+        try:
+            return cast(text)
+        except (ValueError, TypeError):
+            return None
+
+    peak_val = _num(peak_rpm, float)
+    uri_val = _num(unique_uris, int)
+    ua_known = not failures.get("user_agent")
 
     # `any()` over an empty list is False, and `labels` is empty both when Bot Control
     # applied no labels and when the label query failed. Every branch below that reads
@@ -1023,6 +1042,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     labels_unknown = "labels" in failures
     has_bot_label = any("bot:" in r.get("Labels", "") for r in labels)
     has_datacenter = any("known_bot_data_center" in r.get("Labels", "") for r in labels)
+    has_verified = any("bot:verified" in r.get("Labels", "") for r in labels)
 
     if labels_unknown:
         lines.append("**CANNOT DETERMINE: the Bot Control label query failed.**")
@@ -1033,28 +1053,62 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
                      "first is what produces a false bypass call.")
         lines.append("→ Re-run this investigation once the query succeeds. Do NOT report a "
                      "verdict from this run.")
-    elif has_datacenter and peak_val > 50 and not has_bot_label:
-        lines.append("**HIGH CONFIDENCE: Undetected bot from data center.**")
-        lines.append("Evidence: data-center IP (signal:known_bot_data_center) + high frequency + no bot classification.")
-        lines.append("→ Bot Control is not catching this IP.")
-    elif is_automation_ua and not has_bot_label:
-        lines.append("**HIGH CONFIDENCE: Bot Control bypass — automation UA allowed through.**")
-        lines.append("Evidence: known automation User-Agent but no bot detection label applied.")
-        lines.append("→ Bot Control may not be deployed, or SignalNonBrowserUserAgent is set to Count.")
-    elif peak_val > 200 and uri_val > 50:
-        lines.append("**HIGH CONFIDENCE: Automated scraper/crawler.**")
-        lines.append(f"Evidence: {peak_rpm} req/min + {unique_uris} unique URIs — far exceeds human behavior.")
-    elif peak_val > 200 and uri_val < 10:
-        lines.append("**HIGH CONFIDENCE: Endpoint hammering (possible DDoS participant or brute-force).**")
-        lines.append(f"Evidence: {peak_rpm} req/min concentrated on few URIs.")
-    elif uri_val > 50 and not has_bot_label:
-        lines.append("**LIKELY: Probable scraper** (needs user confirmation).")
-        lines.append(f"Evidence: {unique_uris} unique URIs, no bot labels. Frequency moderate ({peak_rpm}/min).")
-        lines.append("→ Ask user if this IP is a known partner/crawler.")
+    elif has_verified:
+        # Before every volume rung, which read no label: a verified search crawler at crawl volume
+        # was "HIGH CONFIDENCE: Automated scraper". The prompt treats bot:verified as ground truth.
+        lines.append(f"**VERIFIED BOT: {', '.join(sorted(bot_names)) or 'name not labelled'}.**")
+        lines.append("Bot Control verified this client's identity, so its traffic is not a bypass. "
+                     "Whether to allow, rate-limit or block it is a business decision, not a finding.")
     else:
-        lines.append("**CANNOT DETERMINE** — signals are mixed or insufficient.")
-        lines.append(f"Evidence: {peak_rpm} req/min, {unique_uris} URIs, country={country}.")
-        lines.append("→ Ask user: is this IP expected? Is this a known service/partner?")
+        # Each rung is True (fires), False (cannot fire) or None (cannot tell). The first True wins;
+        # the first None stops the ladder, because a rung that might have fired makes every rung
+        # after it answer the wrong question. A rung its known inputs already rule out is False,
+        # so an unread input it does not need cannot block it.
+        def _gt(v, n):
+            return None if v is None else v > n
+
+        def _lt(v, n):
+            return None if v is None else v < n
+
+        def _all(*xs):
+            return False if any(x is False for x in xs) else (None if any(x is None for x in xs) else True)
+
+        rungs = [
+            (("frequency",), _all(has_datacenter, not has_bot_label, _gt(peak_val, 50)), [
+                "**HIGH CONFIDENCE: Undetected bot from data center.**",
+                "Evidence: data-center IP (signal:known_bot_data_center) + high frequency + no bot classification.",
+                "→ Bot Control is not catching this IP."]),
+            (("user_agent",), _all(not has_bot_label, is_automation_ua if ua_known else None), [
+                "**HIGH CONFIDENCE: Bot Control bypass — automation UA allowed through.**",
+                "Evidence: known automation User-Agent but no bot detection label applied.",
+                "→ Bot Control may not be deployed, or SignalNonBrowserUserAgent is set to Count."]),
+            (("frequency", "uri_diversity"), _all(_gt(peak_val, 200), _gt(uri_val, 50)), [
+                "**HIGH CONFIDENCE: Automated scraper/crawler.**",
+                f"Evidence: {peak_rpm} req/min + {unique_uris} unique URIs — far exceeds human behavior."]),
+            (("frequency", "uri_diversity"), _all(_gt(peak_val, 200), _lt(uri_val, 10)), [
+                "**HIGH CONFIDENCE: Endpoint hammering (possible DDoS participant or brute-force).**",
+                f"Evidence: {peak_rpm} req/min concentrated on few URIs."]),
+            (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [
+                "**LIKELY: Probable scraper** (needs user confirmation).",
+                f"Evidence: {unique_uris} unique URIs, no bot labels. Frequency moderate ({peak_rpm}/min).",
+                "→ Ask user if this IP is a known partner/crawler."]),
+        ]
+        verdict = None
+        for needs, fires, text in rungs:
+            if fires is None:
+                unread = [n for n in needs if failures.get(n)] or list(needs)
+                verdict = [f"**CANNOT DETERMINE** — the {', '.join(unread)} input did not answer, so "
+                           f"the rungs that read it cannot be evaluated.",
+                           *(f"Reason ({n}): {failures[n]}" for n in unread if failures.get(n)),
+                           "→ Re-run this investigation once the query succeeds."]
+                break
+            if fires:
+                verdict = text
+                break
+        lines.extend(verdict or [
+            "**CANNOT DETERMINE** — signals are mixed or insufficient.",
+            f"Evidence: {peak_rpm} req/min, {unique_uris} URIs, country={country}.",
+            "→ Ask user: is this IP expected? Is this a known service/partner?"])
 
     lines.append("")
     lines.append(CONFIDENCE_RULES)

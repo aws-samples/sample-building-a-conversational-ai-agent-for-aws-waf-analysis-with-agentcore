@@ -48,11 +48,11 @@ CASES = [
         [f"{T}::test_an_allow_rule_is_never_a_detector_whatever_its_shape"],
     ),
     (
-        "ranking by row order again, i.e. the defect that reached production",
+        "ranking by config order again, i.e. the defect that reached production",
         "tools/waf_injection.py",
-        "    return [name for name, _ in sorted(pairs, key=lambda p: p[1], reverse=True)]",
-        "    return [name for name, _ in pairs]",
-        [f"{T}::test_the_busiest_injection_rule_is_chosen_by_count_not_by_row_order"],
+        "        ranked.sort(key=lambda t: t[1], reverse=True)\n",
+        "",
+        ["tests/test_injection_ranking.py::test_the_busiest_detector_wins_over_config_order"],
     ),
     (
         "an unparseable count dropping the rule instead of ranking it last",
@@ -144,7 +144,7 @@ CASES = [
     (
         "a data step bypassing the primitive",
         "tools/waf_injection.py",
-        "    paths = _agg(group_by=\"uri\", filter_by=blocked)",
+        "    paths = _agg(group_by=\"uri\", filter_by=matched)",
         "    from tools.waf_query import query_logs\n"
         "    paths = str(query_logs('a', 'b', 0, 1))",
         [f"{T}::test_every_data_step_goes_through_the_primitive"],

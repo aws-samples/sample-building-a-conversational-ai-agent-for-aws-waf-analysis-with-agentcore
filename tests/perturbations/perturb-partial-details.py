@@ -28,6 +28,24 @@ SWEEP = f"{T}::test_every_detail_query_hands_the_failure_on_instead_of_an_empty_
 CONTROL = f"{T}::test_a_detail_query_that_answered_still_returns_its_content"
 
 CASES = [
+    ("the Athena IP and URI queries back on the terminating rule only",
+     [(P, "                rule_pred = _rule_match_athena(safe_rule)\n",
+       "                rule_pred = f\"terminatingruleid = '{safe_rule}'\"\n")],
+     [f"{T}::test_the_athena_ip_and_uri_queries_find_a_rule_that_only_counted"], True),
+
+    ("the CloudWatch IP query back on the terminating rule only",
+     [(P, "    query = f\"filter {_rule_match_cwl(safe_name)} | stats count(*) as cnt by httpRequest.clientIp",
+       "    query = f\"filter terminatingRuleId = '{safe_name}' | stats count(*) as cnt by httpRequest.clientIp")],
+     [f"{T}::test_the_cloudwatch_ip_and_uri_queries_find_a_rule_that_only_counted"], True),
+
+    # The return the tuple-to-dict migration missed, restored. patrol_scan reads ["details"] off it.
+    ("the out-of-range return back to a bare two-tuple",
+     [(P, '            return {"details": {}, "table_msg": table_msg,\n'
+          '                    "unavailable": f"⚠️ Per-rule log details were skipped. {range_problem}"}',
+       '            return {}, f"⚠️ Per-rule log details were skipped. {range_problem}"')],
+     [f"{T}::test_a_window_outside_the_projection_range_is_a_named_skip_not_a_crash",
+      f"{T}::test_every_return_in_the_athena_helper_is_the_three_field_dict"], True),
+
     # The shipped defect, restored. Measured 2026-09-13: `ips` and `uris` came back as `_error`
     # rows and `content` came back `[]`, so the renderer printed two failures and one idle rule.
     ("the content cell swallowing the reason again, i.e. a failed query read as an idle rule",
@@ -59,8 +77,8 @@ CASES = [
 
     ("a raised call swallowed, which is how the whole class starts",
      [(P, '        return [{"_error": _skip_reason("detail_query_error", type(exc).__name__)}]\n\n\n'
-       "def _query_top_ips_by_rule",
-       "        return []\n\n\ndef _query_top_ips_by_rule")],
+       "def _rule_match_athena",
+       "        return []\n\n\ndef _rule_match_athena")],
      [f"{T}::test_a_raised_call_says_which_error"], True),
 ]
 

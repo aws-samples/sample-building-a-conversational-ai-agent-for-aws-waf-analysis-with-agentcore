@@ -55,11 +55,11 @@ These two rules block requests with non-browser User-Agents. Default Block frequ
 - The SDK generates valid AWS WAF tokens for native app requests. Remove the scope-down once SDK is integrated.
 - Targeted level: works correctly. `TGT_TokenAbsent` will not fire for SDK-enabled requests.
 - Common level: `SignalNonBrowserUserAgent` (default Block) will Block native app requests. Must be overridden to **Count** when the scope-down is removed.
-- **NEVER override `TGT_TokenAbsent` to Count** — it is the foundation of all Targeted Bot Control detection. Overriding it disables the entire session-tracking mechanism for token-absent requests.
+- **Do not switch `TGT_TokenAbsent` to Block** for this traffic. Its default action is already Count, and a request without a token matches it, so before the SDK is integrated every native app request would be blocked.
 
 **Key rules**:
 - `SignalNonBrowserUserAgent` (default Block): blocks non-browser User-Agents. Override to **Count** when native apps are present and not excluded via scope-down.
-- `TGT_TokenAbsent` (default Count, often overridden to Challenge): flags requests without AWS WAF token. **Do not override to Count.**
+- `TGT_TokenAbsent` (default Count): flags requests without an AWS WAF token. An override to Count changes nothing. Block or Challenge applies to every request that has no token, which is every first visit unless the SDK or an earlier Challenge/CAPTCHA issued one.
 - `TGT_VolumetricIpTokenAbsent` (default Challenge): 5+ requests from same IP without token in 5 min
 
 

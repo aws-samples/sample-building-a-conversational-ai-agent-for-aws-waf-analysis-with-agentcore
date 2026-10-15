@@ -28,7 +28,7 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
 
     Args:
         start_time: Start time for log query (e.g., "2026-05-12T14:00").
-        duration_minutes: Duration in minutes (default 180, max 360 for CWL, 60 for Athena).
+        duration_minutes: Duration in minutes (default 180, max 360, both engines).
         action_type: "CHALLENGE" or "CAPTCHA". Default "CHALLENGE".
     """
     from tools.waf_logs import _parse_start_time
@@ -108,14 +108,19 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     )
     fr_results = _run_q(fr_cwl, fr_athena, start_epoch, end_epoch, limit=10)
 
-    # Check for anti-ddos event (ChallengeAllDuringEvent)
+    # Check for anti-ddos event (ChallengeAllDuringEvent). Only `event-detected` says AMR declared
+    # one. Any `anti-ddos` text was the first version, and `challengeable-request` is on nearly every
+    # request AMR evaluates: measured 2026-10-15, 640,593 records in 14 days with 0 events, so the
+    # note below fired on every check. Anchored to the label's JSON on CloudWatch, where the bare
+    # word also matched URIs and headers.
     antiddos_note = ""
     if action == "CHALLENGE":
-        ddos_cwl = "filter @message like 'anti-ddos' | stats count(*) as hits"
+        event = "awswaf:managed:aws:anti-ddos:event-detected"
+        ddos_cwl = f"filter @message like '\"name\":\"{event}\"' | stats count(*) as hits"
         ddos_athena = (
             "SELECT count(*) as hits FROM {TABLE}"
             " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
-            " AND any_match(labels, l -> l.name LIKE '%anti-ddos%')"
+            f" AND any_match(labels, l -> l.name = '{event}')"
         )
         ddos_results = _run_q(ddos_cwl, ddos_athena, start_epoch, end_epoch)
         if ddos_results and int(ddos_results[0].get("hits", 0)) > 0:

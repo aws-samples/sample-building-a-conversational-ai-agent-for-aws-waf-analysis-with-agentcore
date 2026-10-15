@@ -506,8 +506,11 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     # rules: used in data_lines for LLM summary context (not rendered in HTML)
     rules = _get_top_rules(cw, webacl_name, start_this_week, end, scope, region)
 
-    total_this = this_week["allowed"] + this_week["blocked"] + this_week["challenge"]
-    total_last = last_week["allowed"] + last_week["blocked"] + last_week["challenge"]
+    # All four terminating actions, the hit-rate denominator `waf_overview` uses. CAPTCHA was left
+    # out here while "mitigated" below counts it, so the mitigated share was taken against a
+    # denominator missing part of its own numerator.
+    total_this = this_week["allowed"] + this_week["blocked"] + this_week["challenge"] + this_week["captcha"]
+    total_last = last_week["allowed"] + last_week["blocked"] + last_week["challenge"] + last_week["captcha"]
 
     # Challenge total
     challenge_total = this_week["challenge"] + this_week["captcha"]
@@ -515,6 +518,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     # Challenge/CAPTCHA solved — use dedicated CloudWatch metrics
     challenge_solved = 0
     captcha_solved = 0
+    solved_error = None
     for metric_id, metric_name in [("cs", "ChallengesSolved"), ("cas", "CaptchasSolved")]:
         try:
             resp = cw.get_metric_data(
@@ -534,8 +538,9 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     challenge_solved = val
                 else:
                     captcha_solved = val
-        except Exception:
-            pass
+        except Exception as exc:
+            # Was `pass`, leaving the count at 0, which the summary then stated as "solved: 0".
+            solved_error = f"{type(exc).__name__}: {exc}"
 
     # Bot requests — will be computed in bot section below, default to 0
     bot_requests = 0
@@ -567,6 +572,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     caps = get_capabilities()
     log_dest = get_log_destination()
     # Auto-discover log destination if not already set
+    log_dest_error = None
     if not log_dest:
         try:
             waf_client = get_client("wafv2", region_name=region)
@@ -578,8 +584,10 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 dests = log_resp["LoggingConfiguration"]["LogDestinationConfigs"]
                 if dests:
                     log_dest = dests[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            # Kept: with no log group the Anti-DDoS reason below would otherwise say "this WebACL
+            # logs to S3 or Firehose", which is a claim about a configuration nobody read.
+            log_dest_error = f"{type(exc).__name__}: {exc}"
     log_group = log_dest.split(":log-group:")[-1].rstrip(":*") if log_dest and ":log-group:" in log_dest else None
     logs_client = get_client("logs", region_name=region) if log_group else None
     log_end = int(end.timestamp()) if log_group else 0
@@ -588,13 +596,16 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     # handler that swallows a failure has to say so, or the report attributes every empty section
     # to an idle WebACL.
     section_skips: dict[str, str] = {}
+    if solved_error:
+        section_skips["challenge_solved"] = (f"the Challenge/CAPTCHA solved counts could not be read "
+                                             f"({solved_error}), so they are unknown rather than zero")
 
     if caps.get("anti_ddos_amr") and log_group:
         try:
 
             # Event time range + total requests during event
             event_cnt = _poll_log_query(logs_client, log_group, log_start, log_end,
-                "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
+                "filter @message like '\"awswaf:managed:aws:anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
                 webacl_name, return_full=True)
 
             if event_cnt and int(event_cnt.get("cnt", 0)) > 0:
@@ -604,7 +615,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
                 # Count distinct events by looking for time gaps > 10 min between bins
                 event_count_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                    "filter @message like 'anti-ddos:event-detected' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
+                    "filter @message like '\"awswaf:managed:aws:anti-ddos:event-detected' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
                     webacl_name, return_rows=True)
                 num_events = 1 if event_count_result else 0
                 prev_ts = None
@@ -624,7 +635,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
                 # DDoS request breakdown by suspicion level
                 ddos_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                    "filter @message like 'anti-ddos:ddos-request' | stats count(*) as total, sum(strcontains(@message, 'high-suspicion')) as high, sum(strcontains(@message, 'medium-suspicion')) as medium, sum(strcontains(@message, 'low-suspicion')) as low",
+                    "filter @message like '\"awswaf:managed:aws:anti-ddos:ddos-request' | stats count(*) as total, sum(strcontains(@message, '\"awswaf:managed:aws:anti-ddos:high-suspicion')) as high, sum(strcontains(@message, '\"awswaf:managed:aws:anti-ddos:medium-suspicion')) as medium, sum(strcontains(@message, '\"awswaf:managed:aws:anti-ddos:low-suspicion')) as low",
                     webacl_name, return_full=True)
                 ddos_total = int(float(ddos_result.get("total", 0))) if ddos_result else 0
                 ddos_high = int(float(ddos_result.get("high", 0))) if ddos_result else 0
@@ -675,6 +686,10 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
     # The two non-failure silences. `empty` below tests three sections for emptiness and this is not
     # one of them, so until now the only way this section reached `missing` was by raising.
+    if "anti_ddos_events" not in section_skips and log_dest_error and caps.get("anti_ddos_amr"):
+        section_skips["anti_ddos_events"] = (
+            f"the logging configuration could not be read ({log_dest_error}), so where this WebACL "
+            f"logs, and whether the Anti-DDoS queries can run against it, is unknown")
     if "anti_ddos_events" not in section_skips:
         why = _antiddos_skip(bool(caps.get("anti_ddos_amr")), log_group, ddos_num_events)
         if why:
@@ -894,8 +909,13 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     f'</div>'
                     f'</div>'
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            # Was `pass`. The empty section then took the 14-day metric-discovery explanation, which
+            # tells a user whose query failed to go generate traffic. A half-built section is
+            # dropped rather than rendered.
+            bot_section = ""
+            section_skips["bot_control"] = (f"the Bot Control queries failed ({type(exc).__name__}: "
+                                            f"{exc}), so this section is missing for a call failure")
 
     # Attack type timeseries for stacked area chart
     attack_ts = _get_attack_timeseries(cw, webacl_name, start_this_week, end, tz_offset=_tz_offset, scope=scope, region=region)
@@ -908,6 +928,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
     # DDoS event count from metrics — count distinct events by looking for gaps in event-detected label
     ddos_event_count = 0
+    ddos_count_error = None
     try:
         _ddos_resp = cw.get_metric_data(
             MetricDataQueries=[
@@ -930,9 +951,15 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                         in_event = True
                 else:
                     in_event = False
-    except Exception:
-        pass
-    ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else L["no_events"]
+    except Exception as exc:
+        # Was `pass`, which printed "No events" for a count that never ran.
+        ddos_count_error = f"{type(exc).__name__}: {exc}"
+        section_skips["ddos_event_count"] = (f"the DDoS event count could not be read "
+                                             f"({ddos_count_error}), so whether an event occurred is unknown")
+    if ddos_count_error:
+        ddos_status = "⚠️ " + ("未知" if lang == "zh" else "Unknown")
+    else:
+        ddos_status = f"🔴 {ddos_event_count} {L['events']}" if ddos_event_count > 0 else L["no_events"]
 
     # Executive Summary — LLM generates, limited to 3-5 sentences
     mitigated_pct = f"{(threats_mitigated/total_this*100):.1f}" if total_this > 0 else "0"
@@ -997,7 +1024,9 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         f"- Week-over-week change: {total_change}",
         f"- Top attack sources (countries): {', '.join(c['country'] + '=' + str(c['count']) for c in countries[:5])}",
         f"- Top blocking rules: {', '.join(r['rule'] + '=' + str(r['count']) for r in [r for r in rules if r['action']=='BLOCK'][:5])}",
-        f"- Challenge issued: {challenge_total:,}, Challenge solved: {challenge_solved:,}, CAPTCHA solved: {captcha_solved:,}",
+        (f"- Challenge issued: {challenge_total:,}, Challenge and CAPTCHA solved: unknown (the count failed)"
+         if solved_error else
+         f"- Challenge issued: {challenge_total:,}, Challenge solved: {challenge_solved:,}, CAPTCHA solved: {captcha_solved:,}"),
         f"- Daily trend: {'spike on ' + max(daily, key=lambda d: d['blocked']+d['challenged'])['date'] if daily else 'steady'}",
     ]
 
@@ -1444,8 +1473,9 @@ def _extract_dimension_from_label(label: str, dimension: str) -> str:
 def set_report_summary(path: str, summary: str) -> str:
     """Finalize a weekly report by injecting the executive summary.
 
-    Call this after generate_weekly_report, with a compelling executive summary
-    that answers: What happened this week? What did AWS WAF protect? Is the investment worth it?
+    Call this after generate_weekly_report, with a factual executive summary
+    that answers: What happened this week? What did AWS WAF protect? Follow the tone rule
+    generate_weekly_report returns: no ROI or "worth the investment" language.
 
     Args:
         path: Path to the HTML report file (returned by generate_weekly_report).

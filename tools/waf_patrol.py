@@ -29,6 +29,7 @@ _PATROL_I18N = {
         "total_requests": "Total Requests",
         "mitigated": "Mitigated",
         "counted": "Counted",
+        "counted_within": "already within the two above",
         "not_blocked": "Not Blocked",
         "allowed": "Allowed",
         "blocked": "Blocked",
@@ -68,6 +69,7 @@ _PATROL_I18N = {
         "total_requests": "总请求量",
         "mitigated": "已拦截",
         "counted": "监控中",
+        "counted_within": "已包含在上面两项中",
         "not_blocked": "未拦截",
         "allowed": "放行",
         "blocked": "拦截",
@@ -106,7 +108,7 @@ WOW_SEVERE = 10.0     # 10x increase
 SPIKE_RATIO_ATTENTION = 5.0  # max day / avg day
 
 
-def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None, lang: str = "en") -> list[dict]:
+def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dict], ddos_event_windows: list[tuple] | None = None, lang: str = "en", webacl_name: str = "") -> list[dict]:
     """Assess per-rule metrics with WoW comparison. Returns action_items list.
 
     Each item: {severity, rule, text, suggestion, context?}
@@ -114,7 +116,7 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
     ddos_event_windows: list of (start_idx, end_idx) tuples indicating DDoS event periods in daily data
     """
     action_items = []
-    skip_rules = {"ALL", "shield-sample-webacl"}  # WebACL-level aggregates
+    skip_rules = {"ALL", webacl_name}  # WebACL-level aggregates
 
     # --- From Detection Tools (config issues) ---
     for tool in detection_tools:
@@ -165,11 +167,11 @@ def _assess_rules_v2(this_week: dict, last_week: dict, detection_tools: list[dic
         # --- WoW change for mitigated (blocked + challenged) ---
         if tw_mitigated > 50:  # ignore noise
             if lw_mitigated == 0:
-                # No baseline from previous period
+                # No baseline in the same window a week earlier
                 action_items.append({
                     "severity": "moderate",
                     "rule": rule_name,
-                    "text": f"昨日无基线，本期拦截 {tw_mitigated:,} 次" if lang == "zh" else f"No baseline from previous period — {tw_mitigated:,} requests mitigated",
+                    "text": f"上周同期无基线，本期拦截 {tw_mitigated:,} 次" if lang == "zh" else f"No baseline in the same window a week earlier — {tw_mitigated:,} requests mitigated",
                     "suggestion": "确认是否为新攻击模式或新规则部署" if lang == "zh" else "Verify: new attack pattern or new rule deployment?",
                 })
             elif lw_mitigated > 0:
@@ -302,11 +304,20 @@ def _detect_ddos_windows(cw, webacl_name: str, start, end) -> list[int]:
 
 
 def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int = 86400,
-                                   scope: str = "CLOUDFRONT", region: str = "") -> dict:
+                                   scope: str = "CLOUDFRONT", region: str = "",
+                                   rules: list | None = None) -> dict:
     """Get per-rule metrics for all rules using SEARCH (single API call).
 
     Returns: {rule_name: {blocked: [daily], counted: [daily], challenge: [daily], captcha: [daily]}}
     Also returns 'ALL' key for WebACL-level totals.
+
+    **SEARCH alone misses any rule that has been quiet for the last 14 days, whatever window is
+    asked for**, because its discovery window is anchored to now. Measured 2026-10-15 on
+    `response-id-on-page`, window 2026-09-08 04:00-05:00: SEARCH returned no SQLi rule and 0
+    blocks, while a MetricStat for `AWS-AWSManagedRulesSQLiRuleSet` returned 120. So pass the
+    WebACL's `rules` and each one, plus `ALL`, is also read with an explicit MetricStat, which has
+    no discovery step. Its metric name comes from `VisibilityConfig.MetricName`. SEARCH stays,
+    because it also finds managed sub-rules the configuration never names (`TGT_TokenAbsent`).
     """
     # CLOUDFRONT uses {Rule,WebACL}; REGIONAL uses {Rule,WebACL,Region}
     if scope == "REGIONAL" and region:
@@ -316,8 +327,33 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
         dim_set = "{AWS/WAFV2,Rule,WebACL}"
         extra_filter = ""
 
+    explicit = {}  # query id -> (rule dimension, metric key)
+    if rules is not None:
+        names = ["ALL"]
+        for rule in rules:
+            vis = rule.get("VisibilityConfig") or {}
+            if vis.get("CloudWatchMetricsEnabled", True):
+                names.append(vis.get("MetricName") or rule.get("Name", ""))
+            group = (rule.get("Statement") or {}).get("ManagedRuleGroupStatement") or {}
+            names += [o.get("Name", "") for o in group.get("RuleActionOverrides", [])]
+        dims_extra = [{"Name": "Region", "Value": region}] if scope == "REGIONAL" and region else []
+        stat_queries = []
+        for i, name in enumerate(dict.fromkeys(n for n in names if n)):
+            for key, metric in (("blocked", "BlockedRequests"), ("counted", "CountedRequests"),
+                                ("challenge", "ChallengeRequests"), ("captcha", "CaptchaRequests"),
+                                ("allowed", "AllowedRequests")):
+                qid = f"x{i}_{key}"
+                explicit[qid] = (name, key)
+                stat_queries.append({"Id": qid, "MetricStat": {"Metric": {
+                    "Namespace": "AWS/WAFV2", "MetricName": metric,
+                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
+                                   {"Name": "Rule", "Value": name}, *dims_extra]},
+                    "Period": period, "Stat": "Sum"}})
+    else:
+        stat_queries = []
+
     resp = cw.get_metric_data(
-        MetricDataQueries=[
+        MetricDataQueries=[*stat_queries,
             {"Id": "blocked", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', {period})"},
             {"Id": "counted", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CountedRequests\"', 'Sum', {period})"},
             {"Id": "challenge", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', {period})"},
@@ -336,19 +372,25 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
     _user_tz = timezone(timedelta(hours=_tz_off)) if _tz_off is not None else timezone.utc
 
     _raw = {}  # {rule_name: {metric: {ts_str: value}}}
+    found = {}  # explicit reads; where SEARCH also answered, both read the same metric
     for r in resp.get("MetricDataResults", []):
         qid = r["Id"]
+        values = [int(v) for v in r.get("Values", [])]
+        timestamps = [t.astimezone(_user_tz).isoformat() for t in r.get("Timestamps", [])]
+        if qid in explicit:
+            found[explicit[qid]] = dict(zip(timestamps, values))
+            continue
         if qid not in metric_map:
             continue
         label = r.get("Label", "")
         parts = label.rsplit(" ", 1)
         rule_name = parts[0] if len(parts) == 2 else label
-        values = [int(v) for v in r.get("Values", [])]
-        timestamps = [t.astimezone(_user_tz).isoformat() for t in r.get("Timestamps", [])]
 
         if rule_name not in _raw:
             _raw[rule_name] = {}
         _raw[rule_name][metric_map[qid]] = dict(zip(timestamps, values))
+    for (rule_name, key), series in found.items():
+        _raw.setdefault(rule_name, {})[key] = series
 
     # Phase 2: build aligned arrays per rule (union of all timestamps, sorted)
     for rule_name, metrics_data in _raw.items():
@@ -581,7 +623,8 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
         if range_problem:
             # Not fatal for patrol: the metrics half of the report is accurate and
             # worth returning. Say what happened instead of showing empty tables.
-            return {}, f"⚠️ Per-rule log details were skipped. {range_problem}"
+            return {"details": {}, "table_msg": table_msg,
+                    "unavailable": f"⚠️ Per-rule log details were skipped. {range_problem}"}
         time_cond += f" {partition_clause}" if partition_clause else ""
         # If the table location is shared by multiple WebACLs (e.g. a Firehose
         # bucket-root prefix), scope to this WebACL by webaclid so per-rule top
@@ -608,8 +651,9 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
             futures = {}
             for rule_name in attention_rules[:5]:
                 safe_rule = rule_name.replace("'", "''")
-                ip_sql = f'SELECT httprequest.clientip AS "httpRequest.clientIp", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = \'{safe_rule}\' GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT 5'
-                uri_sql = f'SELECT httprequest.uri AS "httpRequest.uri", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND terminatingruleid = \'{safe_rule}\' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT 5'
+                rule_pred = _rule_match_athena(safe_rule)
+                ip_sql = f'SELECT httprequest.clientip AS "httpRequest.clientIp", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND {rule_pred} GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT 5'
+                uri_sql = f'SELECT httprequest.uri AS "httpRequest.uri", COUNT(*) AS cnt FROM {full_table} WHERE {time_cond} AND {rule_pred} GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT 5'
                 futures[executor.submit(_run_athena_select, ip_sql, region)] = (rule_name, "ips")
                 futures[executor.submit(_run_athena_select, uri_sql, region)] = (rule_name, "uris")
                 # Inspected content (the WHY) for rules whose name encodes a
@@ -617,11 +661,6 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
                 loc = inspection_location(rule_name)
                 if loc and loc[1] != "uri":  # uri already shown above
                     expr = athena_content_expr(loc[1])
-                    rule_pred = (
-                        f"(terminatingruleid = '{safe_rule}'"
-                        f" OR any_match(nonterminatingmatchingrules, r -> r.ruleid = '{safe_rule}')"
-                        f" OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{safe_rule}')))"
-                    )
                     content_sql = (f"SELECT {expr} AS content, COUNT(*) AS cnt FROM {full_table}"
                                    f" WHERE {time_cond} AND {rule_pred} AND {expr} <> ''"
                                    f" GROUP BY {expr} ORDER BY cnt DESC LIMIT 5")
@@ -742,19 +781,32 @@ def _poll_log_query(logs_client, log_group: str, start: int, end: int, query: st
         return [{"_error": _skip_reason("detail_query_error", type(exc).__name__)}]
 
 
+def _rule_match_athena(safe_rule: str) -> str:
+    """Every place WAF records a match of this rule, from the one owner `aggregate_logs` uses. The
+    per-rule IP and URI queries read `terminatingruleid` only, where a Count match never is, so a
+    Count-rule spike, which is an action item, came back with both cells empty."""
+    from tools.waf_aggregate import _RULE_ATHENA
+    return _RULE_ATHENA.replace("{v}", safe_rule)
+
+
+def _rule_match_cwl(safe_name: str) -> str:
+    from tools.waf_aggregate import _RULE_CWL
+    return _RULE_CWL.replace("{v}", safe_name)
+
+
 def _query_top_ips_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str,
                            webacl_name: str) -> list[dict]:
-    """Get top 5 IPs blocked by a specific rule."""
+    """Get top 5 IPs matched by a specific rule, whatever its action."""
     safe_name = rule_name.replace("'", "\\'")
-    query = f"filter terminatingRuleId = '{safe_name}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit 5"
+    query = f"filter {_rule_match_cwl(safe_name)} | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit 5"
     return _poll_log_query(logs_client, log_group, start, end, query, webacl_name)
 
 
 def _query_top_uris_by_rule(logs_client, log_group: str, start: int, end: int, rule_name: str,
                             webacl_name: str) -> list[dict]:
-    """Get top 5 URIs blocked by a specific rule."""
+    """Get top 5 URIs matched by a specific rule, whatever its action."""
     safe_name = rule_name.replace("'", "\\'")
-    query = f"filter terminatingRuleId = '{safe_name}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit 5"
+    query = f"filter {_rule_match_cwl(safe_name)} | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit 5"
     return _poll_log_query(logs_client, log_group, start, end, query, webacl_name)
 
 
@@ -943,15 +995,16 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
 
     # 4. Per-rule metrics (this period + same period last week for WoW)
     cw = get_client("cloudwatch", region_name=region)
-    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600, scope=scope, region=region)
-    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, end_last, period=3600, scope=scope, region=region)
+    acl_rules = webacl_data.get("Rules", [])
+    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600, scope=scope, region=region, rules=acl_rules)
+    last_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start_last, end_last, period=3600, scope=scope, region=region, rules=acl_rules)
 
     # 5. Challenge/Captcha solved
     challenge_solved, captcha_solved = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
 
     # 6. DDoS event detection + Action Items
     ddos_windows = _detect_ddos_windows(cw, webacl_name, start, end)
-    action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None, lang)
+    action_items = _assess_rules_v2(this_week_metrics, last_week_metrics, detection_tools, ddos_windows if ddos_windows else None, lang, webacl_name=webacl_name)
 
     # 7. Top IPs/URIs for attention rules (CWL or Athena)
     # Only query logs for traffic anomalies (rules with actual metrics data), not config issues
@@ -1522,8 +1575,10 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
             continue
 
         tot = wr["totals"]
-        total_reqs = tot["blocked"] + tot["challenge"] + tot["captcha"] + tot["counted"] + tot["allowed"]
+        # Counted is not a fifth outcome: a counted request ends as allowed or blocked, so adding it
+        # here counted it twice, and drawing it as a slice skewed every share in the donut.
         mitigated = tot["blocked"] + tot["challenge"] + tot["captcha"]
+        total_reqs = mitigated + tot["allowed"]
 
         # --- 1. Traffic Distribution (donut) + Bot Activity (donut) side by side ---
         donut_id = f'donut_{wr["name"].replace("-","_")}'
@@ -1535,8 +1590,8 @@ def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, 
     <canvas id="{donut_id}" width="220" height="220"></canvas>
     <div class="donut-legend">
       <span class="dot" style="background:#f85149"></span>{L["mitigated"]}: {mitigated:,}<br>
-      <span class="dot" style="background:#d29922"></span>{L["counted"]}: {tot["counted"]:,}<br>
-      <span class="dot" style="background:#3fb950"></span>{L["allowed"]}: {tot["allowed"]:,}
+      <span class="dot" style="background:#3fb950"></span>{L["allowed"]}: {tot["allowed"]:,}<br>
+      <span class="muted">{L["counted"]}: {tot["counted"]:,} ({L["counted_within"]})</span>
     </div>
   </div>
 '''
@@ -1721,7 +1776,7 @@ new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_labe
         tot = wr["totals"]
         mit = tot["blocked"] + tot["challenge"] + tot["captcha"]
         did = f'donut_{wr["name"].replace("-","_")}'
-        donut_calls.append(f'donut("{did}",{json.dumps([mit, tot["counted"], tot["allowed"]])},{json.dumps([L["mitigated"], L["counted"], L["allowed"]])},["#f85149","#d29922","#3fb950"]);')
+        donut_calls.append(f'donut("{did}",{json.dumps([mit, tot["allowed"]])},{json.dumps([L["mitigated"], L["allowed"]])},["#f85149","#3fb950"]);')
         if wr.get("bot_data"):
             bd = wr["bot_data"]
             u_m = bd["unverified_blocked"] + bd["unverified_challenged"] + bd["unverified_captchaed"]

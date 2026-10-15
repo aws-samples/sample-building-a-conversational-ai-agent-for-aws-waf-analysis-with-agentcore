@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: Count matches recorded inside a managed rule group were invisible to several queries
+
+A Count is never the top-level `action`, which holds only the terminating one, and a managed sub-rule's
+Count is nested in `ruleGroupList`. Measured on one day: 0 counted requests at the top level, 1,792
+nested. `top_counted_ips`, `top_counted_countries` and `aggregate_logs(filter_by={"action": "COUNT"})`
+read the top level and came back empty or close to it; all three now use one predicate covering every
+location. `investigate_injection` ranked detectors by BLOCK only, so a Count-mode detector could never
+be the focus rule; on 2026-09-08 03:00 it skipped 160 `CrossSiteScripting_QUERYARGUMENTS` matches for a
+rule with 2 blocks. It now ranks by matches, includes sub-rules overridden to Count, and says when the
+focus rule is in Count mode. Patrol's per-rule IP and URI cells were empty for Count rules for the same
+reason.
+
+### Fixed: patrol missed rules that had been quiet for the last 14 days, whatever window it scanned
+
+CloudWatch SEARCH discovers only metrics with data in the last 14 days, counted from now. For
+2026-09-08 04:00 it returned no SQLi rule and 0 blocks while the rule had blocked 120, so patrol said
+"All systems nominal". Each rule in the WebACL's configuration is now also read directly. The COUNT
+evaluation does the same, and no longer files a rule with no metric under "0 hits, safe to switch":
+a zero is confirmed first, and a rule with metrics off, or whose read failed, gets its own section.
+Step 3 is now actually ranked by hit volume.
+
+### Fixed: verdicts reached from a query that failed or did not parse
+
+`analyze_ip` read a failed User-Agent query as "NAT, Confidence: HIGH", and a failed URI query plus a
+real peak as "HIGH CONFIDENCE: Endpoint hammering". `detect_bypass` and the false-positive
+investigation read an unparseable peak as 0. Each verdict now stops at the first rung whose input is
+unknown and names the query. The bypass verdict also calls a `bot:verified` client a verified bot
+rather than a scraper, and it and the scan now share one automation User-Agent list (the scan
+missed Python clients other than `requests`; the verdict missed `libwww-perl`). iPhone and iPad are
+no longer counted as Mac when judging whether an IP is shared.
+
+### Fixed: text in a URI or header could pass for a WAF label on CloudWatch
+
+Several queries matched label words anywhere in the raw record. Three probe requests with
+"bot:verified" in the path were dropped from five bypass-scan sections; the same text could hide an
+IP from `top_allowed_crawlers` and `top_allowed_repeaters`, raise the weekly report's Anti-DDoS
+counts, or set `token_reuse_ips`'s session id. `host_top_ips` matched the host name anywhere, and its
+top row was 45,841 CloudFront access-log records with no client IP. Label tests now read the labels
+array, and the host template reads the Host header.
+
+### Fixed: the challenge check reported an Anti-DDoS event that never happened
+
+It counted any Anti-DDoS label, and `challengeable-request` is on nearly every request the rule group
+evaluates: 640,593 in 14 days with no event. Only `event-detected` counts now.
+
+### Fixed: failures reported as facts in the weekly report and patrol
+
+A failed DDoS event count printed "No events"; failed Challenge and CAPTCHA solved counts printed 0; a
+failed Bot Control section was blamed on metric discovery; a failed logging-configuration read was
+explained as an S3 destination. Each now names the failure. The report's total includes CAPTCHA,
+which its mitigated share already did. Patrol crashed when the window was outside the Athena
+projection range, double-counted Counted requests in its traffic donut, skipped one hard-coded WebACL
+name instead of the one being scanned, and its Chinese text said "yesterday" for a baseline a week
+earlier. `investigate_injection` reported a failed WebACL read as "no injection coverage".
+
+### Fixed: guidance that contradicted AWS on `TGT_TokenAbsent`
+
+The deep-review guide rated overriding it to Count as Critical, and the knowledge base said never to
+do it. Its default action is already Count. The harmful change is to Block, which without the SDK
+blocks every first visit; both now say so. Run `deploy/sync-kb.sh` for the knowledge base to pick it up.
+
+### Changed: tool descriptions state the real query window
+
+Six tool schemas said Athena was capped at 60 minutes. Both engines allow 360.
+
 ## 0.31.0 (2026-10-15)
 
 ### Changed: the knowledge base is always deployed, and before the backend
