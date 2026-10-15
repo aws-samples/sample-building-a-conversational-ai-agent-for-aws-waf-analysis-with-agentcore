@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.31.0 (2026-10-15)
 
 ### Changed: the knowledge base is always deployed, and before the backend
 
@@ -43,6 +43,15 @@ replacement, and Cleanup now does that before deleting.
 `INVALID_ACTION`), so it is removed. `bedrock-agentcore:ListSessions` was granted and missing from
 `docs/iam-permissions.md`. The test that compares the two matched service names without a hyphen, so
 it never saw any `bedrock-agentcore:` action on either side.
+
+### Security: dependency updates
+
+Merged from Dependabot before this cut. Backend, in the container image: urllib3 2.7.0 → 2.8.0 (#129,
+GHSA-8988-9cw3-xx77, TLS settings for an HTTPS proxy could be ignored; the agent configures no proxy),
+pyjwt 2.13.0 → 2.15.0 (#128), anyio 4.13.0 → 4.14.2 (#127). Frontend, in the built SPA: dompurify
+3.4.13 → 3.4.16 (#131, a bypass when risky tags are allow-listed; `render.js` allow-lists none).
+Build-time only: source-map-js 1.2.1 → 1.2.2 (#130). The frontend ones reach users only when the
+frontend is rebuilt and uploaded (Step 6), not on a backend redeploy.
 
 ## 0.30.1 (2026-09-18)
 
