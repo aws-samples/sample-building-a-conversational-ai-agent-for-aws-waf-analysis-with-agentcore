@@ -36,6 +36,10 @@ Parameters:
     Type: String
     Default: ""
     Description: "Existing Cognito User Pool Client ID. Required if ExistingUserPoolId is set."
+  PermissionsBoundary:
+    Type: String
+    Default: ""
+    Description: "ARN of an IAM managed policy to set as the permissions boundary on every role this stack creates. Leave empty unless your organization requires one."
 
 Conditions:
   HasModelId: !Not [!Equals [!Ref ModelId, ""]]
@@ -46,6 +50,7 @@ Conditions:
     - !Not [!Equals [!Ref MemoryId, "none"]]
   CreateUserPool: !Equals [!Ref ExistingUserPoolId, ""]
   HasKnowledgeBase: !Not [!Equals [!Ref KnowledgeBaseId, ""]]
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundary, ""]]
 
 Resources:
   # --- Cognito ---
@@ -79,6 +84,7 @@ Resources:
   AgentExecutionRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       RoleName: !Sub ${AWS::StackName}-execution-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
@@ -177,7 +183,6 @@ Resources:
                   - bedrock-agentcore:ListEvents
                   - bedrock-agentcore:RetrieveMemoryRecords
                   - bedrock-agentcore:ListMemoryRecords
-                  - bedrock-agentcore:CreateSession
                   - bedrock-agentcore:ListSessions
                 Resource: '*'
               - Sid: Logs

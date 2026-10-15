@@ -67,15 +67,15 @@ CASES = [
     # The reviewer's exact repro of the hollow version: add the original bare bullet back and LEAVE
     # the optional one in place. The whole-block check stayed green here; the per-item check must not.
     ("bare-docker-bullet-alongside-the-optional-one", "README.md",
-     "- AWS CLI v2 configured with appropriate permissions",
-     "- [Docker](https://docs.docker.com/get-docker/) with buildx (for ARM64 images)\n- AWS CLI v2 configured with appropriate permissions",
+     "- AWS CLI v2 configured with administrator permissions",
+     "- [Docker](https://docs.docker.com/get-docker/) with buildx (for ARM64 images)\n- AWS CLI v2 configured with administrator permissions",
      "test_no_prerequisite_item_presents_a_container_tool_as_required"),
     ("guide-docker-required-again", "docs/deployment.md",
-     "2. **A container tool, optional.**",
-     "2. **Docker Desktop** (includes buildx for cross-platform builds).",
+     "3. **A container tool, optional.**",
+     "3. **Docker Desktop** (includes buildx for cross-platform builds).",
      "test_no_prerequisite_item_presents_a_container_tool_as_required"),
     ("guide-docker-required-again-zh", "docs/deployment_zh.md",
-     "2. **容器工具，可选。**", "2. **Docker Desktop**（含 buildx，用于构建容器镜像）。",
+     "3. **容器工具，可选。**", "3. **Docker Desktop**（含 buildx，用于构建容器镜像）。",
      "test_no_prerequisite_item_presents_a_container_tool_as_required"),
     # Anchor moves. These must be CAUGHT by the precondition assertions, not shrugged off.
     ("structure-anchor-moved", "README.md", "├── deploy/\n", "├── deployment/\n",

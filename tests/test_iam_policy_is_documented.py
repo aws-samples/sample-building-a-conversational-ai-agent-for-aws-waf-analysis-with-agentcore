@@ -48,14 +48,14 @@ def _granted() -> set[str]:
     # The policy ends where the next top-level resource key starts, at two spaces of indent.
     end = re.search(r"^  [A-Za-z]", rest, re.M)
     block = rest[:end.start()] if end else rest
-    listed = set(re.findall(r"^\s*-\s+([a-z0-9]+:[A-Za-z0-9*]+)\s*$", block, re.M))
-    inline = set(re.findall(r"^\s*Action:\s+([a-z0-9]+:[A-Za-z0-9*]+)\s*$", block, re.M))
+    listed = set(re.findall(r"^\s*-\s+([a-z0-9-]+:[A-Za-z0-9*]+)\s*$", block, re.M))
+    inline = set(re.findall(r"^\s*Action:\s+([a-z0-9-]+:[A-Za-z0-9*]+)\s*$", block, re.M))
     return listed | inline
 
 
 def _documented(rel: str) -> set[str]:
     """Every action named in a table's first column."""
-    return set(re.findall(r"\| `([a-zA-Z0-9]+:[A-Za-z0-9*]+)`", (ROOT / rel).read_text()))
+    return set(re.findall(r"\| `([a-zA-Z0-9-]+:[A-Za-z0-9*]+)`", (ROOT / rel).read_text()))
 
 
 def test_the_two_sides_were_actually_parsed():

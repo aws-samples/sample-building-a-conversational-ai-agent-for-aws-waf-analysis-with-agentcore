@@ -2,7 +2,7 @@
 
 [中文版](iam-permissions_zh.md)
 
-This document lists every IAM permission WAF Analyst requires, what it's used for, and whether it can modify your production environment.
+This document lists every IAM permission WAF Analyst requires, what it's used for, and whether it can modify your production environment. These are the agent's own permissions at runtime. What the person deploying it needs is in [Before You Deploy](before-you-deploy.md#who-deploys-with-what-permissions).
 
 ## Summary
 
@@ -142,8 +142,9 @@ This document lists every IAM permission WAF Analyst requires, what it's used fo
 | `bedrock-agentcore:ListEvents` | Retrieve recent turns | None (read) |
 | `bedrock-agentcore:RetrieveMemoryRecords` | Semantic search of LTM | None (read) |
 | `bedrock-agentcore:ListMemoryRecords` | List LTM records | None (read) |
+| `bedrock-agentcore:ListSessions` | List the memory sessions stored for a user | None (read) |
 
-### Bedrock Knowledge Base (optional)
+### Bedrock Knowledge Base
 
 | Permission | Purpose | Production Impact |
 |---|---|---|
@@ -155,7 +156,7 @@ This document lists every IAM permission WAF Analyst requires, what it's used fo
 
 - ❌ Modify AWS WAF rules (no `wafv2:UpdateWebACL`, `wafv2:CreateRule`, etc.)
 - ❌ Delete or modify log groups (no `logs:DeleteLogGroup`, `logs:PutRetentionPolicy`)
-- ❌ Modify S3 objects (no `s3:PutObject`, `s3:DeleteObject`)
+- ❌ Modify S3 objects outside an `athena-results/` prefix (no `s3:DeleteObject` anywhere)
 - ❌ Modify CloudFront distributions
 - ❌ Create or modify Firehose delivery streams
 - ❌ Modify existing Glue tables or databases (only creates in `waf_analysis_tmp`)

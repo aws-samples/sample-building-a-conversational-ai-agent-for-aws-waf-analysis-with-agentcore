@@ -5,6 +5,13 @@ Parameters:
   AppName:
     Type: String
     Default: waf-agent-kb
+  PermissionsBoundary:
+    Type: String
+    Default: ""
+    Description: "ARN of an IAM managed policy to set as the permissions boundary on every role this stack creates. Leave empty unless your organization requires one."
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundary, ""]]
 
 Resources:
   # --- S3 Vectors (vector store) ---
@@ -71,6 +78,7 @@ Resources:
   KBServiceRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -111,8 +119,14 @@ Resources:
                 Resource: !Sub "arn:aws:s3vectors:${AWS::Region}:${AWS::AccountId}:bucket/${AppName}-vectors-${AWS::AccountId}-${AWS::Region}/index/${AppName}-index"
 
   # --- Bedrock Knowledge Base ---
+  # The ARNs below are built with !Sub, which gives CloudFormation no dependency edge, so
+  # without DependsOn it deletes the index while Bedrock is still removing the data
+  # source's vectors from it. That leaves the data source DELETE_UNSUCCESSFUL and fails
+  # the stack delete. DependsOn rather than !GetAtt: swapping the ARNs for !GetAtt makes
+  # CloudFormation replace the knowledge base on an existing stack, which changes its ID.
   KnowledgeBase:
     Type: AWS::Bedrock::KnowledgeBase
+    DependsOn: VectorIndex
     Properties:
       Name: !Sub "${AppName}"
       RoleArn: !GetAtt KBServiceRole.Arn
@@ -135,6 +149,10 @@ Resources:
     Properties:
       KnowledgeBaseId: !Ref KnowledgeBase
       Name: !Sub "${AppName}-s3"
+      # The vectors live in the index this same stack deletes, so there is nothing to keep
+      # and nothing worth deleting first. With the default, DELETE, a stack delete fails
+      # whenever the index goes before the data source; see DependsOn on KnowledgeBase.
+      DataDeletionPolicy: RETAIN
       DataSourceConfiguration:
         Type: S3
         S3Configuration:

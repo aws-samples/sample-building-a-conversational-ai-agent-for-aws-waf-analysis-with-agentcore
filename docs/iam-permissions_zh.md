@@ -2,7 +2,7 @@
 
 [English](iam-permissions.md)
 
-本文档列出 WAF Analyst 需要的所有 IAM 权限、用途，以及是否会修改你的生产环境。
+本文档列出 WAF Analyst 需要的所有 IAM 权限、用途，以及是否会修改你的生产环境。这里说的是 agent 运行时自己的权限。部署它的人需要什么权限，见[部署前检查](before-you-deploy_zh.md#谁来部署用什么权限)。
 
 ## 总结
 
@@ -142,8 +142,9 @@
 | `bedrock-agentcore:ListEvents` | 获取最近轮次 | 无（只读） |
 | `bedrock-agentcore:RetrieveMemoryRecords` | 语义搜索 LTM | 无（只读） |
 | `bedrock-agentcore:ListMemoryRecords` | 列出 LTM 记录 | 无（只读） |
+| `bedrock-agentcore:ListSessions` | 列出某个用户存下的记忆会话 | 无（只读） |
 
-### Bedrock 知识库（可选）
+### Bedrock 知识库
 
 | 权限 | 用途 | 生产影响 |
 |---|---|---|
@@ -155,7 +156,7 @@
 
 - ❌ 修改 AWS WAF 规则（没有 `wafv2:UpdateWebACL`、`wafv2:CreateRule` 等）
 - ❌ 删除或修改日志组（没有 `logs:DeleteLogGroup`、`logs:PutRetentionPolicy`）
-- ❌ 修改 S3 对象（没有 `s3:PutObject`、`s3:DeleteObject`）
+- ❌ 修改 `athena-results/` 前缀以外的 S3 对象（任何地方都没有 `s3:DeleteObject`）
 - ❌ 修改 CloudFront 分配
 - ❌ 创建或修改 Firehose 投递流
 - ❌ 修改现有 Glue 表或数据库（仅在 `waf_agent_temp` 中创建）

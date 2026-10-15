@@ -96,7 +96,7 @@ CASES = [
      [f"{T}::test_the_upload_sends_opposite_headers_for_the_two_kinds_of_file"]),
 
     ("the two passes collapsed into one, which is the state that shipped",
-     [(G, "\naws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1 \\\n"
+     [(G, "\naws s3 sync dist/ s3://<FrontendBucket from Step 5>/ --region us-east-1 \\\n"
           "  --exclude '*' --include index.html --cache-control 'no-cache'\n", "\n")],
      [f"{T}::test_the_upload_sends_opposite_headers_for_the_two_kinds_of_file"]),
 ]

@@ -53,7 +53,8 @@ agent 来，它读的是你自己也会读的那份指南，而且是在你眼�
 ### 前置条件
 
 - 已配置 AWS WAF 并开启日志的 AWS 账号
-- AWS CLI v2
+- AWS CLI v2，配管理员权限，或者用 `deploy/deployer-role.yaml` 里那份更窄的部署策略
+- [部署前检查](docs/before-you-deploy_zh.md)里的几项。WAF、日志、Bedrock 分在不同账号时，这几项最要紧
 - Node.js 18+（用于构建前端）
 - 容器工具**可以没有**。装了 [Docker](https://docs.docker.com/get-docker/)（带 buildx）或
   [finch](https://github.com/runfinch/finch)，镜像就在你本机构建；都没装，`deploy/image-build.yaml`
@@ -137,7 +138,7 @@ graph TB
 - **会话**：每用户独立 microVM，空闲 15 分钟超时，最长 8 小时。历史持久化到 DynamoDB（30 天 TTL）。
 - **记忆**：AgentCore Memory 提供跨会话 LTM（事实、偏好、摘要）。DynamoDB 存储完整消息历史。
 
-详见 [部署指南](docs/deployment_zh.md) | [已知局限](docs/limitations_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Analyst？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md) | [小时级 vs 分钟级分区](docs/hourly-vs-minute-partitioning_zh.md) | [路线图](docs/roadmap_zh.md)
+详见 [部署前检查](docs/before-you-deploy_zh.md) | [部署指南](docs/deployment_zh.md) | [已知局限](docs/limitations_zh.md) | [使用指南](docs/user-guide_zh.md) | [IAM 权限说明](docs/iam-permissions_zh.md) | [成本估算](docs/cost-estimation_zh.md) | [数据隐私](docs/data-privacy_zh.md) | [为什么需要 WAF Analyst？](docs/why-waf-agent_zh.md) | [Firehose 优化](docs/firehose-minute-partitioning_zh.md) | [Athena 表检测](docs/athena-table-detection_zh.md) | [小时级 vs 分钟级分区](docs/hourly-vs-minute-partitioning_zh.md) | [路线图](docs/roadmap_zh.md)
 
 ## 支持的区域
 
@@ -192,6 +193,7 @@ VITE_BRAND_NAME=我的公司 WAF Analyst
 │   └── ask_user.py       # 人机交互（CLI 输入 / AG-UI 事件）
 ├── deploy/
 │   ├── backend.yaml      # CloudFormation: Cognito + AgentCore + IAM
+│   ├── deployer-role.yaml # CloudFormation: 最小权限部署角色，可选
 │   ├── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
 │   ├── image-build.yaml  # CloudFormation: 在 CodeBuild 上构建 ARM64 镜像，本机不用装 Docker
 │   ├── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
@@ -200,6 +202,7 @@ VITE_BRAND_NAME=我的公司 WAF Analyst
 ├── frontend/             # React SPA（Vite + AG-UI 流式客户端）
 ├── Dockerfile            # ARM64 容器
 └── docs/
+    ├── before-you-deploy.md # 部署到哪个账号、账号级检查、部署权限
     ├── deployment.md     # 完整部署指南
     ├── capabilities.md   # 功能说明（英文，含示例）
     └── capabilities_zh.md # 功能说明（中文）

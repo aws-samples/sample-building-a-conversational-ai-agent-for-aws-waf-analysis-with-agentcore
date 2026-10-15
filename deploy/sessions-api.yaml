@@ -14,11 +14,19 @@ Parameters:
   CognitoClientId:
     Type: String
     Description: "Cognito User Pool Client ID (from backend stack)"
+  PermissionsBoundary:
+    Type: String
+    Default: ""
+    Description: "ARN of an IAM managed policy to set as the permissions boundary on every role this stack creates. Leave empty unless your organization requires one."
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundary, ""]]
 
 Resources:
   SessionsLambdaRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:

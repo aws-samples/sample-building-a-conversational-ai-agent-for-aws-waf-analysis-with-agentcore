@@ -10,18 +10,19 @@ commands. (Commands are intentionally NOT duplicated here — one source of trut
 ## What you're deploying
 
 WAF Analyst is a read-only conversational AWS WAF analysis agent. Deployment is a container image
-plus **up to 4 CloudFormation stacks** and a static frontend upload.
+plus **4 CloudFormation stacks** and a static frontend upload.
 
 | Stack | Region | Required? |
 |-------|--------|-----------|
 | **backend** (Cognito + AgentCore Runtime + Memory + DynamoDB + IAM) | user's choice | ✅ required |
+| **kb** (S3 Vectors + Bedrock Knowledge Base + docs bucket) | same as backend | ✅ required |
 | **sessions** (API Gateway + Lambda — chat history sidebar) | same as backend | optional |
-| **kb** (S3 Vectors + Bedrock Knowledge Base + docs bucket) | same as backend | optional (recommended) |
 | **frontend** (CloudFront + S3 + WAF WebACL) | **us-east-1 (hard requirement)** | ✅ required |
 
-**Minimal working deploy = image + backend + frontend + one Cognito user.** `sessions` and `kb` are
-additive and can be added later without touching the others. Offer the minimal path first unless the
-user asks for everything.
+**Minimal working deploy = image + kb + backend + frontend + one Cognito user.** Deploy the knowledge
+base without asking: without it the agent loses the AWS documentation it cites, and the user has no
+basis for deciding to go without. `sessions` is additive and can be added later without touching the
+others.
 
 ## Before you start
 
@@ -34,7 +35,10 @@ Collect from the user first:
   supported list in [`docs/deployment.md` → Region Selection](docs/deployment.md#region-selection).
   (Frontend is always us-east-1 regardless.)
 - **AWS profile / credentials** — verify `aws sts get-caller-identity` points at the intended account.
-- **Which optional stacks** they want (session history? knowledge base?).
+- **Whether they want session history** (the optional sessions stack).
+- **Whether they deploy as an administrator.** If not, an administrator has to deploy
+  `deploy/deployer-role.yaml` once first, and every `aws cloudformation deploy` then carries
+  `--role-arn`. See [`docs/before-you-deploy.md`](docs/before-you-deploy.md#who-deploys-with-what-permissions).
 - **Model** — default is region-appropriate Claude; only override if they insist (see principle #5).
 - **Prerequisites present:** AWS CLI v2, Node.js 18+, and the target WebACL(s) already have **WAF
   logging enabled** — without logging the agent can only read metrics.
@@ -51,6 +55,14 @@ Collect from the user first:
   The two paths produce different artefacts, so say which one you took and why. A local build ships the
   working tree tagged by commit; CodeBuild ships a release tagged by release.
 
+**Then run the checks in [`docs/before-you-deploy.md`](docs/before-you-deploy.md) before the first stack,
+and stop on any that fails.** They are read-only plus one model call, and each catches something no stack
+reports. The agent has to run in the WebACL's account, so a log destination owned by another account
+(Firewall Manager central logging is the common case) is a stop: say so plainly, because a deployment
+there produces an agent that cannot read the logs. A failed model check (first-use form, an SCP, a
+Marketplace subscription) is a stop too, since the deployed agent would never answer. The model call is
+also what subscribes a fresh account to the model, which the agent's own role cannot do.
+
 ## The procedure
 
 Follow the numbered steps in [`docs/deployment.md`](docs/deployment.md) — they're already in
@@ -63,15 +75,13 @@ Working method for every stack:
    frontend `.env` consume them. Echo them back to the user as a record.
 
 Dependency flow (why the order matters — this is the part to keep in your head):
-- **Image → backend.** Backend needs the ECR image URI. → Steps 1–2. Which of the two build paths you
+- **Image → backend.** Backend needs the ECR image URI. → Step 1. Which of the two build paths you
   take was decided above, under prerequisites.
-- **backend → sessions.** Sessions API needs backend's DynamoDB table ARN/name + Cognito ids. → Step 3.
-- **backend + kb → backend again.** The KB stack is independent, but wiring it in **requires a second
-  backend deploy** with `KnowledgeBaseId` (that's what sets the env var + `bedrock:Retrieve` IAM).
-  → Steps 4–5. *Efficiency:* if the user definitely wants the KB, deploy kb first and pass
-  `KnowledgeBaseId` on the very first backend deploy to skip the redeploy.
+- **kb → backend.** The backend takes `KnowledgeBaseId` on its first deploy, which is what sets the env
+  var and the `bedrock:Retrieve` grant, so the KB stack comes first. → Steps 2–3.
+- **backend → sessions.** Sessions API needs backend's DynamoDB table ARN/name + Cognito ids. → Step 4.
 - **all outputs → frontend build.** The SPA `.env` is filled from backend + sessions outputs, built,
-  and synced to the frontend bucket. → Steps 4 (frontend stack) + 6 (build/upload).
+  and synced to the frontend bucket. → Steps 5 (frontend stack) + 6 (build/upload).
 - **Cognito user** last, so the user can log in. → Step 7.
 
 Then verify (Step 8 + the doc's runtime status check): open the CloudFront URL, sign in, send

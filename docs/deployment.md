@@ -4,7 +4,7 @@ English | [中文](deployment_zh.md)
 
 ## Overview
 
-WAF Analyst deploys as up to four CloudFormation stacks:
+WAF Analyst deploys as four CloudFormation stacks:
 
 > [!IMPORTANT]
 > **Model choice matters: use Claude Sonnet 5. Do not deploy this agent with GPT-family models on Amazon Bedrock unless you have tested your exact WAF investigation workflow.**
@@ -14,17 +14,22 @@ WAF Analyst deploys as up to four CloudFormation stacks:
 | Stack | Region | Resources |
 |-------|--------|-----------|
 | **backend** | Your choice (see [Region Selection](#region-selection)) | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
+| **kb** | Same as backend | S3 Vectors + Bedrock Knowledge Base + S3 (documents) |
 | **sessions** | Same as backend | API Gateway + Lambda (session history API) — *optional* |
-| **kb** | Same as backend | S3 Vectors + Bedrock Knowledge Base + S3 (documents) — *optional* |
 | **frontend** | us-east-1 (required for CloudFront AWS WAF) | CloudFront + S3 + AWS WAF WebACL |
 
 ## Prerequisites
 
-1. **AWS CLI v2** configured with admin-level permissions
-2. **A container tool, optional.** [Docker Desktop](https://docs.docker.com/get-docker/) with buildx, or [finch](https://github.com/runfinch/finch) (see [appendix](#alternative-using-finch)), builds the image on your own machine. With neither, [build in AWS](#alternative-build-in-aws-no-docker-required) instead. Do not install one just to deploy.
-3. **Node.js 18+** (for building the frontend)
-4. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
-5. **A CloudFront WebACL whose logs land in this same account.** Three shapes are not supported yet, and
+1. **The checks in [Before You Deploy](before-you-deploy.md)**: which account to deploy into, whether Claude and
+   your SCPs allow the model, and who deploys with which permissions. In a multi-account organization any
+   of them can fail, and each is cheaper to find before the first stack.
+2. **AWS CLI v2** configured with administrator permissions, or with the deployer policy from
+   [`deploy/deployer-role.yaml`](../deploy/deployer-role.yaml). With the deployer policy, add
+   `--role-arn <CloudFormationRoleArn>` to every `aws cloudformation deploy` below.
+3. **A container tool, optional.** [Docker Desktop](https://docs.docker.com/get-docker/) with buildx, or [finch](https://github.com/runfinch/finch) (see [appendix](#alternative-using-finch)), builds the image on your own machine. With neither, [build in AWS](#alternative-build-in-aws-no-docker-required) instead. Do not install one just to deploy.
+4. **Node.js 18+** (for building the frontend)
+5. An AWS account with AWS WAF logging enabled (CloudWatch Logs or S3)
+6. **A CloudFront WebACL whose logs land in this same account.** Three shapes are not supported yet, and
    only one of them fails quietly rather than with an error. Confirm all three before you spend a
    deployment on it:
    - **Scope.** `aws wafv2 list-web-acls --scope CLOUDFRONT --region us-east-1` should list the WebACL you
@@ -34,7 +39,8 @@ WAF Analyst deploys as up to four CloudFormation stacks:
    - **Account.** `aws wafv2 get-logging-configuration --resource-arn <webacl-arn>` gives the destination.
      If the bucket, delivery stream or log group belongs to another account, stop here. Deploying into the
      WAF account leaves the bucket unreadable; deploying into the log account leaves no WebACL to select and
-     the metrics in the other account. The agent assumes no cross-account role.
+     the metrics in the other account. The agent assumes no cross-account role. To tell who owns an S3
+     bucket, see [Before You Deploy](before-you-deploy.md#which-account-to-deploy-into).
    - **Format.** JSON, which is what WAF writes, works, and so does Parquet delivered directly to the log
      destination itself. A Parquet copy you convert and keep in a side prefix, with JSON still at the real
      destination, is not read: the agent matches a table by the log path, not by name.
@@ -96,7 +102,7 @@ inside one geography, use the regional profile for your region, and note that ap
 | `WAF_AGENT_MODEL_REGION` | Stack region | Region for Bedrock model invocation |
 | `WAF_AGENT_TIMEZONE_OFFSET` | `0` (UTC) | Fallback timezone offset (hours) for date parsing when user doesn't specify. Set to `8` for UTC+8 (China/Singapore/etc.) |
 
-The first two are **stack parameters**: pass `ModelId` and `ModelRegion` to `deploy/backend.yaml` in Step 2, no file editing. `WAF_AGENT_TIMEZONE_OFFSET` is **not** a parameter, so changing it means editing the `EnvironmentVariables` block in `deploy/backend.yaml` before you deploy. Set it if your team reads dates in local time: a backend in ap-northeast-1 with the default `0` will interpret "yesterday" as UTC.
+The first two are **stack parameters**: pass `ModelId` and `ModelRegion` to `deploy/backend.yaml` in Step 3, no file editing. `WAF_AGENT_TIMEZONE_OFFSET` is **not** a parameter, so changing it means editing the `EnvironmentVariables` block in `deploy/backend.yaml` before you deploy. Set it if your team reads dates in local time: a backend in ap-northeast-1 with the default `0` will interpret "yesterday" as UTC.
 
 ## Step 1: Build and Push Container Image
 
@@ -159,14 +165,42 @@ aws cloudformation describe-stacks \
 
 > **Note**: The remaining steps in this guide use bash syntax (`export`, `$VAR`), which does not run in PowerShell. On Windows, deploy the stacks from the CloudFormation console, or substitute literal values for the variables.
 
-## Step 2: Deploy Backend
+## Step 2: Deploy Knowledge Base
+
+This is the AWS WAF documentation the agent searches when it explains a rule or recommends a change. It comes before the backend because the backend takes its ID.
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/kb.yaml \
+  --stack-name waf-agent-kb \
+  --region $REGION \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+Wait for `CREATE_COMPLETE`, then upload documents and trigger ingestion:
+
+```bash
+./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION
+```
+
+Then keep its ID for Step 3:
+```bash
+KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text)
+```
+
+> **Updating KB documents later**: Just run `./deploy/sync-kb.sh`. No redeployment needed.
+
+> **S3 Vectors metadata limit**: S3 Vectors caps *filterable* metadata at 2 KB per vector. `kb.yaml` marks `AMAZON_BEDROCK_TEXT` and `AMAZON_BEDROCK_METADATA` (chunk text + source metadata, which grow with chunk size) as **non-filterable** to stay under that cap. If you increase the chunk size, keep them non-filterable — otherwise ingestion will fail.
+
+## Step 3: Deploy Backend
 
 ```bash
 aws cloudformation deploy \
   --template-file deploy/backend.yaml \
   --stack-name waf-agent \
   --region $REGION \
-  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT KnowledgeBaseId=$KB_ID \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -183,6 +217,7 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:$COMMIT \
+    KnowledgeBaseId=$KB_ID \
     ModelId=us.anthropic.claude-sonnet-5 \
     ModelRegion=us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM
@@ -201,12 +236,12 @@ AgentCore Memory gives the agent cross-session memory — it remembers your WebA
 
 To disable memory (not recommended):
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=none
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT KnowledgeBaseId=$KB_ID MemoryId=none
 ```
 
 To use an existing Memory resource instead of auto-creating:
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=<your-memory-id>
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT KnowledgeBaseId=$KB_ID MemoryId=<your-memory-id>
 ```
 
 ### Existing Cognito User Pool (optional)
@@ -220,6 +255,7 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:$COMMIT \
+    KnowledgeBaseId=$KB_ID \
     ExistingUserPoolId=<your-user-pool-id> \
     ExistingClientId=<your-client-id> \
   --capabilities CAPABILITY_NAMED_IAM
@@ -242,7 +278,7 @@ Save these values — you'll need them for the frontend:
 - `SessionsTableName`
 - `SessionsTableArn`
 
-## Step 3: Deploy Sessions API (optional, recommended)
+## Step 4: Deploy Sessions API (optional, recommended)
 
 ```bash
 aws cloudformation deploy \
@@ -250,10 +286,10 @@ aws cloudformation deploy \
   --stack-name waf-agent-sessions \
   --region $REGION \
   --parameter-overrides \
-    SessionsTableArn=<SessionsTableArn from Step 2> \
-    SessionsTableName=<SessionsTableName from Step 2> \
-    CognitoUserPoolId=<UserPoolId from Step 2> \
-    CognitoClientId=<UserPoolClientId from Step 2> \
+    SessionsTableArn=<SessionsTableArn from Step 3> \
+    SessionsTableName=<SessionsTableName from Step 3> \
+    CognitoUserPoolId=<UserPoolId from Step 3> \
+    CognitoClientId=<UserPoolClientId from Step 3> \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -263,7 +299,7 @@ Note the `SessionsApiUrl` output.
 
 > **Security note:** The Sessions API is protected by Cognito JWT authorization — only authenticated users can access it. For additional protection (rate limiting, IP reputation, geo-blocking), place a CloudFront distribution with an AWS WAF WebACL in front of the API Gateway. HTTP API (v2) does not support direct WAF association.
 
-## Step 4: Deploy Frontend
+## Step 5: Deploy Frontend
 
 ```bash
 aws cloudformation deploy \
@@ -279,46 +315,7 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
-> **Note**: this stack's own WebACL has no logging configuration, and that is deliberate rather than an omission. Prerequisite 4 is about the WebACLs you want *analysed*, which are the ones in front of your workload. Logging the SPA's own front door would bill CloudWatch ingestion for every asset request and tell you nothing about your traffic. If you do want it, add an `AWS::Logs::LogGroup` in us-east-1 whose name starts with `aws-waf-logs-` plus an `AWS::WAFv2::LoggingConfiguration` pointing at `FrontendWebACL`.
-
-## Step 5: Deploy Knowledge Base (optional, recommended)
-
-Adds AWS WAF best practices retrieval to the agent. Skip this if you don't need KB-powered recommendations.
-
-```bash
-aws cloudformation deploy \
-  --template-file deploy/kb.yaml \
-  --stack-name waf-agent-kb \
-  --region $REGION \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-Wait for `CREATE_COMPLETE`, then upload documents and trigger ingestion:
-
-```bash
-./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION
-```
-
-Finally, redeploy the backend with the KB ID:
-```bash
-KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
-  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text)
-
-aws cloudformation deploy \
-  --template-file deploy/backend.yaml \
-  --stack-name waf-agent \
-  --region $REGION \
-  --parameter-overrides \
-    AgentContainerUri=$ECR_URI:$COMMIT \
-    KnowledgeBaseId=$KB_ID \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-> **Note**: If you used `ExistingUserPoolId`/`ExistingClientId` in Step 2, include those parameters again here. CloudFormation requires all non-default parameters on every deploy.
-
-> **Updating KB documents later**: Just run `./deploy/sync-kb.sh`. No redeployment needed.
-
-> **S3 Vectors metadata limit**: S3 Vectors caps *filterable* metadata at 2 KB per vector. `kb.yaml` marks `AMAZON_BEDROCK_TEXT` and `AMAZON_BEDROCK_METADATA` (chunk text + source metadata, which grow with chunk size) as **non-filterable** to stay under that cap. If you increase the chunk size, keep them non-filterable — otherwise ingestion will fail.
+> **Note**: this stack's own WebACL has no logging configuration, and that is deliberate rather than an omission. Prerequisite 5 is about the WebACLs you want *analysed*, which are the ones in front of your workload. Logging the SPA's own front door would bill CloudWatch ingestion for every asset request and tell you nothing about your traffic. If you do want it, add an `AWS::Logs::LogGroup` in us-east-1 whose name starts with `aws-waf-logs-` plus an `AWS::WAFv2::LoggingConfiguration` pointing at `FrontendWebACL`.
 
 ## Step 6: Build and Upload Frontend
 
@@ -329,12 +326,12 @@ cd frontend
 # earlier deployment builds cleanly and ships a frontend pointed at a runtime that no longer
 # exists. See .env.example for every variable the SPA reads, including the optional ones.
 cat > .env << EOF
-VITE_USER_POOL_ID=<UserPoolId from Step 2>
-VITE_CLIENT_ID=<UserPoolClientId from Step 2>
+VITE_USER_POOL_ID=<UserPoolId from Step 3>
+VITE_CLIENT_ID=<UserPoolClientId from Step 3>
 VITE_REGION=$REGION
-VITE_AGENT_ENDPOINT=<AgentEndpoint from Step 2>
-VITE_AGENT_RUNTIME_ARN=<AgentRuntimeArn from Step 2>
-VITE_SESSIONS_API_URL=<SessionsApiUrl from Step 3>
+VITE_AGENT_ENDPOINT=<AgentEndpoint from Step 3>
+VITE_AGENT_RUNTIME_ARN=<AgentRuntimeArn from Step 3>
+VITE_SESSIONS_API_URL=<SessionsApiUrl from Step 4>
 EOF
 
 # Optional: customize the agent name shown in the UI
@@ -346,7 +343,7 @@ npm run build
 
 # Confirm the bundle really carries the new runtime before uploading. A stale .env fails
 # silently: the build succeeds and the app talks to the previous deployment.
-grep -q "<AgentRuntimeArn from Step 2>" dist/assets/*.js && echo "bundle OK"
+grep -q "<AgentRuntimeArn from Step 3>" dist/assets/*.js && echo "bundle OK"
 
 # Upload in two passes, because the two kinds of file want opposite caching. Everything under
 # assets/ carries a content hash, so it can be cached forever; index.html is the one filename that
@@ -357,10 +354,10 @@ grep -q "<AgentRuntimeArn from Step 2>" dist/assets/*.js && echo "bundle OK"
 # caches index.html heuristically and keeps running the
 # build it already has. If that build's backend was replaced, it does not run quietly out of date,
 # it breaks, and it reports the failure from whichever call happens to fail first.
-aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1 \
+aws s3 sync dist/ s3://<FrontendBucket from Step 5>/ --region us-east-1 \
   --exclude index.html --cache-control 'public, max-age=31536000, immutable'
 
-aws s3 sync dist/ s3://<FrontendBucket from Step 4>/ --region us-east-1 \
+aws s3 sync dist/ s3://<FrontendBucket from Step 5>/ --region us-east-1 \
   --exclude '*' --include index.html --cache-control 'no-cache'
 ```
 
@@ -382,7 +379,7 @@ aws cognito-idp admin-create-user \
 
 ## Step 8: Access
 
-Open `https://<CloudFrontDomain from Step 4>` in your browser. Sign in with the email and temporary password (you'll be prompted to set a new password on first login).
+Open `https://<CloudFrontDomain from Step 5>` in your browser. Sign in with the email and temporary password (you'll be prompted to set a new password on first login).
 
 Ask it `what version are you running?` and `List all WebACLs`. Until one of those returns an answer you have not verified the deployment: the stack reaching `CREATE_COMPLETE` and the runtime reporting `READY` both happen for an image that cannot serve a request.
 
@@ -451,6 +448,24 @@ Common causes:
 
 - Container not responding on port 8080
 - `/invocations` endpoint not implemented
+
+### Knowledge base stack stuck in DELETE_FAILED
+
+The data source reports `Unable to delete data from vector store`, because CloudFormation removed the vector index while Bedrock was still deleting the data source's vectors from it. Tell the data source to keep its vectors, then retry the stack delete. `update-data-source` refuses a request that omits the chunking configuration, so pass both back exactly as they are:
+
+```bash
+KB_ID=<KnowledgeBaseId>; DS_ID=<DataSourceId>
+CFG=$(aws bedrock-agent get-data-source --knowledge-base-id $KB_ID --data-source-id $DS_ID --region $REGION \
+  --query dataSource.dataSourceConfiguration --output json)
+VIC=$(aws bedrock-agent get-data-source --knowledge-base-id $KB_ID --data-source-id $DS_ID --region $REGION \
+  --query dataSource.vectorIngestionConfiguration --output json)
+aws bedrock-agent update-data-source --knowledge-base-id $KB_ID --data-source-id $DS_ID --region $REGION \
+  --name waf-agent-kb-s3 --data-source-configuration "$CFG" --vector-ingestion-configuration "$VIC" \
+  --data-deletion-policy RETAIN
+aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
+```
+
+Measured on 2026-10-15 on a stack in exactly this state. Nothing is lost by it: the vectors lived in the index that is already gone.
 
 ### AgentRuntimeName validation error
 
@@ -548,19 +563,13 @@ aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east
 # 3. Delete sessions API stack (if deployed)
 aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
 
-# 4. Delete KB stack (if deployed). Delete the Bedrock data source and knowledge base
-#    FIRST. kb.yaml builds their ARNs with !Sub, so CloudFormation has no dependency
-#    edge to the vector index and can delete it while Bedrock is still cleaning up,
-#    which leaves the data source DELETE_UNSUCCESSFUL and fails the whole stack.
-KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
-  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text 2>/dev/null)
-if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ]; then
-  for DS in $(aws bedrock-agent list-data-sources --knowledge-base-id "$KB_ID" --region $REGION \
-      --query 'dataSourceSummaries[].dataSourceId' --output text); do
-    aws bedrock-agent delete-data-source --knowledge-base-id "$KB_ID" --data-source-id "$DS" --region $REGION
-  done
-  aws bedrock-agent delete-knowledge-base --knowledge-base-id "$KB_ID" --region $REGION
-fi
+# 4. Delete KB stack. Update it with the current template first, which sets its data
+#    source to leave the vectors to the index the same stack deletes. Without that,
+#    CloudFormation can delete the index while Bedrock is still removing them, which
+#    leaves the data source DELETE_UNSUCCESSFUL and fails the whole stack. On a stack
+#    that is already current, the update changes nothing.
+aws cloudformation deploy --template-file deploy/kb.yaml --stack-name waf-agent-kb \
+  --region $REGION --capabilities CAPABILITY_NAMED_IAM
 KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
 [ -n "$KB_BUCKET" ] && empty_bucket "$KB_BUCKET" $REGION
