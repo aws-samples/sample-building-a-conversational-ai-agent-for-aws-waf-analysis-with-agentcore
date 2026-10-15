@@ -18,6 +18,10 @@ Metadata:
           default: Where to put it
         Parameters:
           - EcrRepositoryName
+      - Label:
+          default: Organization guardrails
+        Parameters:
+          - PermissionsBoundary
     ParameterLabels:
       ReleaseTag:
         default: Release tag to build (for example v0.22.0)
@@ -46,6 +50,14 @@ Parameters:
     AllowedPattern: "[a-z0-9]+(?:[._-][a-z0-9]+)*"
     Description: The ECR repository to create and push to.
 
+  PermissionsBoundary:
+    Type: String
+    Default: ""
+    Description: "ARN of an IAM managed policy to set as the permissions boundary on every role this stack creates. Leave empty unless your organization requires one."
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundary, ""]]
+
 Resources:
   # Tags are immutable because the Runtime resolves a tag when it is created and never
   # revisits it, so a tag whose contents can change would leave the runtime serving an
@@ -67,6 +79,7 @@ Resources:
   BuildRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -168,6 +181,7 @@ Resources:
   BuildRunnerRole:
     Type: AWS::IAM::Role
     Properties:
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:

@@ -144,8 +144,8 @@ def test_both_deployment_guides_carry_the_same_facts(marker):
         assert marker in _read(doc), f"{doc} is missing {marker!r} while its twin has it"
 
 
-@pytest.mark.parametrize("doc,heading", [("docs/deployment.md", "## Step 2: Deploy Backend"),
-                                         ("docs/deployment_zh.md", "## 第 2 步：部署后端")])
+@pytest.mark.parametrize("doc,heading", [("docs/deployment.md", "## Step 3: Deploy Backend"),
+                                         ("docs/deployment_zh.md", "## 第 3 步：部署后端")])
 def test_both_guides_say_stack_success_is_not_readiness(doc, heading):
     """From a measurement on 2026-09-12: a runtime pointed at an image that exits immediately, listens
     on no port and has no `/ping` still reports `READY`, and its stack still reaches

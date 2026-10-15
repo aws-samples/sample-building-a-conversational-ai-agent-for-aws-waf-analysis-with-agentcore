@@ -38,6 +38,12 @@ CASES = [
      [(EN, GLUE_EN, "")],
      [f"{T}::test_the_document_lists_exactly_what_the_role_grants"]),
 
+    # A service name with a hyphen. The parsers once matched `[a-z0-9]+:`, which skips every
+    # `bedrock-agentcore:` action on both sides, so a missing row there could never fail anything.
+    ("a bedrock-agentcore action removed from the document while the grant stays",
+     [(EN, "| `bedrock-agentcore:ListSessions` | List the memory sessions stored for a user | None (read) |\n", "")],
+     [f"{T}::test_the_document_lists_exactly_what_the_role_grants"]),
+
     # The Chinese twin lagging is silent in a way the equality check above cannot see on its own,
     # because each language is compared against the template separately and this one is not.
     ("the Chinese document alone losing a row, which the per-language check cannot see",
@@ -45,12 +51,12 @@ CASES = [
      [f"{T}::test_the_two_languages_document_the_same_actions"]),
 
     ("the granted-action parser blinded, so the equality check compares nothing to nothing",
-     [(T, '    listed = set(re.findall(r"^\\s*-\\s+([a-z0-9]+:[A-Za-z0-9*]+)\\s*$", block, re.M))',
+     [(T, '    listed = set(re.findall(r"^\\s*-\\s+([a-z0-9-]+:[A-Za-z0-9*]+)\\s*$", block, re.M))',
        "    listed = set()")],
      [f"{T}::test_the_two_sides_were_actually_parsed"], True),
 
     ("the inline Action: form no longer collected, which is how one real grant goes missing",
-     [(T, '    inline = set(re.findall(r"^\\s*Action:\\s+([a-z0-9]+:[A-Za-z0-9*]+)\\s*$", block, re.M))',
+     [(T, '    inline = set(re.findall(r"^\\s*Action:\\s+([a-z0-9-]+:[A-Za-z0-9*]+)\\s*$", block, re.M))',
        "    inline = set()")],
      [f"{T}::test_the_two_sides_were_actually_parsed"], True),
 
@@ -62,7 +68,7 @@ CASES = [
      [f"{T}::test_the_two_sides_were_actually_parsed"], True),
 
     ("the document parser blinded, so every action reads as undocumented or as nothing at all",
-     [(T, '    return set(re.findall(r"\\| `([a-zA-Z0-9]+:[A-Za-z0-9*]+)`", (ROOT / rel).read_text()))',
+     [(T, '    return set(re.findall(r"\\| `([a-zA-Z0-9-]+:[A-Za-z0-9*]+)`", (ROOT / rel).read_text()))',
        "    return set()")],
      [f"{T}::test_the_two_sides_were_actually_parsed"], True),
 ]

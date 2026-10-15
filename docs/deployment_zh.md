@@ -4,7 +4,7 @@
 
 ## 概述
 
-WAF Analyst 最多通过四个 CloudFormation Stack 部署：
+WAF Analyst 通过四个 CloudFormation Stack 部署：
 
 > [!IMPORTANT]
 > **模型选择很重要：请使用 Claude Sonnet 5。除非已经完整测试自己的 WAF 调查工作流，否则不要在 Amazon Bedrock 上为本 Agent 部署 GPT 系列模型。**
@@ -14,19 +14,20 @@ WAF Analyst 最多通过四个 CloudFormation Stack 部署：
 | Stack | 区域 | 资源 |
 |-------|------|------|
 | **backend** | 自选（见[区域选择](#区域选择)） | Cognito + AgentCore Runtime + AgentCore Memory + DynamoDB + IAM |
+| **kb** | 与 backend 相同 | S3 Vectors + Bedrock Knowledge Base + S3（文档） |
 | **sessions** | 与 backend 相同 | API Gateway + Lambda（会话历史 API）— *可选* |
-| **kb** | 与 backend 相同 | S3 Vectors + Bedrock Knowledge Base + S3（文档）— *可选* |
 | **frontend** | us-east-1（CloudFront AWS WAF 要求） | CloudFront + S3 + AWS WAF WebACL |
 
 ## 前置条件
 
-1. **AWS CLI v2**，配置了管理员权限
-2. **容器工具，可选。** 装了 [Docker Desktop](https://docs.docker.com/get-docker/)（含 buildx）或 [finch](https://github.com/runfinch/finch)（见[附录](#替代方案使用-finch)），镜像就在你本机构建。两个都没有，就[在 AWS 上构建](#在-aws-上构建不需要-docker)。不要为了部署专门去装一个。
-3. **Node.js 18+**（构建前端）
-4. 已开启 AWS WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
-5. **一个 CloudFront 的 WebACL，日志落在同一个账号里。** 有三种情况还不支持，其中只有一种不报错、静默给错结果。花时间部署之前先把三条都确认掉：
+1. **[部署前检查](before-you-deploy_zh.md)里的几项**：部署到哪个账号、Claude 和 SCP 放不放行模型、谁来部署、用什么权限。多账号的组织里哪一项都可能卡住，在建第一个栈之前查出来最省事。
+2. **AWS CLI v2**，配置管理员权限，或者挂上 [`deploy/deployer-role.yaml`](../deploy/deployer-role.yaml) 建出来的部署策略。用部署策略的话，下面每条 `aws cloudformation deploy` 都要加上 `--role-arn <CloudFormationRoleArn>`。
+3. **容器工具，可选。** 装了 [Docker Desktop](https://docs.docker.com/get-docker/)（含 buildx）或 [finch](https://github.com/runfinch/finch)（见[附录](#替代方案使用-finch)），镜像就在你本机构建。两个都没有，就[在 AWS 上构建](#在-aws-上构建不需要-docker)。不要为了部署专门去装一个。
+4. **Node.js 18+**（构建前端）
+5. 已开启 AWS WAF 日志的 AWS 账号（CloudWatch Logs 或 S3）
+6. **一个 CloudFront 的 WebACL，日志落在同一个账号里。** 有三种情况还不支持，其中只有一种不报错、静默给错结果。花时间部署之前先把三条都确认掉：
    - **范围。**`aws wafv2 list-web-acls --scope CLOUDFRONT --region us-east-1` 应该能列出你要分析的那个 WebACL。REGIONAL 的（ALB、API Gateway、AppSync）直接拒绝：每个带 scope 参数的 tool 一遇到 `scope="REGIONAL"` 就拒绝并说明原因，不会跑出一份标签、攻击、Bot、国家、Anti-DDoS 相关段落全部静默归零的报告。
-   - **账号。**`aws wafv2 get-logging-configuration --resource-arn <webacl-arn>` 能看到投递目标。桶、投递流或日志组属于另一个账号，就到此为止：部署在 WAF 账号读不到桶，部署在日志账号没有 WebACL 可选、指标还在对面。agent 不会 assume 任何跨账号角色。
+   - **账号。**`aws wafv2 get-logging-configuration --resource-arn <webacl-arn>` 能看到投递目标。桶、投递流或日志组属于另一个账号，就到此为止：部署在 WAF 账号读不到桶，部署在日志账号没有 WebACL 可选、指标还在对面。agent 不会 assume 任何跨账号角色。S3 桶归谁，查法见[部署前检查](before-you-deploy_zh.md#部署到哪个账号)。
    - **格式。**JSON（WAF 自己写出来的格式）能用，直接投到日志目的地本身的 Parquet 也能用。你自己转换、另放一个前缀的 Parquet 副本读不到：agent 按日志路径匹配表，不是按名字。
 
    每一条背后的实测数据见[已知局限](limitations_zh.md#还不支持)。
@@ -80,7 +81,7 @@ global profile 会把请求路由到有容量的任意区域。如果你要求�
 | `WAF_AGENT_MODEL_REGION` | 栈所在区域 | 调用 Bedrock 模型的区域 |
 | `WAF_AGENT_TIMEZONE_OFFSET` | `0`（UTC） | 用户没指定日期时，解析日期用的时区偏移（小时）。UTC+8 填 `8` |
 
-前两个是**栈参数**：第 2 步把 `ModelId` 和 `ModelRegion` 传给 `deploy/backend.yaml` 就行，不用改文件。`WAF_AGENT_TIMEZONE_OFFSET` **不是**参数，要改就得在部署前动 `deploy/backend.yaml` 里的 `EnvironmentVariables` 段。团队按本地时间读日期的话记得设：后端在 ap-northeast-1、这个值留 `0`，它会把「昨天」按 UTC 算。
+前两个是**栈参数**：第 3 步把 `ModelId` 和 `ModelRegion` 传给 `deploy/backend.yaml` 就行，不用改文件。`WAF_AGENT_TIMEZONE_OFFSET` **不是**参数，要改就得在部署前动 `deploy/backend.yaml` 里的 `EnvironmentVariables` 段。团队按本地时间读日期的话记得设：后端在 ap-northeast-1、这个值留 `0`，它会把「昨天」按 UTC 算。
 
 ## 第 1 步：构建并推送容器镜像
 
@@ -142,14 +143,42 @@ aws cloudformation describe-stacks \
 
 > **提示**：本指南后面的命令都是 bash 写法（`export`、`$VAR`），PowerShell 里跑不了。Windows 上要么从 CloudFormation 控制台部署，要么把变量换成实际值。
 
-## 第 2 步：部署后端
+## 第 2 步：部署知识库
+
+agent 解释规则、给改动建议时，查的就是这里的 AWS WAF 文档。它要放在后端前面，因为后端要用它的 ID。
+
+```bash
+aws cloudformation deploy \
+  --template-file deploy/kb.yaml \
+  --stack-name waf-agent-kb \
+  --region $REGION \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+等待 `CREATE_COMPLETE`，然后上传文档并触发索引：
+
+```bash
+./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION
+```
+
+记下它的 ID，第 3 步要用：
+```bash
+KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
+  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text)
+```
+
+> **后续更新文档**：只需运行 `./deploy/sync-kb.sh`，无需重新部署。
+
+> **S3 Vectors 元数据上限**：S3 Vectors 对*可过滤*元数据有 2 KB/向量的上限。`kb.yaml` 已将 `AMAZON_BEDROCK_TEXT` 和 `AMAZON_BEDROCK_METADATA`（chunk 文本 + 来源元数据，会随 chunk size 增长）标记为**非可过滤**以避开该上限。如果你调大 chunk size，请保持它们为非可过滤——否则 ingestion 会失败。
+
+## 第 3 步：部署后端
 
 ```bash
 aws cloudformation deploy \
   --template-file deploy/backend.yaml \
   --stack-name waf-agent \
   --region $REGION \
-  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT \
+  --parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT KnowledgeBaseId=$KB_ID \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -166,6 +195,7 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:$COMMIT \
+    KnowledgeBaseId=$KB_ID \
     ModelId=us.anthropic.claude-sonnet-5 \
     ModelRegion=us-east-1 \
   --capabilities CAPABILITY_NAMED_IAM
@@ -184,12 +214,12 @@ AgentCore Memory 让 Agent 拥有跨会话记忆——它会记住你的 WebACL 
 
 禁用 Memory（不推荐）：
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=none
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT KnowledgeBaseId=$KB_ID MemoryId=none
 ```
 
 使用已有的 Memory 资源（而非自动创建）：
 ```bash
---parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT MemoryId=<your-memory-id>
+--parameter-overrides AgentContainerUri=$ECR_URI:$COMMIT KnowledgeBaseId=$KB_ID MemoryId=<your-memory-id>
 ```
 
 ### 使用现有 Cognito User Pool（可选）
@@ -203,6 +233,7 @@ aws cloudformation deploy \
   --region $REGION \
   --parameter-overrides \
     AgentContainerUri=$ECR_URI:$COMMIT \
+    KnowledgeBaseId=$KB_ID \
     ExistingUserPoolId=<your-user-pool-id> \
     ExistingClientId=<your-client-id> \
   --capabilities CAPABILITY_NAMED_IAM
@@ -225,7 +256,7 @@ aws cloudformation describe-stacks --stack-name waf-agent --region $REGION \
 - `SessionsTableName`
 - `SessionsTableArn`
 
-## 第 3 步：部署会话 API（可选，推荐）
+## 第 4 步：部署会话 API（可选，推荐）
 
 ```bash
 aws cloudformation deploy \
@@ -233,10 +264,10 @@ aws cloudformation deploy \
   --stack-name waf-agent-sessions \
   --region $REGION \
   --parameter-overrides \
-    SessionsTableArn=<第 2 步的 SessionsTableArn> \
-    SessionsTableName=<第 2 步的 SessionsTableName> \
-    CognitoUserPoolId=<第 2 步的 UserPoolId> \
-    CognitoClientId=<第 2 步的 UserPoolClientId> \
+    SessionsTableArn=<第 3 步的 SessionsTableArn> \
+    SessionsTableName=<第 3 步的 SessionsTableName> \
+    CognitoUserPoolId=<第 3 步的 UserPoolId> \
+    CognitoClientId=<第 3 步的 UserPoolClientId> \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
@@ -246,7 +277,7 @@ aws cloudformation deploy \
 
 > **安全说明：** 会话 API 受 Cognito JWT 授权保护——只有认证用户可以访问。如需额外防护（频率限制、IP 信誉、地理封锁），可在 API Gateway 前面加一个 CloudFront 分配并关联 AWS WAF WebACL。HTTP API (v2) 不支持直接关联 WAF。
 
-## 第 4 步：部署前端
+## 第 5 步：部署前端
 
 ```bash
 aws cloudformation deploy \
@@ -262,46 +293,7 @@ aws cloudformation describe-stacks --stack-name waf-agent-frontend --region us-e
   --query 'Stacks[0].Outputs' --output table
 ```
 
-> **提示**：这个栈自己的 WebACL 没有配日志，是故意的，不是漏了。前置条件第 4 条说的是你想**被分析**的那些 WebACL，也就是挡在你业务前面的那些。给 SPA 自己的入口开日志，等于为每一次静态资源请求付 CloudWatch 摄取费，而且它告诉不了你任何关于你业务流量的事。真想开的话，在 us-east-1 加一个名字以 `aws-waf-logs-` 开头的 `AWS::Logs::LogGroup`，再加一个指向 `FrontendWebACL` 的 `AWS::WAFv2::LoggingConfiguration`。
-
-## 第 5 步：部署知识库（可选，推荐）
-
-为 Agent 添加 AWS WAF 最佳实践检索能力。不需要可跳过。
-
-```bash
-aws cloudformation deploy \
-  --template-file deploy/kb.yaml \
-  --stack-name waf-agent-kb \
-  --region $REGION \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-等待 `CREATE_COMPLETE`，然后上传文档并触发索引：
-
-```bash
-./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION
-```
-
-最后，重新部署后端以传入 KB ID：
-```bash
-KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
-  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text)
-
-aws cloudformation deploy \
-  --template-file deploy/backend.yaml \
-  --stack-name waf-agent \
-  --region $REGION \
-  --parameter-overrides \
-    AgentContainerUri=$ECR_URI:$COMMIT \
-    KnowledgeBaseId=$KB_ID \
-  --capabilities CAPABILITY_NAMED_IAM
-```
-
-> **注意**：如果第 2 步使用了 `ExistingUserPoolId`/`ExistingClientId`，这里也需要带上这些参数。CloudFormation 每次部署都需要传入所有非默认参数。
-
-> **后续更新文档**：只需运行 `./deploy/sync-kb.sh`，无需重新部署。
-
-> **S3 Vectors 元数据上限**：S3 Vectors 对*可过滤*元数据有 2 KB/向量的上限。`kb.yaml` 已将 `AMAZON_BEDROCK_TEXT` 和 `AMAZON_BEDROCK_METADATA`（chunk 文本 + 来源元数据，会随 chunk size 增长）标记为**非可过滤**以避开该上限。如果你调大 chunk size，请保持它们为非可过滤——否则 ingestion 会失败。
+> **提示**：这个栈自己的 WebACL 没有配日志，是故意的，不是漏了。前置条件第 5 条说的是你想**被分析**的那些 WebACL，也就是挡在你业务前面的那些。给 SPA 自己的入口开日志，等于为每一次静态资源请求付 CloudWatch 摄取费，而且它告诉不了你任何关于你业务流量的事。真想开的话，在 us-east-1 加一个名字以 `aws-waf-logs-` 开头的 `AWS::Logs::LogGroup`，再加一个指向 `FrontendWebACL` 的 `AWS::WAFv2::LoggingConfiguration`。
 
 ## 第 6 步：构建并上传前端
 
@@ -311,12 +303,12 @@ cd frontend
 # 用第 2、3 步的输出填写 .env。直接覆盖，不要去改：上一次部署留下的 .env 照样能构建成功，
 # 但产出的前端指向一个已经不存在的 runtime。SPA 读的全部变量见 .env.example，包括可选的那些。
 cat > .env << EOF
-VITE_USER_POOL_ID=<第 2 步的 UserPoolId>
-VITE_CLIENT_ID=<第 2 步的 UserPoolClientId>
+VITE_USER_POOL_ID=<第 3 步的 UserPoolId>
+VITE_CLIENT_ID=<第 3 步的 UserPoolClientId>
 VITE_REGION=$REGION
-VITE_AGENT_ENDPOINT=<第 2 步的 AgentEndpoint>
-VITE_AGENT_RUNTIME_ARN=<第 2 步的 AgentRuntimeArn>
-VITE_SESSIONS_API_URL=<第 3 步的 SessionsApiUrl>
+VITE_AGENT_ENDPOINT=<第 3 步的 AgentEndpoint>
+VITE_AGENT_RUNTIME_ARN=<第 3 步的 AgentRuntimeArn>
+VITE_SESSIONS_API_URL=<第 4 步的 SessionsApiUrl>
 EOF
 
 # 构建
@@ -325,7 +317,7 @@ npm run build
 
 # 上传前先确认打出来的包里真的是新 runtime。.env 陈旧的失败方式是静默的：
 # 构建成功，应用连的是上一次部署。
-grep -q "<第 2 步的 AgentRuntimeArn>" dist/assets/*.js && echo "bundle OK"
+grep -q "<第 3 步的 AgentRuntimeArn>" dist/assets/*.js && echo "bundle OK"
 
 # 分两趟上传，因为两类文件要的缓存正好相反。assets/ 下面的名字里都带内容哈希，可以永久缓存；
 # index.html 是唯一一个两次构建之间名字不变的，缓存下来那份会一直去加载上一次构建的 asset 哈希。
@@ -334,10 +326,10 @@ grep -q "<第 2 步的 AgentRuntimeArn>" dist/assets/*.js && echo "bundle OK"
 # 边缘什么都不缓存；源头不发头，浏览器就会启发式缓存 index.html，于是继续跑手里已经有的那个
 # 构建。而如果那个构建对应的后端
 # 已经被替换掉，它不是安静地跑旧版本，是坏的，而且报错来自恰好最先失败的那个调用。
-aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1 \
+aws s3 sync dist/ s3://<第 5 步的 FrontendBucket>/ --region us-east-1 \
   --exclude index.html --cache-control 'public, max-age=31536000, immutable'
 
-aws s3 sync dist/ s3://<第 4 步的 FrontendBucket>/ --region us-east-1 \
+aws s3 sync dist/ s3://<第 5 步的 FrontendBucket>/ --region us-east-1 \
   --exclude '*' --include index.html --cache-control 'no-cache'
 ```
 
@@ -359,7 +351,7 @@ aws cognito-idp admin-create-user \
 
 ## 第 8 步：访问
 
-浏览器打开 `https://<第 4 步的 CloudFrontDomain>`，用邮箱和临时密码登录。
+浏览器打开 `https://<第 5 步的 CloudFrontDomain>`，用邮箱和临时密码登录。
 
 问它 `what version are you running?` 和 `List all WebACLs`。这两句里有一句答出来，部署才算验证过：栈走到 `CREATE_COMPLETE`、runtime 报 `READY`，这两件事对一个根本不能应答的镜像也一样会发生。
 
@@ -428,6 +420,24 @@ aws bedrock-agentcore-control get-agent-runtime \
 
 - 容器没有在 8080 端口响应
 - `/invocations` 端点未实现
+
+### 知识库栈卡在 DELETE_FAILED
+
+data source 报 `Unable to delete data from vector store`。原因是 CloudFormation 先删了向量索引，Bedrock 还在从里面删这个 data source 的向量。让 data source 保留向量，再重试删栈就行。`update-data-source` 不带分块配置会被拒，所以把两段配置原样传回去：
+
+```bash
+KB_ID=<KnowledgeBaseId>; DS_ID=<DataSourceId>
+CFG=$(aws bedrock-agent get-data-source --knowledge-base-id $KB_ID --data-source-id $DS_ID --region $REGION \
+  --query dataSource.dataSourceConfiguration --output json)
+VIC=$(aws bedrock-agent get-data-source --knowledge-base-id $KB_ID --data-source-id $DS_ID --region $REGION \
+  --query dataSource.vectorIngestionConfiguration --output json)
+aws bedrock-agent update-data-source --knowledge-base-id $KB_ID --data-source-id $DS_ID --region $REGION \
+  --name waf-agent-kb-s3 --data-source-configuration "$CFG" --vector-ingestion-configuration "$VIC" \
+  --data-deletion-policy RETAIN
+aws cloudformation delete-stack --stack-name waf-agent-kb --region $REGION
+```
+
+2026-10-15 在一个正好卡在这个状态的栈上实测过。这样做不会丢任何东西，向量本来就存在那个已经删掉的索引里。
 
 ### AgentRuntimeName 验证错误
 
@@ -522,18 +532,12 @@ aws cloudformation delete-stack --stack-name waf-agent-frontend --region us-east
 # 3. 删除会话 API 栈（如已部署）
 aws cloudformation delete-stack --stack-name waf-agent-sessions --region $REGION
 
-# 4. 删除知识库栈（如已部署）。先手工删掉 Bedrock 的 data source 和 knowledge base。
-#    kb.yaml 用 !Sub 拼这两个 ARN，CloudFormation 因此没有指向向量索引的依赖边，
-#    可能在 Bedrock 还在清理时就把索引删了，data source 变 DELETE_UNSUCCESSFUL，整栈失败。
-KB_ID=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
-  --query "Stacks[0].Outputs[?OutputKey=='KnowledgeBaseId'].OutputValue" --output text 2>/dev/null)
-if [ -n "$KB_ID" ] && [ "$KB_ID" != "None" ]; then
-  for DS in $(aws bedrock-agent list-data-sources --knowledge-base-id "$KB_ID" --region $REGION \
-      --query 'dataSourceSummaries[].dataSourceId' --output text); do
-    aws bedrock-agent delete-data-source --knowledge-base-id "$KB_ID" --data-source-id "$DS" --region $REGION
-  done
-  aws bedrock-agent delete-knowledge-base --knowledge-base-id "$KB_ID" --region $REGION
-fi
+# 4. 删除知识库栈。删之前先用当前模板更新一次：更新后 data source 不再自己去删向量，
+#    交给同一个栈里一起删掉的索引。不更新的话，CloudFormation 可能在 Bedrock 还没删完
+#    向量时就把索引删了，data source 变成 DELETE_UNSUCCESSFUL，整个栈删除失败。
+#    栈已经是最新的话，这次更新什么都不改。
+aws cloudformation deploy --template-file deploy/kb.yaml --stack-name waf-agent-kb \
+  --region $REGION --capabilities CAPABILITY_NAMED_IAM
 KB_BUCKET=$(aws cloudformation describe-stacks --stack-name waf-agent-kb --region $REGION \
   --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text 2>/dev/null)
 [ -n "$KB_BUCKET" ] && empty_bucket "$KB_BUCKET" $REGION

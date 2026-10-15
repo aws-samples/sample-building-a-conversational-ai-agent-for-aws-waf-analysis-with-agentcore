@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed: the knowledge base is always deployed, and before the backend
+
+`kb` was optional and came after the backend, which then had to be deployed a second time to learn
+`KnowledgeBaseId`. A deployment without it loses the AWS documentation the agent cites, and the person
+asked whether they wanted it had nothing to decide with. It is now Step 2 of `docs/deployment.md`, the
+backend takes its ID on the first deploy, and the second backend deploy is gone. Steps 2 to 5 are
+renumbered. `AGENTS.md` deploys it without asking. Existing deployments need nothing.
+
+### Added: what to settle before deploying, for multi-account organizations
+
+`docs/before-you-deploy.md` answers which account to deploy into when the WebACL, its logs and Bedrock
+are in different accounts, and lists the checks that otherwise surface as an agent that never answers:
+Anthropic's first-use form, the Marketplace subscription a first model call creates, a region allowlist
+SCP that blocks the `global.` profile, and AgentCore's service-linked role. Each comes with the command
+that checks it. `AGENTS.md` now runs them before the first stack and stops on a failure.
+
+### Added: deploying without administrator access, and permissions boundaries
+
+`deploy/deployer-role.yaml` creates a CloudFormation service role that can create, update and delete
+every resource in the other templates, and a managed policy for whoever runs the guide. Every template
+that creates a role takes an optional `PermissionsBoundary`, and with one set the service role refuses
+any role without it. Verified on 2026-10-15 by deploying, updating and deleting all five stacks from a
+principal holding only that policy, with a boundary on every role; the deployed agent answered.
+
+### Fixed: deleting the knowledge-base stack failed once documents had been ingested
+
+`kb.yaml` builds the vector index ARN with `!Sub`, so CloudFormation saw no dependency and deleted the
+index while Bedrock was still removing the data source's vectors from it. The data source went
+`DELETE_UNSUCCESSFUL` and the stack `DELETE_FAILED`, and the manual pre-delete in Cleanup did not
+prevent it. The knowledge base now `DependsOn` the index, and the data source uses
+`DataDeletionPolicy: RETAIN`, since the index it would delete from goes with the same stack. Measured
+both ways: a plain stack delete failed without the dependency and succeeded with it. For an existing
+stack, updating it with the current template is a single in-place change to the data source, no
+replacement, and Cleanup now does that before deleting.
+
+### Fixed: the execution role granted an action that does not exist, and the check comparing it to the docs skipped it
+
+`bedrock-agentcore:CreateSession` is not an IAM action (`aws accessanalyzer validate-policy` reports
+`INVALID_ACTION`), so it is removed. `bedrock-agentcore:ListSessions` was granted and missing from
+`docs/iam-permissions.md`. The test that compares the two matched service names without a hyphen, so
+it never saw any `bedrock-agentcore:` action on either side.
+
 ## 0.30.1 (2026-09-18)
 
 ### Fixed: "Updating the Agent" didn't mention the frontend's version badge is a separate build

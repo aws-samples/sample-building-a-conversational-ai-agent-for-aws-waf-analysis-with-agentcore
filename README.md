@@ -56,7 +56,10 @@ a region where a template is not supported. The agent reads the same guide you w
 ### Prerequisites
 
 - AWS account with AWS WAF configured and logging enabled
-- AWS CLI v2 configured with appropriate permissions
+- AWS CLI v2 configured with administrator permissions, or with the narrower deployer policy in
+  `deploy/deployer-role.yaml`
+- The account checks in [Before You Deploy](docs/before-you-deploy.md), which matter most when WAF,
+  its logs and Bedrock live in different accounts
 - Node.js 18+ (for building the frontend)
 - A container tool is **optional**. [Docker](https://docs.docker.com/get-docker/) with buildx or
   [finch](https://github.com/runfinch/finch) builds the ARM64 image on your own machine. With neither,
@@ -144,7 +147,7 @@ graph TB
 - **Session**: Isolated microVM per user, 15-min idle timeout, max 8h lifetime. History persisted to DynamoDB (30-day TTL).
 - **Memory**: AgentCore Memory for cross-session LTM (facts, preferences, summaries). DynamoDB for full message history.
 
-See [Deployment Guide](docs/deployment.md) | [Known Limitations](docs/limitations.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md) | [Data Privacy](docs/data-privacy.md) | [Why WAF Analyst?](docs/why-waf-agent.md) | [Firehose Optimization](docs/firehose-minute-partitioning.md) | [Athena Table Detection](docs/athena-table-detection.md) | [Hourly vs Minute Partitioning](docs/hourly-vs-minute-partitioning.md) | [Roadmap](docs/roadmap.md)
+See [Before You Deploy](docs/before-you-deploy.md) | [Deployment Guide](docs/deployment.md) | [Known Limitations](docs/limitations.md) | [User Guide](docs/user-guide.md) | [IAM Permissions](docs/iam-permissions.md) | [Cost Estimation](docs/cost-estimation.md) | [Data Privacy](docs/data-privacy.md) | [Why WAF Analyst?](docs/why-waf-agent.md) | [Firehose Optimization](docs/firehose-minute-partitioning.md) | [Athena Table Detection](docs/athena-table-detection.md) | [Hourly vs Minute Partitioning](docs/hourly-vs-minute-partitioning.md) | [Roadmap](docs/roadmap.md)
 
 ## Supported Regions
 
@@ -199,6 +202,7 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 │   └── ask_user.py       # Human-in-the-loop (CLI input / AG-UI event)
 ├── deploy/
 │   ├── backend.yaml      # CloudFormation: Cognito + AgentCore + IAM
+│   ├── deployer-role.yaml # CloudFormation: least-privilege deployment role, optional
 │   ├── frontend.yaml     # CloudFormation: CloudFront + S3 + WAF
 │   ├── image-build.yaml  # CloudFormation: builds the ARM64 image on CodeBuild, no local Docker
 │   ├── kb.yaml           # CloudFormation: Bedrock KB + S3 Vectors
@@ -207,6 +211,7 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 ├── frontend/             # React SPA (Vite + AG-UI streaming client)
 ├── Dockerfile            # ARM64 container for AgentCore
 └── docs/
+    ├── before-you-deploy.md # Account placement, account checks, deployer permissions
     ├── deployment.md     # Full deployment guide
     ├── capabilities.md   # What you can ask (with examples)
     └── capabilities_zh.md

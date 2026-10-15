@@ -128,7 +128,7 @@ Only incurred if session history is enabled (`deploy/sessions-api.yaml` deployed
 
 **Typical usage:** ~10 API calls per session (list + restore). All usage levels stay within Lambda free tier. API Gateway cost < $0.01/month.
 
-### 8. Knowledge Base (optional)
+### 9. Knowledge Base
 
 S3 Vectors + Bedrock KB for AWS WAF best practices retrieval.
 

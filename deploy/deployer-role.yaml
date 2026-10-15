@@ -1,0 +1,491 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  Least-privilege deployment for WAF Analyst. Creates a CloudFormation service role that
+  holds the permissions to create, update and delete every resource in the other templates
+  in deploy/, and a managed policy for the person or pipeline that runs the deployment.
+  Deploy this once, as an administrator, before anything else.
+
+# Every resource type the other templates create, kept here so a test can tell when a
+# template gains a type this role was never derived for. The actions below came from
+# each type's handler permissions in the CloudFormation registry
+# (`aws cloudformation describe-type`), minus those only reached by features these
+# templates do not use: VPC networking, customer-managed KMS keys, Kinesis streaming,
+# S3 table/metadata configurations. Handler lists name API calls rather than IAM actions,
+# so the result was then checked with `aws accessanalyzer validate-policy` and the twelve
+# names IAM does not recognise were dropped. AWS::CodeBuild::Project publishes no handler
+# permissions, so its five actions were added by hand.
+Metadata:
+  CoveredResourceTypes:
+    - AWS::ApiGatewayV2::Api
+    - AWS::ApiGatewayV2::Authorizer
+    - AWS::ApiGatewayV2::Integration
+    - AWS::ApiGatewayV2::Route
+    - AWS::ApiGatewayV2::Stage
+    - AWS::Bedrock::DataSource
+    - AWS::Bedrock::KnowledgeBase
+    - AWS::BedrockAgentCore::Memory
+    - AWS::BedrockAgentCore::Runtime
+    - AWS::CloudFormation::CustomResource
+    - AWS::CloudFront::Distribution
+    - AWS::CloudFront::OriginAccessControl
+    - AWS::CodeBuild::Project
+    - AWS::Cognito::UserPool
+    - AWS::Cognito::UserPoolClient
+    - AWS::DynamoDB::Table
+    - AWS::ECR::Repository
+    - AWS::IAM::Role
+    - AWS::Lambda::Function
+    - AWS::Lambda::Permission
+    - AWS::S3::Bucket
+    - AWS::S3::BucketPolicy
+    - AWS::S3Vectors::Index
+    - AWS::S3Vectors::VectorBucket
+    - AWS::WAFv2::WebACL
+
+Parameters:
+  StackNamePrefix:
+    Type: String
+    Default: waf-agent
+    AllowedPattern: "[a-z][a-z0-9-]*"
+    Description: >-
+      Every WAF Analyst stack name must start with this. The roles those stacks create are
+      named after the stack, so this is also what scopes the IAM permissions below. The
+      deployment guide's stack names all start with waf-agent.
+
+  PermissionsBoundary:
+    Type: String
+    Default: ""
+    Description: >-
+      ARN of the permissions boundary your organization requires on new roles. When set, the
+      service role can only create or grant to roles that carry exactly this boundary, so pass
+      the same ARN as PermissionsBoundary to every other stack. Leave empty if none is required.
+
+Conditions:
+  HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundary, ""]]
+
+Resources:
+  CloudFormationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      # Deliberately outside role/${StackNamePrefix}*, or the grants below would let this
+      # role rewrite its own policy.
+      RoleName: !Sub cfn-${StackNamePrefix}
+      PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundary, !Ref AWS::NoValue]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: ManageWafAnalystStacks
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StackResources
+                Effect: Allow
+                Action:
+                  - apigateway:DELETE
+                  - apigateway:GET
+                  - apigateway:PATCH
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - bedrock:CreateDataSource
+                  - bedrock:CreateKnowledgeBase
+                  - bedrock:DeleteDataSource
+                  - bedrock:DeleteKnowledgeBase
+                  - bedrock:GetDataSource
+                  - bedrock:GetKnowledgeBase
+                  - bedrock:ListDataSources
+                  - bedrock:ListTagsForResource
+                  - bedrock:TagResource
+                  - bedrock:UntagResource
+                  - bedrock:UpdateDataSource
+                  - bedrock:UpdateKnowledgeBase
+                  - bedrock-agentcore:CreateAgentRuntime
+                  - bedrock-agentcore:CreateAgentRuntimeEndpoint
+                  - bedrock-agentcore:CreateMemory
+                  - bedrock-agentcore:CreateWorkloadIdentity
+                  - bedrock-agentcore:DeleteAgentRuntime
+                  - bedrock-agentcore:DeleteAgentRuntimeEndpoint
+                  - bedrock-agentcore:DeleteMemory
+                  - bedrock-agentcore:DeleteWorkloadIdentity
+                  - bedrock-agentcore:GetAgentRuntime
+                  - bedrock-agentcore:GetAgentRuntimeEndpoint
+                  - bedrock-agentcore:GetMemory
+                  - bedrock-agentcore:ListTagsForResource
+                  - bedrock-agentcore:TagResource
+                  - bedrock-agentcore:UntagResource
+                  - bedrock-agentcore:UpdateAgentRuntime
+                  - bedrock-agentcore:UpdateAgentRuntimeEndpoint
+                  - bedrock-agentcore:UpdateMemory
+                  - cloudfront:CreateDistribution
+                  - cloudfront:CreateOriginAccessControl
+                  - cloudfront:DeleteDistribution
+                  - cloudfront:DeleteOriginAccessControl
+                  - cloudfront:GetDistribution
+                  - cloudfront:GetDistributionConfig
+                  - cloudfront:GetOriginAccessControl
+                  - cloudfront:ListTagsForResource
+                  - cloudfront:TagResource
+                  - cloudfront:UntagResource
+                  - cloudfront:UpdateDistribution
+                  - cloudfront:UpdateOriginAccessControl
+                  - codebuild:BatchGetProjects
+                  - codebuild:CreateProject
+                  - codebuild:DeleteProject
+                  - codebuild:UpdateProject
+                  - codebuild:UpdateProjectVisibility
+                  - cognito-idp:AddCustomAttributes
+                  - cognito-idp:CreateUserPool
+                  - cognito-idp:CreateUserPoolClient
+                  - cognito-idp:DeleteUserPool
+                  - cognito-idp:DeleteUserPoolClient
+                  - cognito-idp:DescribeUserPool
+                  - cognito-idp:DescribeUserPoolClient
+                  - cognito-idp:GetUserPoolMfaConfig
+                  - cognito-idp:ListTagsForResource
+                  - cognito-idp:ListUserPoolClientSecrets
+                  - cognito-idp:SetUserPoolMfaConfig
+                  - cognito-idp:TagResource
+                  - cognito-idp:UntagResource
+                  - cognito-idp:UpdateUserPool
+                  - cognito-idp:UpdateUserPoolClient
+                  - ecr:CreateRepository
+                  - ecr:DeleteLifecyclePolicy
+                  - ecr:DeleteRepository
+                  - ecr:DeleteRepositoryPolicy
+                  - ecr:DescribeRepositories
+                  - ecr:GetLifecyclePolicy
+                  - ecr:GetRepositoryPolicy
+                  - ecr:ListTagsForResource
+                  - ecr:PutImageScanningConfiguration
+                  - ecr:PutImageTagMutability
+                  - ecr:PutLifecyclePolicy
+                  - ecr:SetRepositoryPolicy
+                  - ecr:TagResource
+                  - ecr:UntagResource
+                  - lambda:AddPermission
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:DeleteFunctionCodeSigningConfig
+                  - lambda:DeleteFunctionConcurrency
+                  - lambda:GetCodeSigningConfig
+                  - lambda:GetFunction
+                  - lambda:GetFunctionCodeSigningConfig
+                  - lambda:GetFunctionRecursionConfig
+                  - lambda:GetFunctionScalingConfig
+                  - lambda:GetPolicy
+                  - lambda:GetRuntimeManagementConfig
+                  - lambda:InvokeFunction
+                  - lambda:PublishVersion
+                  - lambda:PutFunctionCodeSigningConfig
+                  - lambda:PutFunctionConcurrency
+                  - lambda:PutFunctionRecursionConfig
+                  - lambda:PutFunctionScalingConfig
+                  - lambda:PutRuntimeManagementConfig
+                  - lambda:RemovePermission
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                  - logs:PutRetentionPolicy
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:DeleteBucketPolicy
+                  - s3:DeleteBucketWebsite
+                  - s3:DeleteObject
+                  - s3:GetAccelerateConfiguration
+                  - s3:GetAnalyticsConfiguration
+                  - s3:GetBucketAbac
+                  - s3:GetBucketAcl
+                  - s3:GetBucketCORS
+                  - s3:GetBucketLogging
+                  - s3:GetBucketNotification
+                  - s3:GetBucketObjectLockConfiguration
+                  - s3:GetBucketOwnershipControls
+                  - s3:GetBucketPolicy
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:GetBucketTagging
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketWebsite
+                  - s3:GetEncryptionConfiguration
+                  - s3:GetIntelligentTieringConfiguration
+                  - s3:GetInventoryConfiguration
+                  - s3:GetLifecycleConfiguration
+                  - s3:GetMetricsConfiguration
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetReplicationConfiguration
+                  - s3:ListBucket
+                  - s3:ListTagsForResource
+                  - s3:PutAccelerateConfiguration
+                  - s3:PutAnalyticsConfiguration
+                  - s3:PutBucketAbac
+                  - s3:PutBucketAcl
+                  - s3:PutBucketCORS
+                  - s3:PutBucketLogging
+                  - s3:PutBucketNotification
+                  - s3:PutBucketObjectLockConfiguration
+                  - s3:PutBucketOwnershipControls
+                  - s3:PutBucketPolicy
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutBucketTagging
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketWebsite
+                  - s3:PutEncryptionConfiguration
+                  - s3:PutIntelligentTieringConfiguration
+                  - s3:PutInventoryConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:PutMetricsConfiguration
+                  - s3:PutObjectAcl
+                  - s3:PutReplicationConfiguration
+                  - s3:TagResource
+                  - s3:UntagResource
+                  - s3vectors:CreateIndex
+                  - s3vectors:CreateVectorBucket
+                  - s3vectors:DeleteIndex
+                  - s3vectors:DeleteVectorBucket
+                  - s3vectors:GetIndex
+                  - s3vectors:GetVectorBucket
+                  - s3vectors:ListTagsForResource
+                  - s3vectors:TagResource
+                  - s3vectors:UntagResource
+                  - wafv2:CreateWebACL
+                  - wafv2:DeleteWebACL
+                  - wafv2:GetWebACL
+                  - wafv2:ListTagsForResource
+                  - wafv2:TagResource
+                  - wafv2:UntagResource
+                  - wafv2:UpdateWebACL
+                Resource: "*"
+              - Sid: SessionsTable
+                Effect: Allow
+                Action:
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteItem
+                  - dynamodb:DeleteResourcePolicy
+                  - dynamodb:DeleteTable
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:DescribeContributorInsights
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:GetItem
+                  - dynamodb:GetResourcePolicy
+                  - dynamodb:ListTagsOfResource
+                  - dynamodb:PutItem
+                  - dynamodb:PutResourcePolicy
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                  - dynamodb:UpdateContinuousBackups
+                  - dynamodb:UpdateContributorInsights
+                  - dynamodb:UpdateItem
+                  - dynamodb:UpdateTable
+                  - dynamodb:UpdateTimeToLive
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/${StackNamePrefix}*
+              # Reads and removals cannot widen what a role can do, so they need no boundary.
+              - Sid: StackRoleLifecycle
+                Effect: Allow
+                Action:
+                  - iam:DeleteRole
+                  - iam:DeleteRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListRolePolicies
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackNamePrefix}*
+              # Creating a role or granting it a policy is the escalation path in any template
+              # that creates roles: an inline policy's content cannot be constrained here, so
+              # without a boundary whoever can deploy can mint a role with any permissions.
+              # With a boundary configured, each grant is allowed only for a role carrying it.
+              - Sid: StackRoleGrants
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:PutRolePermissionsBoundary
+                  - iam:PutRolePolicy
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackNamePrefix}*
+                Condition: !If
+                  - HasPermissionsBoundary
+                  - StringEquals:
+                      iam:PermissionsBoundary: !Ref PermissionsBoundary
+                  - !Ref AWS::NoValue
+              # The only managed policy any template attaches.
+              - Sid: StackRoleManagedPolicy
+                Effect: Allow
+                Action: iam:AttachRolePolicy
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackNamePrefix}*
+                Condition: !If
+                  - HasPermissionsBoundary
+                  - ArnEquals:
+                      iam:PolicyARN: !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+                    StringEquals:
+                      iam:PermissionsBoundary: !Ref PermissionsBoundary
+                  - ArnEquals:
+                      iam:PolicyARN: !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+              - !If
+                - HasPermissionsBoundary
+                - !Ref AWS::NoValue
+                - Sid: StackRoleBoundaryRemoval
+                  Effect: Allow
+                  Action: iam:DeleteRolePermissionsBoundary
+                  Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackNamePrefix}*
+              - Sid: PassStackRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackNamePrefix}*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - bedrock-agentcore.amazonaws.com
+                      - bedrock.amazonaws.com
+                      - codebuild.amazonaws.com
+                      - lambda.amazonaws.com
+              # Created by AgentCore the first time a runtime is created in the account, and
+              # never again after that.
+              - Sid: AgentCoreServiceLinkedRole
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/runtime-identity.bedrock-agentcore.amazonaws.com/AWSServiceRoleForBedrockAgentCoreRuntimeIdentity
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName: runtime-identity.bedrock-agentcore.amazonaws.com
+
+  # Attach this to the user, role or pipeline that runs the deployment guide, and never to
+  # a role whose name starts with StackNamePrefix, which the service role can rewrite. It can drive
+  # the stacks only through the role above, plus the steps the guide runs outside
+  # CloudFormation: the pre-deployment checks, the image push, the knowledge-base sync, the
+  # frontend upload, creating the first user, and cleanup.
+  DeployerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${StackNamePrefix}-deployer
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Stacks
+            Effect: Allow
+            Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:CreateStack
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DeleteStack
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStackDriftDetectionStatus
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResourceDrifts
+              - cloudformation:DescribeStackResources
+              - cloudformation:DescribeStacks
+              - cloudformation:DetectStackDrift
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:GetTemplate
+              - cloudformation:ListStackResources
+              - cloudformation:UpdateStack
+            Resource: !Sub arn:${AWS::Partition}:cloudformation:*:${AWS::AccountId}:stack/${StackNamePrefix}*/*
+          - Sid: Templates
+            Effect: Allow
+            Action:
+              - cloudformation:GetTemplateSummary
+              - cloudformation:ValidateTemplate
+            Resource: "*"
+          - Sid: UseTheServiceRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt CloudFormationRole.Arn
+            Condition:
+              StringEquals:
+                iam:PassedToService: cloudformation.amazonaws.com
+          # Read-only checks the guide runs before the first stack. InvokeModel and the two
+          # Marketplace actions are for a single test call that also completes the account's
+          # first-use subscription to the model, which the agent's own role cannot do.
+          - Sid: PreDeploymentChecks
+            Effect: Allow
+            Action:
+              - aws-marketplace:Subscribe
+              - aws-marketplace:ViewSubscriptions
+              - bedrock:GetFoundationModelAvailability
+              - bedrock:InvokeModel
+              - firehose:DescribeDeliveryStream
+              - s3:GetBucketLocation
+              - wafv2:GetLoggingConfiguration
+              - wafv2:GetWebACL
+              - wafv2:ListWebACLs
+            Resource: "*"
+          - Sid: LocalImagePush
+            Effect: Allow
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:CompleteLayerUpload
+              - ecr:CreateRepository
+              - ecr:DeleteRepository
+              - ecr:DescribeImages
+              - ecr:InitiateLayerUpload
+              - ecr:PutImage
+              - ecr:UploadLayerPart
+            Resource: !Sub arn:${AWS::Partition}:ecr:*:${AWS::AccountId}:repository/${StackNamePrefix}*
+          - Sid: EcrLogin
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: "*"
+          # The frontend and knowledge-base document buckets are named after their stacks.
+          - Sid: StackBuckets
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketVersions
+              - s3:PutObject
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${StackNamePrefix}*
+              - !Sub arn:${AWS::Partition}:s3:::${StackNamePrefix}*/*
+          - Sid: KnowledgeBase
+            Effect: Allow
+            Action:
+              - bedrock:DeleteDataSource
+              - bedrock:DeleteKnowledgeBase
+              - bedrock:GetIngestionJob
+              - bedrock:ListDataSources
+              - bedrock:ListIngestionJobs
+              - bedrock:StartIngestionJob
+            Resource: !Sub arn:${AWS::Partition}:bedrock:*:${AWS::AccountId}:knowledge-base/*
+          - Sid: FirstUser
+            Effect: Allow
+            Action: cognito-idp:AdminCreateUser
+            Resource: !Sub arn:${AWS::Partition}:cognito-idp:*:${AWS::AccountId}:userpool/*
+          - Sid: Troubleshooting
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetAgentRuntime
+              - logs:FilterLogEvents
+              - logs:GetLogEvents
+            Resource: "*"
+
+Outputs:
+  CloudFormationRoleArn:
+    Description: Pass this as --role-arn to every aws cloudformation deploy in the guide
+    Value: !GetAtt CloudFormationRole.Arn
+  DeployerPolicyArn:
+    Description: Attach this to whoever runs the deployment
+    Value: !Ref DeployerPolicy
