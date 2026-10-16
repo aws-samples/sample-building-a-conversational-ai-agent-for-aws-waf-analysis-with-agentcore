@@ -87,7 +87,7 @@ def test_every_search_query_in_the_tools_names_its_label():
 def test_report_top_rules_names_its_label():
     """The one SEARCH built in a variable, which the sweep above cannot see."""
     cw = LabelCW([({"Rule": "OnlyRule"}, "BlockedRequests", 9)])
-    rows = R._get_top_rules(cw, "acl", START, END)
+    rows = R._get_top_rules(cw, "acl", START, END, period=3600)
     assert [r["rule"] for r in rows] == ["OnlyRule"], rows
 
 
@@ -124,7 +124,7 @@ def test_an_attack_type_with_two_actions_is_one_row():
 
 def test_the_report_names_a_lone_country_and_attack_type():
     cw = LabelCW([({"Country": "US"}, "BlockedRequests", 12), ({"Attack": "XSS"}, "BlockedRequests", 4)])
-    assert R._get_top_countries(cw, "acl", START, END) == [{"country": "US", "count": 12}]
+    assert R._get_top_countries(cw, "acl", START, END, 3600) == [{"country": "US", "count": 12}]
     assert list(R._get_attack_timeseries(cw, "acl", START, END)["series"]) == ["XSS"]
 
 

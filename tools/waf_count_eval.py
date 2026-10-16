@@ -309,9 +309,9 @@ def _count_rule_matches(rule_name: str, start_epoch: int, end_epoch: int) -> int
     """
     from tools.waf_query import log_query_error
     # Adjacent keys on purpose. WAF writes a rule entry as {"ruleId":..,"action":..,
-    # "overriddenAction":..}; measured 2026-10-15 on shield-sample-webacl, 14 days: 34 records match
-    # this form and 34 match the two keys searched separately. The separate form would also pair one
-    # entry's ruleId with another entry's COUNT, so it is the less precise of the two, not a fix.
+    # "overriddenAction":..}, and the two keys searched separately pair one entry's ruleId with another
+    # entry's COUNT: measured 2026-10-16 on shield-sample-webacl over 14 days, LFI_URIPATH, which only
+    # blocks, matched 34 records that way and none in this form.
     cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
            " | stats count(*) as cnt")
     athena = (f"SELECT count(*) as cnt FROM {{TABLE}}"

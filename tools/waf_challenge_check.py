@@ -116,7 +116,8 @@ def check_challenge_compatibility(start_time: str, duration_minutes: int = 180, 
     antiddos_note = ""
     if action == "CHALLENGE":
         event = "awswaf:managed:aws:anti-ddos:event-detected"
-        ddos_cwl = f"filter @message like '\"name\":\"{event}\"' | stats count(*) as hits"
+        # Spelled out, not formatted from `event`, so the anchoring sweep can read the value it pins.
+        ddos_cwl = "filter @message like '\"name\":\"awswaf:managed:aws:anti-ddos:event-detected\"' | stats count(*) as hits"
         ddos_athena = (
             "SELECT count(*) as hits FROM {TABLE}"
             " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"

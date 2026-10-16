@@ -90,7 +90,7 @@ CASES = [
      [f"{T}::test_a_failed_check_is_not_read_as_no_activity"], True),
 
     ("the window sent as asked, not as CloudWatch answers it",
-     [(O, "        start, end = _whole_points(asked_start, asked_end, unit, oldest(start, end))",
+     [(O, "        start, end = _whole_points(asked_start, asked_end, unit, held)",
        "        start, end = asked_start, asked_end")],
      [f"{T}::test_a_half_hour_97_days_old_is_widened_and_says_so",
       f"{T}::test_an_old_window_off_the_clock_reads_whole_points"], True),
@@ -109,10 +109,16 @@ CASES = [
      [f"{T}::test_an_old_window_moves_only_to_the_resolution_kept"], True),
 
     ("the step chosen once, before the window moved",
-     [(O, "        if _calc_period(minutes, oldest(start, end)) == unit:\n            break",
+     [(O, "        if _period_for_window(int(oldest(start, end).timestamp())) == _period_for_window(int(held.timestamp())):\n            break",
        "        if True:\n            break")],
      [f"{T}::test_the_previous_window_is_read_in_whole_points_across_the_63_day_line",
-      f"{T}::test_a_window_moved_past_the_63_day_line_is_read_and_described_whole"], True),
+      f"{T}::test_a_window_moved_past_the_63_day_line_is_read_and_described_whole",
+      f"{T}::test_a_start_moved_past_63_days_is_rounded_to_the_hour_when_the_period_is_already_an_hour"], True),
+
+    ("the loop stopping when the period holds, though the rounding moved",
+     [(O, "        if _period_for_window(int(oldest(start, end).timestamp())) == _period_for_window(int(held.timestamp())):\n            break",
+       "        if _calc_period(minutes, oldest(start, end)) == unit:\n            break")],
+     [f"{T}::test_a_start_moved_past_63_days_is_rounded_to_the_hour_when_the_period_is_already_an_hour"], True),
 
     ("a window ending now noted for running past now",
      [(O, "    read_end = min(end, datetime.now(timezone.utc))", "    read_end = end")],

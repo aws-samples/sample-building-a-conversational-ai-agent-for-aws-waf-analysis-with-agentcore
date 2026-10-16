@@ -60,6 +60,77 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
     return rows or []
 
 
+def _static_traffic(peak, non_static, allowed, distinct, ip) -> list[str]:
+    """The verdict for fast ALLOW traffic that is nearly all static. It reached static files rather
+    than the application, so it is abuse or cost rather than a way past the rules, and the rate is
+    measured while the intent is not, so it names the shapes that fit."""
+    if None in (non_static, allowed, distinct):
+        return []
+    shape = (f"It fetched many files ({distinct} distinct URIs), which is how bulk fetching, a mirror or "
+             f"an image scraper looks." if distinct > 50 else
+             f"It pulled the same {distinct} file{'s' if distinct != 1 else ''} over and over, which fits a "
+             f"flood aimed at a file, a client stuck in a retry loop, or a monitoring probe." if distinct <= 2 else
+             f"It was spread over {distinct} distinct URIs.")
+    return ["**LIKELY: High-rate static-asset traffic, not a bypass.**",
+            f"Evidence: peak {peak} req/min allowed, {allowed - non_static:,} of {allowed:,} allowed "
+            f"requests static. It reached static files, not the application's endpoints, so this is an "
+            f"abuse or cost question rather than a way past the rules. {shape} These signals cannot "
+            f"tell which.",
+            f"→ Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
+            f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
+            f"filter_by='{{\"ip\": \"{ip}\"}}'))."]
+
+
+def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict) -> list[dict]:
+    """The Count rules on one IP's requests, CloudWatch side: `[{"rule", "hits"}]`, busiest first.
+
+    **CloudWatch has no array accessor that holds up**, so the names are found first and each is then
+    counted with a one-entry substring, `"ruleId":"X","action":"COUNT"`, which counts it once per
+    request as Athena does and which client text cannot produce. `unnest` measured wrong: filtered on
+    the element's action and grouped by its rule, it answered 604 for TGT_TokenAbsent where the
+    records held 1,040 entries, and other filters on unnested fields answered differently on identical
+    runs. A first-match parse alone was the version before this, and since `ruleGroupList` comes before
+    the top-level `nonTerminatingMatchingRules` in the record, it always took a nested entry: over 24
+    hours on `shield-sample-webacl` a WebACL-level Count rule read 0 for 5 requests.
+
+    The names are the first and the last Count entry of each record plus every Count rule the WebACL
+    configures. Missed is only a rule in the middle of three or more, that the configuration does not
+    name, and no such record was found in 24 hours.
+    """
+    import re
+    base = f"filter httpRequest.clientIp = '{ip}' and @message like '\"action\":\"COUNT\"'"
+    found = _safe_query(
+        base + " | parse @message /\"ruleId\":\"(?<first>[^\"]+)\",\"action\":\"COUNT\"/"
+        " | parse @message /.*\"ruleId\":\"(?<last>[^\"]+)\",\"action\":\"COUNT\"/"
+        " | stats count(*) as n by first, last",
+        "", start, end, limit=1000, failures=failures, label="count_rules", notes=notes)
+    if failures.get("count_rules"):
+        return []
+    names = {r.get(k) for r in found for k in ("first", "last")}
+    try:
+        from tools.waf_count_eval import _get_all_count_rules
+        scope = get_scope() or "CLOUDFRONT"
+        names |= set(_get_all_count_rules(resolve_region(scope), scope))
+    except Exception as e:
+        # Not a failure of the section: the names from the records still stand, and only a rule found
+        # in neither place can be missing. Rendered beside the list rather than instead of it.
+        failures["count_rules_config"] = f"{type(e).__name__}: {e}"
+    names = sorted(n for n in names if n and re.fullmatch(r"[\w-]+", n))
+    if not names:
+        return []
+    counted = _safe_query(
+        base + " | stats " + ", ".join(
+            f"sum(strcontains(@message, '\"ruleId\":\"{n}\",\"action\":\"COUNT\"')) as c{i}"
+            for i, n in enumerate(names)),
+        "", start, end, limit=1, failures=failures, label="count_rules", notes=notes)
+    row = counted[0] if counted else {}
+    hits = sorted(((n, int(float(row.get(f"c{i}") or 0))) for i, n in enumerate(names)), key=lambda x: -x[1])
+    hits = [{"rule": n, "hits": str(h)} for n, h in hits if h > 0]
+    if len(hits) > 5:
+        notes["count_rules"] = 5  # what the Athena side records at its row limit of five
+    return hits[:5]
+
+
 def _empty_reason(failures: dict, label: str, none_text: str = "  (none found)") -> str:
     """The line an empty section shows, which depends on why it is empty.
 
@@ -806,9 +877,10 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     )
     freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1, failures=failures, label="frequency", notes=notes)
     # No rows from a query that answered is a zero: on CloudWatch a `stats` with no group-by over no
-    # records answers none, where Athena answers a row of zeros. "?" is kept for a failure.
-    peak_rpm = freq[0].get("peak_rpm", "?") if freq else ("?" if failures.get("frequency") else 0)
-    avg_rpm = freq[0].get("avg_rpm", "?") if freq else ("?" if failures.get("frequency") else 0)
+    # records answers none, where Athena answers one row, with "" for a `max` or `avg` over nothing.
+    # "?" is kept for a failure.
+    peak_rpm = (freq[0].get("peak_rpm", "?") or 0) if freq else ("?" if failures.get("frequency") else 0)
+    avg_rpm = (freq[0].get("avg_rpm", "?") or 0) if freq else ("?" if failures.get("frequency") else 0)
 
     # 2. URI diversity (ALLOW only)
     uri_cwl = (
@@ -823,8 +895,43 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"{ATHENA_EXCLUDE_STATIC}"
     )
     uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1, failures=failures, label="uri_diversity", notes=notes)
-    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else ("?" if failures.get("uri_diversity") else 0)
-    total_reqs = uri_data[0].get("total", "?") if uri_data else ("?" if failures.get("uri_diversity") else 0)
+    unique_uris = (uri_data[0].get("unique_uris", "?") or 0) if uri_data else ("?" if failures.get("uri_diversity") else 0)
+    total_reqs = (uri_data[0].get("total", "?") or 0) if uri_data else ("?" if failures.get("uri_diversity") else 0)
+
+    # 2a. The ALLOW rate over the same non-static requests the URI count reads, and every distinct
+    # ALLOW URI, static ones included. The scraper and hammering rungs set a rate against the
+    # non-static URI count, and the rate was over every request, so an IP pulling only static files
+    # had 0 URIs at 300/min and read as hammering.
+    dyn_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
+        f"{CWL_EXCLUDE_STATIC}"
+        " | stats count(*) as hits by bin(1m)"
+        " | stats max(hits) as peak_rpm"
+    )
+    dyn_athena = (
+        f"SELECT max(cnt) as peak_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
+        f"{ATHENA_EXCLUDE_STATIC}"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    dyn = _safe_query(dyn_cwl, dyn_athena, start_epoch, end_epoch, limit=1, failures=failures,
+                      label="frequency_dynamic", notes=notes)
+    dyn_peak = (dyn[0].get("peak_rpm", "?") or 0) if dyn else ("?" if failures.get("frequency_dynamic") else 0)
+    all_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
+        " | stats count_distinct(httpRequest.uri) as unique_uris_all"
+    )
+    all_athena = (
+        f"SELECT count(DISTINCT httprequest.uri) as unique_uris_all"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
+    )
+    all_data = _safe_query(all_cwl, all_athena, start_epoch, end_epoch, limit=1, failures=failures,
+                           label="all_uris", notes=notes)
+    all_uris = (all_data[0].get("unique_uris_all", "?") or 0) if all_data else ("?" if failures.get("all_uris") else 0)
 
     # 2b. Query strings on ALLOW traffic — attack-like payloads that were NOT
     # blocked are a direct bypass signal. Sensitive params redacted below.
@@ -922,16 +1029,6 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     # `ruleGroupList`, and it is the common one: measured 2026-10-16 on `response-id-on-page`,
     # 2026-10-01 to 10-16, 5 top-level COUNT entries against 2,142 nested. Athena reads both levels
     # and counts each rule once per request, since a group deployed twice logs its sub-rules twice.
-    # CloudWatch has no array accessor that holds up, so it reads the first COUNT entry per record.
-    # `unnest` measured wrong on `shield-sample-webacl`: filtered on the element's action and grouped
-    # by its rule, it answered 604 for TGT_TokenAbsent where the same records held 1,040 entries.
-    count_rules_cwl = (
-        f"filter httpRequest.clientIp = '{ip}' and @message like '\"action\":\"COUNT\"'"
-        " | parse @message /\"ruleId\":\"(?<rule>[^\"]+)\",\"action\":\"COUNT\"/"
-        " | filter ispresent(rule)"
-        " | stats count(*) as hits by rule"
-        " | sort hits desc | limit 5"
-    )
     count_rules_athena = (
         "SELECT t.rule as rule, count(*) as hits FROM (SELECT array_distinct(concat("
         "coalesce(transform(filter(nonterminatingmatchingrules, r -> r.action = 'COUNT'), r -> r.ruleid), ARRAY[]),"
@@ -941,7 +1038,11 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f" AND httprequest.clientip = '{ip}') CROSS JOIN UNNEST(rules) AS t(rule)"
         f" GROUP BY t.rule ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
-    count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures, label="count_rules", notes=notes)
+    if get_log_type() == "cwl":
+        count_rules = _cwl_count_rules(ip, start_epoch, end_epoch, failures, notes)
+    else:
+        count_rules = _safe_query("", count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures,
+                                  label="count_rules", notes=notes)
 
     # Build output
     lines = [
@@ -985,11 +1086,11 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     if count_rules:
         for r in count_rules:
             lines.append(f"  {r.get('rule', '?')} ({r.get('hits', '?')} hits)")
-        if get_log_type() == "cwl":
-            lines.append("  (CloudWatch: each request is listed under its first Count rule only, so a rule "
-                         "that counted beside another may be missing or low.)")
     else:
         lines.append(_empty_reason(failures, "count_rules", "  (none, no COUNT rule matches for this IP)"))
+    if failures.get("count_rules_config"):
+        lines.append(f"  (The WebACL's Count rules could not be read ({failures['count_rules_config']}), so a "
+                     f"Count rule that is neither the first nor the last on a request may be missing.)")
 
     lines.append("")
     lines.append("### Bot Control Labels")
@@ -1045,7 +1146,11 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             return None
 
     peak_val = _num(peak_rpm, float)
+    dyn_val = _num(dyn_peak, float)
     uri_val = _num(unique_uris, int)
+    non_static = _num(total_reqs, int)
+    all_val = _num(all_uris, int)
+    allowed = None if failures.get("actions") else allow_count
     ua_known = not failures.get("user_agent")
 
     # `any()` over an empty list is False, and `labels` is empty both when Bot Control
@@ -1058,7 +1163,14 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     has_datacenter = any("known_bot_data_center" in r.get("Labels", "") for r in labels)
     has_verified = any("bot:verified" in r.get("Labels", "") for r in labels)
 
-    if labels_unknown:
+    if not failures.get("actions") and allow_count == 0:
+        # Before every rung, which all read ALLOW traffic: with none, each fell through to "mixed or
+        # insufficient" on CloudWatch, and on Athena stopped on a peak that was not a number.
+        lines.append("**NO BYPASS: no request from this IP was allowed in this window.**")
+        lines.append("Every request it sent ended blocked, challenged or at a CAPTCHA, so nothing it "
+                     "sent here reached the origin." if action_map else
+                     "The logs hold no request from it in this window at all.")
+    elif labels_unknown:
         lines.append("**CANNOT DETERMINE: the Bot Control label query failed.**")
         lines.append(f"Reason: {failures['labels']}")
         lines.append("Every confidence rule here turns on whether Bot Control labelled this "
@@ -1096,12 +1208,16 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
                 "**HIGH CONFIDENCE: Bot Control bypass — automation UA allowed through.**",
                 "Evidence: known automation User-Agent but no bot detection label applied.",
                 "→ Bot Control may not be deployed, or SignalNonBrowserUserAgent is set to Count."]),
-            (("frequency", "uri_diversity"), _all(_gt(peak_val, 200), _gt(uri_val, 50)), [
+            (("frequency_dynamic", "uri_diversity"), _all(_gt(dyn_val, 200), _gt(uri_val, 50)), [
                 "**HIGH CONFIDENCE: Automated scraper/crawler.**",
-                f"Evidence: {peak_rpm} req/min + {unique_uris} unique URIs — far exceeds human behavior."]),
-            (("frequency", "uri_diversity"), _all(_gt(peak_val, 200), _lt(uri_val, 10)), [
+                f"Evidence: {dyn_peak} non-static req/min + {unique_uris} unique URIs — far exceeds human behavior."]),
+            (("frequency_dynamic", "uri_diversity"), _all(_gt(dyn_val, 200), _lt(uri_val, 10)), [
                 "**HIGH CONFIDENCE: Endpoint hammering (possible DDoS participant or brute-force).**",
-                f"Evidence: {peak_rpm} req/min concentrated on few URIs."]),
+                f"Evidence: {dyn_peak} non-static req/min concentrated on few URIs."]),
+            (("frequency", "uri_diversity", "actions", "all_uris"),
+             _all(_gt(peak_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed,
+                  None if all_val is None else True),
+             _static_traffic(peak_rpm, non_static, allowed, all_val, ip)),
             (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [
                 "**LIKELY: Probable scraper** (needs user confirmation).",
                 f"Evidence: {unique_uris} unique URIs, no bot labels. Frequency moderate ({peak_rpm}/min).",

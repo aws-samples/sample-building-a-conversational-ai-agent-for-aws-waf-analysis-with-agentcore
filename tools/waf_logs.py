@@ -1064,7 +1064,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                 f"nothing below it ran.\n{_empty_reason(failures, 'diversity')}\n\n"
                 f"This is a query failure, NOT a quiet IP. Say so rather than reporting no "
                 f"activity, and do not re-run it unchanged.")
-    if not diversity:
+    # Athena answers a `count(*)` with no group-by as one row of 0, CloudWatch with no rows.
+    if not diversity or str(diversity[0].get("total", "")) == "0":
         # ROADMAP 7.7 item 1, group B. No metric dimension covers an IP, so the witness is the different
         # question "was the log path returning rows at all", which needs two witnesses to avoid flagging
         # every quiet window. `action=None` because this tool looks at every action.
@@ -1144,6 +1145,37 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f")"
     )
 
+    # The same per-minute rate over the requests the URI count reads. The hammering and scraper rungs
+    # set a rate against a count of distinct non-static URIs, and the rate was over every request, so
+    # an IP pulling only static files had 0 URIs at 300/min and read as hammering, and one pulling
+    # 300 images a minute beside 2 API paths did too.
+    dyn_rate_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        f"{CWL_EXCLUDE_STATIC}"
+        ' | stats count(*) as req_per_min by bin(1m)'
+        ' | stats max(req_per_min) as peak_rpm'
+    )
+    dyn_rate_athena = (
+        f"SELECT max(cnt) as peak_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{safe_ip}'"
+        f"{ATHENA_EXCLUDE_STATIC}"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    # Every distinct URI, static ones included, which is what tells bulk fetching from one file pulled
+    # over and over once the traffic is static.
+    all_uris_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | stats count_distinct(httpRequest.uri) as unique_uris_all'
+    )
+    all_uris_athena = (
+        f"SELECT count(DISTINCT httprequest.uri) as unique_uris_all"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
+    )
+
     ja4_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
         ' | stats count(*) as cnt by ja4Fingerprint | sort cnt desc | limit 5'
@@ -1200,6 +1232,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     _later("actions", cross_cwl, cross_athena, 15)
     _later("request_rate", rate_cwl, rate_athena, 1)
+    _later("request_rate_dynamic", dyn_rate_cwl, dyn_rate_athena, 1)
+    _later("all_uris", all_uris_cwl, all_uris_athena, 1)
     _later("ja4", ja4_cwl, ja4_athena, 5)
     _later("uri_diversity", uri_cwl, uri_athena, 1)
     _later("query_strings", qs_cwl, qs_athena, 8)
@@ -1208,6 +1242,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     failures.update(reasons)
     cross = results.get("actions", [])
     rate = results.get("request_rate", [])
+    rate_dyn = results.get("request_rate_dynamic", [])
+    all_uris = results.get("all_uris", [])
     ja4 = results.get("ja4", [])
     uri_div = results.get("uri_diversity", [])
     query_strings = results.get("query_strings", [])
@@ -1264,6 +1300,16 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     else:
         lines.append("**URI diversity** (non-static):")
         lines.append(_empty_reason(failures, "uri_diversity", "  (no non-static requests)"))
+    if rate_dyn and rate_dyn[0].get("peak_rpm"):
+        lines.append(f"**Non-static request rate**: peak {rate_dyn[0]['peak_rpm']} req/min")
+    else:
+        lines.append("**Non-static request rate**:")
+        lines.append(_empty_reason(failures, "request_rate_dynamic", "  (no non-static requests)"))
+    if all_uris:
+        lines.append(f"**Distinct URIs, static files included**: {all_uris[0].get('unique_uris_all') or 0}")
+    else:
+        lines.append("**Distinct URIs, static files included**:")
+        lines.append(_empty_reason(failures, "all_uris", "  (no requests in this window)"))
     lines.append("")
 
     # Query strings (raw request content; QUERYARGUMENTS attack payloads land here)
@@ -1296,10 +1342,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         does not parse. None used to be 0, and the ladder below ran on the 0. Then no rows became
         None as well, but on CloudWatch a `stats` with no group-by over no records answers no rows,
         so an IP sending only static assets could not be ranked there while Athena, answering a row
-        of zeros, called it hammering."""
+        of zeros, called it hammering. Athena's `max` over no rows is NULL, which arrives as "", and
+        is the same zero."""
         if failures.get(label):
             return None
-        if not rows:
+        if not rows or rows[0].get(key) in (None, ""):
             return cast(0)
         try:
             return cast(rows[0].get(key))
@@ -1307,8 +1354,27 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
             return None
 
     peak_val = _known(rate, "peak_rpm", float, "request_rate")
+    dyn_peak = _known(rate_dyn, "peak_rpm", float, "request_rate_dynamic")
     uri_val = _known(uri_div, "unique_uris", int, "uri_diversity")
-    unknown = {"request_rate": peak_val is None, "uri_diversity": uri_val is None}
+    non_static = _known(uri_div, "total_non_static", int, "uri_diversity")
+    all_uri_val = _known(all_uris, "unique_uris_all", int, "all_uris")
+    unknown = {"request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
+               "uri_diversity": uri_val is None or non_static is None, "all_uris": all_uri_val is None}
+
+    def _static_client():
+        """The LIKELY line for a fast client whose requests are nearly all static. The rate is
+        measured and the intent is not, so it names the shapes that fit rather than one of them."""
+        n = all_uri_val
+        shape = (f"fetching many files ({n} distinct URIs), which is how bulk fetching, a mirror or an "
+                 f"image scraper looks" if n > 50 else
+                 f"pulling the same {n} file{'s' if n != 1 else ''} over and over, which fits a flood aimed "
+                 f"at a file, a client stuck in a retry loop, or a monitoring probe" if n <= 2 else
+                 f"spread over {n} distinct URIs")
+        return (f"**LIKELY: High-rate static-asset client** ({total - non_static:,} of {total:,} requests "
+                f"static, peak {peak_val:g} req/min), {shape}. These signals cannot tell which. "
+                f"Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
+                f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
+                f"filter_by='{{\"ip\": \"{ip}\"}}')).")
 
     # Evaluated in order, and a rung whose input is unknown stops the ladder rather than being
     # skipped: the rung might have fired, so every rung after it would be answering the wrong
@@ -1316,10 +1382,12 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     rungs = [
         (("request_rate",), lambda: ua_count > 1 and ja4_count == 1 and peak_val > 50,
          "**HIGH CONFIDENCE: Bot with UA rotation.** Multiple UAs but single JA4 fingerprint = same TLS client spoofing User-Agent."),
-        (("request_rate", "uri_diversity"), lambda: peak_val > 200 and uri_val > 50,
-         "**HIGH CONFIDENCE: Automated scraper.** Peak >200 req/min + >50 unique URIs."),
-        (("request_rate", "uri_diversity"), lambda: peak_val > 200 and uri_val < 10,
-         "**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 req/min concentrated on few URIs."),
+        (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val > 50,
+         "**HIGH CONFIDENCE: Automated scraper.** Peak >200 non-static req/min + >50 unique URIs."),
+        (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val < 10,
+         "**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 non-static req/min concentrated on few URIs."),
+        (("request_rate", "uri_diversity", "all_uris"), lambda: peak_val > 200 and non_static < 0.1 * total,
+         None),
         (("uri_diversity",), lambda: uri_val > 50,
          "**LIKELY: Probable crawler/scraper.** High URI diversity but moderate frequency. Needs user confirmation."),
     ]
@@ -1334,7 +1402,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                        f"this IP cannot be ranked on it.")
             break
         if fires():
-            verdict = text
+            verdict = text or _static_client()
             break
     lines.append(verdict or "**CANNOT DETERMINE** — signals are mixed. Ask user for business context on this IP.")
 

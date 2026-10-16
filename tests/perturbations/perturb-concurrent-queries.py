@@ -168,7 +168,7 @@ CASES = [
         "tools/waf_logs.py",
         '    _later("ja4", ja4_cwl, ja4_athena, 5)',
         "    ja4_unused = None",
-        [f"{T}::test_analyze_ip_registers_its_five_phase_two_queries",
+        [f"{T}::test_analyze_ip_registers_its_phase_two_queries",
          f"{T}::test_analyze_ip_runs_its_phase_two_queries_concurrently"],
     ),
     (

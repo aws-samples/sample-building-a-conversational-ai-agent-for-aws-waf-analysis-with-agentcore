@@ -68,6 +68,11 @@ CASES = [
     ("the report read at a week whatever its length again",
      [(R, "    period = max(days, 1) * 86400", "    period = 604800")],
      [f"{T}::test_a_short_report_reads_no_further_than_its_window"], True),
+
+    ("the weekly totals defaulting to a week again",
+     [(R, '''    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region, period=period)''',
+       '''    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region, period=604800)''')],
+     [f"{T}::test_a_short_report_reads_no_further_than_its_window"], True),
 ]
 
 sys.exit(sweep(CASES))

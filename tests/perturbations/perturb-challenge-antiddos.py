@@ -18,7 +18,7 @@ CASES = [
       f"{T}::test_both_dialects_name_the_event_label_exactly"], True),
 
     ("the CloudWatch filter unanchored again",
-     [(W, '        ddos_cwl = f"filter @message like \'\\"name\\":\\"{event}\\"\' | stats count(*) as hits"', '        ddos_cwl = "filter @message like \'anti-ddos\' | stats count(*) as hits"')],
+     [(W, '        ddos_cwl = "filter @message like \'\\"name\\":\\"awswaf:managed:aws:anti-ddos:event-detected\\"\' | stats count(*) as hits"', '        ddos_cwl = "filter @message like \'anti-ddos\' | stats count(*) as hits"')],
      [f"{T}::test_both_dialects_name_the_event_label_exactly"], True),
 
     ("the event label misspelled, which the positive control is for",

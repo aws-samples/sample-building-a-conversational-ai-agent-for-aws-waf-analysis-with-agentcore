@@ -112,16 +112,19 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
 
     # The window sent is the one CloudWatch will answer, and the reader is told when it differs.
     # For top_rules the earlier window is the older one, so it sets the step for both. Moving the
-    # window makes its oldest point older, which can cross a retention line and need a coarser
-    # step, so this repeats until the step holds; it can only grow, so it stops.
+    # window makes its oldest point older, which can cross a retention line, and then both the
+    # period and the resolution the start is rounded to can need to be coarser. So this repeats
+    # until neither changes; both only grow, so it stops. Checking the period alone missed a period
+    # already at 3600: the start crossed 63 days and stayed rounded to five minutes.
     asked_start, asked_end = start, end
     oldest = lambda s, e: s - (e - s) if query_type == "top_rules" else s
-    unit = _calc_period(minutes, oldest(start, end))
+    held = oldest(start, end)
     while True:
-        start, end = _whole_points(asked_start, asked_end, unit, oldest(start, end))
-        if _calc_period(minutes, oldest(start, end)) == unit:
+        unit = _calc_period(minutes, held)
+        start, end = _whole_points(asked_start, asked_end, unit, held)
+        if _period_for_window(int(oldest(start, end).timestamp())) == _period_for_window(int(held.timestamp())):
             break
-        unit = _calc_period(minutes, oldest(start, end))
+        held = oldest(start, end)
     prev_start = start - (end - start)
     note = _window_note(asked_start, asked_end, start, end, unit)
 

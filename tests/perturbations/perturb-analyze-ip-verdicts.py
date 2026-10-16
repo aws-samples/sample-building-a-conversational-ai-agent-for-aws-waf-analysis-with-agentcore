@@ -37,8 +37,18 @@ CASES = [
       f"{T}::test_a_failed_rate_query_does_not_rank_the_ip_on_a_zero_peak"], True),
 
     ("an empty answer read as unanswered again",
-     [(L, "        if not rows:\n            return cast(0)", "        if not rows:\n            return None")],
-     [f"{T}::test_an_ip_sending_only_static_assets_is_ranked_on_cloudwatch"], True),
+     [(L, '        if not rows or rows[0].get(key) in (None, ""):\n            return cast(0)',
+       '        if not rows:\n            return None\n        if rows[0].get(key) in (None, ""):\n            return cast(0)')],
+     [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering"], True),
+
+    ("Athena's NULL peak read as not a number again",
+     [(L, '        if not rows or rows[0].get(key) in (None, ""):\n            return cast(0)',
+       '        if not rows:\n            return cast(0)')],
+     [f"{T}::test_athena_no_minutes_is_a_zero_peak_not_a_failure"], True),
+
+    ("Athena's zero-count row taken for records",
+     [(L, '    if not diversity or str(diversity[0].get("total", "")) == "0":', '    if not diversity:')],
+     [f"{T}::test_athena_no_records_for_the_ip_is_said_so"], True),
 
     ("the UA-rotation rung never firing",
      [(L, "lambda: ua_count > 1 and ja4_count == 1 and peak_val > 50,", "lambda: False,")],
@@ -61,6 +71,28 @@ CASES = [
     ("the wrong fix: refuse on every input",
      [(L, "    verdict = None\n    if nat_unknown:", '    verdict = "**CANNOT DETERMINE** — x"\n    if nat_unknown:')],
      [f"{T}::test_answered_inputs_still_reach_their_verdict"], True),
+
+    ("hammering judged on the overall rate again",
+     [(L, "lambda: dyn_peak > 200 and uri_val < 10,", "lambda: peak_val > 200 and uri_val < 10,")],
+     [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering"]),
+
+    ("the scraper judged on the overall rate again",
+     [(L, "lambda: dyn_peak > 200 and uri_val > 50,", "lambda: peak_val > 200 and uri_val > 50,")],
+     [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
+
+    ("the static-client rung never firing",
+     [(L, "lambda: peak_val > 200 and non_static < 0.1 * total,", "lambda: False,")],
+     [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering",
+      f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
+
+    ("one file pulled over and over not told from many",
+     [(L, "if n <= 2 else", "if False else")],
+     [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering"]),
+
+    ("the non-static rate counting static requests again",
+     [(L, """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_EXCLUDE_STATIC}"\n""",
+       """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n""")],
+     [f"{T}::test_the_rate_the_rungs_compare_reads_the_same_requests_as_the_uri_count"]),
 ]
 
 sys.exit(sweep(CASES))

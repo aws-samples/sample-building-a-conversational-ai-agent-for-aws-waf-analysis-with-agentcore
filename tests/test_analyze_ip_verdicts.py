@@ -129,7 +129,8 @@ def test_an_unparseable_peak_is_unknown_not_zero(monkeypatch):
 def test_answered_inputs_still_reach_their_verdict(monkeypatch, peak, uris, expected):
     """The controls, one per directional rung, so a refusal that fires on every input fails here."""
     out, _ = _run(monkeypatch, override={"request_rate": [dict(ROW, peak_rpm=peak)],
-                                         "uri_diversity": [dict(ROW, unique_uris=uris)]})
+                                         "request_rate_dynamic": [dict(ROW, peak_rpm=peak)],
+                                         "uri_diversity": [dict(ROW, unique_uris=uris, total_non_static="900")]})
     assert expected in _assessment(out), out
 
 
@@ -144,10 +145,74 @@ def test_the_control_two_fingerprints_are_not_ua_rotation(monkeypatch):
     assert "Bot with UA rotation" not in _assessment(out), out
 
 
-def test_an_ip_sending_only_static_assets_is_ranked_on_cloudwatch(monkeypatch):
-    """CloudWatch answers no rows for a `stats` with no group-by over no records, Athena a row of
-    zeros. Read as unanswered, 300/min on static assets was CANNOT DETERMINE on CloudWatch and
-    "Endpoint hammering" on Athena."""
-    out, _ = _run(monkeypatch, override={"request_rate": [dict(ROW, peak_rpm="300")], "uri_diversity": []})
-    verdict = _assessment(out)
-    assert "Endpoint hammering" in verdict and "did not answer" not in verdict, verdict
+# Three shapes of a 300/min IP, as each engine answers them. CloudWatch answers a `stats` with no
+# group-by over no records with no rows; Athena with one row, "" for `max` and 0 for `count`.
+STATIC_ONLY = {"cwl": {"request_rate_dynamic": [], "uri_diversity": []},
+               "athena": {"request_rate_dynamic": [{"peak_rpm": ""}],
+                          "uri_diversity": [{"unique_uris": "0", "total_non_static": "0"}]}}
+
+
+def _shape(engine, dynamic, all_uris):
+    rows = {"request_rate": [dict(ROW, peak_rpm="300")], "all_uris": [{"unique_uris_all": all_uris}]}
+    rows.update(STATIC_ONLY[engine] if dynamic is None else
+                {"request_rate_dynamic": [dict(ROW, peak_rpm=dynamic[0])],
+                 "uri_diversity": [dict(ROW, unique_uris=dynamic[1], total_non_static=dynamic[2])]})
+    return rows
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering(monkeypatch, engine):
+    """The URI count reads non-static requests and the rate read all of them, so 0 URIs at 300/min
+    was "HIGH CONFIDENCE: Endpoint hammering" about requests it never counted."""
+    verdict = _assessment(_run(monkeypatch, override=_shape(engine, None, "2"))[0])
+    assert "High-rate static-asset client" in verdict and "same 2 files" in verdict, verdict
+    assert "HIGH CONFIDENCE" not in verdict and "hammering" not in verdict.lower(), verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part(monkeypatch, engine):
+    """300/min of images beside 2 API paths: 2 URIs, under 10, and the old rule called it hammering."""
+    verdict = _assessment(_run(monkeypatch, override=_shape(engine, ("2", "2", "20"), "80"))[0])
+    assert "High-rate static-asset client" in verdict and "80 distinct URIs" in verdict, verdict
+    assert "hammering" not in verdict.lower(), verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_the_control_pure_api_traffic_is_still_hammering(monkeypatch, engine):
+    verdict = _assessment(_run(monkeypatch, override=_shape(engine, ("300", "3", "900"), "3"))[0])
+    assert "Endpoint hammering" in verdict and "static-asset" not in verdict, verdict
+
+
+def test_the_rate_the_rungs_compare_reads_the_same_requests_as_the_uri_count():
+    import inspect
+    src = inspect.getsource(L.analyze_ip._tool_func)
+    dyn = src.split("dyn_rate_cwl = (", 1)[1].split(")", 1)[0]
+    assert "CWL_EXCLUDE_STATIC" in dyn, dyn
+    assert "ATHENA_EXCLUDE_STATIC" in src.split("dyn_rate_athena = (", 1)[1].split("\n    )", 1)[0]
+
+
+def test_athena_no_minutes_is_a_zero_peak_not_a_failure(monkeypatch):
+    """Athena's `max` over no rows is "" in one row. With 80 URIs a zero peak lands on "LIKELY";
+    read as unparseable it was CANNOT DETERMINE, "the request_rate query did not answer"."""
+    out, _ = _run(monkeypatch, override={"request_rate": [dict(ROW, peak_rpm="", avg_rpm="")],
+                                         "uri_diversity": [dict(ROW, unique_uris="80")]})
+    assert "LIKELY" in _assessment(out), out
+
+
+def test_athena_no_records_for_the_ip_is_said_so(monkeypatch):
+    """Athena answers a `count(*)` over nothing with one row of 0, so the "no records" return never
+    fired there and the profile ran on empty sections."""
+    from tools import waf_metrics as M
+    monkeypatch.setattr(M, "log_path_warning", lambda *a, **k: "")
+    from tools import session_state as SS
+    monkeypatch.setattr(SS, "get_webacl_name", lambda: "acl")
+    out, seen = _run(monkeypatch, override={"diversity": [{"ua_count": "0", "ja4_count": "0", "total": "0"}]})
+    assert "No log records found" in out and "request_rate" not in seen, out
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper(monkeypatch, engine):
+    """300/min overall but 5/min to the application, over 60 paths. The scraper rung read the
+    overall rate, so the images made it HIGH CONFIDENCE."""
+    verdict = _assessment(_run(monkeypatch, override=_shape(engine, ("5", "60", "100"), "400"))[0])
+    assert "HIGH CONFIDENCE" not in verdict and "LIKELY" in verdict, verdict

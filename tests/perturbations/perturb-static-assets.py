@@ -112,8 +112,9 @@ CASES = [
     (
         "a twenty-first hand-written copy, in the module the sweep is named for",
         "tools/waf_logs.py",
-        'f"{CWL_EXCLUDE_STATIC}"',
-        r"' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/'",
+        'f"{CWL_EXCLUDE_STATIC}"\n        \' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static\'',
+        r"' and httpRequest.uri not like /\\.(js|css|png|jpg|gif|ico|woff2?|svg|ttf|otf)/'"
+        "\n        ' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static'",
         [f"{T}::test_no_module_still_carries_a_hand_written_extension_list"],
         TEXTUAL,
     ),

@@ -167,13 +167,14 @@ def test_managed_groups_are_matched_by_name_and_only_the_injection_ones(group, e
 
 @pytest.mark.parametrize("sub_rule,expected", [
     ("CrossSiteScripting_BODY", True), ("SQLi_QUERYARGUMENTS", True), ("GenericLFI_URIPATH", True),
-    ("Log4JRCE_HEADER", True), ("SizeRestrictions_BODY", False), ("NoUserAgent_HEADER", False),
+    ("Log4JRCE_HEADER", True), ("Log4JRCE", True), ("SizeRestrictions_BODY", False), ("NoUserAgent_HEADER", False),
     ("EC2MetaDataSSRF_BODY", False), ("Host_localhost_HEADER", False),
 ])
 def test_only_an_injection_sub_rule_in_count_is_a_detector(sub_rule, expected):
     """Every Count override in CommonRuleSet was promoted. Live, `shield-sample-webacl` returned
     SizeRestrictions_BODY as an injection detector, which a window of large uploads would make the
-    focus rule and present as the Count-mode injection rule to switch to Block."""
+    focus rule and present as the Count-mode injection rule to switch to Block. `Log4JRCE` with no
+    suffix is the name in KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14."""
     group = "AWSManagedRulesSQLiRuleSet" if sub_rule.startswith("SQLi") else "AWSManagedRulesCommonRuleSet"
     found, _ = I._injection_rules([_rule("r", {"ManagedRuleGroupStatement": {
         "Name": group, "VendorName": "AWS",

@@ -34,23 +34,35 @@ import re
 from tools.waf_logs import TEMPLATES
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RAW = re.compile(r"(?:@message\s+(?:not\s+)?like|strcontains\(@message,)\s*'([^']*)'"
-                 r"|@message\s+(?:not\s+)?like\s*\"([^\"]*)\""
-                 r"|(?:parse\s+@message|@message\s+=~)\s*(/(?:[^/\\]|\\.)*/|'[^']*')")
+# A test of the raw record: `like` or `=~` with a quoted or regex operand, or `strcontains`.
+MATCH = re.compile(r"""(?:@message\s+(?:not\s+)?like|@message\s+=~)\s*('[^']*'|"[^"]*"|/(?:[^/\\]|\\.)*/)"""
+                   r"""|strcontains\(@message,\s*('[^']*')""")
+# An extraction from it, which reads client text on purpose and needs only a key to find its field.
+PARSE = re.compile(r"""parse\s+@message\s+(/(?:[^/\\]|\\.)*/|'[^']*')""")
 KEY = re.compile(r'"\w+\\?":')
+# Keys only WAF writes, so their values cannot be client text. `name` is also a header's key, so it
+# anchors only a value holding `:`, which a header name cannot.
+WAF_KEYS = ("ruleId", "action", "exclusionType", "labels", "terminatingRule", "terminatingRuleMatchDetails",
+            "rateBasedRuleName", "nonTerminatingMatchingRules", "ruleGroupList", "ruleGroupId")
+WAF_KEY = re.compile(r'"(?:' + "|".join(WAF_KEYS) + r')\\?":|"name\\?":\\?"[^"\\]*:')
 
 
 def anchored(lit: str) -> bool:
-    """Whether a raw-record literal pins a JSON key. `\\?` admits the escaped quote a parse regex
-    written in a Python string carries."""
-    return bool(KEY.search(lit))
+    """Whether a test of the raw record pins a key WAF writes. `\\?` admits the escaped quote a
+    regex written in a Python string carries."""
+    return lit[0] in "'/" and bool(WAF_KEY.search(lit))
 
 
-def test_the_anchor_test_tells_a_key_from_a_leading_quote():
-    """The precondition: the criterion rejects what the first one let through."""
-    assert not anchored('"awswaf:managed:aws:anti-ddos:event-detected')
-    assert not anchored('awswaf:managed:token:accepted"')
-    assert anchored('"name":"awswaf:managed:aws:anti-ddos:event-detected"')
+def test_the_anchor_test_tells_a_waf_key_from_a_leading_quote_or_a_client_key():
+    """The precondition: the criterion rejects what each earlier one let through. Measured
+    2026-10-16, `'"value":"Mozilla'` matched 2,235 records in 14 days, every one a User-Agent."""
+    assert not anchored("'\"awswaf:managed:aws:anti-ddos:event-detected'")
+    assert not anchored("'awswaf:managed:token:accepted\"'")
+    assert not anchored("'\"value\":\"Mozilla'")
+    assert not anchored("'\"name\":\"user-agent\"'")
+    assert not anchored('"\\"name\\":\\"awswaf:managed:x\\""'), "double-quoted like answered 0 measured"
+    assert anchored("'\"name\":\"awswaf:managed:aws:anti-ddos:event-detected\"'")
+    assert anchored("'\"ruleId\":\"{}\",\"action\":\"COUNT\"'")
     assert anchored('/"labels":\\[(?<lbls>[^\\]]*)\\]/')
 
 
@@ -59,7 +71,7 @@ def test_every_raw_record_match_on_a_parameter_is_anchored():
                 for lit in re.findall(r"@message\s+(?:not\s+)?like\s+'([^']*)'", t["query"])]
     with_param = [(k, lit) for k, lit in literals if "{" in lit]
     assert with_param, "no template matches a parameter against @message, so this sweep proves nothing"
-    bad = [(k, lit) for k, lit in with_param if not anchored(lit)]
+    bad = [(k, lit) for k, lit in with_param if not anchored(f"'{lit}'")]
     assert not bad, bad
 
 
@@ -68,21 +80,37 @@ def test_the_host_and_label_templates_read_the_field_they_name():
     assert "filter lbls like '{label}'" in TEMPLATES["label_top_ips"]["query"]
 
 
+def _query_strings(tree):
+    """`(lineno, text)` for every string in a module, an f-string whole with each placeholder as `{}`,
+    and none of its pieces again on their own. Docstrings are left out."""
+    docs = {id(n.body[0].value) for n in ast.walk(tree)
+            if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+    pieces = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr) for v in n.values}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.JoinedStr):
+            yield n.lineno, "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in n.values), True
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs | pieces:
+            yield n.lineno, n.value, False
+
+
 def test_no_query_in_the_package_matches_the_raw_record_unanchored():
-    """Every string literal in `tools/`, not only the templates, and not only the ones carrying a
-    parameter: a fixed label word is forgeable from a URI just the same."""
-    found, bad = [], []
+    """Every string in `tools/`, f-strings included, not only the templates, and not only the ones
+    carrying a parameter: a fixed label word is forgeable from a URI just the same. An f-string was
+    invisible to the first two versions, so seven anchored literals were never checked."""
+    tests, parses, in_fstrings, bad = [], [], 0, []
     for path in sorted((ROOT / "tools").glob("*.py")):
-        tree = ast.parse(path.read_text())
-        docs = {id(n.body[0].value) for n in ast.walk(tree)
-                if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs:
-                for lit in ("".join(m) for m in RAW.findall(n.value)):
-                    found.append(lit)
-                    if not anchored(lit):
-                        bad.append(f"{path.name}:{n.lineno} {lit!r}")
-    assert len(found) >= 30, f"only {len(found)} raw-record matches found; the pattern broke"
-    assert any(l.startswith("/") for l in found), "no parse regex was swept"
+        for line, text, is_f in _query_strings(ast.parse(path.read_text())):
+            for m in MATCH.finditer(text):
+                lit = m.group(1) or m.group(2)
+                tests.append(lit)
+                in_fstrings += is_f
+                if not anchored(lit):
+                    bad.append(f"{path.name}:{line} {lit!r}")
+            for m in PARSE.finditer(text):
+                parses.append(m.group(1))
+                if not KEY.search(m.group(1)):
+                    bad.append(f"{path.name}:{line} parse {m.group(1)!r}")
+    assert len(tests) >= 25 and len(parses) >= 15, (len(tests), len(parses))
+    assert in_fstrings >= 7, f"only {in_fstrings} tests found inside f-strings; they are not being read"
     assert not bad, bad

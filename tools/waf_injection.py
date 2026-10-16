@@ -52,7 +52,7 @@ _INJECTION_GROUPS = (
 # The sub-rules of those groups that detect injection, by AWS's name prefix, read off
 # `describe-managed-rule-group` 2026-10-16. CommonRuleSet also holds size limits, a User-Agent check
 # and SSRF rules, and KnownBadInputs a localhost Host and PROPFIND, none of which is injection.
-_INJECTION_SUB_RULES = ("SQLi", "CrossSiteScripting_", "GenericLFI_", "GenericRFI_", "Log4JRCE_",
+_INJECTION_SUB_RULES = ("SQLi", "CrossSiteScripting_", "GenericLFI_", "GenericRFI_", "Log4JRCE",
                         "JavaDeserializationRCE_", "ReactJSRCE_")
 # Statement types that ARE injection detection. Not a name pattern.
 _INJECTION_STATEMENTS = ("SqliMatchStatement", "XssMatchStatement")

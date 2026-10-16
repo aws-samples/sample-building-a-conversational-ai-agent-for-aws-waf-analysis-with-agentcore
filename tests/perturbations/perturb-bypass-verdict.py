@@ -62,8 +62,8 @@ CASES = [
      [f"{T}::test_a_data_center_ip_with_no_bot_label_is_an_undetected_bot"]),
 
     ("an empty URI answer read as unanswered again",
-     [(B, '''    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else ("?" if failures.get("uri_diversity") else 0)''',
-       '''    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"''')],
+     [(B, '''    unique_uris = (uri_data[0].get("unique_uris", "?") or 0) if uri_data else ("?" if failures.get("uri_diversity") else 0)''',
+       '''    unique_uris = (uri_data[0].get("unique_uris", "?") or 0) if uri_data else "?"''')],
      [f"{T}::test_an_ip_sending_only_static_assets_is_ranked"], True),
 
     ("a value that is not a number called unanswered again",
@@ -81,11 +81,42 @@ CASES = [
        '''        "SELECT t.rule as rule, count(*) as hits FROM (SELECT (concat("''')],
      [f"{T}::test_the_count_rules_read_nested_entries_once_per_request"]),
 
-    ("CloudWatch's first-rule-only reading left unsaid",
-     [(B, '''        if get_log_type() == "cwl":
-            lines.append("  (CloudWatch: each request''', '''        if False:
-            lines.append("  (CloudWatch: each request''')],
-     [f"{T}::test_cloudwatch_says_it_lists_the_first_count_rule_only"], True),
+    ("CloudWatch finding only each record's first Count rule again",
+     [(B, '''        " | parse @message /.*\\"ruleId\\":\\"(?<last>[^\\"]+)\\",\\"action\\":\\"COUNT\\"/"\n''', "")],
+     [f"{T}::test_cloudwatch_finds_a_top_level_count_rule_behind_a_nested_one"]),
+
+    ("the configuration's Count rules not added to the names",
+     [(B, "        names |= set(_get_all_count_rules(resolve_region(scope), scope))", "        pass")],
+     [f"{T}::test_cloudwatch_finds_a_middle_count_rule_the_configuration_names"], True),
+
+    ("a failed configuration read left unsaid",
+     [(B, '''    if failures.get("count_rules_config"):''', "    if False:")],
+     [f"{T}::test_a_failed_configuration_read_is_said_beside_the_list"], True),
+
+    ("Athena's NULL peak read as not a number again",
+     [(B, '''    peak_rpm = (freq[0].get("peak_rpm", "?") or 0) if freq''', '''    peak_rpm = freq[0].get("peak_rpm", "?") if freq''')],
+     [f"{T}::test_athena_reads_no_allowed_traffic_as_zero_not_unknown"], True),
+
+    ("no verdict for an IP with nothing allowed",
+     [(B, '''    if not failures.get("actions") and allow_count == 0:''', "    if False:")],
+     [f"{T}::test_an_ip_with_no_allowed_request_is_no_bypass"], True),
+
+    ("no bypass declared on a failed action query",
+     [(B, '''    if not failures.get("actions") and allow_count == 0:''', "    if allow_count == 0:")],
+     [f"{T}::test_a_failed_action_query_is_not_no_bypass"], True),
+
+    ("bypass hammering judged on the overall rate again",
+     [(B, "_all(_gt(dyn_val, 200), _lt(uri_val, 10))", "_all(_gt(peak_val, 200), _lt(uri_val, 10))")],
+     [f"{T}::test_allowed_static_only_traffic_is_not_called_a_bypass"]),
+
+    ("the bypass scraper judged on the overall rate again",
+     [(B, "_all(_gt(dyn_val, 200), _gt(uri_val, 50))", "_all(_gt(peak_val, 200), _gt(uri_val, 50))")],
+     [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
+
+    ("the static-traffic verdict never firing",
+     [(B, "_all(_gt(peak_val, 200), None if non_static is None", "_all(False, None if non_static is None")],
+     [f"{T}::test_allowed_static_only_traffic_is_not_called_a_bypass",
+      f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
 ]
 
 sys.exit(sweep(CASES))

@@ -505,13 +505,13 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     # window ran into this one.
     period = max(days, 1) * 86400
 
-    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region, period)
-    last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region, period)
+    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region, period=period)
+    last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region, period=period)
     daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end, scope, region)
 
     countries = _get_top_countries(cw, webacl_name, start_this_week, end, period)
     # rules: used in data_lines for LLM summary context (not rendered in HTML)
-    rules = _get_top_rules(cw, webacl_name, start_this_week, end, scope, region, period)
+    rules = _get_top_rules(cw, webacl_name, start_this_week, end, scope, region, period=period)
 
     # All four terminating actions, the hit-rate denominator `waf_overview` uses. CAPTCHA was left
     # out here while "mitigated" below counts it, so the mitigated share was taken against a
@@ -1173,7 +1173,7 @@ def _poll_log_query(logs_client, log_group, start, end, query, webacl_name,
     return int(float(row.get("cnt", 0)))
 
 def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "us-east-1",
-                       period: int = 604800) -> dict:
+                       *, period: int) -> dict:
     """Get total allowed/blocked/challenge/captcha for a time range."""
     queries = []
     metrics = ["AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests"]
@@ -1403,7 +1403,7 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFR
     return [data[d] for d in sorted(data.keys())]
 
 
-def _get_top_countries(cw, webacl_name: str, start, end, period: int = 604800) -> list:
+def _get_top_countries(cw, webacl_name: str, start, end, period: int) -> list:
     """Get top countries by mitigated requests (Block + Challenge + Captcha)."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
@@ -1427,7 +1427,7 @@ def _get_top_countries(cw, webacl_name: str, start, end, period: int = 604800) -
 
 
 def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "",
-                   period: int = 604800) -> list:
+                   *, period: int) -> list:
     """Get top rules by hit count using SEARCH."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []

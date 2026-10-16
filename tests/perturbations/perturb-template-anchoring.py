@@ -32,6 +32,15 @@ CASES = [
     ("token_reuse_ips filtering on unanchored label text again",
      [("tools/waf_logs.py", '''"query": "filter @message like '\\"name\\":\\"awswaf:managed:token:accepted\\"' and''', '''"query": "filter @message like 'token:accepted' and''')],
      [SWEEP]),
+
+    ("the report's event query on a key a client writes, `value`",
+     [("tools/report.py", '''"filter @message like '\\"name\\":\\"awswaf:managed:aws:anti-ddos:ddos-request\\"' |''', '''"filter @message like '\\"value\\":\\"awswaf:managed:aws:anti-ddos:ddos-request' |''')],
+     [SWEEP]),
+
+    ("an f-string's Count filter on a leading quote, which only an f-string-reading sweep sees",
+     [("tools/waf_count_eval.py", '''    cwl = (f"filter @message like '\\"ruleId\\":\\"{rule_name}\\",\\"action\\":\\"COUNT\\"'"''',
+       '''    cwl = (f"filter @message like '\\"{rule_name}'"''')],
+     [SWEEP]),
 ]
 
 sys.exit(sweep(CASES))

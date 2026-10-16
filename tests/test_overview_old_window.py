@@ -379,10 +379,11 @@ def test_the_control_a_window_ending_now_carries_no_note(overview):
 
 @pytest.fixture
 def fixed_clock(monkeypatch):
-    """`now` a little after a five-minute line, so a retention line falls between two of them."""
+    """`now` two minutes past a five-minute line that is not on the hour, so a retention line falls
+    between two five-minute points and rounding to five minutes and to the hour differ."""
     from tools import waf_metrics as M
     import types
-    now = datetime.fromtimestamp(int(NOW.timestamp()) // 300 * 300 + 120, timezone.utc)
+    now = datetime.fromtimestamp(int(NOW.timestamp()) // 3600 * 3600 + 25 * 60 + 120, timezone.utc)
     monkeypatch.setattr(M, "time", types.SimpleNamespace(time=lambda: now.timestamp()))
     return now
 
@@ -426,3 +427,13 @@ def test_an_old_window_moves_only_to_the_resolution_kept(overview):
     out = overview("top_rules", ClockCW({("ALL", "AllowedRequests"): 1}), start=start, minutes=1440)
     hm = lambda t: t.strftime("%Y-%m-%d %H:%M")
     assert f"covers {hm(OLD + timedelta(minutes=5))} to" in out, out
+
+
+def test_a_start_moved_past_63_days_is_rounded_to_the_hour_when_the_period_is_already_an_hour(overview, fixed_clock):
+    """The loop checked only the period. Over 4,320 minutes the period is 3600 from the start, so it
+    never changed, and a start moved past 63 days stayed rounded to five minutes: the reviewer's
+    case sent 03:35 at 3600 where CloudWatch reads from 03:00."""
+    start = fixed_clock - timedelta(days=63) + timedelta(seconds=60)
+    cw = ClockCW({("ALL", "BlockedRequests"): 1}, now=fixed_clock)
+    overview("attack_types", cw, start=start, minutes=5000)
+    assert cw.reads and not cw.misread(), cw.misread()
