@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.32.0 (2026-10-16)
 
 ### Fixed: Count matches recorded inside a managed rule group were invisible to several queries
 
