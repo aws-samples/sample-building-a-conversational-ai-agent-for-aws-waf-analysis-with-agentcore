@@ -4,7 +4,7 @@
 
 Anti-DDoS AMR should be deployed on a CLOUDFRONT-scope WebACL, not REGIONAL. Two reasons:
 
-1. **IP aggregation**: Regional WAF (ALB/API Gateway) sees CDN/proxy IPs as source IP, not real client IPs. Anti-DDoS AMR does per-client-IP behavior analysis — if all traffic appears from a few CDN IPs, AMR either misidentifies them as attackers (false positive on all users) or cannot distinguish attackers from legitimate users. AMR does NOT support ForwardedIPConfig.
+1. **IP aggregation**: Regional WAF (ALB/API Gateway) sees CDN/proxy IPs as source IP, not real client IPs. Anti-DDoS AMR labels the sources it suspects by the connecting client IP, and does NOT support ForwardedIPConfig. If all traffic appears from a few CDN IPs, AMR either misidentifies them as attackers (false positive on all users) or cannot distinguish attackers from legitimate users.
 
 2. **DDoS hits the resource before WAF evaluates**: With Regional WAF, requests first reach ALB (TLS termination, connection handling), THEN get evaluated by WAF. A volumetric DDoS flood can overwhelm ALB before WAF can mitigate — causing 5xx errors, scaling delays, or resource exhaustion. With CloudFront-scope WAF, evaluation happens at the edge layer before traffic reaches the origin.
 
@@ -33,7 +33,7 @@ If CloudFront is not in the architecture, Regional WAF Anti-DDoS AMR provides li
 - Challenge sensitivity: same logic for Challenge action
 
 ### Labels produced
-- `awswaf:managed:aws:anti-ddos:challengeable-request` — a GET whose host and path do not match the exempt regex. It is applied whenever the challenge action is enabled, not only during an event, so ordinary logs show which requests an event would challenge. Note: native apps sending GET requests also receive this label, even though they cannot complete Challenge.
+- `awswaf:managed:aws:anti-ddos:challengeable-request` — a GET whose host and path do not match the exempt regex. It is applied while the challenge setting (`ClientSideActionConfig` → `Challenge` → `UsageOfAction`) is `ENABLED`, not only during an event, so ordinary logs show which requests an event would challenge. With it `DISABLED`, no request carries the label. Overriding `ChallengeAllDuringEvent` to Count does not remove it. Note: native apps sending GET requests also receive this label, even though they cannot complete Challenge.
 - `awswaf:managed:aws:anti-ddos:event-detected` — DDoS event detected, applied to ALL requests
 - `awswaf:managed:aws:anti-ddos:ddos-request` — request from suspicious source
 - `awswaf:managed:aws:anti-ddos:high/medium/low-suspicion-ddos-request` — suspicion level
@@ -45,7 +45,7 @@ If CloudFront is not in the architecture, Regional WAF Anti-DDoS AMR provides li
 - A path branch without an anchor is a `contains` match: `\/api\/` also exempts `/admin/api/delete`, and an attacker can use such a path to avoid `ChallengeAllDuringEvent`
 - Anchor a path branch after the host: `^[^/]+\/api(\/|$)` exempts `/api`, `/api/` and `/api/orders` on any host, and leaves `/x/api/orders` challengeable (measured). Suffix branches such as `\.(css|js|png)$` work as they are
 - An API on its own host is exempted whole by the host: `^api\.example\.com\/`
-- To check an exemption, look at ordinary traffic rather than waiting for an event: an API GET that carries `challengeable-request` is not exempt
+- To check an exemption, look at ordinary traffic rather than waiting for an event: with `UsageOfAction` `ENABLED`, an API GET that carries `challengeable-request` is not exempt
 
 ### Pricing
 - $20/month per AMR instance + $0.15/million requests
@@ -69,7 +69,7 @@ Keep ChallengeAllDuringEvent enabled and exempt what cannot complete a Challenge
 
 **Last resort: dual AMR instance in the same Web ACL**
 
-Only when the frontend and the API share one host and the API paths cannot be listed or written as an exempt regex. Each instance then builds its baseline from part of the traffic, which is the inaccuracy AWS warns about; say so when recommending it. Deploy two AMR instances in the same Web ACL with different scope-downs:
+Only when the frontend and the API share one host and the API paths cannot be listed or written as an exempt regex. Each instance's scope-down limits the requests it observes, which is what AWS says can make the baseline inaccurate; say so when recommending it. Deploy two AMR instances in the same Web ACL with different scope-downs:
 
 1. Add a Count+Label rule before both AMR instances: match `Accept: text/html` AND `GET` method → label `custom:browser-request` (or similar). Add a second Count+Label rule for crawler labeling (see crawler-seo.md).
 2. Instance A (browser traffic): scope-down to `custom:browser-request` label, exclude crawler label. Default AMR configuration — ChallengeAllDuringEvent enabled.
@@ -103,7 +103,7 @@ When analyzing logs:
 1. `anti-ddos:event-detected` label present = DDoS event active. Legitimate users being challenged is EXPECTED.
 2. `anti-ddos:high-suspicion-ddos-request` = confirmed attacker IP
 3. Many IPs with `low-suspicion` but no `high-suspicion` = distributed low-rate attack (AMR blind spot)
-4. `challengeable-request` label on API paths = exempt URI regex misconfigured. This holds in ordinary traffic too: `aggregate_logs(group_by='uri', filter_by='{"label": "awswaf:managed:aws:anti-ddos:challengeable-request"}')` lists the paths an event would challenge
+4. `challengeable-request` label on API paths = exempt URI regex misconfigured. This holds in ordinary traffic too, while `UsageOfAction` is `ENABLED`: `aggregate_logs(group_by='uri', filter_by='{"label": "awswaf:managed:aws:anti-ddos:challengeable-request"}')` lists the paths an event would challenge
 
 When reviewing rules:
 1. ChallengeAllDuringEvent overridden to Count → check whether the API could be exempted instead, then whether the dual-instance pattern is in use

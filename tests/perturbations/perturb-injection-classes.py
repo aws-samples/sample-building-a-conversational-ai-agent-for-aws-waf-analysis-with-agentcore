@@ -40,8 +40,30 @@ CASES = [
      [f"{T}::test_a_group_in_whole_group_count_puts_its_sub_rules_in_count_mode"], True),
 
     ("the quiet-window cross-check asking Rule=<sub-rule> again",
-     [(I, '                        group="" if target in count_mode else groups.get(target, ""))', '                        group="")')],
+     [(I, '                        group="" if counted else groups.get(target, ""))', '                        group="")')],
      [f"{T}::test_a_quiet_window_cross_checks_each_sub_rule_against_its_group_metric"]),
+
+    ("a whole-group Count sub-rule read as CountedRequests under Rule=, which is always empty",
+     [(I, "                    counted = target in count_mode and target not in whole", "                    counted = target in count_mode")],
+     [f"{T}::test_a_whole_group_count_sub_rule_is_cross_checked_under_its_native_action"]),
+
+    ("an override read under the group's BlockedRequests",
+     [(I, "                    counted = target in count_mode and target not in whole", "                    counted = False")],
+     [f"{T}::test_the_control_a_sub_rule_overridden_to_count_is_read_as_counted"]),
+
+    ("a pinned version's detectors missing from the list again",
+     [(I, '        "SQLiExtendedPatterns_BODY", "SQLiExtendedPatterns_HEADER", "SQLiExtendedPatterns_QUERYARGUMENTS",',
+       '        "SQLiExtendedPatterns_QUERYARGUMENTS",')],
+     [f"{T}::test_every_injection_name_any_version_has_used_is_listed",
+      f"{T}::test_a_pinned_versions_detectors_are_found_with_no_override"]),
+
+    ("a Count rule's blocks called its own",
+     [(I, '                 + (" by other rules" if ranked[0][0] in count_mode else ""))', '                 )')],
+     [f"{T}::test_a_count_mode_focus_says_its_blocks_were_another_rules"]),
+
+    ("a Count rule's matches all called allowed again",
+     [(I, 'so it blocked none of the requests below; any that "', 'so the requests below matched it and were allowed through; any that "')],
+     [f"{T}::test_a_count_mode_focus_says_its_blocks_were_another_rules"]),
 
     ("the metric ignoring the group it was given",
      [(M, "    if group:\n        return _metric_sum(", "    if False:\n        return _metric_sum(")],

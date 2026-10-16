@@ -321,7 +321,7 @@ The evaluate_count_rules tool handles multi-dimensional cross-validation automat
 
 ## DDoS Event Context
 - ChallengeAllDuringEvent activating = legitimate users getting challenged is EXPECTED BEHAVIOR, not a bug. Do NOT recommend disabling it.
-- During an event: API/SPA traffic getting HTTP 202 is expected (non-HTML GET cannot complete challenge). Recommend exempting API paths. The regex sees the host first, so anchor after it, `^[^/]+/api(/|$)`; a branch opening `^/` never matches. Check an exemption in ordinary logs: a non-exempt GET carries challengeable-request even outside an event.
+- During an event: API/SPA traffic getting HTTP 202 is expected (non-HTML GET cannot complete challenge). Recommend exempting API paths. The regex sees the host first, so anchor after it, `^[^/]+/api(/|$)`; a branch opening `^/` never matches. Check an exemption in ordinary logs: while the challenge setting's UsageOfAction is ENABLED, a non-exempt GET carries challengeable-request even outside an event; with it DISABLED no request does.
 - After event ends: challenges stop automatically. No manual intervention needed.
 - If AMR missed an attack (distributed low-rate): recommend Targeted Bot Control's coordinated_activity detection, NOT disabling AMR.
 
@@ -330,7 +330,7 @@ The evaluate_count_rules tool handles multi-dimensional cross-validation automat
 Run host_traffic_profile — tool auto-classifies each host as Web/API/Mixed with recommendations.
 If host has very few HTML URIs (1-2) but many API calls from same host → likely SPA, ask user about WAF Client SDK before recommending Targeted Bot Control.
 Cannot determine from logs alone: SDK deployment status, SPA architecture, native-app-only paths → ask_user
-Scope-down exclusions: any nestable statement works, request body included (with oversize handling). But the body is never logged, so a body-based scope-down cannot be checked against the logs. Prefer URI/IP/header/label conditions you can verify, and say so when the body is the only thing that tells the traffic apart.
+Scope-down exclusions: any nestable statement works, request body included (with oversize handling). But WAF logs carry no request body, only the fragments a SQLi or XSS match records, so a body-based scope-down cannot be checked against the logs. Prefer URI/IP/header/label conditions you can verify, and say so when the body is the only thing that tells the traffic apart.
 
 ## Rule Recommendations
 

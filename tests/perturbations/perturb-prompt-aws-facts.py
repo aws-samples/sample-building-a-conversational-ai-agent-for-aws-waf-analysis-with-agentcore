@@ -19,12 +19,23 @@ CASES = [
      [(A, "- Anti-DDoS AMR: one traffic baseline per protected resource,", "- Anti-DDoS AMR: per-IP behavior analysis,")],
      [f"{T}::test_the_anti_ddos_baseline_is_per_protected_resource"]),
 
+    ("the knowledge base's CloudFront reason on per-IP analysis again",
+     [("kb-docs/antiddos-amr.md", "Anti-DDoS AMR labels the sources it suspects by the connecting client IP, and",
+       "Anti-DDoS AMR does per-client-IP behavior analysis, and")],
+     [f"{T}::test_the_anti_ddos_baseline_is_per_protected_resource"]),
+
     ("the knowledge base on per-IP analysis again",
      [("kb-docs/antiddos-amr.md", "- One traffic baseline per protected resource (", "- Per-client-IP behavior analysis (")],
      [f"{T}::test_the_anti_ddos_baseline_is_per_protected_resource"]),
 
     ("a body scope-down called impossible again",
-     [(A, "But the body is never logged, so", "AWS WAF doesn't inspect body for scope-down, so")],
+     [(A, "But WAF logs carry no request body, only the fragments a SQLi or XSS match records, so",
+       "AWS WAF doesn't inspect body for scope-down, so")],
+     [f"{T}::test_a_body_scope_down_is_allowed_and_only_unverifiable_from_logs"]),
+
+    ("the body called never logged again",
+     [(A, "But WAF logs carry no request body, only the fragments a SQLi or XSS match records, so",
+       "But the body is never logged, so")],
      [f"{T}::test_a_body_scope_down_is_allowed_and_only_unverifiable_from_logs"]),
 ]
 

@@ -46,6 +46,11 @@ CASES = [
      [("tools/waf_bypass.py", 'lines.append("  ⚠️  Candidate signal: one TLS fingerprint behind many User-Agents from few IPs. That fits one "',
        'lines.append("  ⚠️  Candidate signal: a strong UA-spoofing indicator. "')],
      ["tests/test_bypass_verdict.py::test_the_scan_does_not_call_one_fingerprint_behind_many_uas_spoofing"]),
+
+    ("lookup_ja4 calling one JA4 behind many UAs spoofing again",
+     [("tools/ja4.py", 'lines.append("Multiple UAs but single JA4 = one TLS stack: one client rotating UAs, or several users of "',
+       'lines.append("Multiple UAs but single JA4 = UA spoofing (same client rotating UAs), or several users of "')],
+     [f"{T}::test_lookup_ja4_does_not_call_one_fingerprint_spoofing_either"]),
 ]
 
 sys.exit(sweep(CASES))

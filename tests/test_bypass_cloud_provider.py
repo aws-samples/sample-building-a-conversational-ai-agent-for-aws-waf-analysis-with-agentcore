@@ -71,10 +71,10 @@ ROW = {"total": "999", "unique_uris": "5", "hits": "999", "cnt": "999", "action"
        "avg_rpm": "30", "country": "US"}
 
 
-def _verdict(monkeypatch, labels):
+def _verdict(monkeypatch, labels, **rows):
     monkeypatch.setattr(B, "is_log_filter_active", lambda: False)
     rows = {"labels": [dict(ROW, Labels=json.dumps([{"name": n} for n in labels]))] if labels else [],
-            "frequency_static": []}
+            "frequency_static": [], **rows}
     monkeypatch.setattr(B, "query_logs", lambda cwl, athena, s, e, limit=25, notes=None, label="", **kw:
                         rows.get(label, [dict(ROW)]))
     report = B._step_investigate_ip("203.0.113.9", 0, 3600)
@@ -96,3 +96,16 @@ def test_the_control_the_same_ip_without_the_signal_is_undetermined(monkeypatch)
 def test_a_data_center_ip_is_still_the_high_confidence_rung(monkeypatch):
     verdict = _verdict(monkeypatch, DATA_CENTER)
     assert "HIGH CONFIDENCE: Undetected bot from data center" in verdict, verdict
+
+
+def test_the_fleet_at_its_own_pace_is_named(monkeypatch):
+    """Each host of the fleet sent 90 allowed requests at a peak of 11-14 a minute, measured on Athena,
+    and the rung's old 50-a-minute gate left it to "Probable scraper", which names no provider."""
+    verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm="12")], actions=[dict(ROW, hits="90")])
+    assert "LIKELY: Undetected automation from a cloud provider (aws)" in verdict, verdict
+
+
+def test_the_control_a_handful_of_requests_is_not_called_automation(monkeypatch):
+    """The scan lists a hosting IP from 50 requests; fewer than that is not enough to call it."""
+    verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm="12")], actions=[dict(ROW, hits="40")])
+    assert "cloud provider" not in verdict, verdict

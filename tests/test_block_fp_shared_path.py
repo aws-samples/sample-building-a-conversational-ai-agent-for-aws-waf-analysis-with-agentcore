@@ -46,7 +46,8 @@ def test_other_ips_blocked_on_the_same_path_are_counted_by_the_same_sub_rule(mon
     assert "filter sub_rule = 'SQLi_QUERYARGUMENTS'" in cwl and "| filter own > 0" in cwl, cwl
     assert f"count_if(httprequest.clientip <> '{FP}') as hits" in athena and "= 'SQLi_QUERYARGUMENTS'" in athena, athena
     assert f"HAVING count_if(httprequest.clientip = '{FP}') > 0" in athena, athena
-    assert start == 1000 - 86400 and end >= 4600, (start, end)
+    # Widened to the query window cap around the hour asked for, 2.5 hours either side.
+    assert start == 1000 - 9000 and end == 4600 + 9000, (start, end)
 
 
 def test_the_render_warns_that_an_exception_for_the_path_lets_the_others_through():
@@ -55,6 +56,12 @@ def test_the_render_warns_that_an_exception_for_the_path_lets_the_others_through
     assert "/search: 60 blocks from 10 other IPs" in section and "/help: no other IP" in section, section
     assert "would also let those requests through" in section, section
     assert "Other traffic this rule blocks on these paths" in out.split("## Your Next Action", 1)[1]
+
+
+def test_other_ips_blocks_are_shown_whatever_the_distinct_count_says():
+    """`count_distinct` is approximate on CloudWatch, so `seen` may undercount; the blocks decide."""
+    out = F._render_investigation(FP, 0, 3600, dict(BASE, shared_paths=({"/search": (60, 0)}, "")))
+    assert "/search: no other IP" not in out and "would also let those requests through" in out, out
 
 
 def test_the_control_no_other_ip_carries_no_warning():

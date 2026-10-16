@@ -44,41 +44,45 @@ from tools.aws_session import get_client
 from tools.query_limits import MAX_MINUTES
 from tools.session_state import get_scope, get_webacl_name, note_window_capped, resolve_region
 
-# Every sub-rule of the AWS managed groups that hold injection detectors, read off
-# `describe-managed-rule-group` (CLOUDFRONT, default versions) on 2026-10-16. The agent's role cannot
-# call it, so they are listed here; a sub-rule a later version adds is still found once it is
-# overridden, and `_is_injection_sub_rule` decides which of these are detectors.
+# The injection sub-rules of the AWS managed groups that hold them: every name any version of the
+# group has used, read off `describe-managed-rule-group` (CLOUDFRONT, every version
+# `list-available-managed-rule-group-versions` returned) on 2026-10-16. Versions add and rename them,
+# and a WebACL runs whichever it pins: SQLiRuleSet's default Version_1.3 has no
+# `SQLiExtendedPatterns_BODY`, which Version_2.0 to 2.5 do. A name the deployed version lacks counts 0.
+# The agent's role cannot call the API, so they are listed here; a sub-rule a later version adds is
+# still found once it is overridden.
 _MANAGED_SUB_RULES = {
     "AWSManagedRulesCommonRuleSet": (
-        "NoUserAgent_HEADER", "UserAgent_BadBots_HEADER", "SizeRestrictions_QUERYSTRING",
-        "SizeRestrictions_Cookie_HEADER", "SizeRestrictions_BODY", "SizeRestrictions_URIPATH",
-        "EC2MetaDataSSRF_BODY", "EC2MetaDataSSRF_COOKIE", "EC2MetaDataSSRF_URIPATH",
-        "EC2MetaDataSSRF_QUERYARGUMENTS", "GenericLFI_QUERYARGUMENTS", "GenericLFI_URIPATH",
-        "GenericLFI_BODY", "RestrictedExtensions_URIPATH", "RestrictedExtensions_QUERYARGUMENTS",
-        "GenericRFI_QUERYARGUMENTS", "GenericRFI_BODY", "GenericRFI_URIPATH", "CrossSiteScripting_COOKIE",
-        "CrossSiteScripting_QUERYARGUMENTS", "CrossSiteScripting_BODY", "CrossSiteScripting_URIPATH"),
+        "CrossSiteScripting_BODY", "CrossSiteScripting_COOKIE", "CrossSiteScripting_QUERYARGUMENTS",
+        "CrossSiteScripting_URIPATH", "EC2MetaDataSSRF_BODY", "EC2MetaDataSSRF_COOKIE",
+        "EC2MetaDataSSRF_QUERYARGUMENTS", "EC2MetaDataSSRF_URIPATH", "GenericLFI_BODY", "GenericLFI_QUERYARGUMENTS",
+        "GenericRFI_BODY", "GenericRFI_QUERYARGUMENTS", "GenericRFI_URIPATH"),
     "AWSManagedRulesKnownBadInputsRuleSet": (
-        "JavaDeserializationRCE_BODY", "JavaDeserializationRCE_URIPATH", "JavaDeserializationRCE_QUERYSTRING",
-        "JavaDeserializationRCE_HEADER", "Host_localhost_HEADER", "PROPFIND_METHOD", "ExploitablePaths_URIPATH",
-        "Log4JRCE_QUERYSTRING", "Log4JRCE_BODY", "Log4JRCE_URIPATH", "Log4JRCE_HEADER", "ReactJSRCE_BODY"),
+        "JavaDeserializationRCE_BODY", "JavaDeserializationRCE_HEADER", "JavaDeserializationRCE_QUERYSTRING",
+        "JavaDeserializationRCE_URIPATH", "Log4JRCE", "Log4JRCE_BODY", "Log4JRCE_HEADER", "Log4JRCE_QUERYSTRING",
+        "Log4JRCE_URI", "Log4JRCE_URIPATH", "ReactJSRCE_BODY"),
     "AWSManagedRulesSQLiRuleSet": (
-        "SQLiExtendedPatterns_QUERYARGUMENTS", "SQLi_QUERYARGUMENTS", "SQLi_BODY", "SQLi_COOKIE", "SQLi_URIPATH"),
-    "AWSManagedRulesLinuxRuleSet": ("LFI_URIPATH", "LFI_QUERYSTRING", "LFI_HEADER"),
+        "SQLiExtendedPatterns_BODY", "SQLiExtendedPatterns_HEADER", "SQLiExtendedPatterns_QUERYARGUMENTS",
+        "SQLiExtendedPatterns_URIPATH", "SQLi_BODY", "SQLi_COOKIE", "SQLi_QUERYARGUMENTS", "SQLi_QUERYSTRING_COUNT",
+        "SQLi_URIPATH"),
+    "AWSManagedRulesLinuxRuleSet": ("LFI_BODY", "LFI_COOKIE", "LFI_HEADER", "LFI_QUERYARGUMENTS", "LFI_QUERYSTRING"),
     "AWSManagedRulesUnixRuleSet": (
-        "UNIXShellCommandsVariables_QUERYSTRING", "UNIXShellCommandsVariables_BODY", "UNIXShellCommandsVariables_HEADER"),
+        "UNIXShellCommandsVariables_BODY", "UNIXShellCommandsVariables_HEADER",
+        "UNIXShellCommandsVariables_QUERYARGUMENTS", "UNIXShellCommandsVariables_QUERYSTRING"),
     "AWSManagedRulesWindowsRuleSet": (
-        "WindowsShellCommands_URIPATH_RC_COUNT", "WindowsShellCommands_BODY_RC_COUNT",
-        "WindowsShellCommands_QUERYSTRING_RC_COUNT", "WindowsShellCommands_HEADER_RC_COUNT",
-        "WindowsShellCommands_HEADER", "WindowsShellCommands_QUERYARGUMENTS", "WindowsShellCommands_BODY",
-        "WindowsShellCommands_URIPATH", "PowerShellCommands_COOKIE", "PowerShellCommands_QUERYARGUMENTS",
-        "PowerShellCommands_BODY"),
+        "PowerShellCommands_BODY", "PowerShellCommands_COOKIE", "PowerShellCommands_QUERYARGUMENTS",
+        "PowerShellCommands_Set1_BODY", "PowerShellCommands_Set1_QUERYARGUMENTS", "PowerShellCommands_Set2_BODY",
+        "PowerShellCommands_Set2_QUERYARGUMENTS", "WindowsShellCommands_BODY", "WindowsShellCommands_COOKIE",
+        "WindowsShellCommands_HEADER", "WindowsShellCommands_QUERYARGUMENTS", "WindowsShellCommands_QUERYSTRING",
+        "WindowsShellCommands_URIPATH"),
     "AWSManagedRulesPHPRuleSet": (
-        "PHPHighRiskMethodsVariables_HEADER", "PHPHighRiskMethodsVariables_QUERYSTRING",
-        "PHPHighRiskMethodsVariables_BODY", "PHPHighRiskMethodsVariables_URIPATH"),
+        "PHPHighRiskMethodsVariables_BODY", "PHPHighRiskMethodsVariables_HEADER",
+        "PHPHighRiskMethodsVariables_QUERYARGUMENTS", "PHPHighRiskMethodsVariables_QUERYSTRING",
+        "PHPHighRiskMethodsVariables_URIPATH"),
 }
 _INJECTION_GROUPS = tuple(_MANAGED_SUB_RULES)
 # Families that find a payload in a request component. `Log4JRCE` with no suffix is the name in
-# KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14.
+# KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14, and `Log4JRCE_URI` in Version_1.9.
 _INJECTION_FAMILIES = ("SQLi", "CrossSiteScripting_", "GenericRFI_", "Log4JRCE", "JavaDeserializationRCE_",
                        "ReactJSRCE_", "UNIXShellCommandsVariables_", "WindowsShellCommands_",
                        "PowerShellCommands_", "PHPHighRiskMethodsVariables_", "EC2MetaDataSSRF_",
@@ -88,10 +92,10 @@ _INJECTION_FAMILIES = ("SQLi", "CrossSiteScripting_", "GenericRFI_", "Log4JRCE",
 def _is_injection_sub_rule(name: str) -> bool:
     """Whether a managed sub-rule finds an injected payload, decided with the maintainer 2026-10-16.
 
-    File inclusion on the URI path is file probing, a file asked for by name: the maintainer's
+    Local file inclusion on the URI path is file probing, a file asked for by name: the maintainer's
     2026-10-13 test of 42 paths such as `.env` and `.git/config` matched `LFI_URIPATH` and
     `GenericLFI_URIPATH` and no payload rule. The same family on a query, body or header is a
-    payload. `_RC_COUNT` rules count and label for the rule beside them, so are not detectors."""
+    payload, and so is remote file inclusion anywhere, since a URL in the request is what it finds. `_RC_COUNT` rules count and label for the rule beside them, so are not detectors."""
     if not name.startswith(_INJECTION_FAMILIES) or name.endswith("_RC_COUNT"):
         return False
     return not (name.startswith(("GenericLFI_", "LFI_")) and name.endswith("_URIPATH"))
@@ -204,6 +208,20 @@ def _count_mode(rules: list) -> set:
                 out |= set(_group_sub_rules(group))
         out |= {o["Name"] for o in group.get("RuleActionOverrides", [])
                 if "Count" in (o.get("ActionToUse") or {})}
+    return out
+
+
+def _whole_group_count(rules: list) -> set:
+    """Sub-rules counted only because their group is in Count as a whole. Each logs the group's
+    terminatingRule with its native action, and CloudWatch counts it under that action: measured on
+    `shield-sample-webacl` for 2026-10-15 20:00, `ManagedRuleGroup`+`ManagedRuleGroupRule` held 5
+    BlockedRequests for `AdminProtection_URIPATH` and no CountedRequests, under either dimension set."""
+    out = set()
+    for rule in rules:
+        group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
+        if "Count" in (rule.get("OverrideAction") or {}):
+            overridden = {o.get("Name") for o in group.get("RuleActionOverrides", [])}
+            out |= set(_group_sub_rules(group)) - overridden
     return out
 
 
@@ -350,14 +368,12 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
         return "\n".join(lines)
 
     # By group, since a group contributes up to thirteen sub-rules and each is a name a user never set.
+    # Not counted: the list holds every version's names, so a count would not be the deployed version's.
     groups = _sub_rule_groups(acl_rules)
-    per_group = {}
-    for t in targets:
-        if t in groups:
-            per_group[groups[t]] = per_group.get(groups[t], 0) + 1
+    per_group = dict.fromkeys(groups[t] for t in targets if t in groups)
     own = [t for t in targets if t not in groups]
     lines.append("Injection rules configured: " + ", ".join(
-        own + [f"{n} injection sub-rules of {g}" for g, n in per_group.items()]))
+        own + [f"the injection sub-rules of {g}" for g in per_group]))
     if unknown:
         lines.append(f"Not inspected: {', '.join(unknown)}")
     lines.append("")
@@ -413,28 +429,32 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
             start_epoch = _parse_start_time(start_time)
             if start_epoch is not None:
                 end_epoch = min(start_epoch + duration * 60, int(time.time()))
-                # A managed sub-rule's blocks are counted under its group's dimensions, not `Rule`.
+                # A managed sub-rule's blocks are counted under its group's dimensions, not `Rule`, and
+                # so are a whole-group Count's, under the action they log.
                 groups = _sub_rule_groups(acl_rules)
+                whole = _whole_group_count(acl_rules)
                 for target in targets:
+                    counted = target in count_mode and target not in whole
                     warning = missed_data_warning(
                         get_webacl_name(), target, acl_rules, start_epoch, end_epoch, log_rows=0,
-                        metric_name="CountedRequests" if target in count_mode else "BlockedRequests",
-                        group="" if target in count_mode else groups.get(target, ""))
+                        metric_name="CountedRequests" if counted else "BlockedRequests",
+                        group="" if counted else groups.get(target, ""))
                     if warning:
                         lines.append(warning)
             lines += ["", CONFIDENCE]
             return "\n".join(lines)
         # Busiest first, by matches, read from the counts rather than any table's row order.
         targets = [name for name, _, _ in ranked]
+        # A Count rule blocks nothing, so its blocked requests are a later rule's.
+        tally = (f"{ranked[0][1]:,} matches, {ranked[0][2]:,} blocked"
+                 + (" by other rules" if ranked[0][0] in count_mode else ""))
         if len(ranked) > 1:
             others = ", ".join(f"{n} ({t:,})" for n, t, _ in ranked[1:])
             lines.append(f"Focusing **{ranked[0][0]}**, the busiest injection detector in this "
-                         f"window ({ranked[0][1]:,} matches, {ranked[0][2]:,} blocked). Also "
-                         f"matching: {others}. Re-run with rule_name set to look at one of those "
-                         f"instead; the sections below cover the focus rule only.")
+                         f"window ({tally}). Also matching: {others}. Re-run with rule_name set to "
+                         f"look at one of those instead; the sections below cover the focus rule only.")
         else:
-            lines.append(f"Focus rule: **{ranked[0][0]}** ({ranked[0][1]:,} matches, "
-                         f"{ranked[0][2]:,} blocked).")
+            lines.append(f"Focus rule: **{ranked[0][0]}** ({tally}).")
         lines.append("")
 
     # Steps 2-4. The rule filter reaches all six places a match is recorded, so a sub-rule
@@ -442,9 +462,9 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
     # focus ends as ALLOW, and a BLOCK filter here emptied all four sections for it.
     focus = targets[0]
     if focus in count_mode:
-        lines += [f"**{focus} is in Count mode**, so the requests below matched it and were "
-                  f"allowed through. That is the shadow-mode evidence for whether to switch it to "
-                  f"Block.", ""]
+        lines += [f"**{focus} is in Count mode**, so it blocked none of the requests below; any that "
+                  f"ended blocked were stopped by another rule. Its matches are the shadow-mode evidence "
+                  f"for whether to switch it to Block.", ""]
     matched = json.dumps({"rule": focus})
     # Held in variables rather than read back out of `lines` by index. The first version did
     # `lines[lines.index("### Source IPs") + 1]`, which couples the data flow to the rendering: a

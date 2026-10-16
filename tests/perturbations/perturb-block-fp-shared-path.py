@@ -35,11 +35,21 @@ CASES = [
      [QUERY]),
 
     ("only the investigation window looked at, which missed the scanners",
-     [(F, "_run_query(cwl, athena, start_epoch - _SHARED_LOOK,", "_run_query(cwl, athena, start_epoch,")],
+     [(F, "rows = _run_query(cwl, athena, start_epoch - pad, min(end_epoch + pad,",
+       "rows = _run_query(cwl, athena, start_epoch, min(end_epoch,")],
      [QUERY]),
 
+    ("a day either side again, past the window cap",
+     [(F, "    pad = max(MAX_MINUTES * 60 - (end_epoch - start_epoch), 0) // 2", "    pad = 86400")],
+     [QUERY]),
+
+    ("other IPs' blocks hidden when the distinct count reads zero",
+     [(F, 'other IPs" if hits else f"  {uri}: no other IP")', 'other IPs" if ips else f"  {uri}: no other IP")'),
+      (F, "            if any(hits for hits, _ in shared.values()):", "            if any(ips for _, ips in shared.values()):")],
+     [f"{T}::test_other_ips_blocks_are_shown_whatever_the_distinct_count_says"]),
+
     ("no warning that an exception opens the path to others",
-     [(F, "            if any(ips for _, ips in shared.values()):", "            if False:")],
+     [(F, "            if any(hits for hits, _ in shared.values()):", "            if False:")],
      [RENDER], True),
 
     ("a failed look read as nobody else blocked",

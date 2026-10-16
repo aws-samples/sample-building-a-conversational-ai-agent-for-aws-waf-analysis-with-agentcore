@@ -357,14 +357,13 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
 # group in whole-group Count logs one too, with the native BLOCK, and evaluation goes on past it.
 _LAST_SUB_RULE_CWL = ('parse @message /.*\\{"ruleGroupId":"[^"]+","terminatingRule":\\{"ruleId":"(?<sub_rule>[^"]+)"/')
 _LAST_SUB_RULE_ATHENA = "element_at(filter(rulegrouplist, rg -> rg.terminatingrule IS NOT NULL), -1).terminatingrule.ruleid"
-_SHARED_LOOK = 86400
 _SHARED_PATHS = 1000
 
 
 def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, end_epoch: int) -> tuple:
-    """On each path where the blocking rule blocked this IP, who else it blocked there, a day either side
-    of the window: `({uri: (blocks, other IPs)}, "")`, or `(None, reason)`. Never raises, because it
-    annotates a verdict reached without it.
+    """On each path where the blocking rule blocked this IP, who else it blocked there, over the window
+    widened evenly to the query window cap: `({uri: (blocks, other IPs)}, "")`, or `(None, reason)`.
+    Never raises, because it annotates a verdict reached without it.
 
     An exception for a false positive's path lets through everything else the rule blocks there.
     Measured on `response-id-on-page`, 2026-09-08: the false-positive user took 2 SQLi blocks on
@@ -386,8 +385,11 @@ def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, 
               + (f" AND {_LAST_SUB_RULE_ATHENA} = '{safe_sub}'" if sub_rule else "")
               + f" GROUP BY httprequest.uri HAVING count_if(httprequest.clientip = '{ip}') > 0"
               " ORDER BY hits DESC LIMIT {LIMIT}")
+    # Bounded by the window cap like every other query: a day either side read 13.5 s and 65 MB on
+    # Athena for one small WebACL.
+    pad = max(MAX_MINUTES * 60 - (end_epoch - start_epoch), 0) // 2
     try:
-        rows = _run_query(cwl, athena, start_epoch - _SHARED_LOOK, min(end_epoch + _SHARED_LOOK, int(time.time())),
+        rows = _run_query(cwl, athena, start_epoch - pad, min(end_epoch + pad, int(time.time())),
                           limit=_SHARED_PATHS)
     except Exception as exc:                              # noqa: BLE001
         return None, f"{type(exc).__name__}: {exc}"
@@ -527,13 +529,15 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     shared, shared_note = d.get("shared_paths") or ({}, "")
     if shared or shared is None:
         lines.append("")
-        lines.append(f"### Other traffic this rule blocks on these paths (a day either side, {display_rule})")
+        lines.append(f"### Other traffic this rule blocks on these paths (up to {MAX_MINUTES // 60} hours centered on "
+                     f"the window, {display_rule})")
         if shared is None:
             lines.append(f"  UNKNOWN, the query for this section failed: {shared_note}")
         else:
             for uri, (hits, ips) in shared.items():
-                lines.append(f"  {uri}: {hits:,} blocks from {ips:,} other IPs" if ips else f"  {uri}: no other IP")
-            if any(ips for _, ips in shared.values()):
+                # Keyed on the blocks: `count_distinct` is approximate on CloudWatch.
+                lines.append(f"  {uri}: {hits:,} blocks from {max(ips, 1):,} other IPs" if hits else f"  {uri}: no other IP")
+            if any(hits for hits, _ in shared.values()):
                 lines.append("  ⚠️  An exception for these paths would also let those requests through. Narrow it "
                              "to this client (its IP, a header it sends, a label), or tell the user what it opens.")
             if shared_note:

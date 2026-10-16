@@ -10,8 +10,9 @@
   "profiles your traffic within 15 minutes". The prompt and the knowledge base said per-IP
   behaviour analysis.
 - Scope-down: "You can use any nestable rule in a scope-down statement", and Body and JsonBody are
-  ordinary request components with required oversize handling. What holds is that WAF logs never
-  contain the body, so a body-based scope-down cannot be checked against them.
+  ordinary request components with required oversize handling. What holds is that WAF logs carry
+  no body beyond the fragments a SQLi or XSS match records, so a body-based scope-down cannot be
+  checked against them.
 """
 
 import pathlib
@@ -31,10 +32,11 @@ def test_route53_health_checkers_are_named_by_their_real_prefixes_and_their_labe
 
 def test_the_anti_ddos_baseline_is_per_protected_resource():
     for text in (P, KB_AMR):
-        assert "per-IP behavior analysis" not in text and "Per-client-IP behavior analysis" not in text
+        assert "per-ip behavior analysis" not in text.lower() and "per-client-ip behavior analysis" not in text.lower()
     assert "per protected resource" in P and "per protected resource" in KB_AMR
 
 
 def test_a_body_scope_down_is_allowed_and_only_unverifiable_from_logs():
     assert "doesn't inspect body for scope-down" not in P
-    assert "body is never logged" in P
+    assert "body is never logged" not in P, "SQLi and XSS matchedData can hold fragments of it"
+    assert "logs carry no request body" in P

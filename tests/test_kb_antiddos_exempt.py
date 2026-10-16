@@ -10,8 +10,9 @@ a temporary `^d2uloqf425puyh\\.cloudfront\\.net/api/` exempted it; `^[^/]+\\/api
 `/api`, `/api/` and `/api/orders` and left `/x/api/orders` challengeable. The knowledge base told
 users to anchor every API branch with `^`, which is the form that silently exempts nothing.
 
-The label is on every non-exempt GET whenever the challenge action is enabled, not only during an
-event, so an exemption can be checked from ordinary logs.
+The label is on every non-exempt GET while the group's challenge setting, `UsageOfAction`, is
+`ENABLED`, not only during an event, so an exemption can be checked from ordinary logs. With it
+`DISABLED` no request carries the label, and its absence says nothing about the regex.
 
 The dual-instance pattern is a last resort, decided with the maintainer 2026-10-16: AWS recommends
 against a scope-down on this rule group, because it limits the traffic the baseline is built from.
@@ -19,6 +20,8 @@ against a scope-down on this rule group, because it limits the traffic the basel
 
 import pathlib
 import re
+
+import pytest
 
 import agent
 
@@ -48,6 +51,22 @@ def test_the_working_forms_are_given():
 
 def test_an_exemption_is_checked_from_ordinary_logs():
     assert "not only during an event" in KB and "challengeable-request" in KB
+
+
+@pytest.mark.parametrize("name,text", [("kb-docs/antiddos-amr.md", KB), ("agent.py", agent.SYSTEM_PROMPT)],
+                         ids=["kb", "prompt"])
+def test_the_check_names_the_setting_the_label_needs(name, text):
+    """Overriding `ChallengeAllDuringEvent` to Count does not stop the label, so "the challenge action"
+    is the wrong thing to name."""
+    lines = [l for l in text.splitlines() if "challengeable-request" in l and "outside an event" in l
+             or "not only during an event" in l]
+    assert lines and all("UsageOfAction" in l for l in lines), f"{name}: {lines}"
+
+
+def test_two_instances_are_not_said_to_split_a_baseline():
+    """AWS says a scope-down limits what the group observes; it says nothing on how two instances
+    share a baseline."""
+    assert "builds its baseline from part of the traffic" not in KB
 
 
 def test_two_instances_are_the_last_resort_with_their_cost_stated():

@@ -10,14 +10,15 @@ LinuxRuleSet, UnixRuleSet, WindowsRuleSet and PHPRuleSet were not read at all.
 
 The line, decided 2026-10-16 with the maintainer: a rule family that finds a payload in a request
 component is injection (SQLi, XSS, RFI, Log4j, Java deserialisation, React RCE, shell and PowerShell
-commands, PHP, EC2 metadata SSRF, and file inclusion in a query, body or header). File inclusion on
-the URI path is file probing, `.env` or `.git/config` asked for by name: the maintainer's
+commands, PHP, EC2 metadata SSRF, and local file inclusion in a query, body or header). Local file
+inclusion on the URI path is file probing, `.env` or `.git/config` asked for by name: the maintainer's
 2026-10-13 test of 42 such paths matched `LFI_URIPATH` and `GenericLFI_URIPATH` and no payload rule.
 So are `RestrictedExtensions`, `ExploitablePaths`, the size limits and the User-Agent, Host and
 method checks. Windows' `_RC_COUNT` rules count and label for the rule beside them.
 """
 
 import json
+import pathlib
 import types
 
 import pytest
@@ -81,6 +82,23 @@ def test_a_group_in_whole_group_count_puts_its_sub_rules_in_count_mode():
     assert "SQLi_QUERYARGUMENTS" in I._count_mode(rules)
 
 
+NAMES = json.loads((pathlib.Path(__file__).parent / "fixtures" / "managed_rule_names_2026-10-16.json").read_text())
+
+
+@pytest.mark.parametrize("group", I._INJECTION_GROUPS)
+def test_every_injection_name_any_version_has_used_is_listed(group):
+    """A group's sub-rules differ by version, and a pinned or newly released version is what a WebACL
+    runs. `shield-sample-webacl` pins SQLiRuleSet Version_2.3, whose `SQLiExtendedPatterns_BODY`,
+    `_URIPATH` and `_HEADER` are not in the default Version_1.3, and its logs carry Version_2.5 too.
+    The fixture is every name in every version AWS listed for the group on 2026-10-16."""
+    assert set(I._MANAGED_SUB_RULES[group]) == {n for n in NAMES[group] if I._is_injection_sub_rule(n)}
+
+
+def test_a_pinned_versions_detectors_are_found_with_no_override():
+    found, _ = I._injection_rules([_group("r", "AWSManagedRulesSQLiRuleSet")])
+    assert {"SQLiExtendedPatterns_BODY", "SQLiExtendedPatterns_URIPATH", "SQLiExtendedPatterns_HEADER"} <= set(found), found
+
+
 def test_every_listed_sub_rule_belongs_to_a_listed_group():
     """The list is read off describe-managed-rule-group; a group missing from it would contribute
     nothing and say nothing."""
@@ -136,6 +154,33 @@ def test_a_quiet_window_cross_checks_each_sub_rule_against_its_group_metric(monk
     _, _, warned = _investigate(monkeypatch, [_group("AWS-AWSManagedRulesSQLiRuleSet", "AWSManagedRulesSQLiRuleSet")], {})
     by_rule = {r: k for r, k in warned}
     assert by_rule["SQLi_QUERYARGUMENTS"].get("group") == "AWSManagedRulesSQLiRuleSet", warned
+
+
+def test_a_whole_group_count_sub_rule_is_cross_checked_under_its_native_action(monkeypatch):
+    """CloudWatch counts a sub-rule of a group in whole-group Count under the action it logs, BLOCK.
+    Measured on `shield-sample-webacl` for 2026-10-15 20:00, `ptest-admin-group-count`: 5 requests,
+    `ManagedRuleGroup`+`ManagedRuleGroupRule` BlockedRequests 5, CountedRequests 0, and
+    `Rule=AdminProtection_URIPATH` CountedRequests 0."""
+    _, _, warned = _investigate(monkeypatch, [_group("shadow", "AWSManagedRulesSQLiRuleSet", override_action="Count")], {})
+    kw = dict(warned)["SQLi_QUERYARGUMENTS"]
+    assert kw.get("metric_name") == "BlockedRequests" and kw.get("group") == "AWSManagedRulesSQLiRuleSet", warned
+
+
+def test_the_control_a_sub_rule_overridden_to_count_is_read_as_counted(monkeypatch):
+    """Measured the same day: `CategoryHttpLibrary`, overridden to Count, 75 CountedRequests under
+    `Rule=` and 75 under the group's dimensions."""
+    _, _, warned = _investigate(monkeypatch, [_group("r", "AWSManagedRulesSQLiRuleSet", overrides=["SQLi_BODY"])], {})
+    kw = dict(warned)["SQLi_BODY"]
+    assert kw.get("metric_name") == "CountedRequests" and kw.get("group") == "", warned
+
+
+def test_a_count_mode_focus_says_its_blocks_were_another_rules(monkeypatch):
+    """A Count rule blocks nothing, so its blocked count is requests a later rule blocked. Over 14 days
+    on `shield-sample-webacl`, `TGT_TokenAbsent` had 2,251 matches and 34 of them blocked."""
+    out, _, _ = _investigate(monkeypatch, [_group("shadow", "AWSManagedRulesSQLiRuleSet", override_action="Count")],
+                             {"SQLi_QUERYARGUMENTS": (10, 3)})
+    assert "10 matches, 3 blocked by other rules" in out, out
+    assert "allowed through" not in out, out
 
 
 def test_the_group_metric_reads_the_sub_rule_dimensions(monkeypatch):
@@ -222,4 +267,4 @@ def test_the_configured_list_counts_a_groups_sub_rules_rather_than_naming_them(m
                       "Statement": {"SqliMatchStatement": {"FieldToMatch": {"Body": {}}}}}]
     out, _, _ = _investigate(monkeypatch, rules, {})
     line = next(l for l in out.splitlines() if l.startswith("Injection rules configured"))
-    assert "my-sqli" in line and "13 injection sub-rules of AWSManagedRulesCommonRuleSet" in line, line
+    assert "my-sqli" in line and "the injection sub-rules of AWSManagedRulesCommonRuleSet" in line, line

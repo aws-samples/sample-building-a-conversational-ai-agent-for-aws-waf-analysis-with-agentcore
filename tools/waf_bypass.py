@@ -1275,16 +1275,16 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             (("frequency_static", "uri_diversity", "actions"),
              _all(_gt(static_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed),
              _static_traffic(static_val, non_static, allowed, all_val, failures.get("all_uris"), ip)),
-            # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
             # Below the rate rungs and the data-center one: a cloud provider's addresses carry partners'
             # and SaaS tools' traffic too, so the signal alone is LIKELY, and a rung that measured more
-            # speaks first.
-            (("frequency",), _all(bool(providers), not has_datacenter, not has_bot_label, _gt(peak_val, 50)), [
+            # speaks first. No rate gate: a fleet spreads its rate, and the one that motivated this
+            # sent 90 allowed requests per host at 11-14 a minute. The volume is the scan's, over 50.
+            (("actions",), _all(bool(providers), not has_datacenter, not has_bot_label, _gt(allowed, 50)), [
                 f"**LIKELY: Undetected automation from a cloud provider ({', '.join(providers)})** "
                 f"(needs user confirmation).",
-                f"Evidence: signal:cloud_service_provider:{', '.join(providers)} + {peak_rpm} req/min peak + no bot "
-                f"classification. A fleet on rented instances looks like this, and so does a partner's "
-                f"integration.",
+                f"Evidence: signal:cloud_service_provider:{', '.join(providers)} + {allow_count:,} allowed requests at "
+                f"a {peak_rpm} req/min peak + no bot classification. A fleet on rented instances looks like "
+                f"this, and so does a partner's integration.",
                 "→ Ask user whether this IP is a known partner or service. If not, Bot Control at "
                 "Targeted, or a rate-based rule, is what would catch it."]),
             (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [

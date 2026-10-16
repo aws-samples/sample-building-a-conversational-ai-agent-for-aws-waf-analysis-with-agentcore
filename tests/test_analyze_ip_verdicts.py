@@ -174,6 +174,13 @@ def test_the_diversity_line_does_not_call_one_fingerprint_spoofing(monkeypatch):
     assert "likely UA spoofing" not in out and "cannot tell which" in out, out
 
 
+def test_lookup_ja4_does_not_call_one_fingerprint_spoofing_either():
+    """analyze_ip points the model at lookup_ja4, so the claim came back one call later."""
+    from tools.ja4 import lookup_ja4
+    out = lookup_ja4._tool_func("t13d1516h2_8daaf6152771_02713d6af862")
+    assert "spoofing" not in out and "one browser build behind a shared address" in out, out
+
+
 def test_a_failed_ua_list_stops_the_rotation_rung(monkeypatch):
     out, _ = _run(monkeypatch, diversity=("6", "1"), fail={"user_agents"},
                   override={"request_rate": [dict(ROW, peak_rpm="300")]})

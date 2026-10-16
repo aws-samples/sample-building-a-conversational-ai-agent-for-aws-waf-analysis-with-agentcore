@@ -35,9 +35,17 @@ CASES = [
      [f"{T}::test_an_unclassified_ip_on_a_cloud_provider_is_a_likely_undetected_bot"]),
 
     ("the provider rung firing on any IP",
-     [(B, "_all(bool(providers), not has_datacenter, not has_bot_label, _gt(peak_val, 50))",
-       "_all(True, not has_datacenter, not has_bot_label, _gt(peak_val, 50))")],
+     [(B, "_all(bool(providers), not has_datacenter, not has_bot_label, _gt(allowed, 50))",
+       "_all(True, not has_datacenter, not has_bot_label, _gt(allowed, 50))")],
      [f"{T}::test_the_control_the_same_ip_without_the_signal_is_undetermined"]),
+
+    ("the 50-a-minute gate back, which the fleet never reached",
+     [(B, "not has_bot_label, _gt(allowed, 50)), [", "not has_bot_label, _gt(allowed, 50), _gt(peak_val, 50)), [")],
+     [f"{T}::test_the_fleet_at_its_own_pace_is_named"]),
+
+    ("no volume needed, so a handful of requests is called automation",
+     [(B, "not has_bot_label, _gt(allowed, 50)), [", "not has_bot_label), [")],
+     [f"{T}::test_the_control_a_handful_of_requests_is_not_called_automation"]),
 ]
 
 sys.exit(sweep(CASES))
