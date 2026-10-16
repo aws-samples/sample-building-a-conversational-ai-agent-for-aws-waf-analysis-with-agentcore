@@ -49,6 +49,11 @@ _INJECTION_GROUPS = (
     "AWSManagedRulesKnownBadInputsRuleSet",
     "AWSManagedRulesCommonRuleSet",
 )
+# The sub-rules of those groups that detect injection, by AWS's name prefix, read off
+# `describe-managed-rule-group` 2026-10-16. CommonRuleSet also holds size limits, a User-Agent check
+# and SSRF rules, and KnownBadInputs a localhost Host and PROPFIND, none of which is injection.
+_INJECTION_SUB_RULES = ("SQLi", "CrossSiteScripting_", "GenericLFI_", "GenericRFI_", "Log4JRCE_",
+                        "JavaDeserializationRCE_", "ReactJSRCE_")
 # Statement types that ARE injection detection. Not a name pattern.
 _INJECTION_STATEMENTS = ("SqliMatchStatement", "XssMatchStatement")
 
@@ -106,10 +111,12 @@ def _injection_rules(rules: list) -> tuple[list, list]:
         if group:
             if any(g in group.get("Name", "") for g in _INJECTION_GROUPS):
                 found.append(name)
-                # A sub-rule overridden to Count is logged under its own name, nested, and is the
-                # shadow-mode detector a user set deliberately, so it is a detector in its own right.
+                # An injection sub-rule overridden to Count is logged under its own name, nested,
+                # and is the shadow-mode detector a user set deliberately, so it is a detector in its
+                # own right. Any other override in the group is not.
                 found += [o["Name"] for o in group.get("RuleActionOverrides", [])
-                          if "Count" in (o.get("ActionToUse") or {})]
+                          if "Count" in (o.get("ActionToUse") or {})
+                          and o["Name"].startswith(_INJECTION_SUB_RULES)]
             continue
         # **An `Allow` rule is not a detector whatever its shape**, which is an independent second
         # signal to the statement type. It catches the inverted allowlist even if some future

@@ -38,6 +38,23 @@ CASES = [
     ("the fake no longer cutting a shared call",
      [(T, "                n = min(self.search_series, room)", "                n = self.search_series")],
      [f"{T}::test_the_control_the_fake_does_cut_a_shared_call"], True),
+
+    ("a SEARCH recognised only by its first word again",
+     [(A, '''    searches = [q for q in queries if "SEARCH(" in q.get("Expression", "")]
+    rest = [q for q in queries if "SEARCH(" not in q.get("Expression", "")]''',
+       '''    searches = [q for q in queries if q.get("Expression", "").startswith("SEARCH(")]
+    rest = [q for q in queries if not q.get("Expression", "").startswith("SEARCH(")]''')],
+     [f"{T}::test_a_wrapped_search_is_sent_alone_too"], True),
+
+    ("top_labels asking for every metric name again",
+     [("tools/waf_overview.py", '''WebACL=\\"{webacl_name}\\" {REQUEST_METRIC_FILTER}', 'Sum', {period})",''',
+       '''WebACL=\\"{webacl_name}\\"', 'Sum', {period})",''')],
+     [f"{T}::test_the_label_searches_ask_only_for_the_metrics_they_add"]),
+
+    ("bot_names asking for every metric name again",
+     [("tools/waf_overview.py", '''bot-control:bot:name\\" {REQUEST_METRIC_FILTER}', 'Sum',''',
+       '''bot-control:bot:name\\"', 'Sum',''')],
+     [f"{T}::test_the_label_searches_ask_only_for_the_metrics_they_add"]),
 ]
 
 sys.exit(sweep(CASES))

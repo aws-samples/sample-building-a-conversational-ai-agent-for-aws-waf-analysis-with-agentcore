@@ -36,7 +36,7 @@ class CuttingCW:
                for q in MetricDataQueries if "MetricStat" in q]
         room = 500 - len(out)
         for q in MetricDataQueries:
-            if q.get("Expression", "").startswith("SEARCH("):
+            if "SEARCH(" in q.get("Expression", ""):
                 n = min(self.search_series, room)
                 room -= n
                 out += [{"Id": q["Id"], "Label": f"rule{i}|BlockedRequests", "Values": [1], "Timestamps": [T0]}
@@ -51,6 +51,40 @@ def test_a_search_beside_many_reads_is_not_cut():
                               StartTime=T0, EndTime=T0 + timedelta(hours=1))
     assert sum(1 for r in resp["MetricDataResults"] if r["Id"] == "s") == 45
     assert sum(1 for r in resp["MetricDataResults"] if r["Id"].startswith("x")) == 495
+
+
+def test_a_wrapped_search_is_sent_alone_too():
+    """Measured 2026-10-16: `SORT(SEARCH(...))` beside 480 MetricStats answered 20 of 45 series, cut
+    like a bare SEARCH. Recognised only by its first word, it stayed in the shared call."""
+    inner = CuttingCW(search_series=45)
+    stats = [{"Id": f"x{i}", "MetricStat": {"Metric": {}, "Period": 60, "Stat": "Sum"}} for i in range(480)]
+    wrapped = {"Id": "s", "Expression": "SORT(SEARCH('x', 'Sum', 60), SUM, DESC)"}
+    resp = _RecordingCloudWatch(inner).get_metric_data(MetricDataQueries=[*stats, wrapped], StartTime=T0,
+                                                       EndTime=T0 + timedelta(hours=1))
+    assert sum(1 for r in resp["MetricDataResults"] if r["Id"] == "s") == 45, inner.calls
+
+
+@pytest.mark.parametrize("fn", ["_top_labels", "_bot_names"])
+def test_the_label_searches_ask_only_for_the_metrics_they_add(fn):
+    """Both add only the four request metrics, and asked for every metric name, so a busy Bot
+    Control WebACL reached 500 series and the whole query type errored. The `*RuleMatch` metrics
+    are at least as many series again."""
+    from tools import waf_metrics as M
+    from tools import waf_overview as O
+
+    class Recording:
+        exprs = []
+
+        def get_metric_data(self, MetricDataQueries, **kw):
+            self.exprs += [q.get("Expression", "") for q in MetricDataQueries]
+            return {"MetricDataResults": []}
+    cw = Recording()
+    try:
+        getattr(O, fn)(cw, "acl", T0, T0 + timedelta(hours=1), 60)
+    except Exception:
+        pass
+    search = next(e for e in cw.exprs if e.startswith("SEARCH("))
+    assert all(f'"{m}"' in search for m in M.REQUEST_METRICS) and "MetricName=" in search, search
 
 
 def test_the_control_the_fake_does_cut_a_shared_call():

@@ -500,14 +500,18 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     actual_days = (end - _st).total_seconds() / 86400
     start_this_week = _st
     start_last_week = start_this_week - timedelta(days=days)
+    # One point per window, as long as the window. It was 604800 whatever `days` was, and a period
+    # longer than the window reads past its end: a 3-day report counted 7 days, and its previous
+    # window ran into this one.
+    period = max(days, 1) * 86400
 
-    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region)
-    last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region)
+    this_week = _get_weekly_totals(cw, webacl_name, start_this_week, end, scope, region, period)
+    last_week = _get_weekly_totals(cw, webacl_name, start_last_week, start_this_week, scope, region, period)
     daily = _get_daily_breakdown(cw, webacl_name, start_this_week, end, scope, region)
 
-    countries = _get_top_countries(cw, webacl_name, start_this_week, end)
+    countries = _get_top_countries(cw, webacl_name, start_this_week, end, period)
     # rules: used in data_lines for LLM summary context (not rendered in HTML)
-    rules = _get_top_rules(cw, webacl_name, start_this_week, end, scope, region)
+    rules = _get_top_rules(cw, webacl_name, start_this_week, end, scope, region, period)
 
     # All four terminating actions, the hit-rate denominator `waf_overview` uses. CAPTCHA was left
     # out here while "mitigated" below counts it, so the mitigated share was taken against a
@@ -530,7 +534,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     "MetricStat": {
                         "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric_name,
                                    "Dimensions": _dims(webacl_name, scope, region)},
-                        "Period": 604800, "Stat": "Sum",
+                        "Period": period, "Stat": "Sum",
                     },
                 }],
                 StartTime=start_this_week, EndTime=end,
@@ -608,7 +612,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
             # Event time range + total requests during event
             event_cnt = _poll_log_query(logs_client, log_group, log_start, log_end,
-                "filter @message like '\"awswaf:managed:aws:anti-ddos:event-detected' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
+                "filter @message like '\"name\":\"awswaf:managed:aws:anti-ddos:event-detected\"' | stats count(*) as cnt, min(@timestamp) as first, max(@timestamp) as last",
                 webacl_name, return_full=True)
 
             if event_cnt and int(event_cnt.get("cnt", 0)) > 0:
@@ -618,7 +622,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
                 # Count distinct events by looking for time gaps > 10 min between bins
                 event_count_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                    "filter @message like '\"awswaf:managed:aws:anti-ddos:event-detected' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
+                    "filter @message like '\"name\":\"awswaf:managed:aws:anti-ddos:event-detected\"' | stats count(*) as cnt by bin(5m) | sort @timestamp asc",
                     webacl_name, return_rows=True)
                 num_events = 1 if event_count_result else 0
                 prev_ts = None
@@ -638,7 +642,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
                 # DDoS request breakdown by suspicion level
                 ddos_result = _poll_log_query(logs_client, log_group, log_start, log_end,
-                    "filter @message like '\"awswaf:managed:aws:anti-ddos:ddos-request' | stats count(*) as total, sum(strcontains(@message, '\"awswaf:managed:aws:anti-ddos:high-suspicion')) as high, sum(strcontains(@message, '\"awswaf:managed:aws:anti-ddos:medium-suspicion')) as medium, sum(strcontains(@message, '\"awswaf:managed:aws:anti-ddos:low-suspicion')) as low",
+                    "filter @message like '\"name\":\"awswaf:managed:aws:anti-ddos:ddos-request\"' | stats count(*) as total, sum(strcontains(@message, '\"name\":\"awswaf:managed:aws:anti-ddos:high-suspicion\"')) as high, sum(strcontains(@message, '\"name\":\"awswaf:managed:aws:anti-ddos:medium-suspicion\"')) as medium, sum(strcontains(@message, '\"name\":\"awswaf:managed:aws:anti-ddos:low-suspicion\"')) as low",
                     webacl_name, return_full=True)
                 ddos_total = int(float(ddos_result.get("total", 0))) if ddos_result else 0
                 ddos_high = int(float(ddos_result.get("high", 0))) if ddos_result else 0
@@ -721,7 +725,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                         {"Name": "LabelName", "Value": label},
                         {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"},
                         {"Name": "WebACL", "Value": webacl_name},
-                    ] + _region_dim}, "Period": 604800, "Stat": "Sum",
+                    ] + _region_dim}, "Period": period, "Stat": "Sum",
                 }})
             bl_resp = cw.get_metric_data(MetricDataQueries=label_queries, StartTime=start_this_week, EndTime=end)
             for r in bl_resp.get("MetricDataResults", []):
@@ -741,7 +745,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             # (see `waf_metrics.summed_sub_rules`). Over 13 days its 34 blocked requests were the
             # 17 that AWS-AWSManagedRulesLinuxRuleSet and the 17 that custom-sensitive-files blocked.
             tgt_resp = cw.get_metric_data(
-                MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)",
+                MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', {period})",
                                     "Label": search_label("LabelName")}],
                 StartTime=start_this_week, EndTime=end,
             )
@@ -758,10 +762,10 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             fbv_label = search_label("BotCategory", "BotName", "Intent", "Organization", "VerificationStatus")
             fbv_resp = cw.get_metric_data(
                 MetricDataQueries=[
-                    {"Id": "ba", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleAllowedRequest\"', 'Sum', 604800)", "Label": fbv_label},
-                    {"Id": "bb", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleBlockedRequest\"', 'Sum', 604800)", "Label": fbv_label},
-                    {"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleChallengeRequest\"', 'Sum', 604800)", "Label": fbv_label},
-                    {"Id": "bd", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleCaptchaRequest\"', 'Sum', 604800)", "Label": fbv_label},
+                    {"Id": "ba", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleAllowedRequest\"', 'Sum', {period})", "Label": fbv_label},
+                    {"Id": "bb", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleBlockedRequest\"', 'Sum', {period})", "Label": fbv_label},
+                    {"Id": "bc", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleChallengeRequest\"', 'Sum', {period})", "Label": fbv_label},
+                    {"Id": "bd", "Expression": f"SEARCH('{{AWS/WAFV2,BotCategory,BotName,Intent,Organization,VerificationStatus,WebACL}} WebACL=\"{webacl_name}\" MetricName=\"SampleCaptchaRequest\"', 'Sum', {period})", "Label": fbv_label},
                 ],
                 StartTime=start_this_week, EndTime=end,
             )
@@ -1168,7 +1172,8 @@ def _poll_log_query(logs_client, log_group, start, end, query, webacl_name,
         return row
     return int(float(row.get("cnt", 0)))
 
-def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "us-east-1") -> dict:
+def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "us-east-1",
+                       period: int = 604800) -> dict:
     """Get total allowed/blocked/challenge/captcha for a time range."""
     queries = []
     metrics = ["AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests"]
@@ -1181,7 +1186,7 @@ def _get_weekly_totals(cw, webacl_name: str, start, end, scope: str = "CLOUDFRON
                     "MetricName": metric,
                     "Dimensions": _dims(webacl_name, scope, region),
                 },
-                "Period": 604800,
+                "Period": period,
                 "Stat": "Sum",
             },
         })
@@ -1398,15 +1403,15 @@ def _get_daily_breakdown(cw, webacl_name: str, start, end, scope: str = "CLOUDFR
     return [data[d] for d in sorted(data.keys())]
 
 
-def _get_top_countries(cw, webacl_name: str, start, end) -> list:
+def _get_top_countries(cw, webacl_name: str, start, end, period: int = 604800) -> list:
     """Get top countries by mitigated requests (Block + Challenge + Captcha)."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
     resp = cw.get_metric_data(
         MetricDataQueries=[
-            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)", "Label": search_label("Country")},
-            {"Id": "challenged", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"ChallengeRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)", "Label": search_label("Country")},
-            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"CaptchaRequests\" WebACL=\"{webacl_name}\"', 'Sum', 604800)", "Label": search_label("Country")},
+            {"Id": "blocked", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"BlockedRequests\" WebACL=\"{webacl_name}\"', 'Sum', {period})", "Label": search_label("Country")},
+            {"Id": "challenged", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"ChallengeRequests\" WebACL=\"{webacl_name}\"', 'Sum', {period})", "Label": search_label("Country")},
+            {"Id": "captcha", "Expression": f"SEARCH('{{AWS/WAFV2,Country,WebACL}} MetricName=\"CaptchaRequests\" WebACL=\"{webacl_name}\"', 'Sum', {period})", "Label": search_label("Country")},
         ],
         StartTime=start, EndTime=end,
     )
@@ -1421,7 +1426,8 @@ def _get_top_countries(cw, webacl_name: str, start, end) -> list:
     return [{"country": c, "count": cnt} for c, cnt in sorted_countries[:10]]
 
 
-def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "") -> list:
+def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", region: str = "",
+                   period: int = 604800) -> list:
     """Get top rules by hit count using SEARCH."""
     if not re.match(r'^[\w-]+$', webacl_name):
         return []
@@ -1436,7 +1442,7 @@ def _get_top_rules(cw, webacl_name: str, start, end, scope: str = "CLOUDFRONT", 
     for action in ["BlockedRequests", "CountedRequests", "ChallengeRequests"]:
         expression = (
             f"SEARCH('{dim_set} "
-            f"MetricName=\"{action}\" WebACL=\"{webacl_name}\"{extra_filter}', 'Sum', 604800)"
+            f"MetricName=\"{action}\" WebACL=\"{webacl_name}\"{extra_filter}', 'Sum', {period})"
         )
         resp = cw.get_metric_data(
             MetricDataQueries=[{"Id": f"rules_{action}", "Expression": expression, "Label": search_label("Rule")}],

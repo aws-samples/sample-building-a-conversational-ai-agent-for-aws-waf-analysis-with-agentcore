@@ -96,3 +96,68 @@ def test_both_scan_queries_use_the_shared_pattern():
     src = open(B.__file__).read()
     assert src.count("AUTOMATION_UA_CWL") >= 2 and src.count("AUTOMATION_UA_ATHENA") >= 2
     assert "python-requests|wget" not in src, "a hand-written copy of the list is still in the scan"
+
+
+DATA_CENTER = "awswaf:managed:aws:bot-control:signal:known_bot_data_center"
+
+
+def test_a_data_center_ip_with_no_bot_label_is_an_undetected_bot(monkeypatch):
+    """The first rung. Replacing it with False left the whole suite green."""
+    verdict = _run(monkeypatch, labels=[dict(ROW, Labels=DATA_CENTER)])
+    assert "Undetected bot from data center" in verdict, verdict
+
+
+def test_the_control_no_data_center_signal_is_not_that_rung(monkeypatch):
+    verdict = _run(monkeypatch, labels=[dict(ROW, Labels="awswaf:managed:token:absent")])
+    assert "Undetected bot from data center" not in verdict, verdict
+
+
+def test_an_ip_sending_only_static_assets_is_ranked(monkeypatch):
+    """On CloudWatch a `stats` with no group-by over no records answers no rows, so the URI query
+    answers [] for an IP whose ALLOW traffic is all static. That is 0 URIs, and 300/min on them is
+    hammering. Read as unanswered, it told the user to re-run a query that had answered."""
+    verdict = _run(monkeypatch, uri_diversity=[])
+    assert "Endpoint hammering" in verdict, verdict
+    assert "did not answer" not in verdict, verdict
+
+
+def test_a_value_that_is_not_a_number_is_not_called_unanswered(monkeypatch):
+    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="n/a")])
+    assert "CANNOT DETERMINE" in verdict and "not a number" in verdict, verdict
+    assert "Re-run" not in verdict, verdict
+
+
+def _count_section(monkeypatch, log_type, rows):
+    monkeypatch.setattr(B, "get_log_type", lambda: log_type)
+    monkeypatch.setattr(B, "is_log_filter_active", lambda: False)
+    seen = {}
+
+    def q(cwl, athena, start, end, limit=25, notes=None, label="", **kw):
+        if label == "count_rules":
+            seen["cwl"], seen["athena"] = cwl, athena
+            return rows
+        return [dict(ROW)]
+    monkeypatch.setattr(B, "query_logs", q)
+    report = B._step_investigate_ip("203.0.113.9", 0, 3600)
+    return report.split("### COUNT Rules Triggered", 1)[1].split("###", 1)[0], seen
+
+
+def test_the_count_rules_read_nested_entries_once_per_request(monkeypatch):
+    """A managed sub-rule's Count is nested in `rulegrouplist`. Measured 2026-10-16 on
+    `response-id-on-page`, 2026-10-01 to 10-16: 5 top-level COUNT entries against 2,142 nested, and
+    the Athena query unnested only the top level, so TGT_TokenAbsent's Counts read "(none)"."""
+    _, seen = _count_section(monkeypatch, "athena", [])
+    athena = seen["athena"]
+    assert "rulegrouplist" in athena and "rg.nonterminatingmatchingrules" in athena, athena
+    assert "array_distinct(" in athena, "a group deployed twice would count each request twice"
+
+
+def test_cloudwatch_says_it_lists_the_first_count_rule_only(monkeypatch):
+    section, seen = _count_section(monkeypatch, "cwl", [dict(ROW, rule="TGT_TokenAbsent", hits="7")])
+    assert "TGT_TokenAbsent (7 hits)" in section and "first Count rule only" in section, section
+    assert '"nonTerminatingMatchingRules"' not in seen["cwl"], "the parse still needs the entry to open an array"
+
+
+def test_the_control_athena_carries_no_first_rule_caveat(monkeypatch):
+    section, _ = _count_section(monkeypatch, "athena", [dict(ROW, rule="TGT_TokenAbsent", hits="7")])
+    assert "TGT_TokenAbsent (7 hits)" in section and "first Count rule only" not in section, section

@@ -10,9 +10,13 @@ nested. `top_counted_ips`, `top_counted_countries` and `aggregate_logs(filter_by
 read the top level and came back empty or close to it; all three now use one predicate covering every
 location. `investigate_injection` ranked detectors by BLOCK only, so a Count-mode detector could never
 be the focus rule; on 2026-09-08 03:00 it skipped 160 `CrossSiteScripting_QUERYARGUMENTS` matches for a
-rule with 2 blocks. It now ranks by matches, includes sub-rules overridden to Count, and says when the
-focus rule is in Count mode. Patrol's per-rule IP and URI cells were empty for Count rules for the same
-reason.
+rule with 2 blocks. It now ranks by matches, includes the injection sub-rules overridden to Count, and
+says when the focus rule is in Count mode. Patrol's per-rule IP and URI cells were empty for Count rules
+for the same reason, and so was the bypass investigation's list of Count rules on Athena. That list now
+counts each rule once per request; on CloudWatch it lists a request under its first Count rule only,
+and says so. On CloudWatch the `count_rule_top_*` queries also matched the rule name and a Count as two
+separate pieces of the record, so a request the rule blocked while another rule counted it matched:
+over 14 days `LFI_URIPATH`, which only blocks, showed 34 Count hits.
 
 ### Fixed: patrol missed rules that had been quiet for the last 14 days, whatever window it scanned
 
@@ -80,7 +84,15 @@ Complete and no message: a search answering 45 series alone answered 20 beside 4
 5 beside 495. Patrol reads each configured rule beside five searches, so a WebACL of about 50 rules
 lost the sub-rules only a search finds, and the weekly report's country and bot searches shared calls
 the same way. Every metric read now sends each search in a call of its own, and one that answers 500
-series fails with that reason rather than passing as whole.
+series fails with that reason rather than passing as whole. The overview's `top_labels` and
+`bot_names` searches, the two a busy Bot Control WebACL could take past 500, now ask only for the four
+request metrics they count.
+
+### Fixed: a weekly report shorter than seven days counted seven
+
+Every weekly figure was read as one seven-day point whatever `days` was, and CloudWatch answers a
+point that runs past the window's end. A three-day report counted seven days, and its previous-period
+baseline ran four days into the report itself. Each window is now one point of its own length.
 
 ### Fixed: verdicts reached from a query that failed or did not parse
 
@@ -99,7 +111,8 @@ Several queries matched label words anywhere in the raw record. Three probe requ
 IP from `top_allowed_crawlers` and `top_allowed_repeaters`, raise the weekly report's Anti-DDoS
 counts, or set `token_reuse_ips`'s session id. `host_top_ips` matched the host name anywhere, and its
 top row was 45,841 CloudFront access-log records with no client IP. Label tests now read the labels
-array, and the host template reads the Host header.
+array or match the label's `name` key, which client text cannot produce, and the host template reads
+the Host header in any casing.
 
 ### Fixed: the challenge check reported an Anti-DDoS event that never happened
 

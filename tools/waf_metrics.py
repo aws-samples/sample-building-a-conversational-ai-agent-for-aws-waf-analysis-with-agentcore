@@ -211,6 +211,9 @@ def search_label(*dims: str) -> str:
 # request. The `*RuleMatch` metrics count rule matches instead and can exceed them: measured
 # 2026-10-15, `LFI_URIPath` had BlockRuleMatch 34 and BlockedRequests 17 over the same 13 days.
 REQUEST_METRICS = ("AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests")
+# The same four as a SEARCH filter, for a search that adds only them. Asking for every metric name
+# returns the `*RuleMatch` series too, and one call answers at most 500 series.
+REQUEST_METRIC_FILTER = "MetricName=(" + " OR ".join(f'"{m}"' for m in REQUEST_METRICS) + ")"
 
 
 def summed_sub_rules(cw, webacl_name: str, rules: list, scope: str = "CLOUDFRONT", region: str = ""):

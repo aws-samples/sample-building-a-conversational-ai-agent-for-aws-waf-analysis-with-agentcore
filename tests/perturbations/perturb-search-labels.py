@@ -27,9 +27,9 @@ CASES = [
      [f"{T}::test_every_search_query_in_the_tools_names_its_label"], False),
 
     ("top_labels counting rule matches as requests",
-     [(O, '        if len(parts) == 3 and parts[2] in REQUEST_METRICS:\n            label = f"{parts[0]}:{parts[1]}"',
-       '        if len(parts) == 3:\n            label = f"{parts[0]}:{parts[1]}"')],
-     [f"{T}::test_a_label_with_two_metrics_is_one_row_counted_once"], True),
+     [(O, '''WebACL=\\"{webacl_name}\\" {REQUEST_METRIC_FILTER}', 'Sum', {period})",''',
+       '''WebACL=\\"{webacl_name}\\"', 'Sum', {period})",''')],
+     [f"{T}::test_a_label_with_two_metrics_is_one_row_counted_once"]),
 
     ("targeted signals adding rule matches to requests again",
      [(O, '        if len(parts) != 3 or parts[2] not in REQUEST_METRICS:\n            continue\n        namespace, name, metric = parts',
@@ -64,6 +64,10 @@ CASES = [
      [(T, '        if isinstance(head, ast.Constant) and str(head.value).startswith("SEARCH("):',
        '        if isinstance(head, ast.Constant) and str(head.value).startswith("SEARCH ("):')],
      [f"{T}::test_every_search_query_in_the_tools_names_its_label"], True),
+
+    ("the report read at a week whatever its length again",
+     [(R, "    period = max(days, 1) * 86400", "    period = 604800")],
+     [f"{T}::test_a_short_report_reads_no_further_than_its_window"], True),
 ]
 
 sys.exit(sweep(CASES))

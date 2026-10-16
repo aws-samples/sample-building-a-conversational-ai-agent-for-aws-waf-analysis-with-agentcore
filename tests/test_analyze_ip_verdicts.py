@@ -131,3 +131,23 @@ def test_answered_inputs_still_reach_their_verdict(monkeypatch, peak, uris, expe
     out, _ = _run(monkeypatch, override={"request_rate": [dict(ROW, peak_rpm=peak)],
                                          "uri_diversity": [dict(ROW, unique_uris=uris)]})
     assert expected in _assessment(out), out
+
+
+def test_one_client_rotating_its_ua_is_named(monkeypatch):
+    """The first rung. Replacing it with False left this file green."""
+    out, _ = _run(monkeypatch, diversity=("3", "1"), override={"request_rate": [dict(ROW, peak_rpm="60")]})
+    assert "Bot with UA rotation" in _assessment(out), out
+
+
+def test_the_control_two_fingerprints_are_not_ua_rotation(monkeypatch):
+    out, _ = _run(monkeypatch, diversity=("3", "2"), override={"request_rate": [dict(ROW, peak_rpm="60")]})
+    assert "Bot with UA rotation" not in _assessment(out), out
+
+
+def test_an_ip_sending_only_static_assets_is_ranked_on_cloudwatch(monkeypatch):
+    """CloudWatch answers no rows for a `stats` with no group-by over no records, Athena a row of
+    zeros. Read as unanswered, 300/min on static assets was CANNOT DETERMINE on CloudWatch and
+    "Endpoint hammering" on Athena."""
+    out, _ = _run(monkeypatch, override={"request_rate": [dict(ROW, peak_rpm="300")], "uri_diversity": []})
+    verdict = _assessment(out)
+    assert "Endpoint hammering" in verdict and "did not answer" not in verdict, verdict

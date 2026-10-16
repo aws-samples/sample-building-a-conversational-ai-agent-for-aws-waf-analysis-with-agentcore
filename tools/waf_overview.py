@@ -111,10 +111,17 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
                 "days, and this window starts before that. Query the logs for it instead.")
 
     # The window sent is the one CloudWatch will answer, and the reader is told when it differs.
-    # For top_rules the earlier window is the older one, so it sets the step for both.
+    # For top_rules the earlier window is the older one, so it sets the step for both. Moving the
+    # window makes its oldest point older, which can cross a retention line and need a coarser
+    # step, so this repeats until the step holds; it can only grow, so it stops.
     asked_start, asked_end = start, end
-    unit = _calc_period(minutes, prev_start if query_type == "top_rules" else start)
-    start, end = _whole_points(start, end, unit, prev_start if query_type == "top_rules" else start)
+    oldest = lambda s, e: s - (e - s) if query_type == "top_rules" else s
+    unit = _calc_period(minutes, oldest(start, end))
+    while True:
+        start, end = _whole_points(asked_start, asked_end, unit, oldest(start, end))
+        if _calc_period(minutes, oldest(start, end)) == unit:
+            break
+        unit = _calc_period(minutes, oldest(start, end))
     prev_start = start - (end - start)
     note = _window_note(asked_start, asked_end, start, end, unit)
 
@@ -128,21 +135,21 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
             rules_error = f"{type(e).__name__}: {e}"
 
     if query_type == "top_rules":
-        out = _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope, region, rules, rules_error)
+        out = _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope, region, rules, rules_error, unit)
     elif query_type == "attack_types":
-        out = _attack_types(cw, webacl_name, start, end, minutes, scope, region)
+        out = _attack_types(cw, webacl_name, start, end, minutes, scope, region, unit)
     elif query_type == "bot_summary":
-        out = _bot_summary(cw, webacl_name, start, end, minutes)
+        out = _bot_summary(cw, webacl_name, start, end, minutes, unit)
     elif query_type == "bot_names":
-        out = _bot_names(cw, webacl_name, start, end, minutes, scope, region)
+        out = _bot_names(cw, webacl_name, start, end, minutes, scope, region, unit)
     elif query_type == "targeted_signals":
-        out = _targeted_signals(cw, webacl_name, start, end, minutes, scope, region)
+        out = _targeted_signals(cw, webacl_name, start, end, minutes, scope, region, unit)
     elif query_type == "rate_limits":
-        out = _rate_limits(cw, webacl_name, start, end, minutes, scope, region, rules, rules_error)
+        out = _rate_limits(cw, webacl_name, start, end, minutes, scope, region, rules, rules_error, unit)
     elif query_type == "challenge_solve_rate":
-        out = _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes)
+        out = _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes, unit)
     elif query_type == "top_labels":
-        out = _top_labels(cw, webacl_name, start, end, minutes, scope, region)
+        out = _top_labels(cw, webacl_name, start, end, minutes, scope, region, unit)
     else:
         return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate, top_labels"
     return out + note
@@ -151,18 +158,18 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
 def _whole_points(start, end, period: int, oldest):
     """The window CloudWatch answers in whole `period` points, as (start, end).
 
-    **Measured 2026-10-15, two placements.** For data older than 15 days the points sit on the clock
-    in steps of the period: 04:02-04:32 at 900 answered points at 04:00, 04:15 and 04:30, so it read
-    to 04:45, and 97 days back 04:30-05:00 at 3600 answered the whole hour, 1,893. For newer data the
-    points start at StartTime, to the minute, and the last still runs past EndTime: 61 minutes at 300
-    answered 13 points. Either way a window that is not whole points reads more than it names, so the
-    window sent is this one. `oldest` is the oldest point any read of the call will ask for.
+    **The first point is StartTime rounded down to the resolution CloudWatch still keeps**, a
+    minute for 15 days, five minutes to 63 and an hour after, and points follow every `period` for
+    as long as they start before EndTime. Measured 2026-10-16 on `response-id-on-page`, StartTime
+    hh:07:17: points began at 01:07 at 2 and 10 days old with periods of 900, 3600 and 14400, at
+    01:05 at 37 days with 900, 3600 and 14400, and at 01:00 at 70 and 97 days with 3600 and 14400.
+    So a window that is not whole points from there reads more than it names, and the window sent
+    is this one. `oldest` is the oldest point any read of the call asks for: rounding to its
+    resolution rounds to every finer one too.
     """
     from tools.waf_metrics import _period_for_window
-    if (_period_for_window(int(oldest.timestamp())) or 3600) > 60:
-        start = start - timedelta(seconds=int(start.timestamp()) % period, microseconds=start.microsecond)
-    else:
-        start = start.replace(second=0, microsecond=0)
+    step = _period_for_window(int(oldest.timestamp())) or 3600
+    start = start - timedelta(seconds=int(start.timestamp()) % step, microseconds=start.microsecond)
     points = -(-int((end - start).total_seconds()) // period)
     return start, start + timedelta(seconds=points * period)
 
@@ -257,17 +264,16 @@ def _explain_empty(cw, webacl_name, start, end, scope, region, partial: list, no
 
 
 def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRONT", region="",
-               rules=None, rules_error=""):
+               rules=None, rules_error="", period=None):
     from tools.waf_metrics import _period_for_window
     from tools.waf_patrol import _get_all_rules_metrics_search
-    period = _calc_period(minutes, start)
+    period = period or _calc_period(minutes, prev_start)
     this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope,
                                               region=region, rules=rules)
     # The earlier window is older, so it can need a coarser period; past 455 days it has none.
     last_week = None
     if _period_for_window(int(prev_start.timestamp())):
-        last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start,
-                                                  period=_calc_period(minutes, prev_start),
+        last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=period,
                                                   scope=scope, region=region, rules=rules)
 
     # **Whether the denominator is exact is now load-bearing, so it is tracked.** ROADMAP 4.2 puts
@@ -444,8 +450,8 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
     return "\n".join(lines)
 
 
-def _attack_types(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
-    period = _calc_period(minutes, start)
+def _attack_types(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region="", period=None):
+    period = period or _calc_period(minutes, start)
     from tools.waf_metrics import search_label
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "attacks", "Expression": f"SEARCH('{{AWS/WAFV2,Attack,WebACL}} WebACL=\"{webacl_name}\" MetricName=(\"BlockedRequests\" OR \"ChallengeRequests\" OR \"CaptchaRequests\")', 'Sum', {period})",
@@ -490,8 +496,8 @@ def _attack_types(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", regi
     return "\n".join(lines)
 
 
-def _bot_summary(cw, webacl_name, start, end, minutes):
-    period = _calc_period(minutes, start)
+def _bot_summary(cw, webacl_name, start, end, minutes, period=None):
+    period = period or _calc_period(minutes, start)
     queries = [
         {"Id": "v_a", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": [
             {"Name": "LabelName", "Value": "verified"}, {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:bot-control:bot"}, {"Name": "WebACL", "Value": webacl_name}]}, "Period": period, "Stat": "Sum"}},
@@ -546,18 +552,18 @@ def _bot_summary(cw, webacl_name, start, end, minutes):
     return "\n".join(lines)
 
 
-def _bot_names(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
-    from tools.waf_metrics import REQUEST_METRICS, search_label
+def _bot_names(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region="", period=None):
+    from tools.waf_metrics import REQUEST_METRIC_FILTER, search_label
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\"', 'Sum', {_calc_period(minutes, start)})",
+        {"Id": "names", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:bot:name\" {REQUEST_METRIC_FILTER}', 'Sum', {period or _calc_period(minutes, start)})",
          "Label": search_label("LabelName")},
     ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
     bots = {}
     for r in resp.get("MetricDataResults", []):
-        name, _, metric = r.get("Label", "").partition("|")
+        name = r.get("Label", "").partition("|")[0]
         val = int(sum(r.get("Values", [])))
-        if val > 0 and metric in REQUEST_METRICS:
+        if val > 0:
             bots[name] = bots.get(name, 0) + val
 
     sorted_bots = sorted(bots.items(), key=lambda x: x[1], reverse=True)
@@ -574,9 +580,9 @@ def _bot_names(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=
     return "\n".join(lines)
 
 
-def _targeted_signals(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
+def _targeted_signals(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region="", period=None):
     from tools.waf_metrics import REQUEST_METRICS, search_label
-    period = _calc_period(minutes, start)
+    period = period or _calc_period(minutes, start)
     label = search_label("LabelNamespace", "LabelName")
     resp = cw.get_metric_data(MetricDataQueries=[
         {"Id": "ctrl", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control\"', 'Sum', {period})",
@@ -627,7 +633,8 @@ def _targeted_signals(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", 
     return "\n".join(lines)
 
 
-def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region="", rules=None, rules_error=""):
+def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region="", rules=None, rules_error="",
+                 period=None):
     """Each rate-based rule's matches, read by its `VisibilityConfig.MetricName`, which is the
     metric's dimension and need not equal the rule's name. Every action counts: a rate rule can
     block, challenge, CAPTCHA or only count."""
@@ -644,7 +651,7 @@ def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", regio
     lit = {(r.get("VisibilityConfig") or {}).get("MetricName") or r["Name"]: r["Name"] for r in rate
            if (r.get("VisibilityConfig") or {}).get("CloudWatchMetricsEnabled", True)}
     dark = [r["Name"] for r in rate if r["Name"] not in lit.values()]
-    period = _calc_period(minutes, start)
+    period = period or _calc_period(minutes, start)
     data = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=period, scope=scope,
                                          region=region, rules=rate)
 
@@ -673,9 +680,9 @@ def _rate_limits(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", regio
     return "\n".join(lines)
 
 
-def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
+def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes, period=None):
     from tools.waf_patrol import _get_challenge_solved, _get_all_rules_metrics_search
-    period = _calc_period(minutes, start)
+    period = period or _calc_period(minutes, start)
     try:
         cs, cas = _get_challenge_solved(cw, webacl_name, scope, region, start, end)
         solved_error = ""
@@ -727,20 +734,21 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     return "\n".join(lines)
 
 
-def _top_labels(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region=""):
+def _top_labels(cw, webacl_name, start, end, minutes, scope="CLOUDFRONT", region="", period=None):
     """Get all labels with hit counts — useful for identifying which managed rules/features are active."""
-    from tools.waf_metrics import REQUEST_METRICS, search_label
-    period = _calc_period(minutes, start)
+    from tools.waf_metrics import REQUEST_METRIC_FILTER, search_label
+    period = period or _calc_period(minutes, start)
     resp = cw.get_metric_data(MetricDataQueries=[
-        {"Id": "labels", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\"', 'Sum', {period})",
+        {"Id": "labels", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" {REQUEST_METRIC_FILTER}', 'Sum', {period})",
          "Label": search_label("LabelNamespace", "LabelName")},
     ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")
 
-    # One row per label: the requests that carried it, whatever their outcome
+    # One row per label: the requests that carried it, whatever their outcome. The search asks
+    # for the request metrics only, so a rule-match series never arrives to be added.
     totals = {}
     for r in resp.get("MetricDataResults", []):
         parts = r.get("Label", "").split("|")
-        if len(parts) == 3 and parts[2] in REQUEST_METRICS:
+        if len(parts) == 3:
             label = f"{parts[0]}:{parts[1]}"  # e.g. "awswaf:managed:aws:anti-ddos:event-detected"
             totals[label] = totals.get(label, 0) + sum(int(v) for v in r.get("Values", []))
     label_counts = [(total, label) for label, total in totals.items() if total > 0]

@@ -82,19 +82,19 @@ def _log(msg: str):
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
     "count_rule_top_ips": {
-        "query": "filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top IPs triggering a COUNT rule",
     },
     "count_rule_top_uris": {
-        "query": "filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
-        "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
         "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
@@ -150,7 +150,7 @@ TEMPLATES = {
     "host_top_ips": {
         # Through the Host header, as the two host templates below already do: a bare
         # `@message like '{host}'` also matched the host name turning up in a URI or a referer.
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", action, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND lower(h.name) = 'host' AND h.value = '{host}' GROUP BY httprequest.clientip, action ORDER BY hits DESC LIMIT {LIMIT}",
         "params": ["host"],
         # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
@@ -312,13 +312,13 @@ TEMPLATES = {
         "description": "Detect token reuse across multiple IPs (one WAF session token:id seen from many IPs)",
     },
     "host_traffic_profile": {
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
         "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value as host, count(*) as total, count(DISTINCT httprequest.uri) as unique_uris, sum(CASE WHEN httprequest.httpmethod IN ('POST','PUT','DELETE') THEN 1 ELSE 0 END) as write_requests FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Traffic profile per Host header",
     },
     "host_uri_pattern": {
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
         # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
@@ -326,7 +326,7 @@ TEMPLATES = {
         "description": "Top URIs for a specific host",
     },
     "host_method_distribution": {
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.httpmethod ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
         # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
@@ -1291,18 +1291,23 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # Confidence assessment
     lines.append("---")
     lines.append("## Assessment")
-    def _known(rows, key, cast):
-        """The value, or None when the query failed (it then returns no rows) or its answer does
-        not parse. None used to be 0, and the ladder below ran on the 0."""
-        if not rows:
+    def _known(rows, key, cast, label):
+        """The value, 0 when the query answered with no rows, or None when it failed or its answer
+        does not parse. None used to be 0, and the ladder below ran on the 0. Then no rows became
+        None as well, but on CloudWatch a `stats` with no group-by over no records answers no rows,
+        so an IP sending only static assets could not be ranked there while Athena, answering a row
+        of zeros, called it hammering."""
+        if failures.get(label):
             return None
+        if not rows:
+            return cast(0)
         try:
             return cast(rows[0].get(key))
         except (ValueError, TypeError):
             return None
 
-    peak_val = _known(rate, "peak_rpm", float)
-    uri_val = _known(uri_div, "unique_uris", int)
+    peak_val = _known(rate, "peak_rpm", float, "request_rate")
+    uri_val = _known(uri_div, "unique_uris", int, "uri_diversity")
     unknown = {"request_rate": peak_val is None, "uri_diversity": uri_val is None}
 
     # Evaluated in order, and a rung whose input is unknown stops the ladder rather than being

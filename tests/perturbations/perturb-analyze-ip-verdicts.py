@@ -32,9 +32,17 @@ CASES = [
      [f"{T}::test_mac_and_iphone_safari_users_are_two_operating_systems"]),
 
     ("a failed query read as zero again",
-     [(L, "        if not rows:\n            return None", "        if not rows:\n            return 0")],
+     [(L, "        if failures.get(label):\n            return None", "        if False:\n            return None")],
      [f"{T}::test_a_failed_uri_query_does_not_become_endpoint_hammering",
       f"{T}::test_a_failed_rate_query_does_not_rank_the_ip_on_a_zero_peak"], True),
+
+    ("an empty answer read as unanswered again",
+     [(L, "        if not rows:\n            return cast(0)", "        if not rows:\n            return None")],
+     [f"{T}::test_an_ip_sending_only_static_assets_is_ranked_on_cloudwatch"], True),
+
+    ("the UA-rotation rung never firing",
+     [(L, "lambda: ua_count > 1 and ja4_count == 1 and peak_val > 50,", "lambda: False,")],
+     [f"{T}::test_one_client_rotating_its_ua_is_named"]),
 
     ("an unparseable value read as zero again",
      [(L, "            return cast(rows[0].get(key))\n        except (ValueError, TypeError):\n            return None",

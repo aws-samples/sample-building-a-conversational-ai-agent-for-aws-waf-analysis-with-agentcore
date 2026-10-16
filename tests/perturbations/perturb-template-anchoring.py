@@ -16,7 +16,7 @@ SWEEP = f"{T}::test_no_query_in_the_package_matches_the_raw_record_unanchored"
 
 CASES = [
     ("host_top_ips back on a bare host substring",
-     [("tools/waf_logs.py", '''"query": "parse @message /\\\\{\\"name\\":\\"(H|h)ost\\",\\"value\\":\\"(?<host>.*?)\\"\\\\}/ | filter host = '{host}' | stats count(*) as hits by httpRequest.clientIp, action''',
+     [("tools/waf_logs.py", '''"query": "parse @message /(?i)\\\\{\\"name\\":\\"host\\",\\"value\\":\\"(?<host>.*?)\\"\\\\}/ | filter host = '{host}' | stats count(*) as hits by httpRequest.clientIp, action''',
        '''"query": "filter @message like '{host}' | stats count(*) as hits by httpRequest.clientIp, action''')],
      [f"{T}::test_every_raw_record_match_on_a_parameter_is_anchored", SWEEP]),
 
@@ -25,8 +25,8 @@ CASES = [
        '''        "filter action = 'ALLOW'"\n        f"{CWL_EXCLUDE_STATIC}"\n        " and @message not like 'bot:verified'"\n        " | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris by httpRequest.clientIp"\n        " | filter unique_uris''')],
      [SWEEP]),
 
-    ("the report's event query forgeable from a URI again",
-     [("tools/report.py", '''"filter @message like '\\"awswaf:managed:aws:anti-ddos:ddos-request' |''', '''"filter @message like 'anti-ddos:ddos-request' |''')],
+    ("the report's event query on a leading quote again, which a header value matches",
+     [("tools/report.py", '''"filter @message like '\\"name\\":\\"awswaf:managed:aws:anti-ddos:ddos-request\\"' |''', '''"filter @message like '\\"awswaf:managed:aws:anti-ddos:ddos-request' |''')],
      [SWEEP]),
 
     ("token_reuse_ips filtering on unanchored label text again",

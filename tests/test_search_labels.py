@@ -186,3 +186,29 @@ def test_a_name_claimed_by_an_unverified_client_is_not_a_good_bot(bot_html):
     good = html.split("const gbd = ", 1)[1].split(";", 1)[0]
     unverified = html.split("const ubd = ", 1)[1].split(";", 1)[0]
     assert "Googlebot" in good and "Googlebot" in unverified, (good, unverified)
+
+
+def test_a_short_report_reads_no_further_than_its_window(monkeypatch, tmp_path):
+    """Every weekly figure was read at 604800 whatever `days` was, and a period longer than the
+    window reads past its end (measured 2026-10-15: an hour at 604800 answered 130,678 allowed where
+    the hour held 1,896). So a 3-day report counted 7 days, and its previous window ran into it."""
+    monkeypatch.chdir(tmp_path)
+    reads = []
+
+    class Recording:
+        def get_metric_data(self, MetricDataQueries, StartTime, EndTime, **kw):
+            for q in MetricDataQueries:
+                expr = q.get("Expression", "")
+                period = (q["MetricStat"]["Period"] if "MetricStat" in q else
+                          int(expr.rsplit(",", 1)[1].strip(" )")) if "SEARCH(" in expr else None)
+                if period:
+                    reads.append((period, (EndTime - StartTime).total_seconds(), q["Id"]))
+            return {"MetricDataResults": []}
+    monkeypatch.setattr(R, "get_client", lambda svc, **k: {"cloudwatch": Recording(), "wafv2": _WAF(), "logs": object()}[svc])
+    for name, value in [("get_log_destination", lambda: ""), ("get_capabilities", lambda: {"bot_control": "targeted"}),
+                        ("resolve_region", lambda scope: "us-east-1"), ("get_user_timezone", lambda: 0)]:
+        monkeypatch.setattr(S, name, value)
+    R.generate_weekly_report._tool_func(webacl_name="acl", start_time="2026-09-01", days=3, lang="en")
+    assert len(reads) > 20, reads
+    long = [r for r in reads if r[0] > r[1]]
+    assert not long, long

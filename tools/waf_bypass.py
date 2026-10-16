@@ -805,8 +805,10 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f")"
     )
     freq = _safe_query(freq_cwl, freq_athena, start_epoch, end_epoch, limit=1, failures=failures, label="frequency", notes=notes)
-    peak_rpm = freq[0].get("peak_rpm", "?") if freq else "?"
-    avg_rpm = freq[0].get("avg_rpm", "?") if freq else "?"
+    # No rows from a query that answered is a zero: on CloudWatch a `stats` with no group-by over no
+    # records answers none, where Athena answers a row of zeros. "?" is kept for a failure.
+    peak_rpm = freq[0].get("peak_rpm", "?") if freq else ("?" if failures.get("frequency") else 0)
+    avg_rpm = freq[0].get("avg_rpm", "?") if freq else ("?" if failures.get("frequency") else 0)
 
     # 2. URI diversity (ALLOW only)
     uri_cwl = (
@@ -821,8 +823,8 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         f"{ATHENA_EXCLUDE_STATIC}"
     )
     uri_data = _safe_query(uri_cwl, uri_athena, start_epoch, end_epoch, limit=1, failures=failures, label="uri_diversity", notes=notes)
-    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"
-    total_reqs = uri_data[0].get("total", "?") if uri_data else "?"
+    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else ("?" if failures.get("uri_diversity") else 0)
+    total_reqs = uri_data[0].get("total", "?") if uri_data else ("?" if failures.get("uri_diversity") else 0)
 
     # 2b. Query strings on ALLOW traffic — attack-like payloads that were NOT
     # blocked are a direct bypass signal. Sensitive params redacted below.
@@ -916,20 +918,28 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     )
     ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3, failures=failures, label="ja4", notes=notes)
 
-    # 8. COUNT rules triggered (nonTerminatingMatchingRules)
+    # 8. COUNT rules triggered, one hit per request. A managed sub-rule's Count is nested in
+    # `ruleGroupList`, and it is the common one: measured 2026-10-16 on `response-id-on-page`,
+    # 2026-10-01 to 10-16, 5 top-level COUNT entries against 2,142 nested. Athena reads both levels
+    # and counts each rule once per request, since a group deployed twice logs its sub-rules twice.
+    # CloudWatch has no array accessor that holds up, so it reads the first COUNT entry per record.
+    # `unnest` measured wrong on `shield-sample-webacl`: filtered on the element's action and grouped
+    # by its rule, it answered 604 for TGT_TokenAbsent where the same records held 1,040 entries.
     count_rules_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and @message like '\"action\":\"COUNT\"'"
-        " | parse @message /\"nonTerminatingMatchingRules\":\\[\\{\"ruleId\":\"(?<rule>[^\"]+)\",\"action\":\"COUNT\"/"
+        " | parse @message /\"ruleId\":\"(?<rule>[^\"]+)\",\"action\":\"COUNT\"/"
         " | filter ispresent(rule)"
         " | stats count(*) as hits by rule"
         " | sort hits desc | limit 5"
     )
     count_rules_athena = (
-        f"SELECT t.ruleid as rule, count(*) as hits"
-        f" FROM {{TABLE}} CROSS JOIN UNNEST(nonterminatingmatchingrules) AS t(t)"
-        f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND httprequest.clientip = '{ip}' AND t.action = 'COUNT'"
-        f" GROUP BY t.ruleid ORDER BY hits DESC LIMIT {{LIMIT}}"
+        "SELECT t.rule as rule, count(*) as hits FROM (SELECT array_distinct(concat("
+        "coalesce(transform(filter(nonterminatingmatchingrules, r -> r.action = 'COUNT'), r -> r.ruleid), ARRAY[]),"
+        " coalesce(flatten(transform(rulegrouplist, rg -> coalesce(transform(filter("
+        "rg.nonterminatingmatchingrules, r -> r.action = 'COUNT'), r -> r.ruleid), ARRAY[]))), ARRAY[]))) as rules"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{ip}') CROSS JOIN UNNEST(rules) AS t(rule)"
+        f" GROUP BY t.rule ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     count_rules = _safe_query(count_rules_cwl, count_rules_athena, start_epoch, end_epoch, limit=5, failures=failures, label="count_rules", notes=notes)
 
@@ -975,6 +985,9 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     if count_rules:
         for r in count_rules:
             lines.append(f"  {r.get('rule', '?')} ({r.get('hits', '?')} hits)")
+        if get_log_type() == "cwl":
+            lines.append("  (CloudWatch: each request is listed under its first Count rule only, so a rule "
+                         "that counted beside another may be missing or low.)")
     else:
         lines.append(_empty_reason(failures, "count_rules", "  (none, no COUNT rule matches for this IP)"))
 
@@ -1097,11 +1110,13 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
         verdict = None
         for needs, fires, text in rungs:
             if fires is None:
-                unread = [n for n in needs if failures.get(n)] or list(needs)
-                verdict = [f"**CANNOT DETERMINE** — the {', '.join(unread)} input did not answer, so "
-                           f"the rungs that read it cannot be evaluated.",
-                           *(f"Reason ({n}): {failures[n]}" for n in unread if failures.get(n)),
-                           "→ Re-run this investigation once the query succeeds."]
+                unread = [n for n in needs if failures.get(n)]
+                verdict = ([f"**CANNOT DETERMINE** — the {', '.join(unread)} input did not answer, so "
+                            f"the rungs that read it cannot be evaluated.",
+                            *(f"Reason ({n}): {failures[n]}" for n in unread),
+                            "→ Re-run this investigation once the query succeeds."] if unread else
+                           [f"**CANNOT DETERMINE** — the {', '.join(needs)} input answered with a value "
+                            f"that is not a number, so the rungs that read it cannot be evaluated."])
                 break
             if fires:
                 verdict = text

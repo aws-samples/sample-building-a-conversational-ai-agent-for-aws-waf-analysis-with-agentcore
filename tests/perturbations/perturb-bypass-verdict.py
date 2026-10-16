@@ -55,6 +55,37 @@ CASES = [
      [(B, '        " | filter " + AUTOMATION_UA_CWL +',
        '        " | filter ua like /(?i)(curl|python-requests|wget|httpie|go-http-client|java\\\\/|okhttp|libwww-perl)/"')],
      [f"{T}::test_both_scan_queries_use_the_shared_pattern"]),
+
+    ("the data-center rung never firing",
+     [(B, "            ((\"frequency\",), _all(has_datacenter, not has_bot_label, _gt(peak_val, 50)), [",
+       "            ((\"frequency\",), False, [")],
+     [f"{T}::test_a_data_center_ip_with_no_bot_label_is_an_undetected_bot"]),
+
+    ("an empty URI answer read as unanswered again",
+     [(B, '''    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else ("?" if failures.get("uri_diversity") else 0)''',
+       '''    unique_uris = uri_data[0].get("unique_uris", "?") if uri_data else "?"''')],
+     [f"{T}::test_an_ip_sending_only_static_assets_is_ranked"], True),
+
+    ("a value that is not a number called unanswered again",
+     [(B, "                unread = [n for n in needs if failures.get(n)]\n",
+       "                unread = [n for n in needs if failures.get(n)] or list(needs)\n")],
+     [f"{T}::test_a_value_that_is_not_a_number_is_not_called_unanswered"], True),
+
+    ("the Count rules read from the top level only on Athena again",
+     [(B, '''        " coalesce(flatten(transform(rulegrouplist, rg -> coalesce(transform(filter("''',
+       '''        " coalesce(flatten(transform(ARRAY[], rg -> coalesce(transform(filter("''')],
+     [f"{T}::test_the_count_rules_read_nested_entries_once_per_request"]),
+
+    ("a request counted once per Count entry, so a group run twice counts it twice",
+     [(B, '''        "SELECT t.rule as rule, count(*) as hits FROM (SELECT array_distinct(concat("''',
+       '''        "SELECT t.rule as rule, count(*) as hits FROM (SELECT (concat("''')],
+     [f"{T}::test_the_count_rules_read_nested_entries_once_per_request"]),
+
+    ("CloudWatch's first-rule-only reading left unsaid",
+     [(B, '''        if get_log_type() == "cwl":
+            lines.append("  (CloudWatch: each request''', '''        if False:
+            lines.append("  (CloudWatch: each request''')],
+     [f"{T}::test_cloudwatch_says_it_lists_the_first_count_rule_only"], True),
 ]
 
 sys.exit(sweep(CASES))

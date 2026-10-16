@@ -301,31 +301,30 @@ def test_bypass_volume_reads_all_without_search(monkeypatch):
 # --- the window CloudWatch answers ---------------------------------------------------------------
 
 class ClockCW:
-    """Points placed as measured 2026-10-15. Older than 15 days: on the clock in steps of the
-    period, every point starting before EndTime. Newer: from StartTime to the minute, as many points
-    as cover the span. Each point holds `per_minute` times its length, so a reading says how much
-    time it really covered."""
+    """Points placed as measured 2026-10-16: the first at StartTime rounded down to the resolution
+    still kept for data that old (a minute to 15 days, five minutes to 63, an hour after), then one
+    every period while it starts before EndTime. Each point holds `per_minute` times its length, so a
+    reading says how much time it really covered. `reads` records each read's window and period."""
 
-    def __init__(self, per_minute):
-        self.per_minute = per_minute
+    def __init__(self, per_minute, now=None):
+        self.per_minute, self.now, self.reads = per_minute, now or NOW, []
 
-    @staticmethod
-    def points(start, end, period):
-        if NOW - start > timedelta(days=15):
-            t = start - timedelta(seconds=int(start.timestamp()) % period, microseconds=start.microsecond)
-            out = []
-            while t < end:
-                out.append(t)
-                t += timedelta(seconds=period)
-            return out
-        t = start.replace(second=0, microsecond=0)
-        return [t + timedelta(seconds=i * period) for i in range(-(-int((end - start).total_seconds()) // period))]
+    def points(self, start, end, period):
+        age = self.now - start
+        step = 60 if age <= timedelta(days=15) else 300 if age <= timedelta(days=63) else 3600
+        t = start - timedelta(seconds=int(start.timestamp()) % step, microseconds=start.microsecond)
+        out = []
+        while t < end:
+            out.append(t)
+            t += timedelta(seconds=period)
+        return out
 
     def get_metric_data(self, MetricDataQueries, StartTime, EndTime, **kw):
         raw, out = {}, []
         for q in MetricDataQueries:
             if "MetricStat" in q:
                 st, m = q["MetricStat"], q["MetricStat"]["Metric"]
+                self.reads.append((StartTime, EndTime, st["Period"]))
                 rate = self.per_minute.get((_dim(m, "Rule"), m["MetricName"]), 0)
                 ts = self.points(StartTime, EndTime, st["Period"]) if rate else []
                 raw[q["Id"]] = (ts, [rate * st["Period"] // 60] * len(ts), st["Period"])
@@ -337,7 +336,14 @@ class ClockCW:
                     ts = self.points(StartTime, EndTime, period)
                     vals = [0] * len(ts)
                 out.append({"Id": q["Id"], "Label": "", "Values": vals, "Timestamps": ts})
+            elif q.get("Expression", "").startswith("SEARCH("):
+                self.reads.append((StartTime, EndTime, int(q["Expression"].rsplit(",", 1)[1].strip(" )"))))
         return {"MetricDataResults": out}
+
+    def misread(self):
+        """The reads whose points do not cover exactly the window sent."""
+        return [(s, e, p) for s, e, p in self.reads
+                if (pts := self.points(s, e, p)) and (pts[0] != s or pts[-1] + timedelta(seconds=p) != e)]
 
 
 OLD97 = (NOW - timedelta(days=97)).replace(minute=0, second=0, microsecond=0)
@@ -369,3 +375,54 @@ def test_the_control_a_window_ending_now_carries_no_note(overview):
     cw = ClockCW({("ALL", "AllowedRequests"): 1})
     out = overview("top_rules", cw, start=None, minutes=1440)
     assert "Note: CloudWatch answers" not in out, out
+
+
+@pytest.fixture
+def fixed_clock(monkeypatch):
+    """`now` a little after a five-minute line, so a retention line falls between two of them."""
+    from tools import waf_metrics as M
+    import types
+    now = datetime.fromtimestamp(int(NOW.timestamp()) // 300 * 300 + 120, timezone.utc)
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(time=lambda: now.timestamp()))
+    return now
+
+
+def test_the_previous_window_is_read_in_whole_points_across_the_63_day_line(overview, fixed_clock):
+    """The reviewer's case. The step was chosen from the previous window's start before the window
+    moved, moving it took that start past 63 days, and the previous window was then read at 3600 over
+    a window that was not whole hours: 25 hours for 24 h 15 min, overlapping the current one. Here
+    the current window starts 180 s past a five-minute line, so rounding it moves the previous
+    window's start 180 s back, across the line, which sits 120 s past one."""
+    line = fixed_clock - timedelta(days=63)
+    start = line + timedelta(days=1, seconds=60)
+    cw = ClockCW({("ALL", "AllowedRequests"): 1}, now=fixed_clock)
+    overview("top_rules", cw, start=start, minutes=1440)
+    assert {p for _, _, p in cw.reads} == {3600}, sorted({p for _, _, p in cw.reads})
+    assert not cw.misread(), cw.misread()
+
+
+def test_a_window_moved_past_the_63_day_line_is_read_and_described_whole(overview, fixed_clock):
+    """attack_types, six hours starting just inside 63 days: the window moved past the line, the
+    reader chose 3600 from the moved start, and the note still said five-minute points."""
+    start = fixed_clock - timedelta(days=63) + timedelta(seconds=60)
+    cw = ClockCW({("ALL", "BlockedRequests"): 1}, now=fixed_clock)
+    out = overview("attack_types", cw, start=start, minutes=360)
+    assert not cw.misread(), cw.misread()
+    assert {p for _, _, p in cw.reads} == {3600}, sorted({p for _, _, p in cw.reads})
+    assert "whole 60-minute points" in out, out
+
+
+def test_the_control_a_window_well_inside_63_days_keeps_five_minute_points(overview, fixed_clock):
+    start = fixed_clock - timedelta(days=40)
+    cw = ClockCW({("ALL", "BlockedRequests"): 1}, now=fixed_clock)
+    overview("attack_types", cw, start=start, minutes=360)
+    assert {p for _, _, p in cw.reads} == {300} and not cw.misread(), cw.reads
+
+
+def test_an_old_window_moves_only_to_the_resolution_kept(overview):
+    """37 days old, a day from 04:07 at 900: points start at 04:05. Rounding to the period instead
+    took the window to 04:00."""
+    start = OLD + timedelta(minutes=7)
+    out = overview("top_rules", ClockCW({("ALL", "AllowedRequests"): 1}), start=start, minutes=1440)
+    hm = lambda t: t.strftime("%Y-%m-%d %H:%M")
+    assert f"covers {hm(OLD + timedelta(minutes=5))} to" in out, out

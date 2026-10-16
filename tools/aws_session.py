@@ -82,8 +82,9 @@ def _read_whole(client, kwargs: dict) -> dict:
     (Id, Label), because one SEARCH Id answers with a series per dimension value.
     """
     queries = kwargs["MetricDataQueries"]
-    searches = [q for q in queries if q.get("Expression", "").startswith("SEARCH(")]
-    rest = [q for q in queries if not q.get("Expression", "").startswith("SEARCH(")]
+    # Anywhere in the expression: `SORT(SEARCH(...))` beside 480 MetricStats was cut the same way.
+    searches = [q for q in queries if "SEARCH(" in q.get("Expression", "")]
+    rest = [q for q in queries if "SEARCH(" not in q.get("Expression", "")]
     calls = [([q], q["Id"]) for q in searches] + [(rest[i:i + 500], None) for i in range(0, len(rest), 500)]
     joined, messages = {}, []
     for batch, search_id in calls:

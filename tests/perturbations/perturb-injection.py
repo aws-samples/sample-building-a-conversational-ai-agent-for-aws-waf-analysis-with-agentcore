@@ -158,6 +158,15 @@ CASES = [
         [f"{T}::test_the_output_points_at_record_finding"],
         TEXTUAL,
     ),
+    # Inside an expression, so no probe; the test calls `_injection_rules` directly.
+    (
+        "every Count override in an injection group promoted again",
+        "tools/waf_injection.py",
+        "                          and o[\"Name\"].startswith(_INJECTION_SUB_RULES)]",
+        "                          ]",
+        [f"{T}::test_only_an_injection_sub_rule_in_count_is_a_detector"],
+        TEXTUAL,
+    ),
 ]
 
 # A case with no marker gets the reachability probe: a bare raise goes in above the anchor's line
