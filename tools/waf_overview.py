@@ -107,6 +107,14 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
         return (f"No metrics for {webacl_name} in this window: CloudWatch keeps WAF metrics for 455 "
                 "days, and this window starts before that. Query the logs for it instead.")
 
+    # The window sent is the one CloudWatch will answer, and the reader is told when it differs.
+    # For top_rules the earlier window is the older one, so it sets the step for both.
+    asked_start, asked_end = start, end
+    unit = _calc_period(minutes, prev_start if query_type == "top_rules" else start)
+    start, end = _whole_points(start, end, unit, prev_start if query_type == "top_rules" else start)
+    prev_start = start - (end - start)
+    note = _window_note(asked_start, asked_end, start, end, unit)
+
     # Every configured rule is read directly, because SEARCH discovers only metrics with data in
     # the last 14 days counted from now. None, with the reason, when the read failed.
     rules, rules_error = None, ""
@@ -117,23 +125,57 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
             rules_error = f"{type(e).__name__}: {e}"
 
     if query_type == "top_rules":
-        return _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope, region, rules, rules_error)
+        out = _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope, region, rules, rules_error)
     elif query_type == "attack_types":
-        return _attack_types(cw, webacl_name, start, end, minutes, scope, region)
+        out = _attack_types(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "bot_summary":
-        return _bot_summary(cw, webacl_name, start, end, minutes)
+        out = _bot_summary(cw, webacl_name, start, end, minutes)
     elif query_type == "bot_names":
-        return _bot_names(cw, webacl_name, start, end, minutes, scope, region)
+        out = _bot_names(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "targeted_signals":
-        return _targeted_signals(cw, webacl_name, start, end, minutes, scope, region)
+        out = _targeted_signals(cw, webacl_name, start, end, minutes, scope, region)
     elif query_type == "rate_limits":
-        return _rate_limits(cw, webacl_name, start, end, minutes, scope, region, rules, rules_error)
+        out = _rate_limits(cw, webacl_name, start, end, minutes, scope, region, rules, rules_error)
     elif query_type == "challenge_solve_rate":
-        return _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes)
+        out = _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes)
     elif query_type == "top_labels":
-        return _top_labels(cw, webacl_name, start, end, minutes, scope, region)
+        out = _top_labels(cw, webacl_name, start, end, minutes, scope, region)
     else:
         return f"Error: unknown query_type '{query_type}'. Available: top_rules, attack_types, bot_summary, bot_names, targeted_signals, rate_limits, challenge_solve_rate, top_labels"
+    return out + note
+
+
+def _whole_points(start, end, period: int, oldest):
+    """The window CloudWatch answers in whole `period` points, as (start, end).
+
+    **Measured 2026-10-15, two placements.** For data older than 15 days the points sit on the clock
+    in steps of the period: 04:02-04:32 at 900 answered points at 04:00, 04:15 and 04:30, so it read
+    to 04:45, and 97 days back 04:30-05:00 at 3600 answered the whole hour, 1,893. For newer data the
+    points start at StartTime, to the minute, and the last still runs past EndTime: 61 minutes at 300
+    answered 13 points. Either way a window that is not whole points reads more than it names, so the
+    window sent is this one. `oldest` is the oldest point any read of the call will ask for.
+    """
+    from tools.waf_metrics import _period_for_window
+    if (_period_for_window(int(oldest.timestamp())) or 3600) > 60:
+        start = start - timedelta(seconds=int(start.timestamp()) % period, microseconds=start.microsecond)
+    else:
+        start = start.replace(second=0, microsecond=0)
+    points = -(-int((end - start).total_seconds()) // period)
+    return start, start + timedelta(seconds=points * period)
+
+
+def _window_note(asked_start, asked_end, start, end, period: int) -> str:
+    """A line saying which window the figures cover, when it is not the one asked for. A window
+    ending at now that runs past it reads nothing more, so that alone is not a difference."""
+    read_end = min(end, datetime.now(timezone.utc))
+    if abs((start - asked_start).total_seconds()) < 60 and abs((read_end - asked_end).total_seconds()) < 60:
+        return ""
+    tz_offset = get_user_timezone()
+    tz = timezone(timedelta(hours=tz_offset)) if tz_offset is not None else timezone.utc
+    fmt = lambda t: t.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+    return (f"\n\nNote: CloudWatch answers this window in whole {period // 60}-minute points, so every figure "
+            f"above covers {fmt(start)} to {fmt(read_end)}, not the requested {fmt(asked_start)} to "
+            f"{fmt(asked_end)}.")
 
 
 def _calc_period(minutes: int, start) -> int:
@@ -656,7 +698,7 @@ def _challenge_solve_rate(cw, webacl_name, scope, region, start, end, minutes):
     lines.append("")
     if tot_ch == 0 and tot_cap == 0:
         lines.append("  No challenges or CAPTCHAs issued in this period.")
-    if tot_ch > 0 and cs:
+    if tot_ch > 0 and not solved_error:  # none solved is the low-rate case, not a missing one
         rate = cs * 100 // tot_ch
         if rate > 80:
             lines.append(f"⚠️ High solve rate ({rate}%) — challenges may be hitting real users, not bots.")

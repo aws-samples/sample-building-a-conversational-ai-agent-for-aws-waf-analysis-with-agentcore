@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from strands import tool
 from tools.aws_session import get_client
 from tools.query_limits import MAX_POLL, POLL_INTERVAL, stop_query
-from tools.waf_metrics import search_label
+from tools.waf_metrics import REQUEST_METRICS, search_label
 
 # Module-level storage for the latest report HTML (served via GET /report)
 _latest_report_html: str | None = None
@@ -40,8 +40,9 @@ _I18N = {
         "counted": "Counted",
         "mitigated": "Mitigated",
         "targeted": "🎯 Advanced Bot Detection",
-        "targeted_mitigated": "🚫 Mitigated",
-        "targeted_counted": "👁️ Counted",
+        "targeted_ended_mitigated": "🚫 Ended blocked, challenged or CAPTCHA",
+        "targeted_ended_allowed": "👁️ Ended allowed",
+        "targeted_note": "How each request carrying the label ended, whichever rule ended it. A request can carry more than one of these labels.",
         "requests": "requests",
         "bot_disclaimer": "Note: Per-bot distribution charts are based on sampled data. Relative proportions are indicative; absolute numbers may differ from actual counts. Summary totals (card numbers) are exact.",
         "no_events": "🟢 No events",
@@ -80,8 +81,9 @@ _I18N = {
         "counted": "监控中",
         "mitigated": "已拦截",
         "targeted": "🎯 高级机器人检测",
-        "targeted_mitigated": "🚫 已拦截",
-        "targeted_counted": "👁️ 监控中",
+        "targeted_ended_mitigated": "🚫 最终被拦截、质询或验证码",
+        "targeted_ended_allowed": "👁️ 最终放行",
+        "targeted_note": "统计带这个标签的请求最后怎么处理，不区分是哪条规则处理的。一个请求可能同时带多个这类标签。",
         "requests": "次请求",
         "bot_disclaimer": "注：机器人分布图表基于采样数据，比例关系仅供参考，绝对数字可能与实际有偏差。卡片上的汇总数字为精确值。",
         "no_events": "🟢 本周无事件",
@@ -730,40 +732,26 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 elif r["Id"] == "bl3": unverified_challenged = val
                 elif r["Id"] == "bl4": unverified_captchaed = val
 
-            # 2. Targeted bot control totals from label metrics
-            targeted_blocked = 0
-            targeted_challenged = 0
-            targeted_counted = 0
+            # 2. Targeted Bot Control: the requests carrying each TGT_ label, by how they ended.
+            # Label request metrics say how a request ended, not which rule ended it, and the
+            # `*RuleMatch` metrics count matches, not requests. Measured on shield-sample-webacl
+            # for 2026-10-14: 7 logged requests carried TGT_TokenAbsent, its label AllowedRequests was
+            # 7, and CountRuleMatch, Rule=TGT_TokenAbsent CountedRequests and the ManagedRuleGroupRule
+            # metric were all 14. Over 13 days its 34 blocked requests were the 17 that
+            # AWS-AWSManagedRulesLinuxRuleSet and the 17 that custom-sensitive-files blocked.
             tgt_resp = cw.get_metric_data(
                 MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)",
                                     "Label": search_label("LabelName")}],
                 StartTime=start_this_week, EndTime=end,
             )
-            tgt_rules = {}  # {rule_name: {blocked, challenged, captchaed, counted}}
+            tgt_rules = {}  # {label name: {"allowed": n, "mitigated": n}}
             for r in tgt_resp.get("MetricDataResults", []):
                 total = int(sum(r.get("Values", [])))
-                if total <= 0:
-                    continue
                 parts = r.get("Label", "").split("|")
-                if len(parts) != 2 or not parts[0].startswith("TGT_"):
+                if total <= 0 or len(parts) != 2 or not parts[0].startswith("TGT_") or parts[1] not in REQUEST_METRICS:
                     continue
-                rule_name = parts[0]
-                metric = parts[1]
-                if rule_name not in tgt_rules:
-                    tgt_rules[rule_name] = {"blocked": 0, "challenged": 0, "captchaed": 0, "counted": 0}
-                if "Block" in metric and "Match" not in metric:
-                    tgt_rules[rule_name]["blocked"] += total
-                elif "Challenge" in metric and "Match" not in metric:
-                    tgt_rules[rule_name]["challenged"] += total
-                elif "Captcha" in metric and "Match" not in metric:
-                    tgt_rules[rule_name]["captchaed"] += total
-                elif "Count" in metric:
-                    tgt_rules[rule_name]["counted"] += total
-            targeted_mitigated = 0
-            targeted_counted = 0
-            for d in tgt_rules.values():
-                targeted_mitigated += d["blocked"] + d["challenged"] + d["captchaed"]
-                targeted_counted += d["counted"]
+                d = tgt_rules.setdefault(parts[0], {"allowed": 0, "mitigated": 0})
+                d["allowed" if parts[1] == "AllowedRequests" else "mitigated"] += total
 
             # 3. Free Bot Visibility (sampled) — per-bot classification
             fbv_label = search_label("BotCategory", "BotName", "Intent", "Organization", "VerificationStatus")
@@ -787,18 +775,21 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 bot_name = parts[1]
                 if bot_name in ("ALL_BOTS", "NON_BOT"):
                     continue
-                if bot_name not in bots:
-                    bots[bot_name] = {"category": parts[0].replace("bot:category:", ""), "org": parts[3],
-                                      "verified": parts[4] == "bot:verified",
-                                      "s_allowed": 0, "s_blocked": 0, "s_challenged": 0}
-                if r["Id"] == "ba": bots[bot_name]["s_allowed"] += total
-                elif r["Id"] in ("bb",): bots[bot_name]["s_blocked"] += total
-                elif r["Id"] in ("bc", "bd"): bots[bot_name]["s_challenged"] += total
+                # One name comes back as several series, one per dimension combination. Keyed on
+                # verification too, so a verified bot and a client merely claiming its name are never
+                # merged into one entry, which took the verification of whichever series came first.
+                b = bots.setdefault((bot_name, parts[4] == "bot:verified"), {
+                    "category": parts[0].replace("bot:category:", ""), "org": parts[3],
+                    "verified": parts[4] == "bot:verified", "s_allowed": 0, "s_blocked": 0, "s_challenged": 0})
+                if r["Id"] == "ba": b["s_allowed"] += total
+                elif r["Id"] in ("bb",): b["s_blocked"] += total
+                elif r["Id"] in ("bc", "bd"): b["s_challenged"] += total
+            bots = [(name, b) for (name, _), b in bots.items()]
 
             # 4. Group bots
-            good_bots = [(n, b) for n, b in bots.items() if b["verified"] and b["s_blocked"] == 0]
-            bad_bots = [(n, b) for n, b in bots.items() if (b["s_blocked"] > 0 or b["s_challenged"] > 0) and b["s_allowed"] == 0 and not b["verified"]]
-            counted_bots = [(n, b) for n, b in bots.items() if not b["verified"] and b["s_allowed"] > 0]
+            good_bots = [(n, b) for n, b in bots if b["verified"] and b["s_blocked"] == 0]
+            bad_bots = [(n, b) for n, b in bots if (b["s_blocked"] > 0 or b["s_challenged"] > 0) and b["s_allowed"] == 0 and not b["verified"]]
+            counted_bots = [(n, b) for n, b in bots if not b["verified"] and b["s_allowed"] > 0]
             good_bots.sort(key=lambda x: x[1]["s_allowed"], reverse=True)
             bad_bots.sort(key=lambda x: x[1]["s_blocked"] + x[1]["s_challenged"], reverse=True)
             counted_bots.sort(key=lambda x: x[1]["s_allowed"], reverse=True)
@@ -896,20 +887,26 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
             bot_section += f'<p style="color:var(--muted);font-size:1rem;margin:1rem 0 2rem">{L["bot_disclaimer"]}</p>'
 
             # Targeted Bot Detection section — progress bar style
-            if targeted_mitigated + targeted_counted > 0:
-                tgt_total = targeted_mitigated + targeted_counted
-                tgt_pct = round(targeted_mitigated / max(tgt_total, 1) * 100)
+            if tgt_rules:
+                rows = ""
+                for name, d in sorted(tgt_rules.items(), key=lambda x: -(x[1]["allowed"] + x[1]["mitigated"])):
+                    n = d["allowed"] + d["mitigated"]
+                    pct = round(d["mitigated"] * 100 / n)
+                    rows += (
+                        f'<div class="label" style="font-size:1rem;margin-top:1rem">{name} — <strong>{n:,}</strong> {L["requests"]}</div>'
+                        f'<div style="background:var(--border);border-radius:6px;height:40px;margin:0.5rem 0;overflow:hidden;display:flex">'
+                        f'<div style="width:{pct}%;background:#f85149;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;font-weight:600">{d["mitigated"]:,}</div>'
+                        f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1rem">{d["allowed"]:,}</div>'
+                        f'</div>'
+                        f'<div style="display:flex;justify-content:space-between;font-size:1rem;color:var(--muted)">'
+                        f'<span>{L["targeted_ended_mitigated"]} ({pct}%)</span>'
+                        f'<span>{L["targeted_ended_allowed"]} ({100 - pct}%)</span>'
+                        f'</div>'
+                    )
                 bot_section += (
-                    f'<div class="card" style="margin-top:1rem;padding:5rem 1.5rem">'
-                    f'<div class="label" style="font-size:1rem">{L["targeted"]} — <strong>{tgt_total:,}</strong> {L["requests"]}</div>'
-                    f'<div style="background:var(--border);border-radius:6px;height:40px;margin:1rem 0;overflow:hidden;display:flex">'
-                    f'<div style="width:{tgt_pct}%;background:#f85149;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;font-weight:600">{targeted_mitigated:,}</div>'
-                    f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1rem">{targeted_counted:,}</div>'
-                    f'</div>'
-                    f'<div style="display:flex;justify-content:space-between;font-size:1rem;color:var(--muted)">'
-                    f'<span>{L["targeted_mitigated"]} ({tgt_pct}%)</span>'
-                    f'<span>{L["targeted_counted"]} ({100-tgt_pct}%)</span>'
-                    f'</div>'
+                    f'<div class="card" style="margin-top:1rem;padding:2rem 1.5rem">'
+                    f'<div class="label" style="font-size:1rem">{L["targeted"]}</div>{rows}'
+                    f'<div style="margin-top:1rem;font-size:0.85rem;color:var(--muted)">{L["targeted_note"]}</div>'
                     f'</div>'
                 )
         except Exception as exc:

@@ -89,14 +89,30 @@ CASES = [
        '        return [none]\n        return [f"  ⚠️ The breakdown is empty')],
      [f"{T}::test_a_failed_check_is_not_read_as_no_activity"], True),
 
-    ("every query sent in one call whatever its size",
-     [(P, '    for i in range(0, len(queries), 500):\n        kw = {"MetricDataQueries": queries[i:i + 500]',
-       '    for i in range(0, len(queries), 100000):\n        kw = {"MetricDataQueries": queries[i:i + 100000]')],
-     [f"{T}::test_a_webacl_with_many_rules_is_read_in_calls_cloudwatch_accepts"], True),
+    ("the window sent as asked, not as CloudWatch answers it",
+     [(O, '    start, end = _whole_points(start, end, unit, prev_start if query_type == "top_rules" else start)',
+       "    start, end = start, end")],
+     [f"{T}::test_a_half_hour_97_days_old_is_widened_and_says_so",
+      f"{T}::test_an_old_window_off_the_clock_reads_whole_points"], True),
 
-    ("the first page taken as the whole answer",
-     [(P, '            if not resp.get("NextToken"):\n                break', '            if True:\n                break')],
-     [f"{T}::test_a_paged_answer_is_joined"], True),
+    ("the widened window left unsaid",
+     [(O, "    note = _window_note(asked_start, asked_end, start, end, unit)", '    note = ""')],
+     [f"{T}::test_a_half_hour_97_days_old_is_widened_and_says_so",
+      f"{T}::test_an_old_window_off_the_clock_reads_whole_points"], True),
+
+    ("an old window aligned to the minute instead of the clock",
+     [(O, "        start = start - timedelta(seconds=int(start.timestamp()) % period, microseconds=start.microsecond)",
+       "        start = start.replace(second=0, microsecond=0)")],
+     [f"{T}::test_a_half_hour_97_days_old_is_widened_and_says_so"], True),
+
+    ("a window ending now noted for running past now",
+     [(O, "    read_end = min(end, datetime.now(timezone.utc))", "    read_end = end")],
+     [f"{T}::test_the_control_a_window_ending_now_carries_no_note"], True),
+
+    ("no verdict when nothing was solved",
+     [(O, "    if tot_ch > 0 and not solved_error:  # none solved is the low-rate case, not a missing one",
+       "    if tot_ch > 0 and cs:")],
+     [f"{T}::test_challenges_none_solved_is_a_low_solve_rate"], True),
 
     ("bypass reading ALL through SEARCH",
      [(B, "    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region, rules=[])",

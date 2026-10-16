@@ -132,7 +132,8 @@ def overview(monkeypatch):
         monkeypatch.setattr(S, "refuse_if_regional", lambda scope: "")
         monkeypatch.setattr(S, "resolve_region", lambda scope: "us-east-1")
         return O.get_waf_overview._tool_func(query_type=query_type, webacl_name="acl", minutes=minutes,
-                                             start_time=start.strftime("%Y-%m-%dT%H:%M"), scope="CLOUDFRONT")
+                                             start_time=start.strftime("%Y-%m-%dT%H:%M") if start else "",
+                                             scope="CLOUDFRONT")
     return run
 
 
@@ -228,6 +229,12 @@ def test_a_failed_solved_read_is_not_zero(overview):
     assert "solve rate" not in out.split("ThrottlingException", 1)[0].split("Challenges solved", 1)[1], out
 
 
+def test_challenges_none_solved_is_a_low_solve_rate(overview):
+    """The verdict needed a nonzero solved count, so every challenge failing gave no verdict."""
+    out = overview("challenge_solve_rate", RetainingCW({("ALL", "ChallengeRequests"): 30}))
+    assert "Low solve rate (0%)" in out, out
+
+
 def test_blocked_only_traffic_is_still_no_challenges(overview):
     out = overview("challenge_solve_rate", RetainingCW({("ALL", "BlockedRequests"): 500}))
     assert "No challenges or CAPTCHAs issued" in out, out
@@ -268,32 +275,6 @@ def test_a_failed_check_is_not_read_as_no_activity(overview, query_type, none_te
     assert none_text not in out and "ThrottlingException" in out, out
 
 
-# --- the shared reader -------------------------------------------------------------------------
-
-def test_a_webacl_with_many_rules_is_read_in_calls_cloudwatch_accepts():
-    rules = [{"Name": f"r{i}", "VisibilityConfig": {"MetricName": f"r{i}"}} for i in range(120)]
-    cw = RetainingCW({("r119", "BlockedRequests"): 7}, retained=60)
-    m = P._get_all_rules_metrics_search(cw, "acl", OLD, OLD + HOUR, period=3600, rules=rules)
-    assert cw.calls > 1 and sum(m["r119"]["blocked"]) == 7, (cw.calls, m.get("r119"))
-
-
-def test_a_paged_answer_is_joined():
-    class Paged:
-        def __init__(self):
-            self.tokens = []
-
-        def get_metric_data(self, MetricDataQueries, NextToken=None, **kw):
-            self.tokens.append(NextToken)
-            t = OLD if NextToken is None else OLD + HOUR
-            q = next(q for q in MetricDataQueries if q["Id"] == "blocked")
-            return {"MetricDataResults": [{"Id": "blocked", "Values": [5], "Timestamps": [t],
-                                           "Label": render_label(q, {"Rule": "Rule1"}, "BlockedRequests", 1)}],
-                    **({"NextToken": "p2"} if NextToken is None else {})}
-    cw = Paged()
-    m = P._get_all_rules_metrics_search(cw, "acl", OLD, OLD + 2 * HOUR, period=3600)
-    assert cw.tokens == [None, "p2"] and m["Rule1"]["blocked"] == [5, 5], (cw.tokens, m)
-
-
 def test_top_rules_gap_detection_names_both_possible_causes():
     """Moved from `test_overview_partial_data.py`. Configured rules are read directly now, so the
     14-day cause narrows to the sub-rules only SEARCH finds, and it must still be named."""
@@ -315,3 +296,76 @@ def test_bypass_volume_reads_all_without_search(monkeypatch):
     monkeypatch.setattr(B, "resolve_region", lambda scope: "us-east-1")
     out = B._step_volume_anomaly()
     assert "| ALLOW | 1,000 | 1,000 |" in out and "| 40 | 40 |" in out, out
+
+
+# --- the window CloudWatch answers ---------------------------------------------------------------
+
+class ClockCW:
+    """Points placed as measured 2026-10-15. Older than 15 days: on the clock in steps of the
+    period, every point starting before EndTime. Newer: from StartTime to the minute, as many points
+    as cover the span. Each point holds `per_minute` times its length, so a reading says how much
+    time it really covered."""
+
+    def __init__(self, per_minute):
+        self.per_minute = per_minute
+
+    @staticmethod
+    def points(start, end, period):
+        if NOW - start > timedelta(days=15):
+            t = start - timedelta(seconds=int(start.timestamp()) % period, microseconds=start.microsecond)
+            out = []
+            while t < end:
+                out.append(t)
+                t += timedelta(seconds=period)
+            return out
+        t = start.replace(second=0, microsecond=0)
+        return [t + timedelta(seconds=i * period) for i in range(-(-int((end - start).total_seconds()) // period))]
+
+    def get_metric_data(self, MetricDataQueries, StartTime, EndTime, **kw):
+        raw, out = {}, []
+        for q in MetricDataQueries:
+            if "MetricStat" in q:
+                st, m = q["MetricStat"], q["MetricStat"]["Metric"]
+                rate = self.per_minute.get((_dim(m, "Rule"), m["MetricName"]), 0)
+                ts = self.points(StartTime, EndTime, st["Period"]) if rate else []
+                raw[q["Id"]] = (ts, [rate * st["Period"] // 60] * len(ts), st["Period"])
+                if q.get("ReturnData", True):
+                    out.append({"Id": q["Id"], "Label": "", "Values": raw[q["Id"]][1], "Timestamps": ts})
+            elif q.get("Expression", "").startswith("FILL("):
+                ts, vals, period = raw[q["Expression"][5:].split(",")[0]]
+                if not vals:
+                    ts = self.points(StartTime, EndTime, period)
+                    vals = [0] * len(ts)
+                out.append({"Id": q["Id"], "Label": "", "Values": vals, "Timestamps": ts})
+        return {"MetricDataResults": out}
+
+
+OLD97 = (NOW - timedelta(days=97)).replace(minute=0, second=0, microsecond=0)
+
+
+def test_a_half_hour_97_days_old_is_widened_and_says_so(overview):
+    """The reviewer's case: 04:30-05:00 at 3600 answered the whole hour. The figure must either be
+    the half hour, or say it is the hour."""
+    out = overview("top_rules", ClockCW({("ALL", "AllowedRequests"): 1}), start=OLD97 + timedelta(minutes=30), minutes=30)
+    assert "allowed 60" in out, out
+    hour = lambda t: t.strftime("%Y-%m-%d %H:%M")
+    assert f"covers {hour(OLD97)} to {hour(OLD97 + HOUR)}" in out, out
+
+
+def test_an_old_window_off_the_clock_reads_whole_points(overview):
+    """37 days old, 04:02 for 30 minutes, points of five minutes on the clock."""
+    start = OLD + timedelta(minutes=2)
+    out = overview("top_rules", ClockCW({("ALL", "AllowedRequests"): 1}), start=start, minutes=30)
+    total = int(re.search(r"allowed ([\d,]+)", out).group(1).replace(",", ""))
+    covered = re.search(r"covers (\d{4}-\d\d-\d\d \d\d:\d\d) to (\d{4}-\d\d-\d\d \d\d:\d\d)", out)
+    assert covered, out
+    span = datetime.fromisoformat(covered.group(2)) - datetime.fromisoformat(covered.group(1))
+    assert total == span.total_seconds() // 60, (total, covered.groups())
+
+
+def test_the_control_a_window_ending_now_carries_no_note(overview):
+    """A default "past 24 hours" ends at now, mid-minute, so whole points run past it, and reading
+    past now reads nothing. No start_time, or the window would end on a whole minute instead."""
+    cw = ClockCW({("ALL", "AllowedRequests"): 1})
+    out = overview("top_rules", cw, start=None, minutes=1440)
+    assert "Note: CloudWatch answers" not in out, out

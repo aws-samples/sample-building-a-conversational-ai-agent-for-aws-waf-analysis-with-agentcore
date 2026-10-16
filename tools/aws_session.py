@@ -59,7 +59,49 @@ class _RecordingCloudWatch:
         if start is not None and end is not None:
             from tools.session_state import note_query_provenance
             note_query_provenance("CloudWatch metrics", _epoch(start), _epoch(end))
-        return self._client.get_metric_data(**kwargs)
+        return _read_whole(self._client, kwargs)
+
+
+SERIES_CAP = 500
+
+
+def _read_whole(client, kwargs: dict) -> dict:
+    """One `GetMetricData` request answered whole: each SEARCH in a call of its own, the rest in
+    calls of at most 500 queries, every page joined. Raises when a SEARCH may have been cut.
+
+    **One call answers at most 500 series, and it cuts SEARCH results silently to fit.** Measured
+    2026-10-15 on `shield-sample-webacl`: a label SEARCH answering 45 series alone answered 20 beside
+    480 MetricStats and 5 beside 495, with `StatusCode: Complete` and no `Messages`. So a SEARCH that
+    shares a call can lose series with nothing saying so, and one alone that answers 500 may have
+    been cut the same way. Patrol's per-rule reads are five per rule beside five SEARCH queries, so a
+    WebACL of about 50 rules reached it. Moving a SEARCH out is safe because no expression in the
+    tools reads a SEARCH's Id; every FILL and IF reads a MetricStat.
+
+    501 queries in a call is a `ValidationError`. AWS documents a page as at most 100,800
+    datapoints, the rest behind a `NextToken`; a page continues a series, so results are joined on
+    (Id, Label), because one SEARCH Id answers with a series per dimension value.
+    """
+    queries = kwargs["MetricDataQueries"]
+    searches = [q for q in queries if q.get("Expression", "").startswith("SEARCH(")]
+    rest = [q for q in queries if not q.get("Expression", "").startswith("SEARCH(")]
+    calls = [([q], q["Id"]) for q in searches] + [(rest[i:i + 500], None) for i in range(0, len(rest), 500)]
+    joined, messages = {}, []
+    for batch, search_id in calls:
+        call = {**kwargs, "MetricDataQueries": batch}
+        while True:
+            resp = client.get_metric_data(**call)
+            messages += resp.get("Messages", [])
+            for r in resp.get("MetricDataResults", []):
+                cur = joined.setdefault((r["Id"], r.get("Label", "")), {**r, "Values": [], "Timestamps": []})
+                cur["Values"] += r.get("Values", [])
+                cur["Timestamps"] += r.get("Timestamps", [])
+            if not resp.get("NextToken"):
+                break
+            call["NextToken"] = resp["NextToken"]
+        if search_id and sum(1 for k in joined if k[0] == search_id) >= SERIES_CAP:
+            raise RuntimeError(f"CloudWatch answered its {SERIES_CAP}-series maximum for one metric search "
+                               f"({search_id}), so some of its series may be missing; query the logs instead")
+    return {"MetricDataResults": list(joined.values()), "Messages": messages}
 
 
 def get_client(service: str, profile_name: str | None = None, region_name: str | None = None):

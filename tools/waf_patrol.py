@@ -304,31 +304,6 @@ def _detect_ddos_windows(cw, webacl_name: str, start, end) -> list[int]:
 
 
 
-def _metric_data(cw, queries: list, start, end) -> list:
-    """Every result for `queries`, in calls of at most 500 queries and across every page.
-
-    Measured 2026-10-15: 501 queries is a `ValidationError`, and five metrics per configured rule
-    reaches that at 99 rules. AWS documents a page as at most 100,800 datapoints, the rest behind
-    a `NextToken`, and 100 rules at 14 days of hourly points is 168,000. A page continues a series,
-    so results are joined on (Id, Label): one SEARCH Id answers with a series per rule.
-    """
-    joined = {}
-    for i in range(0, len(queries), 500):
-        kw = {"MetricDataQueries": queries[i:i + 500], "StartTime": start, "EndTime": end,
-              "ScanBy": "TimestampAscending"}
-        while True:
-            resp = cw.get_metric_data(**kw)
-            for r in resp.get("MetricDataResults", []):
-                cur = joined.setdefault((r["Id"], r.get("Label", "")),
-                                        {"Id": r["Id"], "Label": r.get("Label", ""), "Values": [], "Timestamps": []})
-                cur["Values"] += r.get("Values", [])
-                cur["Timestamps"] += r.get("Timestamps", [])
-            if not resp.get("NextToken"):
-                break
-            kw["NextToken"] = resp["NextToken"]
-    return list(joined.values())
-
-
 def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int = 86400,
                                    scope: str = "CLOUDFRONT", region: str = "",
                                    rules: list | None = None) -> dict:
@@ -379,13 +354,13 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
         stat_queries = []
 
     label = search_label("Rule")  # the default label changes shape with what shares the call
-    results = _metric_data(cw, [*stat_queries,
+    results = cw.get_metric_data(MetricDataQueries=[*stat_queries,
             {"Id": "blocked", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"BlockedRequests\"', 'Sum', {period})", "Label": label},
             {"Id": "counted", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CountedRequests\"', 'Sum', {period})", "Label": label},
             {"Id": "challenge", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"ChallengeRequests\"', 'Sum', {period})", "Label": label},
             {"Id": "captcha", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"CaptchaRequests\"', 'Sum', {period})", "Label": label},
             {"Id": "allowed", "Expression": f"SEARCH('{dim_set} WebACL=\"{webacl_name}\"{extra_filter} MetricName=\"AllowedRequests\"', 'Sum', {period})", "Label": label},
-        ], start, end)
+        ], StartTime=start, EndTime=end, ScanBy="TimestampAscending")["MetricDataResults"]
 
     rules = {}  # {rule_name: {blocked: [...], counted: [...], challenge: [...], captcha: [...], allowed: [], timestamps: []}}
     metric_map = {"blocked": "blocked", "counted": "counted", "challenge": "challenge", "captcha": "captcha", "allowed": "allowed"}

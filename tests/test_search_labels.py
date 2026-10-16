@@ -126,3 +126,63 @@ def test_the_report_names_a_lone_country_and_attack_type():
     cw = LabelCW([({"Country": "US"}, "BlockedRequests", 12), ({"Attack": "XSS"}, "BlockedRequests", 4)])
     assert R._get_top_countries(cw, "acl", START, END) == [{"country": "US", "count": 12}]
     assert list(R._get_attack_timeseries(cw, "acl", START, END)["series"]) == ["XSS"]
+
+
+# --- the weekly report's bot section, which the label fix made reachable -------------------------
+
+import pathlib as _pathlib
+
+import pytest
+
+from tools import session_state as S
+
+TGT = {"LabelNamespace": "awswaf:managed:aws:bot-control", "LabelName": "TGT_TokenAbsent"}
+
+
+def _fbv(name, org, verified):
+    return {"BotCategory": "bot:category:monitoring", "BotName": name, "Intent": "bot:intent:x",
+            "Organization": org, "VerificationStatus": "bot:verified" if verified else "bot:unverified"}
+
+
+class _WAF:
+    def list_web_acls(self, Scope):
+        return {"WebACLs": [{"Name": "acl", "ARN": "arn:aws:wafv2:us-east-1:1:global/webacl/acl/1"}]}
+
+    def get_logging_configuration(self, ResourceArn):
+        return {"LoggingConfiguration": {"LogDestinationConfigs": []}}
+
+
+@pytest.fixture
+def bot_html(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    def run(series):
+        cw = LabelCW(series)
+        monkeypatch.setattr(R, "get_client", lambda svc, **k: {"cloudwatch": cw, "wafv2": _WAF(), "logs": object()}[svc])
+        for name, value in [("_get_weekly_totals", lambda *a, **k: {"allowed": 100, "blocked": 0, "challenge": 0, "captcha": 0}),
+                            ("_get_daily_breakdown", lambda *a, **k: []), ("_get_top_countries", lambda *a, **k: []),
+                            ("_get_top_rules", lambda *a, **k: []), ("_get_attack_timeseries", lambda *a, **k: {"series": {}}),
+                            ("_get_ddos_chart_data", lambda *a, **k: "")]:
+            monkeypatch.setattr(R, name, value)
+        for name, value in [("get_log_destination", lambda: ""), ("get_capabilities", lambda: {"bot_control": "targeted"}),
+                            ("resolve_region", lambda scope: "us-east-1"), ("get_user_timezone", lambda: 0)]:
+            monkeypatch.setattr(S, name, value)
+        R.generate_weekly_report._tool_func(webacl_name="acl", start_time="2026-10-01", lang="en")
+        return next(_pathlib.Path(tmp_path).glob("*.html")).read_text()
+    return run
+
+
+def test_the_targeted_card_counts_requests_not_rule_matches(bot_html):
+    """Measured for 2026-10-14: 7 requests carried TGT_TokenAbsent and CountRuleMatch said 14."""
+    html = bot_html([(TGT, "AllowedRequests", 1174), (TGT, "BlockedRequests", 34), (TGT, "CountRuleMatch", 2413)])
+    card = html.split("🎯 Advanced Bot Detection", 1)[1].split('<div class="card"', 1)[0]
+    assert "<strong>1,208</strong>" in card and "2,413" not in card, card
+    assert "Ended allowed" in card and "whichever rule ended it" in card, card
+
+
+def test_a_name_claimed_by_an_unverified_client_is_not_a_good_bot(bot_html):
+    html = bot_html([(_fbv("googlebot", "bot:organization:google", True), "SampleAllowedRequest", 50),
+                     (_fbv("googlebot", "UNSPECIFIED", False), "SampleAllowedRequest", 40)])
+    good = html.split("const gbd = ", 1)[1].split(";", 1)[0]
+    unverified = html.split("const ubd = ", 1)[1].split(";", 1)[0]
+    assert "Googlebot" in good and "Googlebot" in unverified, (good, unverified)

@@ -50,6 +50,16 @@ CASES = [
      [(R, '"Expression": expression, "Label": search_label("Rule")}],', '"Expression": expression}],')],
      [f"{T}::test_report_top_rules_names_its_label"], False),
 
+    ("the targeted card counting rule matches as requests",
+     [(R, '                if total <= 0 or len(parts) != 2 or not parts[0].startswith("TGT_") or parts[1] not in REQUEST_METRICS:',
+       '                if total <= 0 or len(parts) != 2 or not parts[0].startswith("TGT_"):')],
+     [f"{T}::test_the_targeted_card_counts_requests_not_rule_matches"], True),
+
+    ("a verified bot merged with a client claiming its name",
+     [(R, '                b = bots.setdefault((bot_name, parts[4] == "bot:verified"), {',
+       '                b = bots.setdefault((bot_name, True), {')],
+     [f"{T}::test_a_name_claimed_by_an_unverified_client_is_not_a_good_bot"], True),
+
     ("the sweep's matcher finding no SEARCH",
      [(T, '        if isinstance(head, ast.Constant) and str(head.value).startswith("SEARCH("):',
        '        if isinstance(head, ast.Constant) and str(head.value).startswith("SEARCH ("):')],

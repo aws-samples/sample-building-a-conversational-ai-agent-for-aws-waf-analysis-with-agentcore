@@ -32,7 +32,10 @@ every query type chose its period from the window's length, so a one-hour window
 points. CloudWatch keeps those for 15 days and after that answers zeros with status Complete. The
 period is now never finer than what CloudWatch still holds: five minutes up to 63 days, one hour up to
 455, and an older window is refused with that reason. The same hour now shows 120 SQLi blocks and
-1,923 allowed requests.
+1,923 allowed requests. A window that is not a whole number of those points also read more than it
+named, because CloudWatch answers whole points: 97 days back, 04:30-05:00 at one hour answered the
+whole hour. The overview now sends whole points and, when that changes the window, says which window
+its figures cover.
 
 ### Fixed: overview figures read from a query that could not mean what it printed
 
@@ -42,7 +45,8 @@ minutes, CloudWatch rejects that period, and the failure printed "No attack data
 check now uses a valid period, and a failed check says it failed. The Challenge and CAPTCHA solved
 counts used a one-week period, which reads past the end of a shorter window: one hour three days ago
 read 130,678 requests against 1,896 for the hour itself, so the solve rate set days of solves against
-an hour of challenges. `rate_limits` looked rate rules up by rule name, but their metrics are keyed by
+an hour of challenges. When challenges were issued and none solved, it gave no verdict at all; that is
+now the low-rate case. `rate_limits` looked rate rules up by rule name, but their metrics are keyed by
 metric name, so a rule whose two names differ never appeared. It also left out CAPTCHA and Count, and
 said there were no rate-limit rules when the WebACL configuration could not be read.
 
@@ -52,9 +56,23 @@ The default label on a SEARCH result changes shape with how many series come bac
 the same call. On a WebACL with one bot, that bot came back labelled `AllowedRequests`, so the
 overview and patrol listed a bot called "AllowedRequests", and the weekly report's verified-bot chart
 and Advanced Bot Detection card were empty for that WebACL. A label with two metrics was listed twice
-in `top_labels`. Every SEARCH query now sets its own label format. Label and signal counts also stop
-adding rule-match metrics, which count rule matches rather than requests: one LFI label had 34 matches
-for 17 blocked requests.
+in `top_labels`. Every SEARCH query now sets its own label format, and label and signal counts stop
+adding rule-match metrics, which count matches rather than requests: on 2026-10-14, 7 requests carried
+`TGT_TokenAbsent` and its `CountRuleMatch` read 14. Where the Advanced Bot Detection card did have
+data, it showed those matches as "Counted" and every blocked request carrying a targeted label as
+"Mitigated", including the 34 that other rules had blocked. It now lists each targeted label with the
+requests that carried it and how they ended, without crediting the rule that ended them. The report
+also kept the first series it saw for a bot name, so a client merely claiming a verified bot's name
+could land among the verified bots; the two are now counted apart.
+
+### Fixed: metric searches lost series with nothing saying so
+
+One CloudWatch call answers at most 500 series, and it cuts SEARCH results to fit, with status
+Complete and no message: a search answering 45 series alone answered 20 beside 480 other queries, and
+5 beside 495. Patrol reads each configured rule beside five searches, so a WebACL of about 50 rules
+lost the sub-rules only a search finds, and the weekly report's country and bot searches shared calls
+the same way. Every metric read now sends each search in a call of its own, and one that answers 500
+series fails with that reason rather than passing as whole.
 
 ### Fixed: verdicts reached from a query that failed or did not parse
 
