@@ -114,9 +114,48 @@ CASES = [
      [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
 
     ("the static-traffic verdict never firing",
-     [(B, "_all(_gt(peak_val, 200), None if non_static is None", "_all(False, None if non_static is None")],
+     [(B, "_all(_gt(static_floor, 200), None if non_static is None", "_all(False, None if non_static is None")],
      [f"{T}::test_allowed_static_only_traffic_is_not_called_a_bypass",
       f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
+
+    ("the static rung on the overall peak again, so an API burst fires it",
+     [(B, "_all(_gt(static_floor, 200), None if", "_all(_gt(peak_val, 200), None if")],
+     [f"{T}::test_an_api_burst_in_a_mostly_static_window_is_not_static_traffic"]),
+
+    ("the distinct-URI count back among the static rung's inputs",
+     [(B, "_all(_gt(static_floor, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed)",
+       "_all(_gt(static_floor, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed,"
+       " None if all_val is None else True)")],
+     [f"{T}::test_static_traffic_is_named_without_its_distinct_uri_count"]),
+
+    ("the probable-scraper rung naming the overall rate again",
+     [(B, 'no bot labels, at a peak of {dyn_peak} non-static req/min."', 'no bot labels. Frequency moderate ({peak_rpm}/min)."')],
+     [f"{T}::test_the_probable_scraper_rung_names_the_non_static_rate_it_compared"]),
+
+    ("the middle shape saying which of nothing again",
+     [(B, 'f" It was spread over {distinct} distinct URIs.")',
+       'f" It was spread over {distinct} distinct URIs. These signals cannot tell which.")')],
+     [f"{T}::test_a_middle_shape_does_not_say_which_of_nothing"]),
+
+    ("partial bypass said with nothing allowed again",
+     [(B, "    if allow_count and non_allow_count > allow_count * 5:", "    if non_allow_count > allow_count * 5:")],
+     [f"{T}::test_no_allowed_request_is_not_called_a_partial_bypass"]),
+
+    ("the partial-bypass line never printed",
+     [(B, "    if allow_count and non_allow_count > allow_count * 5:", "    if False:")],
+     [f"{T}::test_the_control_a_few_allowed_among_many_blocked_is_a_partial_bypass"]),
+
+    ("every Count rule counted in one query again",
+     [(B, "        if chunks[-1] and len(base", "        if False and len(base")],
+     [f"{T}::test_many_count_rules_are_counted_in_queries_under_the_length_limit"]),
+
+    ("the length budget leaving no room for the WebACL filter",
+     [(B, '_CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128))', "_CWL_QUERY_MAX = 10_000")],
+     [f"{T}::test_many_count_rules_are_counted_in_queries_under_the_length_limit"]),
+
+    ("a failed counting query after the first one rendered as a partial list",
+     [(B, '        if failures.get("count_rules"):\n            return []\n        row.update', '        row.update')],
+     [f"{T}::test_a_failed_later_counting_query_loses_the_section_rather_than_shortening_it"], True),
 ]
 
 sys.exit(sweep(CASES))

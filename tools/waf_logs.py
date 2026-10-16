@@ -1230,12 +1230,14 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
                                           failures=failures, label=label, notes=notes)
 
-    _later("actions", cross_cwl, cross_athena, 15)
+    # The verdict's inputs first. Seven jobs share five workers and one budget, so a job registered
+    # sixth starts only when one of the first five ends, and a slow first wave left it no time.
     _later("request_rate", rate_cwl, rate_athena, 1)
     _later("request_rate_dynamic", dyn_rate_cwl, dyn_rate_athena, 1)
+    _later("uri_diversity", uri_cwl, uri_athena, 1)
+    _later("actions", cross_cwl, cross_athena, 15)
     _later("all_uris", all_uris_cwl, all_uris_athena, 1)
     _later("ja4", ja4_cwl, ja4_athena, 5)
-    _later("uri_diversity", uri_cwl, uri_athena, 1)
     _later("query_strings", qs_cwl, qs_athena, 8)
 
     results, reasons = run_concurrently(jobs)
@@ -1343,10 +1345,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         None as well, but on CloudWatch a `stats` with no group-by over no records answers no rows,
         so an IP sending only static assets could not be ranked there while Athena, answering a row
         of zeros, called it hammering. Athena's `max` over no rows is NULL, which arrives as "", and
-        is the same zero."""
+        is the same zero. A row without the field is not: that is an alias the query did not
+        write, and reading it as 0 was a confident answer to nothing."""
         if failures.get(label):
             return None
-        if not rows or rows[0].get(key) in (None, ""):
+        if not rows or rows[0].get(key) == "":
             return cast(0)
         try:
             return cast(rows[0].get(key))
@@ -1359,19 +1362,22 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     non_static = _known(uri_div, "total_non_static", int, "uri_diversity")
     all_uri_val = _known(all_uris, "unique_uris_all", int, "all_uris")
     unknown = {"request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
-               "uri_diversity": uri_val is None or non_static is None, "all_uris": all_uri_val is None}
+               "uri_diversity": uri_val is None or non_static is None}
 
     def _static_client():
         """The LIKELY line for a fast client whose requests are nearly all static. The rate is
-        measured and the intent is not, so it names the shapes that fit rather than one of them."""
+        measured and the intent is not, so it names the shapes that fit rather than one of them.
+        The distinct-URI count only picks the shape, so without it the verdict stands unshaped."""
         n = all_uri_val
-        shape = (f"fetching many files ({n} distinct URIs), which is how bulk fetching, a mirror or an "
-                 f"image scraper looks" if n > 50 else
-                 f"pulling the same {n} file{'s' if n != 1 else ''} over and over, which fits a flood aimed "
-                 f"at a file, a client stuck in a retry loop, or a monitoring probe" if n <= 2 else
-                 f"spread over {n} distinct URIs")
+        shape = ("" if n is None else
+                 f" It is fetching many files ({n} distinct URIs), which is how bulk fetching, a mirror or "
+                 f"an image scraper looks. These signals cannot tell which." if n > 50 else
+                 f" It is pulling the same {n} file{'s' if n != 1 else ''} over and over, which fits a flood "
+                 f"aimed at a file, a client stuck in a retry loop, or a monitoring probe. These signals "
+                 f"cannot tell which." if n <= 2 else
+                 f" It is spread over {n} distinct URIs.")
         return (f"**LIKELY: High-rate static-asset client** ({total - non_static:,} of {total:,} requests "
-                f"static, peak {peak_val:g} req/min), {shape}. These signals cannot tell which. "
+                f"static, peak {peak_val:g} req/min, at least {peak_val - dyn_peak:g} of them static).{shape} "
                 f"Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
                 f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
                 f"filter_by='{{\"ip\": \"{ip}\"}}')).")
@@ -1386,10 +1392,15 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
          "**HIGH CONFIDENCE: Automated scraper.** Peak >200 non-static req/min + >50 unique URIs."),
         (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val < 10,
          "**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 non-static req/min concentrated on few URIs."),
-        (("request_rate", "uri_diversity", "all_uris"), lambda: peak_val > 200 and non_static < 0.1 * total,
-         None),
+        # The peak minute's non-static requests are at most the non-static peak, so the difference
+        # is a floor on its static ones. The share alone is over the whole window, and an API burst
+        # in a mostly static window made the peak minute.
+        (("request_rate", "request_rate_dynamic", "uri_diversity"),
+         lambda: peak_val - dyn_peak > 200 and non_static < 0.1 * total, None),
+        # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
         (("uri_diversity",), lambda: uri_val > 50,
-         "**LIKELY: Probable crawler/scraper.** High URI diversity but moderate frequency. Needs user confirmation."),
+         lambda: f"**LIKELY: Probable crawler/scraper.** High URI diversity at a peak of {dyn_peak:g} "
+                 f"non-static req/min. Needs user confirmation."),
     ]
     verdict = None
     if nat_unknown:
@@ -1399,10 +1410,12 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         missing = [n for n in needs if unknown[n]]
         if missing:
             verdict = (f"**CANNOT DETERMINE** — the {', '.join(missing)} query did not answer, so "
-                       f"this IP cannot be ranked on it.")
+                       f"this IP cannot be ranked on it." if any(failures.get(n) for n in missing) else
+                       f"**CANNOT DETERMINE** — the {', '.join(missing)} query answered without a "
+                       f"number, so this IP cannot be ranked on it.")
             break
         if fires():
-            verdict = text or _static_client()
+            verdict = text() if callable(text) else text or _static_client()
             break
     lines.append(verdict or "**CANNOT DETERMINE** — signals are mixed. Ask user for business context on this IP.")
 

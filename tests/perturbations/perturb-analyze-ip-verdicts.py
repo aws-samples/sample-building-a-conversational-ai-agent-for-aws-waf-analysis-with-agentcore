@@ -37,12 +37,12 @@ CASES = [
       f"{T}::test_a_failed_rate_query_does_not_rank_the_ip_on_a_zero_peak"], True),
 
     ("an empty answer read as unanswered again",
-     [(L, '        if not rows or rows[0].get(key) in (None, ""):\n            return cast(0)',
-       '        if not rows:\n            return None\n        if rows[0].get(key) in (None, ""):\n            return cast(0)')],
+     [(L, '        if not rows or rows[0].get(key) == "":\n            return cast(0)',
+       '        if not rows:\n            return None\n        if rows[0].get(key) == "":\n            return cast(0)')],
      [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering"], True),
 
     ("Athena's NULL peak read as not a number again",
-     [(L, '        if not rows or rows[0].get(key) in (None, ""):\n            return cast(0)',
+     [(L, '        if not rows or rows[0].get(key) == "":\n            return cast(0)',
        '        if not rows:\n            return cast(0)')],
      [f"{T}::test_athena_no_minutes_is_a_zero_peak_not_a_failure"], True),
 
@@ -81,7 +81,7 @@ CASES = [
      [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
 
     ("the static-client rung never firing",
-     [(L, "lambda: peak_val > 200 and non_static < 0.1 * total,", "lambda: False,")],
+     [(L, "lambda: peak_val - dyn_peak > 200 and non_static < 0.1 * total, None", "lambda: False, None")],
      [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering",
       f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
 
@@ -93,6 +93,38 @@ CASES = [
      [(L, """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_EXCLUDE_STATIC}"\n""",
        """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n""")],
      [f"{T}::test_the_rate_the_rungs_compare_reads_the_same_requests_as_the_uri_count"]),
+
+    ("a missing field read as zero again",
+     [(L, '        if not rows or rows[0].get(key) == "":', '        if not rows or rows[0].get(key) in (None, ""):')],
+     [f"{T}::test_a_missing_field_is_unknown_not_zero"], True),
+
+    ("the static rung on the overall peak again, so an API burst fires it",
+     [(L, "lambda: peak_val - dyn_peak > 200 and non_static", "lambda: peak_val > 200 and non_static")],
+     [f"{T}::test_an_api_burst_in_a_mostly_static_window_is_not_a_static_client"]),
+
+    ("the crawler rung saying moderate frequency again",
+     [(L, 'lambda: f"**LIKELY: Probable crawler/scraper.** High URI diversity at a peak of {dyn_peak:g} "\n'
+          '                 f"non-static req/min. Needs user confirmation."',
+       '"**LIKELY: Probable crawler/scraper.** High URI diversity but moderate frequency. Needs user confirmation."')],
+     [f"{T}::test_the_crawler_rung_names_the_non_static_rate_it_compared"]),
+
+    ("the distinct-URI count back among the static rung's inputs",
+     [(L, '"uri_diversity": uri_val is None or non_static is None}',
+       '"uri_diversity": uri_val is None or non_static is None, "all_uris": all_uri_val is None}'),
+      (L, '(("request_rate", "request_rate_dynamic", "uri_diversity"),\n         lambda: peak_val - dyn_peak',
+       '(("request_rate", "request_rate_dynamic", "uri_diversity", "all_uris"),\n         lambda: peak_val - dyn_peak')],
+     [f"{T}::test_a_failed_distinct_uri_count_does_not_stop_the_ladder"]),
+
+    ("the middle shape saying which of nothing again",
+     [(L, 'f" It is spread over {n} distinct URIs.")', 'f" It is spread over {n} distinct URIs. These signals cannot tell which.")')],
+     [f"{T}::test_a_middle_shape_does_not_say_which_of_nothing"]),
+
+    ("a ladder input registered after the display queries again",
+     [(L, '    _later("uri_diversity", uri_cwl, uri_athena, 1)\n    _later("actions", cross_cwl, cross_athena, 15)\n'
+          '    _later("all_uris", all_uris_cwl, all_uris_athena, 1)\n    _later("ja4", ja4_cwl, ja4_athena, 5)\n',
+       '    _later("actions", cross_cwl, cross_athena, 15)\n    _later("all_uris", all_uris_cwl, all_uris_athena, 1)\n'
+       '    _later("ja4", ja4_cwl, ja4_athena, 5)\n    _later("uri_diversity", uri_cwl, uri_athena, 1)\n')],
+     [f"{T}::test_the_ladder_inputs_are_in_the_first_wave"], True),
 ]
 
 sys.exit(sweep(CASES))

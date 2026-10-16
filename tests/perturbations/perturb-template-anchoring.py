@@ -41,6 +41,11 @@ CASES = [
      [("tools/waf_count_eval.py", '''    cwl = (f"filter @message like '\\"ruleId\\":\\"{rule_name}\\",\\"action\\":\\"COUNT\\"'"''',
        '''    cwl = (f"filter @message like '\\"{rule_name}'"''')],
      [SWEEP]),
+
+    ("a quoted operand pinning an escaped quote, which only client text holds",
+     [("tools/waf_bypass.py", """and @message like '\\"action\\":\\"COUNT\\"'\"""",
+       """and @message like '\\"action\\\\\\":\\"COUNT\\"'\"""")],
+     [SWEEP]),
 ]
 
 sys.exit(sweep(CASES))

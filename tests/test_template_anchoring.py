@@ -44,13 +44,14 @@ KEY = re.compile(r'"\w+\\?":')
 # anchors only a value holding `:`, which a header name cannot.
 WAF_KEYS = ("ruleId", "action", "exclusionType", "labels", "terminatingRule", "terminatingRuleMatchDetails",
             "rateBasedRuleName", "nonTerminatingMatchingRules", "ruleGroupList", "ruleGroupId")
-WAF_KEY = re.compile(r'"(?:' + "|".join(WAF_KEYS) + r')\\?":|"name\\?":\\?"[^"\\]*:')
+WAF_KEY = re.compile(r'"(?:' + "|".join(WAF_KEYS) + r')":|"name":"[^"\\]*:')
+# A regex may escape its quotes. In a quoted operand an escaped quote is the client's, as logged.
+WAF_KEY_RE = re.compile(r'"(?:' + "|".join(WAF_KEYS) + r')\\?":|"name\\?":\\?"[^"\\]*:')
 
 
 def anchored(lit: str) -> bool:
-    """Whether a test of the raw record pins a key WAF writes. `\\?` admits the escaped quote a
-    regex written in a Python string carries."""
-    return lit[0] in "'/" and bool(WAF_KEY.search(lit))
+    """Whether a test of the raw record pins a key WAF writes."""
+    return lit[0] in "'/" and bool((WAF_KEY_RE if lit[0] == "/" else WAF_KEY).search(lit))
 
 
 def test_the_anchor_test_tells_a_waf_key_from_a_leading_quote_or_a_client_key():
@@ -64,6 +65,9 @@ def test_the_anchor_test_tells_a_waf_key_from_a_leading_quote_or_a_client_key():
     assert anchored("'\"name\":\"awswaf:managed:aws:anti-ddos:event-detected\"'")
     assert anchored("'\"ruleId\":\"{}\",\"action\":\"COUNT\"'")
     assert anchored('/"labels":\\[(?<lbls>[^\\]]*)\\]/')
+    # A client's quote arrives escaped, so a quoted operand holding `\"` matches only client text.
+    assert not anchored("'\"ruleId\\\":\"X'"), "an escaped quote in a quoted operand pins client text"
+    assert anchored('/"ruleId\\":"X/'), "a regex may escape its quote"
 
 
 def test_every_raw_record_match_on_a_parameter_is_anchored():

@@ -278,3 +278,95 @@ def test_the_control_pure_api_traffic_is_still_hammering(monkeypatch, engine):
 def test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper(monkeypatch, engine):
     verdict = _run(monkeypatch, **_shape(engine, ("5", "60", "100"), "400"))
     assert "HIGH CONFIDENCE" not in verdict and "LIKELY" in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_the_probable_scraper_rung_names_the_non_static_rate_it_compared(monkeypatch, engine):
+    """The scraper rung reads the non-static peak, so this rung is reached at 300 allowed per
+    minute, and "Frequency moderate (300/min)" was false."""
+    verdict = _run(monkeypatch, **_shape(engine, ("150", "60", "180"), "400"))
+    assert "Probable scraper" in verdict and "150 non-static req/min" in verdict, verdict
+    assert "Frequency moderate" not in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_an_api_burst_in_a_mostly_static_window_is_not_static_traffic(monkeypatch, engine):
+    """Peak 210, of which up to 150 non-static: at most 60 static requests in that minute."""
+    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="210")], **_shape(engine, ("150", "3", "27"), "3"))
+    assert "static-asset" not in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_the_control_a_static_minute_over_200_is_static_traffic(monkeypatch, engine):
+    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="360")], **_shape(engine, ("150", "3", "27"), "3"))
+    assert "static-asset traffic, not a bypass" in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_static_traffic_is_named_without_its_distinct_uri_count(monkeypatch, engine):
+    """The rung's condition never reads the count, only its text does."""
+    rows = _shape(engine, None, "1")
+    del rows["all_uris"]
+    verdict = _run(monkeypatch, fail={"all_uris"}, **rows)
+    assert "static-asset traffic, not a bypass" in verdict and "distinct URIs" not in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_a_middle_shape_does_not_say_which_of_nothing(monkeypatch, engine):
+    verdict = _run(monkeypatch, **_shape(engine, None, "20"))
+    assert "20 distinct URIs" in verdict and "cannot tell which" not in verdict, verdict
+
+
+def _report(monkeypatch, **rows):
+    monkeypatch.setattr(B, "is_log_filter_active", lambda: False)
+    monkeypatch.setattr(B, "query_logs", lambda cwl, athena, s, e, limit=25, notes=None, label="", **kw:
+                        rows.get(label, [dict(ROW)]))
+    return B._step_investigate_ip("203.0.113.9", 0, 3600)
+
+
+def test_no_allowed_request_is_not_called_a_partial_bypass(monkeypatch):
+    """Any non-ALLOW count is more than five times 0, so the line said "partial bypass" beside
+    "NO BYPASS: no request from this IP was allowed"."""
+    report = _report(monkeypatch, actions=[dict(ROW, action="BLOCK", hits="120"), dict(ROW, action="CHALLENGE", hits="30")])
+    assert "NO BYPASS" in report and "partial bypass" not in report, report
+
+
+def test_the_control_a_few_allowed_among_many_blocked_is_a_partial_bypass(monkeypatch):
+    report = _report(monkeypatch, actions=[dict(ROW, action="BLOCK", hits="600"), dict(ROW, action="ALLOW", hits="10")])
+    assert "partial bypass" in report, report
+
+
+def test_many_count_rules_are_counted_in_queries_under_the_length_limit(monkeypatch):
+    """StartQuery rejects a query over 10,000 characters, measured 2026-10-16 with this query's own
+    form: 10,000 ran and 10,001 was rejected. Every Count rule the WebACL configures is counted,
+    whether this IP hit it or not, so 150 names went into one query and the section was lost. The
+    limit applies after `_run_cwl` prefixes the WebACL filter, so the fake rejects on that length
+    with the longest WebACL name there can be."""
+    from tools.waf_query import scope_cwl_query
+    names = [f"ATP-CustomRule-For-Tuning-{i:03d}" for i in range(150)]
+    answer = _records([[names[0], names[75], names[149]]] * 3 + [[names[40]]])
+    sent = []
+
+    def cwl(query):
+        sent.append(query)
+        if len(scope_cwl_query(query, "w" * 128)) > 10_000:
+            raise RuntimeError("InvalidParameterException: queryString failed to satisfy constraint")
+        return answer(query)
+    section, _ = _count_section(monkeypatch, "cwl", cwl=cwl, config=names)
+    for n, hits in ((names[0], 3), (names[75], 3), (names[149], 3), (names[40], 1)):
+        assert f"{n} ({hits} hits)" in section, section
+    assert len(sent) > 2, "one counting query: the case does not exceed the limit, so it proves nothing"
+
+
+def test_a_failed_later_counting_query_loses_the_section_rather_than_shortening_it(monkeypatch):
+    """A list from the first query alone reads as every Count rule this IP hit."""
+    names = [f"ATP-CustomRule-For-Tuning-{i:03d}" for i in range(150)]
+    answer = _records([[names[0], names[149]]] * 3)
+
+    def cwl(query):
+        if "as c149" in query:
+            raise RuntimeError("ThrottlingException: rate exceeded")
+        return answer(query)
+    section, seen = _count_section(monkeypatch, "cwl", cwl=cwl, config=names)
+    assert not any("as c149" in q and re.search(r"as c0\b", q) for q in seen["cwl"]), "one query: nothing came after the first"
+    assert "ThrottlingException" in section and names[0] not in section, section

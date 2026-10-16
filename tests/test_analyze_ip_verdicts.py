@@ -216,3 +216,80 @@ def test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper(monk
     overall rate, so the images made it HIGH CONFIDENCE."""
     verdict = _assessment(_run(monkeypatch, override=_shape(engine, ("5", "60", "100"), "400"))[0])
     assert "HIGH CONFIDENCE" not in verdict and "LIKELY" in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_the_crawler_rung_names_the_non_static_rate_it_compared(monkeypatch, engine):
+    """The scraper rung reads the non-static peak, so this rung is reached at an overall 300/min,
+    and "moderate frequency" was false about the overall rate."""
+    verdict = _assessment(_run(monkeypatch, override=_shape(engine, ("150", "60", "180"), "400"))[0])
+    assert "Probable crawler" in verdict and "150 non-static req/min" in verdict, verdict
+    assert "moderate frequency" not in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_an_api_burst_in_a_mostly_static_window_is_not_a_static_client(monkeypatch, engine):
+    """Peak 210, of which up to 150 non-static: at most 60 static requests in that minute, so the
+    fast minute was the API burst and the static share is over the whole window."""
+    rows = _shape(engine, ("150", "3", "27"), "3")
+    rows["request_rate"] = [dict(ROW, peak_rpm="210")]
+    verdict = _assessment(_run(monkeypatch, override=rows)[0])
+    assert "static-asset" not in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_the_control_a_static_minute_over_200_is_a_static_client(monkeypatch, engine):
+    rows = _shape(engine, ("150", "3", "27"), "3")
+    rows["request_rate"] = [dict(ROW, peak_rpm="360")]
+    verdict = _assessment(_run(monkeypatch, override=rows)[0])
+    assert "High-rate static-asset client" in verdict, verdict
+
+
+def test_a_failed_distinct_uri_count_does_not_stop_the_ladder(monkeypatch):
+    """The static rung's condition never reads it, only its text does."""
+    out, _ = _run(monkeypatch, fail={"all_uris"}, override={"request_rate": [dict(ROW, peak_rpm="30")],
+                                                           "uri_diversity": [dict(ROW, unique_uris="80")]})
+    assert "Probable crawler" in _assessment(out), out
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_a_static_client_is_named_without_its_distinct_uri_count(monkeypatch, engine):
+    rows = _shape(engine, None, "2")
+    del rows["all_uris"]
+    verdict = _assessment(_run(monkeypatch, fail={"all_uris"}, override=rows)[0])
+    assert "High-rate static-asset client" in verdict and "distinct URIs" not in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_a_middle_shape_does_not_say_which_of_nothing(monkeypatch, engine):
+    verdict = _assessment(_run(monkeypatch, override=_shape(engine, None, "20"))[0])
+    assert "20 distinct URIs" in verdict and "cannot tell which" not in verdict, verdict
+
+
+def test_a_missing_field_is_unknown_not_zero(monkeypatch):
+    """No peak field in the row is a mismatched alias, not a quiet IP. Read as 0, 80 URIs reached
+    "LIKELY"."""
+    out, _ = _run(monkeypatch, override={"request_rate": [{"avg_rpm": "1"}],
+                                         "uri_diversity": [dict(ROW, unique_uris="80")]})
+    verdict = _assessment(out)
+    assert "LIKELY" not in verdict and "CANNOT DETERMINE" in verdict, verdict
+
+
+def test_the_ladder_inputs_are_in_the_first_wave(monkeypatch):
+    """Five workers for seven jobs, one budget. An input registered sixth starts only when one of the
+    first five finishes, so a slow first wave cost it the verdict. The inputs are found by failing each
+    query and seeing whether the verdict names it, not listed here."""
+    import inspect
+    order = []
+    real = WQ.run_concurrently
+
+    def spy(jobs, *a, **k):
+        order[:] = list(jobs)
+        return real(jobs, *a, **k)
+    monkeypatch.setattr(WQ, "run_concurrently", spy)
+    _run(monkeypatch)
+    wave = list(order)
+    ladder = {l for l in wave if f"the {l} query did not answer" in _assessment(_run(monkeypatch, fail={l})[0])}
+    assert "uri_diversity" in ladder and "request_rate" in ladder, ladder
+    workers = inspect.signature(real).parameters["workers"].default
+    assert ladder <= set(wave[:workers]), (ladder, wave)

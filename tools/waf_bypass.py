@@ -10,7 +10,8 @@ from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import (get_webacl_name, get_scope, resolve_region, is_log_filter_active,
                                  note_window_capped)
-from tools.waf_query import query_logs, log_query_error, get_log_type, run_concurrently, truncation_summary
+from tools.waf_query import (query_logs, log_query_error, get_log_type, run_concurrently, truncation_summary,
+                             scope_cwl_query)
 from tools.query_limits import MAX_MINUTES
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
 
@@ -60,25 +61,33 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
     return rows or []
 
 
-def _static_traffic(peak, non_static, allowed, distinct, ip) -> list[str]:
+def _static_traffic(peak, static_floor, non_static, allowed, distinct, ip) -> list[str]:
     """The verdict for fast ALLOW traffic that is nearly all static. It reached static files rather
     than the application, so it is abuse or cost rather than a way past the rules, and the rate is
-    measured while the intent is not, so it names the shapes that fit."""
-    if None in (non_static, allowed, distinct):
+    measured while the intent is not, so it names the shapes that fit. The distinct-URI count only
+    picks the shape, so without it the verdict stands unshaped."""
+    if None in (static_floor, non_static, allowed):
         return []
-    shape = (f"It fetched many files ({distinct} distinct URIs), which is how bulk fetching, a mirror or "
-             f"an image scraper looks." if distinct > 50 else
-             f"It pulled the same {distinct} file{'s' if distinct != 1 else ''} over and over, which fits a "
-             f"flood aimed at a file, a client stuck in a retry loop, or a monitoring probe." if distinct <= 2 else
-             f"It was spread over {distinct} distinct URIs.")
+    shape = ("" if distinct is None else
+             f" It fetched many files ({distinct} distinct URIs), which is how bulk fetching, a mirror or "
+             f"an image scraper looks. These signals cannot tell which." if distinct > 50 else
+             f" It pulled the same {distinct} file{'s' if distinct != 1 else ''} over and over, which fits a "
+             f"flood aimed at a file, a client stuck in a retry loop, or a monitoring probe. These signals "
+             f"cannot tell which." if distinct <= 2 else
+             f" It was spread over {distinct} distinct URIs.")
     return ["**LIKELY: High-rate static-asset traffic, not a bypass.**",
-            f"Evidence: peak {peak} req/min allowed, {allowed - non_static:,} of {allowed:,} allowed "
-            f"requests static. It reached static files, not the application's endpoints, so this is an "
-            f"abuse or cost question rather than a way past the rules. {shape} These signals cannot "
-            f"tell which.",
+            f"Evidence: peak {peak} req/min allowed, at least {static_floor:g} of them static, and "
+            f"{allowed - non_static:,} of {allowed:,} allowed requests static. It reached static files, not "
+            f"the application's endpoints, so this is an abuse or cost question rather than a way past "
+            f"the rules.{shape}",
             f"→ Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
             f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
             f"filter_by='{{\"ip\": \"{ip}\"}}'))."]
+
+
+# StartQuery rejects a query string over 10,000 characters, measured 2026-10-16: 10,000 ran and 10,001
+# was rejected. `_run_cwl` prefixes the WebACL filter, so this leaves room for the longest name.
+_CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128))
 
 
 def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict) -> list[dict]:
@@ -118,12 +127,21 @@ def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict)
     names = sorted(n for n in names if n and re.fullmatch(r"[\w-]+", n))
     if not names:
         return []
-    counted = _safe_query(
-        base + " | stats " + ", ".join(
-            f"sum(strcontains(@message, '\"ruleId\":\"{n}\",\"action\":\"COUNT\"')) as c{i}"
-            for i, n in enumerate(names)),
-        "", start, end, limit=1, failures=failures, label="count_rules", notes=notes)
-    row = counted[0] if counted else {}
+    # As many queries as the length limit needs: every Count rule the WebACL configures is counted,
+    # and a WebACL tuning several managed groups in Count holds more than 140 of them.
+    chunks = [[]]
+    for i, n in enumerate(names):
+        field = f"sum(strcontains(@message, '\"ruleId\":\"{n}\",\"action\":\"COUNT\"')) as c{i}"
+        if chunks[-1] and len(base + " | stats " + ", ".join(chunks[-1] + [field])) > _CWL_QUERY_MAX:
+            chunks.append([])
+        chunks[-1].append(field)
+    row = {}
+    for chunk in chunks:
+        counted = _safe_query(base + " | stats " + ", ".join(chunk), "", start, end, limit=1,
+                              failures=failures, label="count_rules", notes=notes)
+        if failures.get("count_rules"):
+            return []
+        row.update(counted[0] if counted else {})
     hits = sorted(((n, int(float(row.get(f"c{i}") or 0))) for i, n in enumerate(names)), key=lambda x: -x[1])
     hits = [{"rule": n, "hits": str(h)} for n, h in hits if h > 0]
     if len(hits) > 5:
@@ -1058,7 +1076,9 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     non_allow_count = sum(v for k, v in action_map.items() if k != "ALLOW")
     for action, count in sorted(action_map.items(), key=lambda x: x[1], reverse=True):
         lines.append(f"  {action}: {count:,}")
-    if non_allow_count > allow_count * 5:
+    # Gated on an allowed request: any count is more than five times 0, and with none allowed the
+    # verdict below is NO BYPASS.
+    if allow_count and non_allow_count > allow_count * 5:
         lines.append(f"\n  ⚠️ This IP has {non_allow_count:,} non-ALLOW requests vs {allow_count:,} ALLOW — primarily an attacker being mitigated, with partial bypass.")
 
     lines.append("")
@@ -1150,6 +1170,10 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     uri_val = _num(unique_uris, int)
     non_static = _num(total_reqs, int)
     all_val = _num(all_uris, int)
+    # The peak minute's non-static requests are at most the non-static peak, so the difference is a
+    # floor on its static ones. The static share alone is over the whole window, and an API burst in
+    # a mostly static window made the peak minute.
+    static_floor = None if peak_val is None or dyn_val is None else peak_val - dyn_val
     allowed = None if failures.get("actions") else allow_count
     ua_known = not failures.get("user_agent")
 
@@ -1214,13 +1238,13 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             (("frequency_dynamic", "uri_diversity"), _all(_gt(dyn_val, 200), _lt(uri_val, 10)), [
                 "**HIGH CONFIDENCE: Endpoint hammering (possible DDoS participant or brute-force).**",
                 f"Evidence: {dyn_peak} non-static req/min concentrated on few URIs."]),
-            (("frequency", "uri_diversity", "actions", "all_uris"),
-             _all(_gt(peak_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed,
-                  None if all_val is None else True),
-             _static_traffic(peak_rpm, non_static, allowed, all_val, ip)),
+            (("frequency", "frequency_dynamic", "uri_diversity", "actions"),
+             _all(_gt(static_floor, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed),
+             _static_traffic(peak_rpm, static_floor, non_static, allowed, all_val, ip)),
+            # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
             (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [
                 "**LIKELY: Probable scraper** (needs user confirmation).",
-                f"Evidence: {unique_uris} unique URIs, no bot labels. Frequency moderate ({peak_rpm}/min).",
+                f"Evidence: {unique_uris} unique URIs, no bot labels, at a peak of {dyn_peak} non-static req/min.",
                 "→ Ask user if this IP is a known partner/crawler."]),
         ]
         verdict = None

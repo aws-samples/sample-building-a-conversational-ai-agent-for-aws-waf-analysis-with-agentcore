@@ -13,7 +13,9 @@ be the focus rule; on 2026-09-08 03:00 it skipped 160 `CrossSiteScripting_QUERYA
 rule with 2 blocks. It now ranks by matches, includes the injection sub-rules overridden to Count, and
 says when the focus rule is in Count mode. Patrol's per-rule IP and URI cells were empty for Count rules
 for the same reason, and so was the bypass investigation's list of Count rules on Athena. That list now
-counts each rule once per request on both engines. On CloudWatch the `count_rule_top_*` queries also matched the rule name and a Count as two
+counts each rule once per request on both engines. Its CloudWatch queries stay under StartQuery's
+10,000-character limit: every Count rule the WebACL configures goes into them, and more than about 140
+do not fit in one. On CloudWatch the `count_rule_top_*` queries also matched the rule name and a Count as two
 separate pieces of the record, so a request the rule blocked while another rule counted it matched:
 over 14 days `LFI_URIPATH`, which only blocks, showed 34 Count hits.
 
@@ -103,12 +105,14 @@ rather than a scraper, and it and the scan now share one automation User-Agent l
 missed Python clients other than `requests`; the verdict missed `libwww-perl`). iPhone and iPad are
 no longer counted as Mac when judging whether an IP is shared. An IP with no allowed request in the
 window is now "no bypass" in the bypass investigation, where it fell through to "mixed or
-insufficient".
+insufficient", and its action breakdown no longer adds "primarily an attacker being mitigated, with
+partial bypass".
 
 Both tools also set a request rate over every request against a count of non-static URIs, so an IP
 pulling only static files had 0 URIs and read as "HIGH CONFIDENCE: Endpoint hammering", and so did one
 sending 300 images a minute beside 2 API paths. The scraper and hammering verdicts now read the
-non-static rate. A fast client whose requests are nearly all static gets its own "LIKELY" verdict,
+non-static rate, and the crawler verdicts reached after them name that rate. A client whose requests are
+nearly all static, with at least 200 static requests in its busiest minute, gets its own "LIKELY" verdict,
 which says whether it fetched many files or the same few over and over, and that these signals cannot
 tell its intent. The bypass investigation adds that such traffic reached static files rather than the
 application, so it is not a bypass.
