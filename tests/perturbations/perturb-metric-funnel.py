@@ -44,7 +44,7 @@ CASES = [
      [f"{T}::test_a_metric_read_records_its_window_and_names_the_engine"], True),
 
     ("the read recorded and then not performed, which no provenance assertion would see",
-     [(A, "        return self._client.get_metric_data(**kwargs)", "        return {}")],
+     [(A, "        return _read_whole(self._client, kwargs)", "        return {}")],
      [f"{T}::test_a_metric_read_records_its_window_and_names_the_engine"], True),
 
     # The quiet one. A proxy is only safe while everything it does not intercept passes through.

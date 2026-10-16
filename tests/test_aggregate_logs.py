@@ -216,18 +216,27 @@ def test_no_filter_matches_the_raw_record_instead_of_a_field(key):
     assert any("@message" in f.cwl for f in AG._FILTERS.values()), \
         "no filter compares against the raw record, so this sweep proves nothing"
     spec = AG._FILTERS[key]
-    if "@message" not in spec.cwl:
-        return
-    # Only the literals belonging to a `@message` comparison. Taking EVERY quoted literal was the
-    # second wrong version: it flagged `rule` again, this time for its `terminatingRuleId = '{v}'`
-    # clause, which is a field comparison and needs no anchoring. The search space has to be the
-    # claim's, which is the lesson this whole file keeps relearning.
-    literals = re.findall(r"@message\s+(?:not\s+)?like\s+'([^']*)'", spec.cwl)
-    assert literals, f"the {key} filter names @message outside a `like`: {spec.cwl}"
-    for lit in literals:
-        assert '"' in lit, (
-            f"the {key} filter matches the raw record with an unanchored value, so it also matches "
-            f"that value appearing in any other field: {lit!r} in {spec.cwl}")
+    # Every predicate the filter can render, not only its template: a value with its own predicate
+    # (`action=COUNT` reads the rule entries) would otherwise escape the check entirely.
+    for cwl in [spec.cwl, *(c for _, c in spec.by_value.values())]:
+        if "@message" not in cwl:
+            continue
+        # Only the literals belonging to a `@message` comparison. Taking EVERY quoted literal was
+        # the second wrong version: it flagged `rule` again, this time for its
+        # `terminatingRuleId = '{v}'` clause, which is a field comparison and needs no anchoring.
+        # The search space has to be the claim's, which is the lesson this file keeps relearning.
+        literals = re.findall(r"@message\s+(?:not\s+)?like\s+'([^']*)'", cwl)
+        assert literals, f"the {key} filter names @message outside a `like`: {cwl}"
+        for lit in literals:
+            assert '"' in lit, (
+                f"the {key} filter matches the raw record with an unanchored value, so it also "
+                f"matches that value appearing in any other field: {lit!r} in {cwl}")
+
+
+def test_the_by_value_predicates_are_reached_by_the_anchoring_sweep():
+    """The precondition for the loop above reaching `by_value` at all."""
+    assert any("@message" in c for f in AG._FILTERS.values() for _, c in f.by_value.values()), \
+        "no by_value predicate reads the raw record, so the sweep's new half checks nothing"
 
 
 def test_the_label_filter_sees_every_label_and_only_labels():

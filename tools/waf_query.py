@@ -1006,7 +1006,7 @@ def drain_log_value_findings() -> str:
     wrongness rather than gating it.** The scan sits upstream of masking: `query_logs` masks nothing
     itself, `redact_row_fields` runs after it returns, and only two of its six consumers call it. So
     a note claiming "this content reached you" would be false whenever the cell was masked
-    (`token_reuse_ips` aliases the cookie column as `cookie`, which `_name_is_sensitive` masks) and
+    (`token_reuse_ips` names its session column `token_id`, which `_name_is_sensitive` masks) and
     a gate predicting the masking would be false for the four consumers that never mask. A note
     about what the log RECORD contains is true whether the value was shown, masked or truncated, so
     there is nothing left to keep in sync. It is also the wording that helps most in the masked

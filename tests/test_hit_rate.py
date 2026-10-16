@@ -25,11 +25,14 @@ an error:
 import ast
 import pathlib
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import agent
 from tools import waf_overview as O
+
+START = datetime.now(timezone.utc) - timedelta(days=2)
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
@@ -67,13 +70,13 @@ def rendered(monkeypatch):
                                     "Timestamps": []})
                 return {"MetricDataResults": out}
 
-        monkeypatch.setattr(O, "_calc_period", lambda m: 3600, raising=False)
+        monkeypatch.setattr(O, "_calc_period", lambda m, start: 3600, raising=False)
         import tools.waf_patrol as P
         monkeypatch.setattr(
             P, "_get_all_rules_metrics_search",
-            lambda cw, name, s, e, period=86400, scope="CLOUDFRONT", region="":
-                _fixture(rules, all_totals) if s == "now" else _fixture(prev or {}, all_totals))
-        return O._top_rules(FakeCW(), "acl", "now", "end", "prev", 1440)
+            lambda cw, name, s, e, **kw:
+                _fixture(rules, all_totals) if s == START else _fixture(prev or {}, all_totals))
+        return O._top_rules(FakeCW(), "acl", START, START + timedelta(days=1), START - timedelta(days=1), 1440)
     return run
 
 

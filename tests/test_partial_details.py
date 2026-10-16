@@ -271,3 +271,69 @@ def test_an_error_cell_is_not_rendered_as_a_row_of_question_marks():
     src = inspect.getsource(P.patrol_scan._tool_func)
     assert "_error" in src, "the detail renderer does not know about failed cells"
     assert "cell_errors" in src
+
+
+# --- a window outside the projection range crashed patrol ----------------------
+
+@pytest.fixture
+def window_outside_projection(monkeypatch):
+    """Everything up to the range check succeeds, and the range check refuses the window."""
+    from tools import waf_athena
+    monkeypatch.setattr(waf_athena, "resolve_s3_log_path", lambda *a, **k: "s3://b/AWSLogs/")
+    monkeypatch.setattr(waf_athena, "resolve_log_table", lambda *a, **k: "waf_analysis_tmp.t")
+    monkeypatch.setattr(waf_athena, "partition_predicate",
+                        lambda s, e: ("", "The window starts before the table's projection range."))
+    monkeypatch.setitem(waf_athena._athena_state, "partition_format", "yyyy/MM/dd/HH/mm")
+
+
+def test_a_window_outside_the_projection_range_is_a_named_skip_not_a_crash(window_outside_projection):
+    """`patrol_scan` reads `["details"]` off whatever comes back, so the bare `({}, msg)` this path
+    returned raised `TypeError` there for every patrol whose window the table cannot reach."""
+    from datetime import datetime, timezone
+    now = datetime(2026, 10, 15, tzinfo=timezone.utc)
+    got = P._get_log_details_athena("dest", "acl", "CLOUDFRONT", "us-east-1", now, now, ["r"])
+    assert isinstance(got, dict), f"got {type(got).__name__}: {got!r}"
+    assert got["details"] == {}
+    assert "projection range" in (got["unavailable"] or ""), got
+
+
+def test_every_return_in_the_athena_helper_is_the_three_field_dict():
+    """The migration from a two-tuple fixed every return but one. Swept over the function's AST
+    so a return added later is held to the same shape without anyone remembering this test."""
+    import ast, inspect, pathlib, textwrap
+    src = pathlib.Path(P.__file__).read_text()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "_get_log_details_athena")
+    returns = [n for n in ast.walk(fn) if isinstance(n, ast.Return)]
+    assert len(returns) >= 4, f"only {len(returns)} returns found; the function moved"
+    bad = [(r.lineno, ast.unparse(r.value)[:60]) for r in returns
+           if not (isinstance(r.value, ast.Dict)
+                   and {k.value for k in r.value.keys if isinstance(k, ast.Constant)}
+                   == {"details", "table_msg", "unavailable"})]
+    assert not bad, f"returns not shaped as the three-field dict: {bad}"
+
+
+# --- per-rule IPs and URIs for a Count rule ---------------------------------------------------
+
+def test_the_athena_ip_and_uri_queries_find_a_rule_that_only_counted(window_outside_projection, monkeypatch):
+    """A Count-rule spike is a patrol action item, so it gets log details; the IP and URI queries
+    filtered on `terminatingruleid` only, where a Count match never is, and both cells were empty
+    while the content query beside them already searched the nested matches."""
+    from datetime import datetime, timezone
+    from tools import waf_athena
+    monkeypatch.setattr(waf_athena, "partition_predicate", lambda s, e: ("", None))
+    seen = []
+    monkeypatch.setattr(waf_athena, "_run_athena_select", lambda sql, region, *a, **k: seen.append(sql) or [])
+    now = datetime(2026, 10, 15, tzinfo=timezone.utc)
+    P._get_log_details_athena("dest", "acl", "CLOUDFRONT", "us-east-1", now, now, ["CrossSiteScripting_BODY"])
+    ip_uri = [q for q in seen if "GROUP BY httprequest.clientip" in q or "GROUP BY httprequest.uri" in q]
+    assert len(ip_uri) == 2, seen
+    assert all("rg.nonterminatingmatchingrules" in q for q in ip_uri), ip_uri
+
+
+@pytest.mark.parametrize("fn", ["_query_top_ips_by_rule", "_query_top_uris_by_rule"])
+def test_the_cloudwatch_ip_and_uri_queries_find_a_rule_that_only_counted(monkeypatch, fn):
+    seen = []
+    monkeypatch.setattr(P, "_poll_log_query", lambda client, group, s, e, query, acl: seen.append(query) or [])
+    getattr(P, fn)(None, "g", 0, 1, "CrossSiteScripting_BODY", "acl")
+    assert seen and "@message like '\"ruleId\":\"CrossSiteScripting_BODY\"'" in seen[0], seen

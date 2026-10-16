@@ -18,7 +18,7 @@ W = "tools/waf_logs.py"
 T = "tests/test_token_reuse_grouping.py"
 CASES = [
     ("the CWL key back to the extracted token value, which fragments one session",
-     [(W, "parse @message /awswaf:managed:token:id:(?<token_id>[0-9a-f-]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id",
+     [(W, "parse @message /\\\"name\\\":\\\"awswaf:managed:token:id:(?<token_id>[0-9a-f-]+)\\\"/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id",
        "parse @message /aws-waf-token=(?<token_id>[^;\\\"]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id")],
      [f"{T}::test_one_session_across_many_ips_is_one_group_with_the_full_ip_count",
       f"{T}::test_two_token_values_sharing_one_session_do_not_fragment",
@@ -37,8 +37,8 @@ CASES = [
     # Drop the label filter: a token:accepted record with no token:id parses to an empty key and sorts
     # first by ip_count. The test that requires the filter goes red.
     ("the CWL label filter removed, reopening the empty catch-all group",
-     [(W, "filter @message like 'token:accepted' and @message like 'awswaf:managed:token:id:' | parse",
-       "filter @message like 'token:accepted' | parse")],
+     [(W, "filter @message like '\\\"name\\\":\\\"awswaf:managed:token:accepted\\\"' and @message like '\\\"name\\\":\\\"awswaf:managed:token:id:' | parse",
+       "filter @message like '\\\"name\\\":\\\"awswaf:managed:token:accepted\\\"' | parse")],
      [f"{T}::test_the_query_requires_the_label_so_there_is_no_empty_catch_all"],
      False),   # textual
 
@@ -51,8 +51,8 @@ CASES = [
     # A name that reads fine and drops the masking: `tokenid` has no separator, so it does not carry the
     # `token` name token and `_name_is_sensitive` returns False, and the session id renders in clear.
     ("the session column renamed to one the masker does not recognise",
-     [(W, "(?<token_id>[0-9a-f-]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id",
-       "(?<tokenid>[0-9a-f-]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by tokenid")],
+     [(W, "(?<token_id>[0-9a-f-]+)\\\"/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id",
+       "(?<tokenid>[0-9a-f-]+)\\\"/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by tokenid")],
      [f"{T}::test_the_session_column_is_named_so_it_is_masked_on_display"],
      False),   # textual
 ]

@@ -126,32 +126,6 @@ def test_an_allow_rule_is_never_a_detector_whatever_its_shape(action, is_detecto
     assert bool(found) is is_detector, f"{action} classified as detector={bool(found)}"
 
 
-def test_the_busiest_injection_rule_is_chosen_by_count_not_by_row_order():
-    """**The more serious of the two live-found defects, which had a paragraph and no assertion.**
-
-    Step 1 originally took the first injection rule in WebACL config order, which on the live
-    account picked a rule that had blocked nothing while the SQLi set had the blocks: four sections
-    printed "0 results" and the assessment ran on no evidence.
-
-    The first fix ranked by taking the first surviving ROW, justified by "the primitive sorts by
-    hits descending" -- two implicit cross-module contracts. This fixture puts the busiest rule
-    SECOND in the table, so row order and count order disagree, which is the only arrangement that
-    tells the two apart. The code now reads the count and sorts locally, so the contract is gone
-    rather than asserted."""
-    table = ("[action=BLOCK] by rule, 60 min — 2 rows\n\n"
-             "| terminatingRuleId | hits |\n| --- | --- |\n"
-             "| QuietRule | 2 |\n| BusyRule | 97 |\n")
-    # Asserted on `_rank_by_blocks`, the function the tool actually calls. The first version
-    # asserted `_extract_pairs` and then sorted in the test body, which proves the test's own
-    # arithmetic and nothing about what the tool picks.
-    ranked = I._rank_by_blocks(table, ["QuietRule", "BusyRule"])
-    assert ranked == ["BusyRule", "QuietRule"], (
-        f"got {ranked}; ranking follows row order rather than the count, which is the defect that "
-        f"reached production")
-    # And a rule that is not an injection rule must not be ranked at all, however busy.
-    assert I._rank_by_blocks(table, ["QuietRule"]) == ["QuietRule"]
-
-
 def test_an_unparseable_count_ranks_last_rather_than_vanishing():
     """A row whose count will not parse is kept at 0. Dropping it would take a rule that genuinely
     blocked out of the running silently, which is worse than ranking it last."""
@@ -189,6 +163,23 @@ def test_managed_groups_are_matched_by_name_and_only_the_injection_ones(group, e
     found, _ = I._injection_rules([
         _rule("r", {"ManagedRuleGroupStatement": {"Name": group, "VendorName": "AWS"}})])
     assert bool(found) is expected, f"{group} classified as injection={bool(found)}"
+
+
+@pytest.mark.parametrize("sub_rule,expected", [
+    ("CrossSiteScripting_BODY", True), ("SQLi_QUERYARGUMENTS", True), ("GenericLFI_URIPATH", True),
+    ("Log4JRCE_HEADER", True), ("Log4JRCE", True), ("SizeRestrictions_BODY", False), ("NoUserAgent_HEADER", False),
+    ("EC2MetaDataSSRF_BODY", False), ("Host_localhost_HEADER", False),
+])
+def test_only_an_injection_sub_rule_in_count_is_a_detector(sub_rule, expected):
+    """Every Count override in CommonRuleSet was promoted. Live, `shield-sample-webacl` returned
+    SizeRestrictions_BODY as an injection detector, which a window of large uploads would make the
+    focus rule and present as the Count-mode injection rule to switch to Block. `Log4JRCE` with no
+    suffix is the name in KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14."""
+    group = "AWSManagedRulesSQLiRuleSet" if sub_rule.startswith("SQLi") else "AWSManagedRulesCommonRuleSet"
+    found, _ = I._injection_rules([_rule("r", {"ManagedRuleGroupStatement": {
+        "Name": group, "VendorName": "AWS",
+        "RuleActionOverrides": [{"Name": sub_rule, "ActionToUse": {"Count": {}}}]}})])
+    assert (sub_rule in found) is expected, found
 
 
 # --- the step-6 matrix, which 4.3 requires to be in code --------------------

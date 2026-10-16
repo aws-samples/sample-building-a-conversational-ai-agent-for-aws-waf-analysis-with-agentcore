@@ -56,6 +56,7 @@ import time
 
 from strands import tool
 
+from tools.counted import COUNTED_ATHENA, COUNTED_CWL, EXCLUDED_ATHENA, EXCLUDED_CWL
 from tools.query_limits import MAX_MINUTES
 from tools.session_state import is_log_filter_active, note_window_capped
 
@@ -172,10 +173,12 @@ def _checked_rule(raw) -> tuple[str, str | None]:
 
 class _Filter:
     def __init__(self, check, athena: str, cwl: str, cwl_pre: tuple = (),
-                 redactable_filter: tuple = ()):
+                 redactable_filter: tuple = (), by_value: dict | None = None):
         self.check = check
         self.athena = athena
         self.cwl = cwl
+        # Values whose predicate is not the template's: value -> (athena, cwl).
+        self.by_value = dict(by_value or {})
         self.cwl_pre = tuple(cwl_pre)
         # ROADMAP 6.13's filter half: the `RedactedFields` entries that would strip what this
         # PREDICATE reads. Named for the role, not the field, because the display half is covered
@@ -191,8 +194,10 @@ class _Filter:
 # **The rule filter names all four places a match can be recorded**, which is the nested-COUNT
 # trap ROADMAP 2.6 owns. A `RuleActionOverrides` Count lands in
 # `rulegrouplist[].nonterminatingmatchingrules[]`, a group-level `OverrideAction: Count` writes
-# the sub-rule to `rulegrouplist[].terminatingrule` paired with its native action, a top-level
-# Count lands in `nonterminatingmatchingrules`, and a rate-based rule is a fourth shape. The
+# the sub-rule to `rulegrouplist[].terminatingrule` paired with its native action AND a top-level
+# `nonterminatingmatchingrules` entry named for the WebACL rule with action COUNT (measured
+# 2026-10-15, see tools/counted.py), a top-level Count lands in `nonterminatingmatchingrules`, and
+# a rate-based rule is a fourth shape. The
 # existing `rule_uri_prefix` template covers three of the four, so a filter copied from it would
 # silently miss exactly the case a COUNT investigation is looking for.
 #
@@ -265,10 +270,15 @@ _RULE_CWL = ("(terminatingRuleId = '{v}' or @message like '\"ruleId\":\"{v}\"'"
 
 # filter_by key -> validator plus the pre-written predicate pair.
 _FILTERS = {
+    # COUNT and EXCLUDED_AS_COUNT are never the top-level action, which holds only the terminating
+    # one, so `action = 'COUNT'` matched no row on either engine. They are found in the rule
+    # entries instead; see tools/counted.py for where, and the measurement.
     "action": _Filter(
         _checked(r"ALLOW|BLOCK|COUNT|CAPTCHA|CHALLENGE|EXCLUDED_AS_COUNT",
                  "a WAF action (ALLOW, BLOCK, COUNT, CAPTCHA, CHALLENGE, EXCLUDED_AS_COUNT)"),
-        "action = '{v}'", "action = '{v}'"),
+        "action = '{v}'", "action = '{v}'",
+        by_value={"COUNT": (COUNTED_ATHENA, COUNTED_CWL),
+                  "EXCLUDED_AS_COUNT": (EXCLUDED_ATHENA, EXCLUDED_CWL)}),
     "rule": _Filter(_checked_rule, _RULE_ATHENA, _RULE_CWL),
     "ip": _Filter(_checked_ip,
                   "httprequest.clientip = '{v}'", "httpRequest.clientIp = '{v}'"),
@@ -386,8 +396,9 @@ def _build(group_by: str, metric: str, filters: dict, bucket_minutes: int,
         # than at the render sites: the zero-row branch returns before either of them, and a filter
         # on a redacted field is a fourth cause of zero rows that the message there does not offer.
         note_redacted_filter(spec.redactable_filter)
-        a_preds.append(spec.athena.replace("{v}", value))
-        cwl_preds.append(spec.cwl.replace("{v}", value))
+        athena, cwl = spec.by_value.get(value, (spec.athena, spec.cwl))
+        a_preds.append(athena.replace("{v}", value))
+        cwl_preds.append(cwl.replace("{v}", value))
         # Deduplicated per STAGE, which is what makes `_LABELS_ARRAY` shareable between the label
         # dimension and the label filter without defining `lbls` twice.
         stages.extend(stage for stage in spec.cwl_pre if stage not in stages)

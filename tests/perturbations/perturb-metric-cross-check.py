@@ -148,8 +148,7 @@ CASES = [
     # a line nothing runs, and the guard's own reachability is established by the behavioural cases
     # above. Written `"textual"` at first, which is truthy, so it asked for the probe it was declining.
     ("the injection tool's no-activity branch no longer cross-checking metrics",
-     [(I, "                    warning = missed_data_warning(get_webacl_name(), target, acl_rules,",
-       "                    warning = _no_cross_check(get_webacl_name(), target, acl_rules,")],
+     [(I, "                    warning = missed_data_warning(\n", "                    warning = _no_cross_check(\n")],
      [f"{T}::test_the_injection_tool_reaches_the_cross_check_from_its_no_activity_branch"],
      False),
 ]

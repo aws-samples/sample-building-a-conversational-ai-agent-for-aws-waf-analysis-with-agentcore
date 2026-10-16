@@ -285,7 +285,7 @@ def test_a_failed_label_query_refuses_the_verdict(monkeypatch, how):
     CONFIDENCE branches. A swallowed error therefore pushed the tool toward declaring a
     bypass, which is the false alarm a security tool must not manufacture."""
     monkeypatch.setattr(B, "query_logs",
-                        fake_query_logs(["@message like 'labels'"], how))
+                        fake_query_logs(["@message like '\"labels\":['"], how))
     verdict = _verdict(B._step_investigate_ip("203.0.113.9", 0, 3600))
     assert "CANNOT DETERMINE: the Bot Control label query failed." in verdict
     # Scoped to the verdict on purpose: "If HIGH CONFIDENCE -> call record_finding" sits in
@@ -298,7 +298,10 @@ def test_the_verdict_still_fires_when_the_label_query_succeeds(monkeypatch):
     """The mirror. Without it the assertion above is satisfied by a tool that never
     reaches a verdict at all, which would pass while saying nothing."""
     def run(cwl, athena, start, end, limit=25, **kw):
-        row = dict(ROW)
+        # A known, quiet peak. ROW has no `peak_rpm`, and since the verdict stopped reading an
+        # unparseable value as 0, a data-center IP with an unknown peak is undecidable rather than
+        # "not the data-center rung", which is not what this test is about.
+        row = dict(ROW, peak_rpm="1")
         if "labels" in f"{cwl}\n{athena}":
             row["Labels"] = "awswaf:managed:aws:bot-control:signal:known_bot_data_center"
         return [row]

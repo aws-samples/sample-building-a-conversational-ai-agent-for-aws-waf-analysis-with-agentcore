@@ -49,6 +49,11 @@ _INJECTION_GROUPS = (
     "AWSManagedRulesKnownBadInputsRuleSet",
     "AWSManagedRulesCommonRuleSet",
 )
+# The sub-rules of those groups that detect injection, by AWS's name prefix, read off
+# `describe-managed-rule-group` 2026-10-16. CommonRuleSet also holds size limits, a User-Agent check
+# and SSRF rules, and KnownBadInputs a localhost Host and PROPFIND, none of which is injection.
+_INJECTION_SUB_RULES = ("SQLi", "CrossSiteScripting_", "GenericLFI_", "GenericRFI_", "Log4JRCE",
+                        "JavaDeserializationRCE_", "ReactJSRCE_")
 # Statement types that ARE injection detection. Not a name pattern.
 _INJECTION_STATEMENTS = ("SqliMatchStatement", "XssMatchStatement")
 
@@ -106,6 +111,12 @@ def _injection_rules(rules: list) -> tuple[list, list]:
         if group:
             if any(g in group.get("Name", "") for g in _INJECTION_GROUPS):
                 found.append(name)
+                # An injection sub-rule overridden to Count is logged under its own name, nested,
+                # and is the shadow-mode detector a user set deliberately, so it is a detector in its
+                # own right. Any other override in the group is not.
+                found += [o["Name"] for o in group.get("RuleActionOverrides", [])
+                          if "Count" in (o.get("ActionToUse") or {})
+                          and o["Name"].startswith(_INJECTION_SUB_RULES)]
             continue
         # **An `Allow` rule is not a detector whatever its shape**, which is an independent second
         # signal to the statement type. It catches the inverted allowlist even if some future
@@ -121,6 +132,31 @@ def _injection_rules(rules: list) -> tuple[list, list]:
             # injection detection cannot be read here without another API call per group.
             unknown.append(f"{name} (custom rule group, contents not inspected)")
     return found, unknown
+
+
+def _count_mode(rules: list) -> set:
+    """Detector names whose matches end as ALLOW: custom rules with a Count action, sub-rules
+    overridden to Count, and groups overridden to Count as a whole."""
+    out = set()
+    for rule in rules:
+        if "Count" in (rule.get("Action") or {}) or "Count" in (rule.get("OverrideAction") or {}):
+            out.add(rule.get("Name", ""))
+        group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
+        out |= {o["Name"] for o in group.get("RuleActionOverrides", [])
+                if "Count" in (o.get("ActionToUse") or {})}
+    return out
+
+
+def _outcome(table: str):
+    """`(pairs, None)` for a result table, `([], None)` for a query that found nothing, and
+    `(None, reason)` for one that did not run. `_extract_column` returns `[]` for the last two
+    alike, which is how a failed query read as "nothing matched"."""
+    if any(r.startswith("| ") for r in table.splitlines()):
+        header = next(r for r in table.splitlines() if r.startswith("| "))
+        return _extract_pairs(table, header.strip("| ").split(" |")[0].strip()), None
+    if " returned 0 results." in table:
+        return [], None
+    return None, table.strip().splitlines()[0] if table.strip() else "no answer"
 
 
 def _classify(ip_rows: list, ja4_rows: list) -> tuple[str, str]:
@@ -214,7 +250,7 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
     # Step 1. Which rules do injection detection, read off the WebACL rather than guessed.
     # Held beyond the `try` because the metric cross-check below re-checks a rule name against it
     # at the line that issues the query, rather than trusting that the name came from here.
-    injection, unknown, acl_rules = [], [], []
+    injection, unknown, acl_rules, acl_error = [], [], [], None
     try:
         waf = get_client("wafv2", region_name=resolve_region(scope))
         acls = waf.list_web_acls(Scope=scope).get("WebACLs", [])
@@ -224,13 +260,23 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
             acl_rules = acl.get("Rules", [])
             injection, unknown = _injection_rules(acl_rules)
     except Exception as exc:
-        lines.append(f"Could not read the WebACL's rules ({type(exc).__name__}: {exc}), so the "
+        acl_error = f"{type(exc).__name__}: {exc}"
+        lines.append(f"Could not read the WebACL's rules ({acl_error}), so the "
                      f"rule list below is whatever the logs show rather than the configured set.")
+    count_mode = _count_mode(acl_rules)
 
     if rule_name:
         targets = [rule_name]
     elif injection:
         targets = injection
+    elif acl_error:
+        # Not "no injection rules": the read that would have said so did not happen. That message
+        # calls the absence a finding, which is exactly wrong for a failed API call.
+        lines.append("**Whether this WebACL has any injection-detection rule is unknown**, because "
+                     "reading its rules failed. Re-run once get_web_acl succeeds, or pass rule_name "
+                     "to investigate a rule you already know.")
+        lines.append(f"\n{CONFIDENCE}")
+        return "\n".join(lines)
     else:
         lines.append("**No injection-detection rule found in this WebACL.** Nothing here matches "
                      "a SQLi or XSS statement, and no AWS managed rule group that covers "
@@ -253,33 +299,42 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
         cap and WebACL scoping stay intact rather than being re-implemented here."""
         return aggregate_logs._tool_func(start_time=start_time, duration_minutes=duration, **kw)
 
-    # **Which injection rule to focus, ranked by what actually blocked rather than config order.**
-    # The first version took `targets[0]`, the first injection rule in the WebACL's rule order, and
-    # on the live account that picked `KnownBadInputsRuleSet`, which had blocked nothing, while the
-    # SQLi set had the blocks. Four sections then printed "0 results" and the assessment ran on no
-    # evidence. Config order is not a ranking.
+    # **Which injection rule to focus, ranked by what it matched, whatever the action.** Config
+    # order was the first version and picked a rule that had matched nothing. BLOCK-only was the
+    # second: it ranked the terminating rule, and a Count-mode detector ends as ALLOW under its
+    # sub-rule's name, so the shadow-mode detectors step 1 keeps on purpose could never be the
+    # focus. One query per detector through the six-location rule filter, which reaches a sub-rule
+    # counted inside a managed group.
     if not rule_name:
-        by_rule = _agg(group_by="rule", filter_by=json.dumps({"action": "BLOCK"}))
-        # **Sorted here rather than relying on the primitive's ORDER BY.** The first version took
-        # the first surviving row and justified it with "the primitive sorts by hits descending",
-        # which is two implicit cross-module contracts: `aggregate_logs` emitting `ORDER BY hits
-        # DESC`, and `_extract_column` preserving row order. Both hold today. A tie-break or an
-        # ordering change upstream would silently restore the ranked-by-config-order defect, whose
-        # symptom is a finished-looking report built on no evidence. Reading the count removes the
-        # contract instead of asserting it.
-        active = _rank_by_blocks(by_rule, targets)
-        if not active:
+        ranked, unread = [], {}
+        for target in targets:
+            pairs, reason = _outcome(_agg(group_by="action", filter_by=json.dumps({"rule": target})))
+            if pairs is None:
+                unread[target] = reason
+                continue
+            total = sum(h for _, h in pairs)
+            if total:
+                ranked.append((target, total, dict(pairs).get("BLOCK", 0)))
+        ranked.sort(key=lambda t: t[1], reverse=True)
+        if unread:
+            lines.append("**Some detectors could not be ranked, so the ranking below is partial:**")
+            lines += [f"  - {name}: {why}" for name, why in unread.items()]
+            lines.append("")
+        if not ranked and unread:
+            lines.append("Nothing can be concluded about injection activity in this window: every "
+                         "detector that answered matched nothing, and the ones above did not answer. "
+                         "Re-run once they do. Do NOT report this window as quiet.")
+            lines += ["", CONFIDENCE]
+            return "\n".join(lines)
+        if not ranked:
             # **Stopping here is the answer, not a failure to find one.** Investigating a rule with
             # no activity produces four empty sections and an assessment with nothing behind it,
-            # which reads like a finished investigation. One query establishes this; the other four
-            # would add nothing.
-            lines.append("**No injection rule blocked anything in this window.** Your injection "
-                         "rules are configured and matched no requests here, so there is no attack "
-                         "activity to characterise. Blocks in this window, if any, came from other "
-                         "rules:")
-            lines += ["", by_rule, "",
-                      "If you expected injection activity, widen the window or check whether a "
-                      "Log Filter is dropping BLOCK records before they reach the log destination."]
+            # which reads like a finished investigation.
+            lines.append("**No injection rule matched anything in this window**, in Block or in "
+                         "Count mode. Your injection rules are configured and matched no requests "
+                         "here, so there is no attack activity to characterise.")
+            lines += ["", "If you expected injection activity, widen the window or check whether a "
+                          "Log Filter is dropping records before they reach the log destination."]
             # ROADMAP 7.1. This is the sentence the investigation got wrong on 2026-09-08: it said
             # zero SQLi hits on the strength of one log query, and a log query returning zero is
             # byte-identical to the attack not having happened. Metrics are the one witness immune
@@ -295,42 +350,49 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
             import time
             from tools.waf_logs import _parse_start_time
             from tools.waf_metrics import missed_data_warning
-            # Parsed here rather than passed in, and it can be None on the very path that reaches
-            # this branch: an unparseable `start_time` makes `aggregate_logs` return an error string
-            # instead of a table, `_rank_by_blocks` finds no rule in it, and `active` is empty. The
-            # aggregate already said so in `by_rule` above, so the cross-check just stands down.
+            # Parsed here rather than passed in. An unparseable `start_time` makes every ranking
+            # query an error, which stops above as unread rather than reaching this branch, so None
+            # here would mean a parser the primitive disagrees with; the cross-check stands down.
             start_epoch = _parse_start_time(start_time)
             if start_epoch is not None:
                 end_epoch = min(start_epoch + duration * 60, int(time.time()))
                 for target in targets:
-                    warning = missed_data_warning(get_webacl_name(), target, acl_rules,
-                                                  start_epoch, end_epoch, log_rows=0)
+                    warning = missed_data_warning(
+                        get_webacl_name(), target, acl_rules, start_epoch, end_epoch, log_rows=0,
+                        metric_name="CountedRequests" if target in count_mode else "BlockedRequests")
                     if warning:
                         lines.append(warning)
             lines += ["", CONFIDENCE]
             return "\n".join(lines)
-        # `active` is already ordered busiest-first by `_rank_by_blocks`, which read the counts
-        # rather than trusting the table's row order, so `active[0]` below needs nothing from the
-        # primitive's ORDER BY.
-        targets = active
-        if len(active) > 1:
-            others = ", ".join(active[1:])
-            lines.append(f"Focusing **{active[0]}**, the busiest injection rule in this window. "
-                         f"Also blocking: {others}. Re-run with rule_name set to look at one of "
-                         f"those instead; the sections below cover the focus rule only.")
-            lines.append("")
+        # Busiest first, by matches, read from the counts rather than any table's row order.
+        targets = [name for name, _, _ in ranked]
+        if len(ranked) > 1:
+            others = ", ".join(f"{n} ({t:,})" for n, t, _ in ranked[1:])
+            lines.append(f"Focusing **{ranked[0][0]}**, the busiest injection detector in this "
+                         f"window ({ranked[0][1]:,} matches, {ranked[0][2]:,} blocked). Also "
+                         f"matching: {others}. Re-run with rule_name set to look at one of those "
+                         f"instead; the sections below cover the focus rule only.")
+        else:
+            lines.append(f"Focus rule: **{ranked[0][0]}** ({ranked[0][1]:,} matches, "
+                         f"{ranked[0][2]:,} blocked).")
+        lines.append("")
 
     # Steps 2-4. The rule filter reaches all six places a match is recorded, so a sub-rule
-    # counted inside a managed group is found too.
+    # counted inside a managed group is found too. Every match, not only blocks: a Count-mode
+    # focus ends as ALLOW, and a BLOCK filter here emptied all four sections for it.
     focus = targets[0]
-    blocked = json.dumps({"rule": focus, "action": "BLOCK"})
+    if focus in count_mode:
+        lines += [f"**{focus} is in Count mode**, so the requests below matched it and were "
+                  f"allowed through. That is the shadow-mode evidence for whether to switch it to "
+                  f"Block.", ""]
+    matched = json.dumps({"rule": focus})
     # Held in variables rather than read back out of `lines` by index. The first version did
     # `lines[lines.index("### Source IPs") + 1]`, which couples the data flow to the rendering: a
     # reordered section or a duplicated heading silently reads the wrong table.
-    paths = _agg(group_by="uri", filter_by=blocked)
-    sources = _agg(group_by="clientIp", filter_by=blocked)
-    agents = _agg(group_by="ua", filter_by=blocked)
-    prints = _agg(group_by="ja4", filter_by=blocked)
+    paths = _agg(group_by="uri", filter_by=matched)
+    sources = _agg(group_by="clientIp", filter_by=matched)
+    agents = _agg(group_by="ua", filter_by=matched)
+    prints = _agg(group_by="ja4", filter_by=matched)
     lines += ["### Target paths", paths, "", "### Source IPs", sources, "",
               "### User agents", agents, "", "### TLS fingerprints", prints, ""]
 
@@ -339,6 +401,9 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
     # same ones a direct call would give.
     ips = _extract_column(sources, "httpRequest.clientIp")
     ja4s = _extract_column(prints, "ja4Fingerprint")
+    # A failed query and an empty one both extract to []. Only the empty one is evidence.
+    unread_steps = {name: why for name, table in (("source IPs", sources), ("TLS fingerprints", prints))
+                    for pairs, why in [_outcome(table)] if pairs is None}
     if ips:
         from tools.waf_logs import analyze_ip
         lines += [f"### Source profile: {ips[0]}",
@@ -351,6 +416,10 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
 
     # Step 6. The matrix, in code.
     classification, recommendation = _classify(ips, ja4s)
+    if unread_steps:
+        classification = ("unknown, the " + " and ".join(unread_steps) + " query did not answer ("
+                          + "; ".join(unread_steps.values()) + ")")
+        recommendation = "Re-run once the query succeeds; nothing here says the pattern is absent."
     lines += ["### Assessment",
               f"Pattern: {classification}",
               f"Recommendation: {recommendation}", "",
@@ -360,19 +429,6 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
               f"Next: call record_finding(title='Injection activity on {focus}', "
               f"severity='medium', detail='...') to keep this in the report."]
     return "\n".join(lines)
-
-
-def _rank_by_blocks(by_rule_table: str, wanted: list) -> list:
-    """The injection rules that actually blocked, busiest first.
-
-    A named function rather than three lines inline, so a test can assert the RANKING rather than
-    re-derive it. The first test of this asserted `_extract_pairs` and then sorted in the test body,
-    which proves the test's own arithmetic and nothing about what the tool picks -- the same
-    one-layer-off mistake as asserting a denominator's summation when the exclusion lives in which
-    metrics get requested."""
-    keep = set(wanted)
-    pairs = [p for p in _extract_pairs(by_rule_table, "terminatingRuleId") if p[0] in keep]
-    return [name for name, _ in sorted(pairs, key=lambda p: p[1], reverse=True)]
 
 
 def _extract_pairs(table: str, column: str) -> list:

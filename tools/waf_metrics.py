@@ -194,6 +194,74 @@ def _period_for_window(start_epoch: int) -> int | None:
     return None
 
 
+def search_label(*dims: str) -> str:
+    """A `Label` for a SEARCH query: the named dimensions, then the metric name, joined by `|`.
+
+    **A SEARCH result's default label is not a fixed format.** Measured 2026-10-15, bot names on
+    two WebACLs: three bots came back labelled `go_http`, `googlebot` and `route53_health_check`,
+    and a WebACL with one bot came back labelled `AllowedRequests`, which is its metric name. One
+    geo label with two metrics came back as `AllowRuleMatch` and `AllowedRequests`, with no label
+    name at all. A parser of the default label reads one of those shapes as the other. A template
+    gives the same shape on every call, and `|` is not a legal character in any of these values.
+    """
+    return "|".join([*(f"${{PROP('Dim.{d}')}}" for d in dims), "${PROP('MetricName')}"])
+
+
+# The four terminal outcomes a label or attack-type metric records, which are disjoint per
+# request. The `*RuleMatch` metrics count rule matches instead and can exceed them: measured
+# 2026-10-15, `LFI_URIPath` had BlockRuleMatch 34 and BlockedRequests 17 over the same 13 days.
+REQUEST_METRICS = ("AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests")
+# The same four as a SEARCH filter, for a search that adds only them. Asking for every metric name
+# returns the `*RuleMatch` series too, and one call answers at most 500 series.
+REQUEST_METRIC_FILTER = "MetricName=(" + " OR ".join(f'"{m}"' for m in REQUEST_METRICS) + ")"
+
+
+def summed_sub_rules(cw, webacl_name: str, rules: list, scope: str = "CLOUDFRONT", region: str = ""):
+    """`(names, note)` for the sub-rules of every managed rule group the WebACL runs more than once.
+
+    **A managed sub-rule's metric names no instance.** `Rule=<sub-rule>`, `ManagedRuleGroupRule`
+    and the label `*RuleMatch` metrics carry the sub-rule's name and nothing about which WebACL rule
+    ran it, so a group deployed twice writes both instances into one series. Measured 2026-10-16 on
+    `shield-sample-webacl`, which runs AWSManagedRulesBotControlRuleSet at priorities 10 and 11:
+    over 13 days TGT_TokenAbsent read 3,436 against 2,230 logged requests, CategoryHttpLibrary 65
+    against 35, SignalNonBrowserUserAgent 6 against 3, while the label request metrics matched the
+    logs exactly. `response-id-on-page` runs it once, and all three read 440 for 2026-10-15.
+
+    A sub-rule is the group's when the configuration overrides it there, or when CloudWatch has a
+    `ManagedRuleGroupRule` series for it under that group, which covers sub-rules nothing overrides
+    (`TGT_TokenAbsent`). That search is sent only when a group repeats. `({}, "")` when none does.
+    """
+    counts, names = {}, set()
+    for rule in rules:
+        group = (rule.get("Statement") or {}).get("ManagedRuleGroupStatement")
+        if group:
+            counts[group.get("Name", "")] = counts.get(group.get("Name", ""), 0) + 1
+    repeated = {g: n for g, n in counts.items() if n > 1}
+    if not repeated:
+        return set(), ""
+    for rule in rules:
+        group = (rule.get("Statement") or {}).get("ManagedRuleGroupStatement") or {}
+        if group.get("Name") in repeated:
+            names |= {o.get("Name", "") for o in group.get("RuleActionOverrides", [])}
+    dims, extra = ("{AWS/WAFV2,ManagedRuleGroup,ManagedRuleGroupRule,Region,WebACL}", f' Region="{region}"') \
+        if scope == "REGIONAL" and region else ("{AWS/WAFV2,ManagedRuleGroup,ManagedRuleGroupRule,WebACL}", "")
+    end = datetime.now(timezone.utc)
+    note = (f"* {', '.join(f'{g} runs {n} times' for g, n in repeated.items())} in this WebACL. CloudWatch's "
+            "metric for a managed sub-rule names no instance, so a row marked * adds up every instance of "
+            "its group and can exceed the requests it matched.")
+    try:
+        for group in repeated:
+            resp = cw.get_metric_data(MetricDataQueries=[{
+                "Id": "g", "Label": search_label("ManagedRuleGroupRule"),
+                "Expression": f"SEARCH('{dims} WebACL=\"{webacl_name}\"{extra} ManagedRuleGroup=\"{group}\"', 'Sum', 86400)"}],
+                StartTime=end - timedelta(days=14), EndTime=end)
+            names |= {r.get("Label", "").split("|")[0] for r in resp.get("MetricDataResults", [])}
+    except Exception as e:
+        note += (f" Only the sub-rules the configuration overrides are marked: the lookup for the rest "
+                 f"failed ({type(e).__name__}: {e}).")
+    return names - {""}, note
+
+
 def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
                              end_epoch: int, metric_name: str = "BlockedRequests"):
     """What CloudWatch says this rule terminated in this window. `(count, reason)`, never raises.

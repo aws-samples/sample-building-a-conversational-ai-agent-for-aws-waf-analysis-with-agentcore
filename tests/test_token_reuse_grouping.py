@@ -133,7 +133,7 @@ def test_neither_engine_parses_the_cookie_anymore():
 def test_the_query_requires_the_label_so_there_is_no_empty_catch_all():
     """A `token:accepted` record without a `token:id` would parse to an empty key and sort first by
     `ip_count`. Both engines filter to records that carry the label, so that group cannot form."""
-    assert "and @message like 'awswaf:managed:token:id:'" in SPEC["query"], \
+    assert "and @message like '\"name\":\"awswaf:managed:token:id:'" in SPEC["query"], \
         "the CWL query does not require the token:id label"
     assert "any_match(labels, l -> l.name LIKE 'awswaf:managed:token:id:%')" in SPEC["athena"], \
         "the Athena query does not require the token:id label"

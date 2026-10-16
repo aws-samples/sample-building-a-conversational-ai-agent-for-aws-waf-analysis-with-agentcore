@@ -1,5 +1,157 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: Count matches recorded inside a managed rule group were invisible to several queries
+
+A Count is never the top-level `action`, which holds only the terminating one, and a managed sub-rule's
+Count is nested in `ruleGroupList`. Measured on one day: 0 counted requests at the top level, 1,792
+nested. `top_counted_ips`, `top_counted_countries` and `aggregate_logs(filter_by={"action": "COUNT"})`
+read the top level and came back empty or close to it; all three now use one predicate covering every
+location. `investigate_injection` ranked detectors by BLOCK only, so a Count-mode detector could never
+be the focus rule; on 2026-09-08 03:00 it skipped 160 `CrossSiteScripting_QUERYARGUMENTS` matches for a
+rule with 2 blocks. It now ranks by matches, includes the injection sub-rules overridden to Count, and
+says when the focus rule is in Count mode. Patrol's per-rule IP and URI cells were empty for Count rules
+for the same reason, and so was the bypass investigation's list of Count rules on Athena. That list now
+counts each rule once per request on both engines. Its CloudWatch queries stay under StartQuery's
+10,000-character limit: every Count rule the WebACL configures goes into them, and more than about 140
+do not fit in one. On CloudWatch the `count_rule_top_*` queries also matched the rule name and a Count as two
+separate pieces of the record, so a request the rule blocked while another rule counted it matched:
+over 14 days `LFI_URIPATH`, which only blocks, showed 34 Count hits.
+
+### Fixed: patrol missed rules that had been quiet for the last 14 days, whatever window it scanned
+
+CloudWatch SEARCH discovers only metrics with data in the last 14 days, counted from now. For
+2026-09-08 04:00 it returned no SQLi rule and 0 blocks while the rule had blocked 120, so patrol said
+"All systems nominal". Each rule in the WebACL's configuration is now also read directly. The COUNT
+evaluation does the same, and no longer files a rule with no metric under "0 hits, safe to switch":
+a zero is confirmed first, and a rule with metrics off, or whose read failed, gets its own section.
+Step 3 is now actually ranked by hit volume.
+
+### Fixed: the overview showed nothing for a window more than 15 days old
+
+For 2026-09-08 04:00, an hour in which the SQLi rule blocked 120 requests, `get_waf_overview(top_rules)`
+said "No metrics data ... Verify the WebACL name and time range". It had two causes. Like patrol, it
+read rules only through SEARCH, and it now reads each rule in the WebACL's configuration directly. And
+every query type chose its period from the window's length, so a one-hour window asked for one-minute
+points. CloudWatch keeps those for 15 days and after that answers zeros with status Complete. The
+period is now never finer than what CloudWatch still holds: five minutes up to 63 days, one hour up to
+455, and an older window is refused with that reason. The same hour now shows 120 SQLi blocks and
+1,923 allowed requests. A window that is not a whole number of those points also read more than it
+named, because CloudWatch answers whole points: 97 days back, 04:30-05:00 at one hour answered the
+whole hour. The overview now sends whole points and, when that changes the window, says which window
+its figures cover.
+
+### Fixed: overview figures read from a query that could not mean what it printed
+
+Before saying a breakdown is empty, the overview checks whether the WebACL mitigated anything, using
+the window's length in seconds as the period. A window cut off at the present is not a whole number of
+minutes, CloudWatch rejects that period, and the failure printed "No attack data in this period". The
+check now uses a valid period, and a failed check says it failed. The Challenge and CAPTCHA solved
+counts used a one-week period, which reads past the end of a shorter window: one hour three days ago
+read 130,678 requests against 1,896 for the hour itself, so the solve rate set days of solves against
+an hour of challenges. When challenges were issued and none solved, it gave no verdict at all; that is
+now the low-rate case. `rate_limits` looked rate rules up by rule name, but their metrics are keyed by
+metric name, so a rule whose two names differ never appeared. It also left out CAPTCHA and Count, and
+said there were no rate-limit rules when the WebACL configuration could not be read.
+
+### Fixed: bot, label and attack-type breakdowns misread CloudWatch's labels
+
+The default label on a SEARCH result changes shape with how many series come back and what else is in
+the same call. On a WebACL with one bot, that bot came back labelled `AllowedRequests`, so the
+overview and patrol listed a bot called "AllowedRequests", and the weekly report's verified-bot chart
+and Advanced Bot Detection card were empty for that WebACL. A label with two metrics was listed twice
+in `top_labels`. Every SEARCH query now sets its own label format, and label and signal counts stop
+adding rule-match metrics, which count matches rather than requests: on 2026-10-14, on a WebACL that
+runs Bot Control twice, 7 requests carried `TGT_TokenAbsent` and its `CountRuleMatch` read 14. Where the Advanced Bot Detection card did have
+data, it showed those matches as "Counted" and every blocked request carrying a targeted label as
+"Mitigated", including the 34 that other rules had blocked. It now lists each targeted label with the
+requests that carried it and how they ended, without crediting the rule that ended them. The report
+also kept the first series it saw for a bot name, so a client merely claiming a verified bot's name
+could land among the verified bots; the two are now counted apart.
+
+### Fixed: a managed rule group deployed twice doubled its sub-rules' counts unannounced
+
+A managed sub-rule's metric names no instance, so with the same rule group in a WebACL twice both
+instances write into one series. On a WebACL running Bot Control twice, `TGT_TokenAbsent` read 3,436
+over 13 days for 2,230 logged requests; with one instance the two agree (440 and 440). The overview's
+`top_rules` and the COUNT evaluation now mark such rows and say why, and the evaluation no longer
+lists an overridden sub-rule once per instance.
+
+### Fixed: metric searches lost series with nothing saying so
+
+One CloudWatch call answers at most 500 series, and it cuts SEARCH results to fit, with status
+Complete and no message: a search answering 45 series alone answered 20 beside 480 other queries, and
+5 beside 495. Patrol reads each configured rule beside five searches, so a WebACL of about 50 rules
+lost the sub-rules only a search finds, and the weekly report's country and bot searches shared calls
+the same way. Every metric read now sends each search in a call of its own, and one that answers 500
+series fails with that reason rather than passing as whole. The overview's `top_labels` and
+`bot_names` searches, the two a busy Bot Control WebACL could take past 500, now ask only for the four
+request metrics they count.
+
+### Fixed: a weekly report shorter than seven days counted seven
+
+Every weekly figure was read as one seven-day point whatever `days` was, and CloudWatch answers a
+point that runs past the window's end. A three-day report counted seven days, and its previous-period
+baseline ran four days into the report itself. Each window is now one point of its own length.
+
+### Fixed: verdicts reached from a query that failed or did not parse
+
+`analyze_ip` read a failed User-Agent query as "NAT, Confidence: HIGH", and a failed URI query plus a
+real peak as "HIGH CONFIDENCE: Endpoint hammering". `detect_bypass` and the false-positive
+investigation read an unparseable peak as 0. Each verdict now stops at the first rung whose input is
+unknown and names the query. The bypass verdict also calls a `bot:verified` client a verified bot
+rather than a scraper, and it and the scan now share one automation User-Agent list (the scan
+missed Python clients other than `requests`; the verdict missed `libwww-perl`). iPhone and iPad are
+no longer counted as Mac when judging whether an IP is shared. An IP with no allowed request in the
+window is now "no bypass" in the bypass investigation, where it fell through to "mixed or
+insufficient", and its action breakdown no longer adds "primarily an attacker being mitigated, with
+partial bypass".
+
+Both tools also set a request rate over every request against a count of non-static URIs, so an IP
+pulling only static files had 0 URIs and read as "HIGH CONFIDENCE: Endpoint hammering", and so did one
+sending 300 images a minute beside 2 API paths. The scraper and hammering verdicts now read the
+non-static rate, and the crawler verdicts reached after them name that rate. A client whose requests are
+nearly all static, with more than 200 static requests in its busiest minute, gets its own "LIKELY" verdict,
+which says whether it fetched many files or the same few over and over, and that these signals cannot
+tell its intent. The bypass investigation adds that such traffic reached static files rather than the
+application, so it is not a bypass.
+
+### Fixed: text in a URI or header could pass for a WAF label on CloudWatch
+
+Several queries matched label words anywhere in the raw record. Three probe requests with
+"bot:verified" in the path were dropped from five bypass-scan sections; the same text could hide an
+IP from `top_allowed_crawlers` and `top_allowed_repeaters`, raise the weekly report's Anti-DDoS
+counts, or set `token_reuse_ips`'s session id. `host_top_ips` matched the host name anywhere, and its
+top row was 45,841 CloudFront access-log records with no client IP. Label tests now read the labels
+array or match the label's `name` key, which client text cannot produce, and the host template reads
+the Host header in any casing.
+
+### Fixed: the challenge check reported an Anti-DDoS event that never happened
+
+It counted any Anti-DDoS label, and `challengeable-request` is on nearly every request the rule group
+evaluates: 640,593 in 14 days with no event. Only `event-detected` counts now.
+
+### Fixed: failures reported as facts in the weekly report and patrol
+
+A failed DDoS event count printed "No events"; failed Challenge and CAPTCHA solved counts printed 0; a
+failed Bot Control section was blamed on metric discovery; a failed logging-configuration read was
+explained as an S3 destination. Each now names the failure. The report's total includes CAPTCHA,
+which its mitigated share already did. Patrol crashed when the window was outside the Athena
+projection range, double-counted Counted requests in its traffic donut, skipped one hard-coded WebACL
+name instead of the one being scanned, and its Chinese text said "yesterday" for a baseline a week
+earlier. `investigate_injection` reported a failed WebACL read as "no injection coverage".
+
+### Fixed: guidance that contradicted AWS on `TGT_TokenAbsent`
+
+The deep-review guide rated overriding it to Count as Critical, and the knowledge base said never to
+do it. Its default action is already Count. The harmful change is to Block, which without the SDK
+blocks every first visit; both now say so. Run `deploy/sync-kb.sh` for the knowledge base to pick it up.
+
+### Changed: tool descriptions state the real query window
+
+Six tool schemas said Athena was capped at 60 minutes. Both engines allow 360.
+
 ## 0.31.0 (2026-10-15)
 
 ### Changed: the knowledge base is always deployed, and before the backend

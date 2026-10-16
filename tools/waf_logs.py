@@ -12,7 +12,9 @@ from tools.aws_session import get_client
 from tools.session_state import (get_logs_region, get_log_destination, is_log_filter_active,
                                  note_query_success, note_window_capped)
 
-from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
+from tools.static_assets import ATHENA_EXCLUDE_STATIC, ATHENA_ONLY_STATIC, CWL_EXCLUDE_STATIC, CWL_ONLY_STATIC
+from tools.counted import COUNTED_ATHENA, COUNTED_CWL
+from tools.waf_aggregate import _LABELS_ARRAY
 from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL,
                                 poll_timeout_message, query_failed_message, stop_query)
 
@@ -80,19 +82,19 @@ def _log(msg: str):
 # Parameterized query templates. LLM picks a query_type + provides parameters.
 TEMPLATES = {
     "count_rule_top_ips": {
-        "query": "filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "query": "filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top IPs triggering a COUNT rule",
     },
     "count_rule_top_uris": {
-        "query": "filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top URIs where a COUNT rule is triggered",
     },
     "count_rule_top_uas": {
-        "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '\"ruleId\":\"{rule_name}\"' and @message like '\"action\":\"COUNT\"' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"user-agent\",\"value\":\"(?<ua>.*?)\"\\}/ | filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | stats count(*) as cnt by ua | sort cnt desc | limit {limit}",
         "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua, count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT') OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'))) GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["rule_name"],
         "description": "Top User-Agents triggering a COUNT rule",
@@ -146,7 +148,9 @@ TEMPLATES = {
         "description": "All WAF labels applied to an IP's requests — bot signals, Anti-DDoS, token status. CWL: first label per request only; Athena: all labels (more accurate)",
     },
     "host_top_ips": {
-        "query": "filter @message like '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",
+        # Through the Host header, as the two host templates below already do: a bare
+        # `@message like '{host}'` also matched the host name turning up in a URI or a referer.
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as hits by httpRequest.clientIp, action | sort hits desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", action, count(*) as hits FROM {TABLE} CROSS JOIN UNNEST(httprequest.headers) AS t(h) WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND lower(h.name) = 'host' AND h.value = '{host}' GROUP BY httprequest.clientip, action ORDER BY hits DESC LIMIT {LIMIT}",
         "params": ["host"],
         # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
@@ -202,14 +206,14 @@ TEMPLATES = {
         "description": "Top countries receiving CAPTCHA",
     },
     "top_counted_ips": {
-        "query": "filter nonTerminatingMatchingRules.0.action = 'COUNT' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
+        "query": "filter " + COUNTED_CWL + " | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND " + COUNTED_ATHENA + " GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top IPs triggering COUNT rules (by request count, not rule count)",
     },
     "top_counted_countries": {
-        "query": "filter nonTerminatingMatchingRules.0.action = 'COUNT' | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
-        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(nonterminatingmatchingrules, r -> r.action = 'COUNT') GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
+        "query": "filter " + COUNTED_CWL + " | stats count(*) as cnt by httpRequest.country | sort cnt desc | limit {limit}",
+        "athena": "SELECT httprequest.country as \"httpRequest.country\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND " + COUNTED_ATHENA + " GROUP BY httprequest.country ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Top countries triggering COUNT rules",
     },
@@ -232,7 +236,9 @@ TEMPLATES = {
         "description": "JA4 fingerprints for a specific IP",
     },
     "label_top_ips": {
-        "query": "filter @message like '{label}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
+        # Scoped to the labels array, as `aggregate_logs`' label filter is: a bare
+        # `@message like '{label}'` also matched the label text turning up in a URI or a header.
+        "query": "parse @message /\"labels\":\\[(?<lbls>[^\\]]*)\\]/ | filter lbls like '{label}' | stats count(*) as cnt by httpRequest.clientIp | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%{label}%') GROUP BY httprequest.clientip ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["label"],
         "description": "Top IPs matching a specific AWS WAF label",
@@ -268,13 +274,13 @@ TEMPLATES = {
         "description": "Top ALLOW IPs with unique non-static URI count",
     },
     "top_allowed_crawlers": {
-        "query": "filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
+        "query": _LABELS_ARRAY + " | filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " and (not ispresent(lbls) or not (lbls like 'bot:verified')) | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter unique_uris > 50 | sort unique_uris desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'" + ATHENA_EXCLUDE_STATIC + " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') ) GROUP BY httprequest.clientip HAVING count(DISTINCT httprequest.uri) > 50 ORDER BY unique_uris DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Find IPs with high URI diversity (likely crawlers)",
     },
     "top_allowed_repeaters": {
-        "query": "filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " and @message not like 'bot:verified' | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 200 and unique_uris < 10 | sort total desc | limit {limit}",
+        "query": _LABELS_ARRAY + " | filter action = 'ALLOW'" + CWL_EXCLUDE_STATIC + " and (not ispresent(lbls) or not (lbls like 'bot:verified')) | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, min(@timestamp) as first_seen, max(@timestamp) as last_seen by httpRequest.clientIp | filter total > 200 and unique_uris < 10 | sort total desc | limit {limit}",
         "athena": "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total, count(DISTINCT httprequest.uri) as unique_uris FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'" + ATHENA_EXCLUDE_STATIC + " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') ) GROUP BY httprequest.clientip HAVING count(*) > 200 AND count(DISTINCT httprequest.uri) < 10 ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Find IPs hitting few URIs at high frequency",
@@ -300,19 +306,19 @@ TEMPLATES = {
     # had it), and the safer of the two directions, but a reader must not take "one fewer session" here as
     # "no reuse". Keyed `token_id`, which `_name_is_sensitive` masks via its `token` component. ROADMAP 4.4.
     "token_reuse_ips": {
-        "query": "filter @message like 'token:accepted' and @message like 'awswaf:managed:token:id:' | parse @message /awswaf:managed:token:id:(?<token_id>[0-9a-f-]+)/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id | sort ip_count desc | limit {limit}",
+        "query": "filter @message like '\"name\":\"awswaf:managed:token:accepted\"' and @message like '\"name\":\"awswaf:managed:token:id:' | parse @message /\"name\":\"awswaf:managed:token:id:(?<token_id>[0-9a-f-]+)\"/ | stats count_distinct(httpRequest.clientIp) as ip_count, count(*) as total by token_id | sort ip_count desc | limit {limit}",
         "athena": "SELECT regexp_extract(array_join(transform(labels, l -> l.name), ','), 'awswaf:managed:token:id:([0-9a-f-]+)', 1) as token_id, count(DISTINCT httprequest.clientip) as ip_count, count(*) as total FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND any_match(labels, l -> l.name LIKE '%token:accepted%') AND any_match(labels, l -> l.name LIKE 'awswaf:managed:token:id:%') GROUP BY regexp_extract(array_join(transform(labels, l -> l.name), ','), 'awswaf:managed:token:id:([0-9a-f-]+)', 1) ORDER BY ip_count DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Detect token reuse across multiple IPs (one WAF session token:id seen from many IPs)",
     },
     "host_traffic_profile": {
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | stats count(*) as total, count_distinct(httpRequest.uri) as unique_uris, sum(strcontains(httpRequest.httpMethod, 'POST') + strcontains(httpRequest.httpMethod, 'PUT') + strcontains(httpRequest.httpMethod, 'DELETE')) as write_requests by host | sort total desc | limit {limit}",
         "athena": "SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value as host, count(*) as total, count(DISTINCT httprequest.uri) as unique_uris, sum(CASE WHEN httprequest.httpmethod IN ('POST','PUT','DELETE') THEN 1 ELSE 0 END) as write_requests FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value ORDER BY total DESC LIMIT {LIMIT}",
         "params": [],
         "description": "Traffic profile per Host header",
     },
     "host_uri_pattern": {
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.uri | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.uri as \"httpRequest.uri\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.uri ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
         # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
@@ -320,7 +326,7 @@ TEMPLATES = {
         "description": "Top URIs for a specific host",
     },
     "host_method_distribution": {
-        "query": "parse @message /\\{\"name\":\"(H|h)ost\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
+        "query": "parse @message /(?i)\\{\"name\":\"host\",\"value\":\"(?<host>.*?)\"\\}/ | filter host = '{host}' | stats count(*) as cnt by httpRequest.httpMethod | sort cnt desc | limit {limit}",
         "athena": "SELECT httprequest.httpmethod as \"httpRequest.httpMethod\", count(*) as cnt FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND element_at(filter(httprequest.headers, h -> lower(h.name) = 'host'), 1).value = '{host}' GROUP BY httprequest.httpmethod ORDER BY cnt DESC LIMIT {LIMIT}",
         "params": ["host"],
         # ROADMAP 6.13: the `host` param becomes a PREDICATE on the Host header.
@@ -550,7 +556,7 @@ def run_logs_query(
             - host_uri_pattern: Top URIs for a specific host (needs host param)
             - host_method_distribution: HTTP method distribution for a host (needs host param)
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED — ask user if not provided.
-        duration_minutes: Duration in minutes from start_time (default 180, max 360 for CWL, 60 for Athena). The query covers [start_time, start_time + duration_minutes].
+        duration_minutes: Duration in minutes from start_time (default 180, max 360, both engines). The query covers [start_time, start_time + duration_minutes].
         log_group: CW Logs log group name. Auto-detected from WebACL config if empty.
         rule_name: Rule name (for count_rule_* queries).
         ip: Client IP address (for ip_* queries).
@@ -878,17 +884,18 @@ def _interpret_host_profile(rows: list[dict]) -> str:
     return "---\nTraffic Type:\n" + "\n".join(findings)
 
 
-def _is_nat_traffic(ua_rows: list[dict]) -> bool:
+def _is_nat_traffic(ua_rows: list[dict]) -> bool | None:
     """Determine if UA diversity indicates real NAT (multiple users) vs UA rotation (one bot).
 
     Real NAT: diverse OS/browser combos (Windows+Mac+iPhone, Chrome+Safari+Firefox)
     UA rotation: same template with only version numbers changing, or sequential versions.
 
-    Returns True if likely NAT, False if suspicious (possible rotation).
+    Returns True if likely NAT, False if suspicious (possible rotation), and None when there are
+    too few UAs to judge. None used to be True, which the caller printed as "Confidence: HIGH".
     """
     uas = [row.get("ua", "") for row in ua_rows if row.get("ua")]
     if len(uas) < 4:
-        return True  # too few to judge, assume NAT
+        return None
 
     # Extract OS and browser base signatures (strip version numbers)
     os_set = set()
@@ -897,12 +904,14 @@ def _is_nat_traffic(ua_rows: list[dict]) -> bool:
 
     for ua in uas:
         # OS detection
+        # iPhone and iPad before Mac: their UAs say "like Mac OS X", so the other order read every
+        # iOS device as a Mac and collapsed a Mac-and-iPhone office into one OS.
         if "Windows" in ua:
             os_set.add("Windows")
-        elif "Macintosh" in ua or "Mac OS" in ua:
-            os_set.add("Mac")
         elif "iPhone" in ua or "iPad" in ua:
             os_set.add("iOS")
+        elif "Macintosh" in ua or "Mac OS" in ua:
+            os_set.add("Mac")
         elif "Android" in ua:
             os_set.add("Android")
         elif "Linux" in ua:
@@ -976,7 +985,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     Args:
         ip: IP address to analyze.
         start_time: Start date/time for the query (e.g., "2026-05-09" or "2026-05-09T14:00"). REQUIRED.
-        duration_minutes: Duration in minutes from start_time (default 180, max 360 for CWL, 60 for Athena).
+        duration_minutes: Duration in minutes from start_time (default 180, max 360, both engines).
 
     Returns:
         Formatted analysis: NAT status, action breakdown, request rate, JA4 fingerprints, top URIs, top query strings (sensitive values redacted).
@@ -1055,7 +1064,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                 f"nothing below it ran.\n{_empty_reason(failures, 'diversity')}\n\n"
                 f"This is a query failure, NOT a quiet IP. Say so rather than reporting no "
                 f"activity, and do not re-run it unchanged.")
-    if not diversity:
+    # Athena answers a `count(*)` with no group-by as one row of 0, CloudWatch with no rows.
+    if not diversity or str(diversity[0].get("total", "")) == "0":
         # ROADMAP 7.7 item 1, group B. No metric dimension covers an IP, so the witness is the different
         # question "was the log path returning rows at all", which needs two witnesses to avoid flagging
         # every quiet window. `action=None` because this tool looks at every action.
@@ -1065,6 +1075,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         return f"No log records found for {ip} in this time window.{warning}"
 
     d = diversity[0]
+    nat_unknown = None
     ua_count = int(d.get("ua_count", "0"))
     ja4_count = int(d.get("ja4_count", "0"))
     total = int(d.get("total", "0"))
@@ -1086,7 +1097,15 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         )
         ua_rows = _safe_query(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20,
                               failures=failures, label="user_agents", notes=notes)
-        if not ua_rows or _is_nat_traffic(ua_rows):
+        nat = _is_nat_traffic(ua_rows) if ua_rows else None
+        if nat is None:
+            # The gate could not decide. Profile anyway, since the sections are real data, but the
+            # verdict below refuses a direction: a shared IP is exactly the one not to block.
+            nat_unknown = (f"the user_agents query failed: {failures['user_agents']}"
+                           if failures.get("user_agents") else
+                           f"only {len(ua_rows)} User-Agent value(s) came back, too few to tell "
+                           f"a shared IP from one client rotating its UA")
+        if nat:
             lines = [
                 f"## {ip} — NAT/Shared IP (skipped)",
                 "",
@@ -1124,6 +1143,55 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"  AND httprequest.clientip = '{safe_ip}'"
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
+    )
+
+    # The same per-minute rate over the requests the URI count reads. The hammering and scraper rungs
+    # set a rate against a count of distinct non-static URIs, and the rate was over every request, so
+    # an IP pulling only static files had 0 URIs at 300/min and read as hammering, and one pulling
+    # 300 images a minute beside 2 API paths did too.
+    dyn_rate_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        f"{CWL_EXCLUDE_STATIC}"
+        ' | stats count(*) as req_per_min by bin(1m)'
+        ' | stats max(req_per_min) as peak_rpm'
+    )
+    dyn_rate_athena = (
+        f"SELECT max(cnt) as peak_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{safe_ip}'"
+        f"{ATHENA_EXCLUDE_STATIC}"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    # The rate over static requests alone, for the static rung. The overall peak less the non-static one
+    # is only a floor on the static requests in the busiest minute: an API burst in another minute
+    # lowers it, and a client pulling 250 static files a minute read as mixed.
+    static_rate_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        f"{CWL_ONLY_STATIC}"
+        ' | stats count(*) as req_per_min by bin(1m)'
+        ' | stats max(req_per_min) as peak_rpm'
+    )
+    static_rate_athena = (
+        f"SELECT max(cnt) as peak_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{safe_ip}'"
+        f"{ATHENA_ONLY_STATIC}"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    # Every distinct URI, static ones included, which is what tells bulk fetching from one file pulled
+    # over and over once the traffic is static.
+    all_uris_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | stats count_distinct(httpRequest.uri) as unique_uris_all'
+    )
+    all_uris_athena = (
+        f"SELECT count(DISTINCT httprequest.uri) as unique_uris_all"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
     )
 
     ja4_cwl = (
@@ -1180,16 +1248,24 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
                                           failures=failures, label=label, notes=notes)
 
-    _later("actions", cross_cwl, cross_athena, 15)
+    # The verdict's inputs first. Eight jobs share five workers and one budget, so a job registered
+    # sixth starts only when one of the first five ends, and a slow first wave left it no time.
     _later("request_rate", rate_cwl, rate_athena, 1)
-    _later("ja4", ja4_cwl, ja4_athena, 5)
+    _later("request_rate_dynamic", dyn_rate_cwl, dyn_rate_athena, 1)
+    _later("request_rate_static", static_rate_cwl, static_rate_athena, 1)
     _later("uri_diversity", uri_cwl, uri_athena, 1)
+    _later("actions", cross_cwl, cross_athena, 15)
+    _later("all_uris", all_uris_cwl, all_uris_athena, 1)
+    _later("ja4", ja4_cwl, ja4_athena, 5)
     _later("query_strings", qs_cwl, qs_athena, 8)
 
     results, reasons = run_concurrently(jobs)
     failures.update(reasons)
     cross = results.get("actions", [])
     rate = results.get("request_rate", [])
+    rate_dyn = results.get("request_rate_dynamic", [])
+    rate_static = results.get("request_rate_static", [])
+    all_uris = results.get("all_uris", [])
     ja4 = results.get("ja4", [])
     uri_div = results.get("uri_diversity", [])
     query_strings = results.get("query_strings", [])
@@ -1203,6 +1279,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         lines.append("⚠️ Multiple UAs but single JA4 = likely UA spoofing (same TLS stack)")
     elif ua_count == 1 and ja4_count == 1:
         lines.append("Single UA + single JA4 = single client")
+    if nat_unknown:
+        lines.append(f"⚠️ Shared-IP (NAT) check did not run: {nat_unknown}.")
     lines.append("")
 
     # Action breakdown
@@ -1244,6 +1322,21 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     else:
         lines.append("**URI diversity** (non-static):")
         lines.append(_empty_reason(failures, "uri_diversity", "  (no non-static requests)"))
+    if rate_dyn and rate_dyn[0].get("peak_rpm"):
+        lines.append(f"**Non-static request rate**: peak {rate_dyn[0]['peak_rpm']} req/min")
+    else:
+        lines.append("**Non-static request rate**:")
+        lines.append(_empty_reason(failures, "request_rate_dynamic", "  (no non-static requests)"))
+    if rate_static and rate_static[0].get("peak_rpm"):
+        lines.append(f"**Static request rate**: peak {rate_static[0]['peak_rpm']} req/min")
+    else:
+        lines.append("**Static request rate**:")
+        lines.append(_empty_reason(failures, "request_rate_static", "  (no static requests)"))
+    if all_uris:
+        lines.append(f"**Distinct URIs, static files included**: {all_uris[0].get('unique_uris_all') or 0}")
+    else:
+        lines.append("**Distinct URIs, static files included**:")
+        lines.append(_empty_reason(failures, "all_uris", "  (no requests in this window)"))
     lines.append("")
 
     # Query strings (raw request content; QUERYARGUMENTS attack payloads land here)
@@ -1271,25 +1364,87 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # Confidence assessment
     lines.append("---")
     lines.append("## Assessment")
-    try:
-        peak_val = float(rate[0].get("peak_rpm", "0")) if rate else 0
-    except (ValueError, TypeError):
-        peak_val = 0
-    try:
-        uri_val = int(uri_div[0].get("unique_uris", "0")) if uri_div else 0
-    except (ValueError, TypeError):
-        uri_val = 0
+    def _known(rows, key, cast, label):
+        """The value, 0 when the query answered with no rows, or None when it failed or its answer
+        does not parse. None used to be 0, and the ladder below ran on the 0. Then no rows became
+        None as well, but on CloudWatch a `stats` with no group-by over no records answers no rows,
+        so an IP sending only static assets could not be ranked there while Athena, answering a row
+        of zeros, called it hammering. Athena's `max` over no rows is NULL, which arrives as "", and
+        is the same zero. A row without the field is not: that is an alias the query did not
+        write, and reading it as 0 was a confident answer to nothing."""
+        if failures.get(label):
+            return None
+        if not rows or rows[0].get(key) == "":
+            return cast(0)
+        try:
+            return cast(rows[0].get(key))
+        except (ValueError, TypeError):
+            return None
 
-    if ua_count > 1 and ja4_count == 1 and peak_val > 50:
-        lines.append("**HIGH CONFIDENCE: Bot with UA rotation.** Multiple UAs but single JA4 fingerprint = same TLS client spoofing User-Agent.")
-    elif peak_val > 200 and uri_val > 50:
-        lines.append("**HIGH CONFIDENCE: Automated scraper.** Peak >200 req/min + >50 unique URIs.")
-    elif peak_val > 200 and uri_val < 10:
-        lines.append("**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 req/min concentrated on few URIs.")
-    elif uri_val > 50:
-        lines.append("**LIKELY: Probable crawler/scraper.** High URI diversity but moderate frequency. Needs user confirmation.")
-    else:
-        lines.append("**CANNOT DETERMINE** — signals are mixed. Ask user for business context on this IP.")
+    peak_val = _known(rate, "peak_rpm", float, "request_rate")
+    dyn_peak = _known(rate_dyn, "peak_rpm", float, "request_rate_dynamic")
+    static_peak = _known(rate_static, "peak_rpm", float, "request_rate_static")
+    uri_val = _known(uri_div, "unique_uris", int, "uri_diversity")
+    non_static = _known(uri_div, "total_non_static", int, "uri_diversity")
+    all_uri_val = _known(all_uris, "unique_uris_all", int, "all_uris")
+    unknown = {"request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
+               "request_rate_static": static_peak is None,
+               "uri_diversity": uri_val is None or non_static is None}
+
+    def _static_client():
+        """The LIKELY line for a fast client whose requests are nearly all static. The rate is
+        measured and the intent is not, so it names the shapes that fit rather than one of them.
+        The distinct-URI count only picks the shape, so without it the verdict stands unshaped."""
+        n = all_uri_val
+        shape = ("" if n is None else
+                 f" It is fetching many files ({n} distinct URIs), which is how bulk fetching, a mirror or "
+                 f"an image scraper looks. These signals cannot tell which." if n > 50 else
+                 f" It is pulling the same {n} file{'s' if n != 1 else ''} over and over, which fits a flood "
+                 f"aimed at a file, a client stuck in a retry loop, or a monitoring probe. These signals "
+                 f"cannot tell which." if n <= 2 else
+                 f" It is spread over {n} distinct URIs.")
+        return (f"**LIKELY: High-rate static-asset client** ({total - non_static:,} of {total:,} requests "
+                f"static, peak {static_peak:g} static req/min).{shape} "
+                f"Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
+                f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
+                f"filter_by='{{\"ip\": \"{ip}\"}}')).")
+
+    # Evaluated in order, and a rung whose input is unknown stops the ladder rather than being
+    # skipped: the rung might have fired, so every rung after it would be answering the wrong
+    # question. Each rung names what it reads.
+    rungs = [
+        (("request_rate",), lambda: ua_count > 1 and ja4_count == 1 and peak_val > 50,
+         "**HIGH CONFIDENCE: Bot with UA rotation.** Multiple UAs but single JA4 fingerprint = same TLS client spoofing User-Agent."),
+        (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val > 50,
+         "**HIGH CONFIDENCE: Automated scraper.** Peak >200 non-static req/min + >50 unique URIs."),
+        (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val < 10,
+         "**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 non-static req/min concentrated on few URIs."),
+        # The static peak, not the overall one: an API burst in a mostly static window made the overall
+        # peak minute, and the static share alone is over the whole window.
+        (("request_rate_static", "uri_diversity"),
+         lambda: static_peak > 200 and non_static < 0.1 * total, None),
+        # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
+        (("uri_diversity",), lambda: uri_val > 50,
+         lambda: f"**LIKELY: Probable crawler/scraper.** High URI diversity at a peak of {dyn_peak:g} "
+                 f"non-static req/min. Needs user confirmation."),
+    ]
+    verdict = None
+    if nat_unknown:
+        verdict = (f"**CANNOT DETERMINE** — the shared-IP check did not run ({nat_unknown}), and a "
+                   f"verdict on a shared IP would apply to every user behind it.")
+    for needs, fires, text in ([] if verdict else rungs):
+        missing = [n for n in needs if unknown[n]]
+        if missing:
+            failed = [n for n in missing if failures.get(n)]
+            odd = [n for n in missing if n not in failed]
+            why = ([f"the {', '.join(failed)} query did not answer"] if failed else []) + \
+                  ([f"the {', '.join(odd)} query answered without a number"] if odd else [])
+            verdict = f"**CANNOT DETERMINE** — {' and '.join(why)}, so this IP cannot be ranked on it."
+            break
+        if fires():
+            verdict = text() if callable(text) else text or _static_client()
+            break
+    lines.append(verdict or "**CANNOT DETERMINE** — signals are mixed. Ask user for business context on this IP.")
 
     lines.append("")
     lines.append("→ If malicious: suggest user add IP to block list or adjust rate-limit threshold.")
