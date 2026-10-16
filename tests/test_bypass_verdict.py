@@ -246,11 +246,18 @@ _STATIC_ONLY = {"cwl": {"frequency_dynamic": [], "uri_diversity": []},
                            "uri_diversity": [dict(ROW, unique_uris="0", total="0")]}}
 
 
+_NO_STATIC = {"cwl": [], "athena": [dict(ROW, peak_rpm="")]}
+
+
 def _shape(engine, dynamic, distinct):
+    """`dynamic` is (non-static peak, URIs, non-static requests), or None for static only. The static
+    peak is what ROW's 300 leaves, which is exact when both peaks fall in one minute."""
     rows = {"actions": [dict(ROW, action="ALLOW", hits="900")], "all_uris": [{"unique_uris_all": distinct}]}
     rows.update(_STATIC_ONLY[engine] if dynamic is None else
                 {"frequency_dynamic": [dict(ROW, peak_rpm=dynamic[0])],
                  "uri_diversity": [dict(ROW, unique_uris=dynamic[1], total=dynamic[2])]})
+    static = 300 - int(dynamic[0]) if dynamic else 300
+    rows["frequency_static"] = [dict(ROW, peak_rpm=str(static))] if static else _NO_STATIC[engine]
     return rows
 
 
@@ -292,14 +299,33 @@ def test_the_probable_scraper_rung_names_the_non_static_rate_it_compared(monkeyp
 @pytest.mark.parametrize("engine", ["cwl", "athena"])
 def test_an_api_burst_in_a_mostly_static_window_is_not_static_traffic(monkeypatch, engine):
     """Peak 210, of which up to 150 non-static: at most 60 static requests in that minute."""
-    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="210")], **_shape(engine, ("150", "3", "27"), "3"))
+    rows = dict(_shape(engine, ("150", "3", "27"), "3"), frequency_static=[dict(ROW, peak_rpm="60")])
+    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="210")], **rows)
     assert "static-asset" not in verdict, verdict
 
 
 @pytest.mark.parametrize("engine", ["cwl", "athena"])
 def test_the_control_a_static_minute_over_200_is_static_traffic(monkeypatch, engine):
-    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="360")], **_shape(engine, ("150", "3", "27"), "3"))
+    rows = dict(_shape(engine, ("150", "3", "27"), "3"), frequency_static=[dict(ROW, peak_rpm="210")])
+    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="360")], **rows)
     assert "static-asset traffic, not a bypass" in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_static_traffic_whose_api_burst_was_in_another_minute_is_still_named(monkeypatch, engine):
+    """Peak 250 allowed and non-static peak 100, in different minutes: the busiest minute held 250
+    static requests, and the overall peak minus the non-static one, 150, read it as mixed."""
+    rows = dict(_shape(engine, ("100", "3", "54"), "3"), frequency_static=[dict(ROW, peak_rpm="250")])
+    verdict = _run(monkeypatch, frequency=[dict(ROW, peak_rpm="250")], **rows)
+    assert "static-asset traffic, not a bypass" in verdict, verdict
+
+
+def test_a_failed_distinct_uri_count_is_said_in_the_static_verdict(monkeypatch):
+    """The investigation shows no distinct-URI section, so the verdict is the only place to say it."""
+    rows = _shape("cwl", None, "1")
+    del rows["all_uris"]
+    verdict = _run(monkeypatch, fail={"all_uris"}, **rows)
+    assert "static-asset traffic" in verdict and "all_uris query timed out" in verdict, verdict
 
 
 @pytest.mark.parametrize("engine", ["cwl", "athena"])
@@ -370,3 +396,62 @@ def test_a_failed_later_counting_query_loses_the_section_rather_than_shortening_
     section, seen = _count_section(monkeypatch, "cwl", cwl=cwl, config=names)
     assert not any("as c149" in q and re.search(r"as c0\b", q) for q in seen["cwl"]), "one query: nothing came after the first"
     assert "ThrottlingException" in section and names[0] not in section, section
+
+
+class _LimitedCwl:
+    """A Logs Insights client that applies StartQuery's length rule as measured 2026-10-16: the query
+    string plus the ` | limit N` the API limit adds must fit in 10,000 characters (limit 2: 9,990 ran
+    and 9,991 was rejected; limit 100000: 9,985 and 9,986). It answers from `answer(query)`."""
+
+    def __init__(self, answer):
+        self.answer, self.sent, self.rows = answer, [], {}
+
+    def start_query(self, queryString, limit=None, **kw):
+        size = len(queryString) + (len(f" | limit {limit}") if limit is not None else 0)
+        self.sent.append(size)
+        if size > 10_000:
+            raise RuntimeError("InvalidParameterException: Query string must be less than or equal to 10000")
+        qid = str(len(self.sent))
+        self.rows[qid] = self.answer(queryString)
+        return {"queryId": qid}
+
+    def get_query_results(self, queryId):
+        return {"status": "Complete", "statistics": {},
+                "results": [[{"field": k, "value": v} for k, v in r.items()] for r in self.rows[queryId]]}
+
+
+def test_the_count_queries_fit_the_limit_with_the_longest_webacl_name(monkeypatch):
+    """Through `query_logs` and `_run_cwl` to the client, so the WebACL prefix and the limit suffix are
+    the real ones. The budget first left out the suffix, which only a 119-character or longer WebACL
+    name and a chunk filled to the last few characters reach, so this tries many configurations."""
+    import random
+    from tools import waf_count_eval as C
+    from tools import waf_query as Q
+    monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
+    monkeypatch.setattr(Q, "get_webacl_name", lambda: "w" * 128)
+    monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
+    monkeypatch.setattr(Q, "get_logs_region", lambda: "us-east-1")
+    monkeypatch.setattr(Q, "POLL_INTERVAL", 0)
+    monkeypatch.setattr(B, "resolve_region", lambda scope: "us-east-1")
+    rng = random.Random(7)
+    sizes = []
+    for _ in range(40):
+        names = sorted({"R" + "".join(rng.choice("abcdefghij-_") for _ in range(rng.randint(8, 60)))
+                        for _ in range(160)})
+        monkeypatch.setattr(C, "_get_all_count_rules", lambda region, scope, names=names: names)
+        fake = _LimitedCwl(_records([[names[0], names[-1]]] * 2))
+        monkeypatch.setattr(Q, "get_client", lambda *a, fake=fake, **k: fake)
+        failures, notes = {}, {}
+        hits = B._cwl_count_rules("203.0.113.9", 0, 3600, failures, notes)
+        assert not failures, (max(fake.sent), failures)
+        assert {"rule": names[-1], "hits": "2"} in hits, hits
+        sizes += fake.sent
+    assert max(sizes) > 9_985, f"no query came near the limit ({max(sizes)}), so this proves nothing"
+
+
+def test_the_static_peak_reads_only_static_allowed_requests():
+    import inspect
+    src = inspect.getsource(B._step_investigate_ip)
+    for name, frag in (("static_cwl", "CWL_ONLY_STATIC"), ("static_athena", "ATHENA_ONLY_STATIC")):
+        body = src.split(f"{name} = (", 1)[1].split("\n    )", 1)[0]
+        assert frag in body and "action = 'ALLOW'" in body, body

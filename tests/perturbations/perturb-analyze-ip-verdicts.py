@@ -60,7 +60,7 @@ CASES = [
      [f"{T}::test_an_unparseable_peak_is_unknown_not_zero"], True),
 
     ("a rung with an unknown input skipped instead of stopping the ladder",
-     [(L, "        if missing:\n            verdict = (", "        if False:\n            verdict = (")],
+     [(L, "        if missing:\n            failed = ", "        if False:\n            failed = ")],
      [f"{T}::test_a_failed_uri_query_does_not_become_endpoint_hammering"], True),
 
     ("an undecided NAT gate no longer refusing the verdict",
@@ -81,7 +81,7 @@ CASES = [
      [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
 
     ("the static-client rung never firing",
-     [(L, "lambda: peak_val - dyn_peak > 200 and non_static < 0.1 * total, None", "lambda: False, None")],
+     [(L, "lambda: static_peak > 200 and non_static < 0.1 * total, None", "lambda: False, None")],
      [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering",
       f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
 
@@ -99,7 +99,7 @@ CASES = [
      [f"{T}::test_a_missing_field_is_unknown_not_zero"], True),
 
     ("the static rung on the overall peak again, so an API burst fires it",
-     [(L, "lambda: peak_val - dyn_peak > 200 and non_static", "lambda: peak_val > 200 and non_static")],
+     [(L, "lambda: static_peak > 200 and non_static", "lambda: peak_val > 200 and non_static")],
      [f"{T}::test_an_api_burst_in_a_mostly_static_window_is_not_a_static_client"]),
 
     ("the crawler rung saying moderate frequency again",
@@ -111,8 +111,8 @@ CASES = [
     ("the distinct-URI count back among the static rung's inputs",
      [(L, '"uri_diversity": uri_val is None or non_static is None}',
        '"uri_diversity": uri_val is None or non_static is None, "all_uris": all_uri_val is None}'),
-      (L, '(("request_rate", "request_rate_dynamic", "uri_diversity"),\n         lambda: peak_val - dyn_peak',
-       '(("request_rate", "request_rate_dynamic", "uri_diversity", "all_uris"),\n         lambda: peak_val - dyn_peak')],
+      (L, '(("request_rate_static", "uri_diversity"),\n         lambda: static_peak',
+       '(("request_rate_static", "uri_diversity", "all_uris"),\n         lambda: static_peak')],
      [f"{T}::test_a_failed_distinct_uri_count_does_not_stop_the_ladder"]),
 
     ("the middle shape saying which of nothing again",
@@ -125,6 +125,19 @@ CASES = [
        '    _later("actions", cross_cwl, cross_athena, 15)\n    _later("all_uris", all_uris_cwl, all_uris_athena, 1)\n'
        '    _later("ja4", ja4_cwl, ja4_athena, 5)\n    _later("uri_diversity", uri_cwl, uri_athena, 1)\n')],
      [f"{T}::test_the_ladder_inputs_are_in_the_first_wave"], True),
+
+    ("the static rung on the overall peak less the non-static one again",
+     [(L, "lambda: static_peak > 200 and non_static", "lambda: peak_val - dyn_peak > 200 and non_static")],
+     [f"{T}::test_a_static_client_whose_api_burst_was_in_another_minute_is_still_named"]),
+
+    ("the static peak counting every request",
+     [(L, """    static_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_ONLY_STATIC}"\n""",
+       """    static_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n""")],
+     [f"{T}::test_the_static_peak_reads_only_static_requests"]),
+
+    ("an input that answered without a number called unanswered",
+     [(L, "            failed = [n for n in missing if failures.get(n)]", "            failed = list(missing)")],
+     [f"{T}::test_two_unknown_inputs_are_each_named_for_what_went_wrong"], True),
 ]
 
 sys.exit(sweep(CASES))

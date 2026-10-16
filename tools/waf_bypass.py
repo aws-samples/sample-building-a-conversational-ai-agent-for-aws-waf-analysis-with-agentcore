@@ -13,7 +13,7 @@ from tools.session_state import (get_webacl_name, get_scope, resolve_region, is_
 from tools.waf_query import (query_logs, log_query_error, get_log_type, run_concurrently, truncation_summary,
                              scope_cwl_query)
 from tools.query_limits import MAX_MINUTES
-from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
+from tools.static_assets import ATHENA_EXCLUDE_STATIC, ATHENA_ONLY_STATIC, CWL_EXCLUDE_STATIC, CWL_ONLY_STATIC
 
 # Every label test on CloudWatch reads the parsed `labels` array, never the raw record. A bare
 # `@message not like 'bot:verified'` also dropped any request carrying that text in its URI or
@@ -61,33 +61,37 @@ def _safe_query(cwl: str, athena: str, start: int, end: int, limit: int = 10, *,
     return rows or []
 
 
-def _static_traffic(peak, static_floor, non_static, allowed, distinct, ip) -> list[str]:
+def _static_traffic(static_peak, non_static, allowed, distinct, distinct_failed, ip) -> list[str]:
     """The verdict for fast ALLOW traffic that is nearly all static. It reached static files rather
     than the application, so it is abuse or cost rather than a way past the rules, and the rate is
     measured while the intent is not, so it names the shapes that fit. The distinct-URI count only
-    picks the shape, so without it the verdict stands unshaped."""
-    if None in (static_floor, non_static, allowed):
+    picks the shape, so without it the verdict stands unshaped, and says why: the investigation has
+    no section of its own for that count."""
+    if None in (static_peak, non_static, allowed):
         return []
-    shape = ("" if distinct is None else
-             f" It fetched many files ({distinct} distinct URIs), which is how bulk fetching, a mirror or "
-             f"an image scraper looks. These signals cannot tell which." if distinct > 50 else
-             f" It pulled the same {distinct} file{'s' if distinct != 1 else ''} over and over, which fits a "
-             f"flood aimed at a file, a client stuck in a retry loop, or a monitoring probe. These signals "
-             f"cannot tell which." if distinct <= 2 else
-             f" It was spread over {distinct} distinct URIs.")
+    if distinct is None:
+        reason = (distinct_failed or "").split("\nACTION:")[0].strip()
+        shape = f" How many distinct files it fetched is unknown: the all_uris query did not answer ({reason})." if reason else ""
+    else:
+        shape = (f" It fetched many files ({distinct} distinct URIs), which is how bulk fetching, a mirror or "
+                 f"an image scraper looks. These signals cannot tell which." if distinct > 50 else
+                 f" It pulled the same {distinct} file{'s' if distinct != 1 else ''} over and over, which fits a "
+                 f"flood aimed at a file, a client stuck in a retry loop, or a monitoring probe. These signals "
+                 f"cannot tell which." if distinct <= 2 else
+                 f" It was spread over {distinct} distinct URIs.")
     return ["**LIKELY: High-rate static-asset traffic, not a bypass.**",
-            f"Evidence: peak {peak} req/min allowed, at least {static_floor:g} of them static, and "
-            f"{allowed - non_static:,} of {allowed:,} allowed requests static. It reached static files, not "
-            f"the application's endpoints, so this is an abuse or cost question rather than a way past "
-            f"the rules.{shape}",
+            f"Evidence: peak {static_peak:g} static req/min allowed, and {allowed - non_static:,} of "
+            f"{allowed:,} allowed requests static. It reached static files, not the application's "
+            f"endpoints, so this is an abuse or cost question rather than a way past the rules.{shape}",
             f"→ Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
             f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
             f"filter_by='{{\"ip\": \"{ip}\"}}'))."]
 
 
-# StartQuery rejects a query string over 10,000 characters, measured 2026-10-16: 10,000 ran and 10,001
-# was rejected. `_run_cwl` prefixes the WebACL filter, so this leaves room for the longest name.
-_CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128))
+# StartQuery rejects a query string over 10,000 characters, counting the ` | limit N` its API limit adds,
+# measured 2026-10-16: at limit 2, 9,990 ran and 9,991 was rejected. `_run_cwl` prefixes the WebACL
+# filter, so this leaves room for the longest name and for the largest limit the API takes.
+_CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128)) - len(" | limit 100000")
 
 
 def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict) -> list[dict]:
@@ -938,6 +942,28 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     dyn = _safe_query(dyn_cwl, dyn_athena, start_epoch, end_epoch, limit=1, failures=failures,
                       label="frequency_dynamic", notes=notes)
     dyn_peak = (dyn[0].get("peak_rpm", "?") or 0) if dyn else ("?" if failures.get("frequency_dynamic") else 0)
+    # The ALLOW rate over static requests alone, for the static rung. The overall peak less the
+    # non-static one is only a floor on the static requests in the busiest minute: an API burst in
+    # another minute lowers it, and an IP pulling 250 static files a minute read as mixed.
+    static_cwl = (
+        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
+        f"{CWL_ONLY_STATIC}"
+        " | stats count(*) as hits by bin(1m)"
+        " | stats max(hits) as peak_rpm"
+    )
+    static_athena = (
+        f"SELECT max(cnt) as peak_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{ip}' AND action = 'ALLOW'"
+        f"{ATHENA_ONLY_STATIC}"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
+    static_data = _safe_query(static_cwl, static_athena, start_epoch, end_epoch, limit=1, failures=failures,
+                              label="frequency_static", notes=notes)
+    static_peak = ((static_data[0].get("peak_rpm", "?") or 0) if static_data else
+                   ("?" if failures.get("frequency_static") else 0))
     all_cwl = (
         f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"
         " | stats count_distinct(httpRequest.uri) as unique_uris_all"
@@ -1170,10 +1196,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     uri_val = _num(unique_uris, int)
     non_static = _num(total_reqs, int)
     all_val = _num(all_uris, int)
-    # The peak minute's non-static requests are at most the non-static peak, so the difference is a
-    # floor on its static ones. The static share alone is over the whole window, and an API burst in
-    # a mostly static window made the peak minute.
-    static_floor = None if peak_val is None or dyn_val is None else peak_val - dyn_val
+    static_val = _num(static_peak, float)
     allowed = None if failures.get("actions") else allow_count
     ua_known = not failures.get("user_agent")
 
@@ -1238,9 +1261,11 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             (("frequency_dynamic", "uri_diversity"), _all(_gt(dyn_val, 200), _lt(uri_val, 10)), [
                 "**HIGH CONFIDENCE: Endpoint hammering (possible DDoS participant or brute-force).**",
                 f"Evidence: {dyn_peak} non-static req/min concentrated on few URIs."]),
-            (("frequency", "frequency_dynamic", "uri_diversity", "actions"),
-             _all(_gt(static_floor, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed),
-             _static_traffic(peak_rpm, static_floor, non_static, allowed, all_val, ip)),
+            # The static peak, not the overall one: an API burst in a mostly static window made the
+            # overall peak minute, and the static share alone is over the whole window.
+            (("frequency_static", "uri_diversity", "actions"),
+             _all(_gt(static_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed),
+             _static_traffic(static_val, non_static, allowed, all_val, failures.get("all_uris"), ip)),
             # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
             (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [
                 "**LIKELY: Probable scraper** (needs user confirmation).",

@@ -12,7 +12,7 @@ from tools.aws_session import get_client
 from tools.session_state import (get_logs_region, get_log_destination, is_log_filter_active,
                                  note_query_success, note_window_capped)
 
-from tools.static_assets import ATHENA_EXCLUDE_STATIC, CWL_EXCLUDE_STATIC
+from tools.static_assets import ATHENA_EXCLUDE_STATIC, ATHENA_ONLY_STATIC, CWL_EXCLUDE_STATIC, CWL_ONLY_STATIC
 from tools.counted import COUNTED_ATHENA, COUNTED_CWL
 from tools.waf_aggregate import _LABELS_ARRAY
 from tools.query_limits import (MAX_MINUTES, MAX_POLL, POLL_INTERVAL,
@@ -1164,6 +1164,24 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
+    # The rate over static requests alone, for the static rung. The overall peak less the non-static one
+    # is only a floor on the static requests in the busiest minute: an API burst in another minute
+    # lowers it, and a client pulling 250 static files a minute read as mixed.
+    static_rate_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        f"{CWL_ONLY_STATIC}"
+        ' | stats count(*) as req_per_min by bin(1m)'
+        ' | stats max(req_per_min) as peak_rpm'
+    )
+    static_rate_athena = (
+        f"SELECT max(cnt) as peak_rpm FROM ("
+        f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
+        f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f"  AND httprequest.clientip = '{safe_ip}'"
+        f"{ATHENA_ONLY_STATIC}"
+        f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
+        f")"
+    )
     # Every distinct URI, static ones included, which is what tells bulk fetching from one file pulled
     # over and over once the traffic is static.
     all_uris_cwl = (
@@ -1230,10 +1248,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         jobs[label] = lambda: _safe_query(cwl, athena, start_epoch, end_epoch, limit=limit,
                                           failures=failures, label=label, notes=notes)
 
-    # The verdict's inputs first. Seven jobs share five workers and one budget, so a job registered
+    # The verdict's inputs first. Eight jobs share five workers and one budget, so a job registered
     # sixth starts only when one of the first five ends, and a slow first wave left it no time.
     _later("request_rate", rate_cwl, rate_athena, 1)
     _later("request_rate_dynamic", dyn_rate_cwl, dyn_rate_athena, 1)
+    _later("request_rate_static", static_rate_cwl, static_rate_athena, 1)
     _later("uri_diversity", uri_cwl, uri_athena, 1)
     _later("actions", cross_cwl, cross_athena, 15)
     _later("all_uris", all_uris_cwl, all_uris_athena, 1)
@@ -1245,6 +1264,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     cross = results.get("actions", [])
     rate = results.get("request_rate", [])
     rate_dyn = results.get("request_rate_dynamic", [])
+    rate_static = results.get("request_rate_static", [])
     all_uris = results.get("all_uris", [])
     ja4 = results.get("ja4", [])
     uri_div = results.get("uri_diversity", [])
@@ -1307,6 +1327,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     else:
         lines.append("**Non-static request rate**:")
         lines.append(_empty_reason(failures, "request_rate_dynamic", "  (no non-static requests)"))
+    if rate_static and rate_static[0].get("peak_rpm"):
+        lines.append(f"**Static request rate**: peak {rate_static[0]['peak_rpm']} req/min")
+    else:
+        lines.append("**Static request rate**:")
+        lines.append(_empty_reason(failures, "request_rate_static", "  (no static requests)"))
     if all_uris:
         lines.append(f"**Distinct URIs, static files included**: {all_uris[0].get('unique_uris_all') or 0}")
     else:
@@ -1358,10 +1383,12 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     peak_val = _known(rate, "peak_rpm", float, "request_rate")
     dyn_peak = _known(rate_dyn, "peak_rpm", float, "request_rate_dynamic")
+    static_peak = _known(rate_static, "peak_rpm", float, "request_rate_static")
     uri_val = _known(uri_div, "unique_uris", int, "uri_diversity")
     non_static = _known(uri_div, "total_non_static", int, "uri_diversity")
     all_uri_val = _known(all_uris, "unique_uris_all", int, "all_uris")
     unknown = {"request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
+               "request_rate_static": static_peak is None,
                "uri_diversity": uri_val is None or non_static is None}
 
     def _static_client():
@@ -1377,7 +1404,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                  f"cannot tell which." if n <= 2 else
                  f" It is spread over {n} distinct URIs.")
         return (f"**LIKELY: High-rate static-asset client** ({total - non_static:,} of {total:,} requests "
-                f"static, peak {peak_val:g} req/min, at least {peak_val - dyn_peak:g} of them static).{shape} "
+                f"static, peak {static_peak:g} static req/min).{shape} "
                 f"Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
                 f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
                 f"filter_by='{{\"ip\": \"{ip}\"}}')).")
@@ -1392,11 +1419,10 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
          "**HIGH CONFIDENCE: Automated scraper.** Peak >200 non-static req/min + >50 unique URIs."),
         (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val < 10,
          "**HIGH CONFIDENCE: Endpoint hammering.** Peak >200 non-static req/min concentrated on few URIs."),
-        # The peak minute's non-static requests are at most the non-static peak, so the difference
-        # is a floor on its static ones. The share alone is over the whole window, and an API burst
-        # in a mostly static window made the peak minute.
-        (("request_rate", "request_rate_dynamic", "uri_diversity"),
-         lambda: peak_val - dyn_peak > 200 and non_static < 0.1 * total, None),
+        # The static peak, not the overall one: an API burst in a mostly static window made the overall
+        # peak minute, and the static share alone is over the whole window.
+        (("request_rate_static", "uri_diversity"),
+         lambda: static_peak > 200 and non_static < 0.1 * total, None),
         # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
         (("uri_diversity",), lambda: uri_val > 50,
          lambda: f"**LIKELY: Probable crawler/scraper.** High URI diversity at a peak of {dyn_peak:g} "
@@ -1409,10 +1435,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     for needs, fires, text in ([] if verdict else rungs):
         missing = [n for n in needs if unknown[n]]
         if missing:
-            verdict = (f"**CANNOT DETERMINE** — the {', '.join(missing)} query did not answer, so "
-                       f"this IP cannot be ranked on it." if any(failures.get(n) for n in missing) else
-                       f"**CANNOT DETERMINE** — the {', '.join(missing)} query answered without a "
-                       f"number, so this IP cannot be ranked on it.")
+            failed = [n for n in missing if failures.get(n)]
+            odd = [n for n in missing if n not in failed]
+            why = ([f"the {', '.join(failed)} query did not answer"] if failed else []) + \
+                  ([f"the {', '.join(odd)} query answered without a number"] if odd else [])
+            verdict = f"**CANNOT DETERMINE** — {' and '.join(why)}, so this IP cannot be ranked on it."
             break
         if fires():
             verdict = text() if callable(text) else text or _static_client()

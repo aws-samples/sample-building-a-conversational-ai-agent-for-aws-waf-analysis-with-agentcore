@@ -376,16 +376,16 @@ def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
 # --- analyze_ip, the third 4.6 target --------------------------------------
 #
 # `analyze_ip` runs a diversity check first (phase 1), which decides whether the IP is a shared
-# NAT and whether phase 2 runs at all, so it stays sequential. Phase 2's seven queries are
+# NAT and whether phase 2 runs at all, so it stays sequential. Phase 2's eight queries are
 # independent and run in one wave. The mock keeps diversity low (ua_count/ja4_count <= 3) so the
 # NAT branch is skipped and phase 2 is reached; the diversity query is the only one carrying
 # `ua_count`, so it is easy to tell apart from the wave.
 
-# Fields the seven phase-2 queries' rows are read by, in one dict so any of them can return it.
+# Fields the eight phase-2 queries' rows are read by, in one dict so any of them can return it.
 AIP_ROW = {"action": "ALLOW", "terminatingRuleId": "r", "cnt": "9", "avg_rpm": "1",
            "peak_rpm": "1", "active_minutes": "1", "ja4Fingerprint": "t13d1516h2",
            "unique_uris": "1", "total_non_static": "1", "unique_uris_all": "1", "args": "?a=1", "hits": "1"}
-AIP_PHASE2 = {"actions", "request_rate", "request_rate_dynamic", "all_uris", "ja4", "uri_diversity", "query_strings"}
+AIP_PHASE2 = {"actions", "request_rate", "request_rate_dynamic", "request_rate_static", "all_uris", "ja4", "uri_diversity", "query_strings"}
 
 
 def _analyze_offline(monkeypatch):
@@ -401,7 +401,7 @@ def _is_diversity(cwl, athena):
 
 
 def test_analyze_ip_registers_its_phase_two_queries(monkeypatch):
-    """The wave is exactly phase 2's seven independent queries. A query dropped from it is one paid
+    """The wave is exactly phase 2's eight independent queries. A query dropped from it is one paid
     for serially or not at all; the diversity check and the NAT ua_list are phase 1 and must not be
     in the wave. Asserted as a set, so either direction of drift is caught."""
     from tools import waf_logs as L
@@ -422,7 +422,7 @@ def test_analyze_ip_registers_its_phase_two_queries(monkeypatch):
 
 
 def test_analyze_ip_runs_its_phase_two_queries_concurrently(monkeypatch):
-    """Five phase-2 queries in flight at once, the worker cap, of seven. Gated to the first five
+    """Five phase-2 queries in flight at once, the worker cap, of eight. Gated to the first five
     arrivals, because a `Barrier` rearms and the sixth would wait alone; the diversity query is
     excluded, so run serially the first phase-2 query would wait alone until the barrier's timeout
     and this would exceed the margin."""

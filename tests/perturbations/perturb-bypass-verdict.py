@@ -114,17 +114,17 @@ CASES = [
      [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
 
     ("the static-traffic verdict never firing",
-     [(B, "_all(_gt(static_floor, 200), None if non_static is None", "_all(False, None if non_static is None")],
+     [(B, "_all(_gt(static_val, 200), None if non_static is None", "_all(False, None if non_static is None")],
      [f"{T}::test_allowed_static_only_traffic_is_not_called_a_bypass",
       f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
 
     ("the static rung on the overall peak again, so an API burst fires it",
-     [(B, "_all(_gt(static_floor, 200), None if", "_all(_gt(peak_val, 200), None if")],
+     [(B, "_all(_gt(static_val, 200), None if", "_all(_gt(peak_val, 200), None if")],
      [f"{T}::test_an_api_burst_in_a_mostly_static_window_is_not_static_traffic"]),
 
     ("the distinct-URI count back among the static rung's inputs",
-     [(B, "_all(_gt(static_floor, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed)",
-       "_all(_gt(static_floor, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed,"
+     [(B, "_all(_gt(static_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed)",
+       "_all(_gt(static_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed,"
        " None if all_val is None else True)")],
      [f"{T}::test_static_traffic_is_named_without_its_distinct_uri_count"]),
 
@@ -156,6 +156,24 @@ CASES = [
     ("a failed counting query after the first one rendered as a partial list",
      [(B, '        if failures.get("count_rules"):\n            return []\n        row.update', '        row.update')],
      [f"{T}::test_a_failed_later_counting_query_loses_the_section_rather_than_shortening_it"], True),
+
+    ("the static rung on the overall peak less the non-static one again",
+     [(B, "_all(_gt(static_val, 200), None if",
+       "_all(_gt(None if peak_val is None or dyn_val is None else peak_val - dyn_val, 200), None if")],
+     [f"{T}::test_static_traffic_whose_api_burst_was_in_another_minute_is_still_named"]),
+
+    ("the static peak counting every allowed request",
+     [(B, """    static_cwl = (\n        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"\n        f"{CWL_ONLY_STATIC}"\n""",
+       """    static_cwl = (\n        f"filter httpRequest.clientIp = '{ip}' and action = 'ALLOW'"\n""")],
+     [f"{T}::test_the_static_peak_reads_only_static_allowed_requests"]),
+
+    ("a failed distinct-URI count left unsaid in the static verdict",
+     [(B, '        shape = f" How many distinct files', '        shape = "" and f" How many distinct files')],
+     [f"{T}::test_a_failed_distinct_uri_count_is_said_in_the_static_verdict"]),
+
+    ("the length budget leaving out the limit the API adds",
+     [(B, ' - len(" | limit 100000")', "")],
+     [f"{T}::test_the_count_queries_fit_the_limit_with_the_longest_webacl_name"]),
 ]
 
 sys.exit(sweep(CASES))

@@ -67,7 +67,8 @@ def test_a_failed_ua_list_is_not_read_as_nat(monkeypatch):
     # stay undirected because the gate refused it. Quiet inputs fall through to CANNOT DETERMINE
     # with or without the gate, which is how this test first passed with the gate disabled.
     out, seen = _run(monkeypatch, diversity=("6", "5"), fail={"user_agents"},
-                     override={"request_rate": [dict(ROW, peak_rpm="300")], "uri_diversity": [dict(ROW, unique_uris="3")]})
+                     override={"request_rate": [dict(ROW, peak_rpm="300")], "request_rate_dynamic": [dict(ROW, peak_rpm="300")],
+                               "uri_diversity": [dict(ROW, unique_uris="3")]})
     assert "user_agents" in seen, "the UA list was never asked for, so this proves nothing"
     assert "NAT/Shared IP" not in out and "Confidence: HIGH" not in out, out
     assert "user_agents query timed out" in out, "the reason the NAT check could not run is lost"
@@ -77,10 +78,20 @@ def test_a_failed_ua_list_is_not_read_as_nat(monkeypatch):
 
 def test_a_ua_list_too_short_to_judge_is_not_read_as_nat(monkeypatch):
     out, _ = _run(monkeypatch, diversity=("6", "5"), uas=[MAC, IPHONE],
-                  override={"request_rate": [dict(ROW, peak_rpm="300")], "uri_diversity": [dict(ROW, unique_uris="3")]})
+                  override={"request_rate": [dict(ROW, peak_rpm="300")], "request_rate_dynamic": [dict(ROW, peak_rpm="300")],
+                               "uri_diversity": [dict(ROW, unique_uris="3")]})
     assert "NAT/Shared IP" not in out, out
     verdict = _assessment(out)
     assert "CANNOT DETERMINE" in verdict and "HIGH CONFIDENCE" not in verdict, verdict
+
+
+def test_the_nat_fixture_reaches_hammering_without_the_gate(monkeypatch):
+    """The precondition of the two tests above. Hammering reads the non-static peak, and with only the
+    overall one at 300 these inputs reached no verdict, so the gate's refusal was never what they saw."""
+    out, _ = _run(monkeypatch, diversity=("6", "5"), uas=[MAC] * 4,
+                  override={"request_rate": [dict(ROW, peak_rpm="300")], "request_rate_dynamic": [dict(ROW, peak_rpm="300")],
+                            "uri_diversity": [dict(ROW, unique_uris="3")]})
+    assert "Endpoint hammering" in _assessment(out), out
 
 
 def test_genuine_diversity_is_still_nat(monkeypatch):
@@ -152,11 +163,18 @@ STATIC_ONLY = {"cwl": {"request_rate_dynamic": [], "uri_diversity": []},
                           "uri_diversity": [{"unique_uris": "0", "total_non_static": "0"}]}}
 
 
+NO_STATIC = {"cwl": [], "athena": [{"peak_rpm": ""}]}
+
+
 def _shape(engine, dynamic, all_uris):
+    """`dynamic` is (non-static peak, URIs, non-static requests), or None for static only. The static
+    peak is what the 300 leaves, which is exact when both peaks fall in one minute."""
     rows = {"request_rate": [dict(ROW, peak_rpm="300")], "all_uris": [{"unique_uris_all": all_uris}]}
     rows.update(STATIC_ONLY[engine] if dynamic is None else
                 {"request_rate_dynamic": [dict(ROW, peak_rpm=dynamic[0])],
                  "uri_diversity": [dict(ROW, unique_uris=dynamic[1], total_non_static=dynamic[2])]})
+    static = 300 - int(dynamic[0]) if dynamic else 300
+    rows["request_rate_static"] = [dict(ROW, peak_rpm=str(static))] if static else NO_STATIC[engine]
     return rows
 
 
@@ -233,6 +251,7 @@ def test_an_api_burst_in_a_mostly_static_window_is_not_a_static_client(monkeypat
     fast minute was the API burst and the static share is over the whole window."""
     rows = _shape(engine, ("150", "3", "27"), "3")
     rows["request_rate"] = [dict(ROW, peak_rpm="210")]
+    rows["request_rate_static"] = [dict(ROW, peak_rpm="60")]
     verdict = _assessment(_run(monkeypatch, override=rows)[0])
     assert "static-asset" not in verdict, verdict
 
@@ -241,8 +260,36 @@ def test_an_api_burst_in_a_mostly_static_window_is_not_a_static_client(monkeypat
 def test_the_control_a_static_minute_over_200_is_a_static_client(monkeypatch, engine):
     rows = _shape(engine, ("150", "3", "27"), "3")
     rows["request_rate"] = [dict(ROW, peak_rpm="360")]
+    rows["request_rate_static"] = [dict(ROW, peak_rpm="210")]
     verdict = _assessment(_run(monkeypatch, override=rows)[0])
     assert "High-rate static-asset client" in verdict, verdict
+
+
+@pytest.mark.parametrize("engine", ["cwl", "athena"])
+def test_a_static_client_whose_api_burst_was_in_another_minute_is_still_named(monkeypatch, engine):
+    """Overall peak 250 and non-static peak 100, in different minutes, so the busiest minute held 250
+    static requests. The overall peak minus the non-static one is 150, and that floor read it as mixed."""
+    rows = _shape(engine, ("100", "3", "54"), "3")
+    rows["request_rate"] = [dict(ROW, peak_rpm="250")]
+    rows["request_rate_static"] = [dict(ROW, peak_rpm="250")]
+    verdict = _assessment(_run(monkeypatch, override=rows)[0])
+    assert "High-rate static-asset client" in verdict, verdict
+
+
+def test_the_static_peak_reads_only_static_requests():
+    import inspect
+    src = inspect.getsource(L.analyze_ip._tool_func)
+    assert "CWL_ONLY_STATIC" in src.split("static_rate_cwl = (", 1)[1].split("\n    )", 1)[0]
+    assert "ATHENA_ONLY_STATIC" in src.split("static_rate_athena = (", 1)[1].split("\n    )", 1)[0]
+
+
+def test_two_unknown_inputs_are_each_named_for_what_went_wrong(monkeypatch):
+    """The scraper rung reads both, so one refusal names them together."""
+    out, _ = _run(monkeypatch, fail={"request_rate_dynamic"},
+                  override={"uri_diversity": [dict(ROW, unique_uris="n/a")]})
+    verdict = _assessment(out)
+    assert "request_rate_dynamic query did not answer" in verdict, verdict
+    assert "uri_diversity query answered without a number" in verdict, verdict
 
 
 def test_a_failed_distinct_uri_count_does_not_stop_the_ladder(monkeypatch):

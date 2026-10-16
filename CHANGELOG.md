@@ -112,7 +112,7 @@ Both tools also set a request rate over every request against a count of non-sta
 pulling only static files had 0 URIs and read as "HIGH CONFIDENCE: Endpoint hammering", and so did one
 sending 300 images a minute beside 2 API paths. The scraper and hammering verdicts now read the
 non-static rate, and the crawler verdicts reached after them name that rate. A client whose requests are
-nearly all static, with at least 200 static requests in its busiest minute, gets its own "LIKELY" verdict,
+nearly all static, with more than 200 static requests in its busiest minute, gets its own "LIKELY" verdict,
 which says whether it fetched many files or the same few over and over, and that these signals cannot
 tell its intent. The bypass investigation adds that such traffic reached static files rather than the
 application, so it is not a bypass.

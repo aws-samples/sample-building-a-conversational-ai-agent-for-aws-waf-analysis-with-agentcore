@@ -101,3 +101,8 @@ _PATTERN = r"(?i)\.(" + "|".join(sorted(STATIC_ASSET_EXTENSIONS)) + r")($|\?)"
 CWL_EXCLUDE_STATIC = f" and httpRequest.uri not like /{_PATTERN}/"
 ATHENA_EXCLUDE_STATIC = (" AND (httprequest.uri IS NULL"
                          f" OR NOT regexp_like(httprequest.uri, '{_PATTERN}'))")
+# The complement, for a rate over static requests alone. No guard: a NULL `uri` is not a static asset,
+# and `like` on an absent field and `regexp_like` on NULL both drop the row, so on each engine these
+# two fragments split the requests between them.
+CWL_ONLY_STATIC = f" and httpRequest.uri like /{_PATTERN}/"
+ATHENA_ONLY_STATIC = f" AND regexp_like(httprequest.uri, '{_PATTERN}')"
