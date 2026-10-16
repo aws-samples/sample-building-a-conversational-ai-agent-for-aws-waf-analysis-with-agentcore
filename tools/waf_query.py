@@ -56,10 +56,12 @@ def scope_cwl_query(query: str, webacl_name: str | None) -> str:
     sample: 14,893,856 records, of which 7,446,843 are `shield-sample-webacl`, 7,447,003 are CloudFront
     access logs sharing the group and carrying no `webaclId` at all, and zero belong to another WebACL.
 
-    **The substring form, mirroring the Athena side.** `webaclId` is the full ARN in WAFv2, so `'/name/'`
-    matches the name as a path segment exactly as `webaclid LIKE '%/name/%'` does. Verified on real
-    records: `filter webaclId like '/test2/'` returns 7 in that window and `'/shield-sample-webacl/'`
-    returns nothing. A regex form works too and needs escaping this one does not.
+    **The substring form, mirroring the Athena side.** `webaclId` is the full ARN in WAFv2, so
+    `'/webacl/name/'` matches the name as the segment after `webacl/` exactly as
+    `webaclid LIKE '%/webacl/name/%'` does. Verified on real records: `filter webaclId like '/test2/'`
+    returns 7 in that window and `'/shield-sample-webacl/'` returns nothing. `/name/` alone was the
+    first form, and a WebACL named `webacl` matched every WebACL's records with it. A regex form works
+    too and needs escaping this one does not.
 
     **It buys correctness and not bytes**, which is worth stating because the cheaper-looking fix does not
     exist. `StartQuery` takes no stream parameter, read from the botocore shape, so a restriction can only
@@ -75,7 +77,14 @@ def scope_cwl_query(query: str, webacl_name: str | None) -> str:
         raise RuntimeError(
             f"cannot scope a CloudWatch Logs query to WebACL {webacl_name!r}: a log group can hold "
             f"several WebACLs' records, so an unscoped query may answer from another one")
-    return f"filter webaclId like '/{webacl_name}/' | {query.strip()}"
+    # `webacl/` in front: a WebACL may be named `webacl`, and every ARN holds `/webacl/`.
+    return f"filter webaclId like '/webacl/{webacl_name}/' | {query.strip()}"
+
+
+# StartQuery rejects a query string over 10,000 characters, counting the ` | limit N` its API limit adds,
+# measured 2026-10-16: at limit 2, 9,990 ran and 9,991 was rejected. `_run_cwl` prefixes the WebACL
+# filter, so this leaves room for the longest name and for the largest limit the API takes.
+CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128)) - len(" | limit 100000")
 
 
 def inspection_location(rule_name: str):
@@ -671,7 +680,7 @@ def query_logs(query_cwl: str, query_athena: str, start_epoch: int, end_epoch: i
         if not _athena_state.get("webacl_scoped", True):
             wn = get_webacl_name()
             if wn and re.fullmatch(r"[A-Za-z0-9_-]+", wn):
-                partition_clause += f" AND webaclid LIKE '%/{wn}/%'"
+                partition_clause += f" AND webaclid LIKE '%/webacl/{wn}/%'"
         sql = sql.replace("{PARTITION_FILTER}", partition_clause)
         return _scan_log_values(_trim(_run_athena(sql), limit, notes, label))
     raise RuntimeError(f"Unsupported log destination format: {dest}")

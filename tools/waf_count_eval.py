@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """COUNT-to-BLOCK evaluation workflow tool — guided skill for LLM."""
 
+import json
 import sys
 import time
 from strands import tool
@@ -330,6 +331,61 @@ def _count_rule_matches(rule_name: str, start_epoch: int, end_epoch: int) -> int
     return int(rows[0]["cnt"])
 
 
+_MATCH_SAMPLE = 50
+
+
+def _detail_text(d: dict) -> str:
+    data = d.get("matchedData")
+    return (f"{d.get('conditionType') or '?'} at {d.get('location') or '?'}: "
+            f"{' '.join(data) if data else 'matched data not recorded'}")
+
+
+def _count_match_details(rule_name: str, start_epoch: int, end_epoch: int) -> tuple[list, int | None]:
+    """What the rule matched in the requests it counted: `[(detail, requests)]`, busiest first, and how
+    many requests CloudWatch's list came from (None on Athena, which counts the whole window). Raises
+    LogQueryFailed when the read did not run.
+
+    The details are on the Count entry itself, top-level or inside its group, and
+    `terminatingRuleMatchDetails` stays empty. WAF fills them for SQLi and XSS statements, with the
+    matched tokens, and for some others with the location only. Measured 2026-09-08 on
+    `response-id-on-page`: 160 of 160 `CrossSiteScripting_QUERYARGUMENTS` Count records carried them.
+    Counted once per request, because a group deployed twice logs its sub-rule's entry twice.
+
+    CloudWatch has no array accessor that holds up, so it reads up to `_MATCH_SAMPLE` raw records and
+    parses them here; Athena flattens both levels in the query."""
+    if get_log_type() == "cwl":
+        cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\",\"ruleMatchDetails\":[{{'"
+               f" | fields @message | limit {_MATCH_SAMPLE}")
+        rows = _run_log_query(cwl, "", start_epoch, end_epoch, limit=_MATCH_SAMPLE)
+        counts: dict[str, int] = {}
+        for r in rows:
+            try:
+                rec = json.loads(r.get("@message", ""))
+            except ValueError:
+                continue
+            entries = list(rec.get("nonTerminatingMatchingRules") or [])
+            for g in rec.get("ruleGroupList") or []:
+                entries += g.get("nonTerminatingMatchingRules") or []
+            for text in {_detail_text(d) for e in entries
+                         if e.get("ruleId") == rule_name and e.get("action") == "COUNT"
+                         for d in e.get("ruleMatchDetails") or []}:
+                counts[text] = counts.get(text, 0) + 1
+        return sorted(counts.items(), key=lambda x: -x[1])[:8], len(rows)
+    pick = f"r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT'"
+    details = (f"concat(flatten(transform(filter(coalesce(nonterminatingmatchingrules, ARRAY[]), {pick}),"
+               f" r -> coalesce(r.rulematchdetails, ARRAY[]))),"
+               f" flatten(transform(coalesce(rulegrouplist, ARRAY[]), rg -> flatten(transform(filter("
+               f"coalesce(rg.nonterminatingmatchingrules, ARRAY[]), {pick}), r -> coalesce(r.rulematchdetails, ARRAY[]))))))")
+    athena = (f"SELECT coalesce(d.conditiontype, '?') || ' at ' || coalesce(d.location, '?') || ': ' ||"
+              f" coalesce(array_join(d.matcheddata, ' '), 'matched data not recorded') as md,"
+              f" count(DISTINCT httprequest.requestid) as hits"
+              f" FROM {{TABLE}} CROSS JOIN UNNEST({details}) AS u(d)"
+              f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+              f" GROUP BY 1 ORDER BY hits DESC LIMIT {{LIMIT}}")
+    rows = _run_log_query("", athena, start_epoch, end_epoch, limit=8)
+    return [(r.get("md", "?"), int(r.get("hits") or 0)) for r in rows], None
+
+
 def _step_analyze_rule(rule_name: str) -> str:
     """Step 4-5: Find peak hour for this rule, then get client distribution.
 
@@ -600,6 +656,23 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
             lines.append(f"  ⚠️  Could not retrieve {label} content on this log backend — state this; do not guess.")
         else:
             lines.append(f"  HINT: {REDACTION_POSSIBLE_HINT}")
+
+    lines.append("")
+    lines.append("### What the rule matched (its Count entries' ruleMatchDetails)")
+    lines.append("(raw, as logged — show to user, do NOT interpret/verdict)")
+    try:
+        details, sampled = _count_match_details(rule_name, start_epoch, end_epoch)
+    except LogQueryFailed as exc:
+        lines.append(f"  UNKNOWN, the query for this section failed: {exc}")
+    else:
+        for text, hits in details:
+            lines.append(f"  [{hits:>4} requests] {text[:200]}")
+        if not details:
+            lines.append("  (none logged; WAF records them for SQLi and XSS statements, and the location "
+                         "only for some others)")
+        if sampled is not None:
+            lines.append(f"  (from {sampled} sampled requests; CloudWatch reads raw records, at most "
+                         f"{_MATCH_SAMPLE})")
 
     lines.append("")
     lines.append("---")

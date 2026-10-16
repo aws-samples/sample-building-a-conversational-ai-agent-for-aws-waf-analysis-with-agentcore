@@ -26,6 +26,7 @@ warns before you deploy.
 
 - Network (ASN) concentration as an analysis dimension, alongside the country and referer breakdowns that already ship
 - A cross-WebACL summary in the patrol report
+- Sensitive-file probing as its own investigation: requests for `.env`, `.git/config` or backup files by name, which the injection investigation now leaves out, and which several common files reach with no managed rule matching at all
 
 ## Security and privacy
 

@@ -263,7 +263,7 @@ def summed_sub_rules(cw, webacl_name: str, rules: list, scope: str = "CLOUDFRONT
 
 
 def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
-                             end_epoch: int, metric_name: str = "BlockedRequests"):
+                             end_epoch: int, metric_name: str = "BlockedRequests", group: str = ""):
     """What CloudWatch says this rule terminated in this window. `(count, reason)`, never raises.
 
     `count` is None whenever the question could not be asked, and `reason` says which of the four
@@ -281,7 +281,17 @@ def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, star
     **The dimension value is `VisibilityConfig.MetricName`, never the rule's `Name`.** They are
     equal for all 20 rules on the measurement account, which is exactly why assuming it would never
     be caught here. Reading the metric name removes the assumption instead of testing it.
+
+    **`group` names the managed rule group a sub-rule belongs to**, and then the query reads
+    `ManagedRuleGroup`+`ManagedRuleGroupRule` instead of `Rule`. A managed sub-rule's blocks are not
+    under `Rule=<sub-rule>`: measured 2026-10-15 on `response-id-on-page` for 2026-09-08 03:00-05:00,
+    `Rule=SQLi_QUERYARGUMENTS` was empty while those two dimensions held 122. The caller's group name
+    comes from the same configuration read, so its provenance is the same.
     """
+    if group:
+        return _metric_sum(webacl_name, rule_name, metric_name, start_epoch, end_epoch,
+                           dimensions=[{"Name": "ManagedRuleGroup", "Value": group},
+                                       {"Name": "ManagedRuleGroupRule", "Value": rule_name}])
     dimension, in_config = resolve_rule_dimension(rule_name, rules)
     if in_config == "metrics-off":
         return None, (f"'{rule_name}' has CloudWatchMetricsEnabled false, so it publishes no "
@@ -347,7 +357,7 @@ def webacl_action_total(webacl_name: str, metric_name: str, start_epoch: int, en
 
 
 def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_epoch: int,
-                end_epoch: int):
+                end_epoch: int, dimensions: list | None = None):
     """One `MetricStat` over one window. `(sum, "")`, or `(None, reason)`. Never raises.
 
     The retention guard sits here rather than in each caller, because a period no longer retained
@@ -359,8 +369,8 @@ def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_e
         return None, ("the window starts more than 455 days ago, beyond every CloudWatch metric "
                       "resolution, so there is no metric to compare against")
 
-    dimensions = [{"Name": "WebACL", "Value": webacl_name},
-                  {"Name": "Rule", "Value": rule_dimension}]
+    dimensions = [{"Name": "WebACL", "Value": webacl_name}] + (
+        dimensions or [{"Name": "Rule", "Value": rule_dimension}])
     scope = get_scope()
     region = resolve_region(scope)
     if region is None:
@@ -387,7 +397,8 @@ def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_e
 
 
 def missed_data_warning(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
-                        end_epoch: int, log_rows: int, metric_name: str = "BlockedRequests") -> str:
+                        end_epoch: int, log_rows: int, metric_name: str = "BlockedRequests",
+                        group: str = "") -> str:
     """The sentence to add when the metric says a rule fired and the logs hold less than it says.
 
     **Widened past the exactly-zero case on 2026-09-15, and `log_rows` has to mean requests.** The
@@ -430,7 +441,7 @@ def missed_data_warning(webacl_name: str, rule_name: str, rules: list, start_epo
     reached.
     """
     count, reason = rule_blocked_per_metrics(webacl_name, rule_name, rules, start_epoch, end_epoch,
-                                             metric_name)
+                                             metric_name, group)
     if log_rows == 0:
         return _missed_data_sentence(count, reason, f"rule '{rule_name}'", webacl_name, metric_name)
     return _partial_gap_sentence(count, reason, rule_name, webacl_name, metric_name, log_rows,

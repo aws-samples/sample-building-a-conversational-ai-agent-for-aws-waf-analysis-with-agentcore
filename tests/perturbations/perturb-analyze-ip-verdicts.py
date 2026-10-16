@@ -51,7 +51,7 @@ CASES = [
      [f"{T}::test_athena_no_records_for_the_ip_is_said_so"], True),
 
     ("the UA-rotation rung never firing",
-     [(L, "lambda: ua_count > 1 and ja4_count == 1 and peak_val > 50,", "lambda: False,")],
+     [(L, "lambda: rotation and ja4_count == 1 and peak_val > 200,", "lambda: False,")],
      [f"{T}::test_one_client_rotating_its_ua_is_named"]),
 
     ("an unparseable value read as zero again",

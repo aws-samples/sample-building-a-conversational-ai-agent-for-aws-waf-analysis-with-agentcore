@@ -44,7 +44,7 @@ CASES = [
     # A filter that reads like a fix and matches the wrong records. `test2` is a substring of
     # `test2-staging`, and without the slashes the name matches anywhere in the ARN.
     ("the slashes dropped, so the name matches as a substring instead of a path segment",
-     [(Q, """    return f"filter webaclId like '/{webacl_name}/' | {query.strip()}\"""",
+     [(Q, """    return f"filter webaclId like '/webacl/{webacl_name}/' | {query.strip()}\"""",
        """    return f"filter webaclId like '{webacl_name}' | {query.strip()}\"""")],
      [f"{T}::test_the_filter_names_the_webacl_as_a_path_segment"], True),
 
@@ -88,6 +88,22 @@ CASES = [
        "    return _execute_query_internal(client, lg, s, e, q)\n\n\n"
        "def _execute_query_internal(client, log_group: str")],
      [f"{T}::test_the_dead_query_site_still_has_no_callers"], False),
+
+    ("the name matched as any path segment again, so a WebACL named webacl matches every one",
+     [(Q, """    return f"filter webaclId like '/webacl/{webacl_name}/' | {query.strip()}\"""",
+       """    return f"filter webaclId like '/{webacl_name}/' | {query.strip()}\"""")],
+     ["tests/test_webacl_id_segment.py::test_a_webacl_named_webacl_does_not_match_another_webacls_records",
+      "tests/test_webacl_id_segment.py::test_every_webacl_filter_in_the_package_names_the_webacl_segment"]),
+
+    ("the Athena query filter on any path segment again",
+     [("tools/waf_query.py", """partition_clause += f" AND webaclid LIKE '%/webacl/{wn}/%'\"""",
+       """partition_clause += f" AND webaclid LIKE '%/{wn}/%'\"""")],
+     ["tests/test_webacl_id_segment.py::test_every_webacl_filter_in_the_package_names_the_webacl_segment"]),
+
+    ("patrol's Athena filter on any path segment again",
+     [("tools/waf_patrol.py", """time_cond += f" AND webaclid LIKE '%/webacl/{webacl_name}/%'\"""",
+       """time_cond += f" AND webaclid LIKE '%/{webacl_name}/%'\"""")],
+     ["tests/test_webacl_id_segment.py::test_every_webacl_filter_in_the_package_names_the_webacl_segment"]),
 ]
 
 sys.exit(sweep(CASES))

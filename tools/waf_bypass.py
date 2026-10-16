@@ -11,7 +11,7 @@ from tools.aws_session import get_client
 from tools.session_state import (get_webacl_name, get_scope, resolve_region, is_log_filter_active,
                                  note_window_capped)
 from tools.waf_query import (query_logs, log_query_error, get_log_type, run_concurrently, truncation_summary,
-                             scope_cwl_query)
+                             CWL_QUERY_MAX)
 from tools.query_limits import MAX_MINUTES
 from tools.static_assets import ATHENA_EXCLUDE_STATIC, ATHENA_ONLY_STATIC, CWL_EXCLUDE_STATIC, CWL_ONLY_STATIC
 
@@ -88,12 +88,6 @@ def _static_traffic(static_peak, non_static, allowed, distinct, distinct_failed,
             f"filter_by='{{\"ip\": \"{ip}\"}}'))."]
 
 
-# StartQuery rejects a query string over 10,000 characters, counting the ` | limit N` its API limit adds,
-# measured 2026-10-16: at limit 2, 9,990 ran and 9,991 was rejected. `_run_cwl` prefixes the WebACL
-# filter, so this leaves room for the longest name and for the largest limit the API takes.
-_CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128)) - len(" | limit 100000")
-
-
 def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict) -> list[dict]:
     """The Count rules on one IP's requests, CloudWatch side: `[{"rule", "hits"}]`, busiest first.
 
@@ -136,7 +130,7 @@ def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict)
     chunks = [[]]
     for i, n in enumerate(names):
         field = f"sum(strcontains(@message, '\"ruleId\":\"{n}\",\"action\":\"COUNT\"')) as c{i}"
-        if chunks[-1] and len(base + " | stats " + ", ".join(chunks[-1] + [field])) > _CWL_QUERY_MAX:
+        if chunks[-1] and len(base + " | stats " + ", ".join(chunks[-1] + [field])) > CWL_QUERY_MAX:
             chunks.append([])
         chunks[-1].append(field)
     row = {}
@@ -592,20 +586,30 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         " ORDER BY total DESC LIMIT {LIMIT}"
     )
 
-    # Data-center IPs not caught by Bot Control
+    # Data-center and cloud-provider IPs not caught by Bot Control. The provider signal is the one a
+    # fleet on rented instances carries: measured 2026-09-08 on `response-id-on-page`, 12 scraper
+    # hosts sent 1,080 allowed requests, all labelled `signal:cloud_service_provider:aws` and none
+    # `known_bot_data_center`.
     datacenter_cwl = (
-        _LABELS_ARRAY + " | " "filter action = 'ALLOW' and lbls like 'known_bot_data_center'"
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW' and (lbls like 'known_bot_data_center'"
+        " or lbls like 'signal:cloud_service_provider:')"
         " and not (lbls like 'bot:verified') and not (lbls like 'bot:unverified')"
-        " | stats count(*) as total by httpRequest.clientIp"
+        " | parse lbls /signal:cloud_service_provider:(?<csp>[a-z_]+)/"
+        " | stats count(*) as total, sum(strcontains(lbls, 'known_bot_data_center')) as data_center,"
+        " latest(csp) as provider by httpRequest.clientIp"
         " | filter total > 50"
         " | sort total desc | limit 10"
     )
     datacenter_athena = (
-        "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total"
+        "SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as total,"
+        " count_if(any_match(labels, l -> l.name LIKE '%known_bot_data_center%')) as data_center,"
+        " max(regexp_extract(array_join(transform(labels, l -> l.name), ','),"
+        " 'signal:cloud_service_provider:([a-z_]+)', 1)) as provider"
         " FROM {TABLE}"
         " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
         " AND action = 'ALLOW'"
-        " AND any_match(labels, l -> l.name LIKE '%known_bot_data_center%')"
+        " AND (any_match(labels, l -> l.name LIKE '%known_bot_data_center%')"
+        " OR any_match(labels, l -> l.name LIKE '%signal:cloud_service_provider:%'))"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:unverified%') )"
         " GROUP BY httprequest.clientip HAVING count(*) > 50"
@@ -675,12 +679,10 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # layout, and this loop was the unbounded part of it, firing hardest at production volume
     # where diverse fingerprints actually qualify. It is now `step="ja4_ips"`, one query for one
     # fingerprint the user picked, which bounds the chain by construction instead of by a cap.
-    # UA rotation: one TLS fingerprint (JA4) behind many different User-Agents.
-    # A real client has a stable UA per TLS stack; many UAs on a single JA4 means
-    # one client faking multiple browsers (UA spoofing/rotation). JA4 is much
-    # harder to forge than the UA string, so this is a low-false-positive signal.
-    # Keep unique_ips low to avoid flagging large NAT/CDN egress points that
-    # legitimately share a JA4 across many real users.
+    # UA rotation candidates: one TLS fingerprint (JA4) behind many different User-Agents from few
+    # IPs. A JA4 names a TLS stack rather than a client, so an office on one browser build behind one
+    # egress looks the same, and the section says so rather than calling it spoofing. Few IPs keeps
+    # large NAT and CDN egress points out.
     ua_rotation_cwl = (
         _LABELS_ARRAY + " | " "filter action = 'ALLOW' and ispresent(ja4Fingerprint) and ja4Fingerprint != ''"
         " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
@@ -752,13 +754,17 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append(_empty_reason(failures, "repeaters"))
 
     lines.append("")
-    lines.append("### Data-Center IPs Not Caught by Bot Control")
+    lines.append("### Data-Center and Cloud-Provider IPs Not Caught by Bot Control")
     if datacenter:
-        lines.append(f"| {'IP':<15} | {'Requests':>8} |")
-        lines.append(f"| {'-'*15} | {'-'*8} |")
+        lines.append(f"| {'IP':<15} | {'Requests':>8} | {'Signal':<20} |")
+        lines.append(f"| {'-'*15} | {'-'*8} | {'-'*20} |")
         for r in datacenter:
-            lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} |")
-        lines.append("  (signal:known_bot_data_center label present but not classified as bot)")
+            signal = ("data center" if str(r.get("data_center", "0")) not in ("0", "") else
+                      f"cloud provider: {r.get('provider') or '?'}")
+            lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} | {signal:<20} |")
+        lines.append("  (signal:known_bot_data_center or signal:cloud_service_provider:* present, but not "
+                     "classified as a bot. Partners and SaaS tools run on cloud providers too, so a "
+                     "cloud-provider row needs the user to say whether the IP is expected.)")
     else:
         lines.append(_empty_reason(failures, "datacenter"))
 
@@ -788,13 +794,15 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append(_empty_reason(failures, "distributed"))
 
     lines.append("")
-    lines.append("### UA Rotation — Single JA4 Behind Many User-Agents (UA spoofing)")
+    lines.append("### UA Rotation Candidates — Single JA4 Behind Many User-Agents")
     if ua_rotation:
         lines.append(f"| {'JA4 Fingerprint':<34} | {'Requests':>8} | {'Unique UAs':>10} | {'Unique IPs':>10} |")
         lines.append(f"| {'-'*34} | {'-'*8} | {'-'*10} | {'-'*10} |")
         for r in ua_rotation:
             lines.append(f"| {r.get('ja4Fingerprint', '?'):<34} | {r.get('total', '?'):>8} | {r.get('unique_uas', '?'):>10} | {r.get('unique_ips', '?'):>10} |")
-        lines.append("  ⚠️  Candidate signal: one TLS fingerprint faking many User-Agents from few IPs. JA4 is hard to forge, so this is a strong UA-spoofing indicator. Needs IP-level investigation to confirm.")
+        lines.append("  ⚠️  Candidate signal: one TLS fingerprint behind many User-Agents from few IPs. That fits one "
+                     "client rotating its User-Agent, and also an office on one browser build behind one egress, "
+                     "so it is not spoofing until an IP-level investigation says so.")
         lines.append("  → This section has no IPs in it, so do not invent one: call "
                      "detect_bypass(step='ja4_ips', ja4='<fingerprint>') first, then "
                      "investigate_ip on one of the IPs it returns.")
@@ -1208,6 +1216,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     labels_unknown = "labels" in failures
     has_bot_label = any("bot:" in r.get("Labels", "") for r in labels)
     has_datacenter = any("known_bot_data_center" in r.get("Labels", "") for r in labels)
+    providers = sorted({p for r in labels for p in re.findall(r"signal:cloud_service_provider:([a-z_]+)", r.get("Labels", ""))})
     has_verified = any("bot:verified" in r.get("Labels", "") for r in labels)
 
     if not failures.get("actions") and allow_count == 0:
@@ -1267,6 +1276,17 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
              _all(_gt(static_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed),
              _static_traffic(static_val, non_static, allowed, all_val, failures.get("all_uris"), ip)),
             # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
+            # Below the rate rungs and the data-center one: a cloud provider's addresses carry partners'
+            # and SaaS tools' traffic too, so the signal alone is LIKELY, and a rung that measured more
+            # speaks first.
+            (("frequency",), _all(bool(providers), not has_datacenter, not has_bot_label, _gt(peak_val, 50)), [
+                f"**LIKELY: Undetected automation from a cloud provider ({', '.join(providers)})** "
+                f"(needs user confirmation).",
+                f"Evidence: signal:cloud_service_provider:{', '.join(providers)} + {peak_rpm} req/min peak + no bot "
+                f"classification. A fleet on rented instances looks like this, and so does a partner's "
+                f"integration.",
+                "→ Ask user whether this IP is a known partner or service. If not, Bot Control at "
+                "Targeted, or a rate-based rule, is what would catch it."]),
             (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [
                 "**LIKELY: Probable scraper** (needs user confirmation).",
                 f"Evidence: {unique_uris} unique URIs, no bot labels, at a peak of {dyn_peak} non-static req/min.",

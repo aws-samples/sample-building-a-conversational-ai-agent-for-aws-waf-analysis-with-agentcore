@@ -4,6 +4,7 @@
 
 import json
 import threading
+import time
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import (
@@ -281,20 +282,26 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
     sub_rule = ""
 
     if rule_type == "MANAGED_RULE_GROUP":
+        # The last group entry with a `terminatingRule`, on the primary rule's blocks only. A group in
+        # whole-group Count still logs the sub-rule that matched as its `terminatingRule`, with the
+        # native BLOCK, and evaluation goes on, so a record holds one per group that matched and the
+        # group that ended evaluation is the last. Measured 2026-10-02 to 10-16 on
+        # `shield-sample-webacl`: last = terminating group in 109 of 109, while the first entry named
+        # another group's sub-rule in 6 of 17 LinuxRuleSet blocks. Every BLOCK from the IP was read
+        # too, so a second group blocking it could supply the busiest sub-rule.
+        safe_rule = rule_id.replace("'", "''")
         sub_cwl = (
-            f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK'"
-            " | parse @message /\"ruleGroupList\":\\[.*?\"terminatingRule\":\\{\"ruleId\":\"(?<sub_rule>[^\"]+)\"/"
+            f"filter httpRequest.clientIp = '{ip}' and action = 'BLOCK' and terminatingRuleId = '{safe_rule}'"
+            f" | {_LAST_SUB_RULE_CWL}"
             " | filter ispresent(sub_rule)"
             " | stats count(*) as hits by sub_rule"
             " | sort hits desc | limit 5"
         )
         sub_athena = (
-            f"SELECT rg.terminatingrule.ruleid as sub_rule, count(*) as hits"
-            f" FROM {{TABLE}} CROSS JOIN UNNEST(rulegrouplist) AS t(rg)"
-            f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-            f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK'"
-            f" AND rg.terminatingrule.ruleid IS NOT NULL"
-            f" GROUP BY rg.terminatingrule.ruleid ORDER BY hits DESC LIMIT {{LIMIT}}"
+            f"SELECT sub_rule, count(*) as hits FROM (SELECT {_LAST_SUB_RULE_ATHENA} as sub_rule"
+            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+            f" AND httprequest.clientip = '{ip}' AND action = 'BLOCK' AND terminatingruleid = '{safe_rule}')"
+            f" WHERE sub_rule IS NOT NULL GROUP BY sub_rule ORDER BY hits DESC LIMIT {{LIMIT}}"
         )
         sub_results = _run_query(sub_cwl, sub_athena, start_epoch, end_epoch, limit=5)
         if sub_results:
@@ -332,7 +339,10 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
     except Exception:
         insp_label, insp_samples, insp_masked = (None, None, False)
 
+    shared_paths = _shared_path_blocks(ip, rule_id, sub_rule, start_epoch, end_epoch)
+
     return {
+        "shared_paths": shared_paths,
         "rule_id": rule_id, "rule_type": rule_type, "sub_rule": sub_rule,
         "allow_count": allow_count, "block_count": block_count, "total": total,
         "peak_rpm": peak_rpm, "avg_rpm": avg_rpm, "rules_triggered": rules_triggered,
@@ -341,6 +351,52 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         "text_transforms": text_transforms,
         "insp_label": insp_label, "insp_samples": insp_samples, "insp_masked": insp_masked,
     }
+
+
+# The sub-rule of the group that ended evaluation: the last group entry with a `terminatingRule`. A
+# group in whole-group Count logs one too, with the native BLOCK, and evaluation goes on past it.
+_LAST_SUB_RULE_CWL = ('parse @message /.*\\{"ruleGroupId":"[^"]+","terminatingRule":\\{"ruleId":"(?<sub_rule>[^"]+)"/')
+_LAST_SUB_RULE_ATHENA = "element_at(filter(rulegrouplist, rg -> rg.terminatingrule IS NOT NULL), -1).terminatingrule.ruleid"
+_SHARED_LOOK = 86400
+_SHARED_PATHS = 1000
+
+
+def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, end_epoch: int) -> tuple:
+    """On each path where the blocking rule blocked this IP, who else it blocked there, a day either side
+    of the window: `({uri: (blocks, other IPs)}, "")`, or `(None, reason)`. Never raises, because it
+    annotates a verdict reached without it.
+
+    An exception for a false positive's path lets through everything else the rule blocks there.
+    Measured on `response-id-on-page`, 2026-09-08: the false-positive user took 2 SQLi blocks on
+    `/search` at 03:58, and 10 scanners took 60 more there at 04:03-04:04, so a window around the
+    user's blocks alone would not have seen them. A managed group is narrowed to the sub-rule, since
+    its other sub-rules are not what the exception is for. The IP's own count is in the same query, so
+    only the paths this rule blocked it on are listed, and they sort first."""
+    safe_rule = rule_id.replace("'", "''")
+    safe_sub = sub_rule.replace("'", "''")
+    cwl = (f"filter action = 'BLOCK' and terminatingRuleId = '{safe_rule}'"
+           + (f" | {_LAST_SUB_RULE_CWL} | filter sub_rule = '{safe_sub}'" if sub_rule else "")
+           + f" | stats sum(if(httpRequest.clientIp = '{ip}', 1, 0)) as own,"
+           f" sum(if(httpRequest.clientIp != '{ip}', 1, 0)) as hits, count_distinct(httpRequest.clientIp) as seen"
+           f" by httpRequest.uri | filter own > 0 | sort hits desc | limit {_SHARED_PATHS}")
+    athena = (f"SELECT httprequest.uri as \"httpRequest.uri\", count_if(httprequest.clientip = '{ip}') as own,"
+              f" count_if(httprequest.clientip <> '{ip}') as hits, count(DISTINCT httprequest.clientip) as seen"
+              f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+              f" AND action = 'BLOCK' AND terminatingruleid = '{safe_rule}'"
+              + (f" AND {_LAST_SUB_RULE_ATHENA} = '{safe_sub}'" if sub_rule else "")
+              + f" GROUP BY httprequest.uri HAVING count_if(httprequest.clientip = '{ip}') > 0"
+              " ORDER BY hits DESC LIMIT {LIMIT}")
+    try:
+        rows = _run_query(cwl, athena, start_epoch - _SHARED_LOOK, min(end_epoch + _SHARED_LOOK, int(time.time())),
+                          limit=_SHARED_PATHS)
+    except Exception as exc:                              # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    # `seen` counts this IP too, which every listed path holds.
+    found = {r.get("httpRequest.uri"): (int(float(r.get("hits") or 0)), max(int(float(r.get("seen") or 0)) - 1, 0))
+             for r in rows}
+    reason = (f"the list reached its limit of {_SHARED_PATHS} paths, so it may not hold every one"
+              if len(rows) >= _SHARED_PATHS else "")
+    return found, reason
 
 
 def _gather_match_detail(ip: str, start_epoch: int, end_epoch: int) -> tuple[str, str]:
@@ -468,6 +524,21 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     else:
         lines.append("(no URI data)")
 
+    shared, shared_note = d.get("shared_paths") or ({}, "")
+    if shared or shared is None:
+        lines.append("")
+        lines.append(f"### Other traffic this rule blocks on these paths (a day either side, {display_rule})")
+        if shared is None:
+            lines.append(f"  UNKNOWN, the query for this section failed: {shared_note}")
+        else:
+            for uri, (hits, ips) in shared.items():
+                lines.append(f"  {uri}: {hits:,} blocks from {ips:,} other IPs" if ips else f"  {uri}: no other IP")
+            if any(ips for _, ips in shared.values()):
+                lines.append("  ⚠️  An exception for these paths would also let those requests through. Narrow it "
+                             "to this client (its IP, a header it sends, a label), or tell the user what it opens.")
+            if shared_note:
+                lines.append(f"  ({shared_note})")
+
     # Match detail
     if match_detail:
         lines.append("")
@@ -546,7 +617,9 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     lines.append("2. \"Is this IP a known customer, partner, or internal service?\"")
     lines.append("3. \"Does this endpoint expect content that might look like an attack? (HTML, XML, SQL-like syntax)\"")
     lines.append("")
-    lines.append("If user confirms FP → use search_waf_knowledge to help design scope-down exclusion.")
+    lines.append("If user confirms FP → first read \"Other traffic this rule blocks on these paths\": where other IPs "
+                 "are blocked there, an exception for the path opens it to them too. Then use search_waf_knowledge "
+                 "to help design a scope-down exclusion narrow enough to leave them blocked.")
     lines.append("If user confirms NOT FP → call record_finding with 'correct block' conclusion.")
     return "\n".join(lines)
 

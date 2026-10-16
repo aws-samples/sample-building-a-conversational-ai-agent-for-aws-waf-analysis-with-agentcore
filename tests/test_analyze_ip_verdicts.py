@@ -88,7 +88,7 @@ def test_a_ua_list_too_short_to_judge_is_not_read_as_nat(monkeypatch):
 def test_the_nat_fixture_reaches_hammering_without_the_gate(monkeypatch):
     """The precondition of the two tests above. Hammering reads the non-static peak, and with only the
     overall one at 300 these inputs reached no verdict, so the gate's refusal was never what they saw."""
-    out, _ = _run(monkeypatch, diversity=("6", "5"), uas=[MAC] * 4,
+    out, _ = _run(monkeypatch, diversity=("6", "5"), uas=ROTATED,
                   override={"request_rate": [dict(ROW, peak_rpm="300")], "request_rate_dynamic": [dict(ROW, peak_rpm="300")],
                             "uri_diversity": [dict(ROW, unique_uris="3")]})
     assert "Endpoint hammering" in _assessment(out), out
@@ -145,10 +145,47 @@ def test_answered_inputs_still_reach_their_verdict(monkeypatch, peak, uris, expe
     assert expected in _assessment(out), out
 
 
+# One Chrome build on one OS, versions only differing: what a rotating client sends, and also what an
+# office on one browser build sends. Machine pace is what the rung adds to tell them apart.
+ROTATED = [f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.0.0 Safari/537.36"
+           for v in (118, 119, 120, 121, 122, 123)]
+
+
 def test_one_client_rotating_its_ua_is_named(monkeypatch):
     """The first rung. Replacing it with False left this file green."""
-    out, _ = _run(monkeypatch, diversity=("3", "1"), override={"request_rate": [dict(ROW, peak_rpm="60")]})
+    out, seen = _run(monkeypatch, diversity=("6", "1"), uas=ROTATED, override={"request_rate": [dict(ROW, peak_rpm="300")]})
+    assert "user_agents" in seen, "the UA list was not read, so the rung could not have judged it"
     assert "Bot with UA rotation" in _assessment(out), out
+
+
+@pytest.mark.parametrize("diversity,uas,peak", [
+    (("3", "1"), ROTATED[:3], "60"),     # the old rung's whole condition: more than one UA, one JA4, over 50
+    (("6", "1"), ROTATED, "100"),        # rotation-shaped, at a pace an office reaches
+    (("6", "1"), ROTATED[:3] + [MAC, IPHONE, IPAD], "300"),  # several OSes on one JA4
+])
+def test_one_fingerprint_behind_several_uas_is_not_called_rotation_on_its_own(monkeypatch, diversity, uas, peak):
+    """A JA4 names a TLS stack, which an office of one browser build shares behind one egress."""
+    out, _ = _run(monkeypatch, diversity=diversity, uas=uas, override={"request_rate": [dict(ROW, peak_rpm=peak)]})
+    assert "UA rotation" not in _assessment(out), out
+
+
+def test_the_diversity_line_does_not_call_one_fingerprint_spoofing(monkeypatch):
+    out, _ = _run(monkeypatch, diversity=("3", "1"), uas=ROTATED[:3])
+    assert "likely UA spoofing" not in out and "cannot tell which" in out, out
+
+
+def test_a_failed_ua_list_stops_the_rotation_rung(monkeypatch):
+    out, _ = _run(monkeypatch, diversity=("6", "1"), fail={"user_agents"},
+                  override={"request_rate": [dict(ROW, peak_rpm="300")]})
+    verdict = _assessment(out)
+    assert "CANNOT DETERMINE" in verdict and "user_agents" in verdict, verdict
+
+
+@pytest.mark.parametrize("uas", [[MAC] * 4, ROTATED[:4],
+                                 [u.replace("Chrome/", "Chrome/1.") for u in ROTATED[:3]] + [ROTATED[0].replace("Win64; x64", "WOW64")]])
+def test_one_browser_family_without_the_rotation_shape_is_undecided(uas):
+    """Four UAs, or one OS and browser with several templates: the old heuristic called both rotation."""
+    assert L._is_nat_traffic([{"ua": u} for u in uas]) is None
 
 
 def test_the_control_two_fingerprints_are_not_ua_rotation(monkeypatch):

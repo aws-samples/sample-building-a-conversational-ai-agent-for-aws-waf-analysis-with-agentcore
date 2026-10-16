@@ -25,9 +25,11 @@ config answers it:
   Authoritative, since that IS the rule doing injection detection. Walked recursively because the
   statement can sit under `And`/`Or`/`Not` or a scope-down, the same traversal
   `waf_block_fp._extract_transforms_from_statement` already does.
-- **Managed rule groups: the group's own name.** The sub-rule names inside are AWS's
-  (`SQLi_BODY`, `CrossSiteScripting_QUERYARGUMENTS`, `GenericLFI_*`), so matching the group is
-  matching a documented set rather than guessing at a customer's naming.
+- **Managed rule groups: their injection sub-rules, by family and component.** The sub-rule names
+  are AWS's (`SQLi_BODY`, `CrossSiteScripting_QUERYARGUMENTS`, `LFI_QUERYSTRING`), so a name
+  pattern over them is a documented set rather than a guess at a customer's naming. The group
+  itself is not a detector: CommonRuleSet also blocks on extensions and sizes, and taking it whole
+  made `.bak` probing the busiest "injection detector".
 
 A rule this cannot classify is reported as unclassifiable rather than dropped, because "no
 injection rules found" and "you have injection rules I could not recognise" are different answers
@@ -42,18 +44,77 @@ from tools.aws_session import get_client
 from tools.query_limits import MAX_MINUTES
 from tools.session_state import get_scope, get_webacl_name, note_window_capped, resolve_region
 
-# Managed rule groups whose sub-rules are injection detectors. Matched on the group name because
-# the sub-rule names inside are AWS's own.
-_INJECTION_GROUPS = (
-    "AWSManagedRulesSQLiRuleSet",
-    "AWSManagedRulesKnownBadInputsRuleSet",
-    "AWSManagedRulesCommonRuleSet",
-)
-# The sub-rules of those groups that detect injection, by AWS's name prefix, read off
-# `describe-managed-rule-group` 2026-10-16. CommonRuleSet also holds size limits, a User-Agent check
-# and SSRF rules, and KnownBadInputs a localhost Host and PROPFIND, none of which is injection.
-_INJECTION_SUB_RULES = ("SQLi", "CrossSiteScripting_", "GenericLFI_", "GenericRFI_", "Log4JRCE",
-                        "JavaDeserializationRCE_", "ReactJSRCE_")
+# Every sub-rule of the AWS managed groups that hold injection detectors, read off
+# `describe-managed-rule-group` (CLOUDFRONT, default versions) on 2026-10-16. The agent's role cannot
+# call it, so they are listed here; a sub-rule a later version adds is still found once it is
+# overridden, and `_is_injection_sub_rule` decides which of these are detectors.
+_MANAGED_SUB_RULES = {
+    "AWSManagedRulesCommonRuleSet": (
+        "NoUserAgent_HEADER", "UserAgent_BadBots_HEADER", "SizeRestrictions_QUERYSTRING",
+        "SizeRestrictions_Cookie_HEADER", "SizeRestrictions_BODY", "SizeRestrictions_URIPATH",
+        "EC2MetaDataSSRF_BODY", "EC2MetaDataSSRF_COOKIE", "EC2MetaDataSSRF_URIPATH",
+        "EC2MetaDataSSRF_QUERYARGUMENTS", "GenericLFI_QUERYARGUMENTS", "GenericLFI_URIPATH",
+        "GenericLFI_BODY", "RestrictedExtensions_URIPATH", "RestrictedExtensions_QUERYARGUMENTS",
+        "GenericRFI_QUERYARGUMENTS", "GenericRFI_BODY", "GenericRFI_URIPATH", "CrossSiteScripting_COOKIE",
+        "CrossSiteScripting_QUERYARGUMENTS", "CrossSiteScripting_BODY", "CrossSiteScripting_URIPATH"),
+    "AWSManagedRulesKnownBadInputsRuleSet": (
+        "JavaDeserializationRCE_BODY", "JavaDeserializationRCE_URIPATH", "JavaDeserializationRCE_QUERYSTRING",
+        "JavaDeserializationRCE_HEADER", "Host_localhost_HEADER", "PROPFIND_METHOD", "ExploitablePaths_URIPATH",
+        "Log4JRCE_QUERYSTRING", "Log4JRCE_BODY", "Log4JRCE_URIPATH", "Log4JRCE_HEADER", "ReactJSRCE_BODY"),
+    "AWSManagedRulesSQLiRuleSet": (
+        "SQLiExtendedPatterns_QUERYARGUMENTS", "SQLi_QUERYARGUMENTS", "SQLi_BODY", "SQLi_COOKIE", "SQLi_URIPATH"),
+    "AWSManagedRulesLinuxRuleSet": ("LFI_URIPATH", "LFI_QUERYSTRING", "LFI_HEADER"),
+    "AWSManagedRulesUnixRuleSet": (
+        "UNIXShellCommandsVariables_QUERYSTRING", "UNIXShellCommandsVariables_BODY", "UNIXShellCommandsVariables_HEADER"),
+    "AWSManagedRulesWindowsRuleSet": (
+        "WindowsShellCommands_URIPATH_RC_COUNT", "WindowsShellCommands_BODY_RC_COUNT",
+        "WindowsShellCommands_QUERYSTRING_RC_COUNT", "WindowsShellCommands_HEADER_RC_COUNT",
+        "WindowsShellCommands_HEADER", "WindowsShellCommands_QUERYARGUMENTS", "WindowsShellCommands_BODY",
+        "WindowsShellCommands_URIPATH", "PowerShellCommands_COOKIE", "PowerShellCommands_QUERYARGUMENTS",
+        "PowerShellCommands_BODY"),
+    "AWSManagedRulesPHPRuleSet": (
+        "PHPHighRiskMethodsVariables_HEADER", "PHPHighRiskMethodsVariables_QUERYSTRING",
+        "PHPHighRiskMethodsVariables_BODY", "PHPHighRiskMethodsVariables_URIPATH"),
+}
+_INJECTION_GROUPS = tuple(_MANAGED_SUB_RULES)
+# Families that find a payload in a request component. `Log4JRCE` with no suffix is the name in
+# KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14.
+_INJECTION_FAMILIES = ("SQLi", "CrossSiteScripting_", "GenericRFI_", "Log4JRCE", "JavaDeserializationRCE_",
+                       "ReactJSRCE_", "UNIXShellCommandsVariables_", "WindowsShellCommands_",
+                       "PowerShellCommands_", "PHPHighRiskMethodsVariables_", "EC2MetaDataSSRF_",
+                       "GenericLFI_", "LFI_")
+
+
+def _is_injection_sub_rule(name: str) -> bool:
+    """Whether a managed sub-rule finds an injected payload, decided with the maintainer 2026-10-16.
+
+    File inclusion on the URI path is file probing, a file asked for by name: the maintainer's
+    2026-10-13 test of 42 paths such as `.env` and `.git/config` matched `LFI_URIPATH` and
+    `GenericLFI_URIPATH` and no payload rule. The same family on a query, body or header is a
+    payload. `_RC_COUNT` rules count and label for the rule beside them, so are not detectors."""
+    if not name.startswith(_INJECTION_FAMILIES) or name.endswith("_RC_COUNT"):
+        return False
+    return not (name.startswith(("GenericLFI_", "LFI_")) and name.endswith("_URIPATH"))
+
+
+def _sub_rule_groups(rules: list) -> dict:
+    """Each injection sub-rule named by `_injection_rules`, mapped to its managed group's name, which
+    is the `ManagedRuleGroup` dimension its blocks are counted under."""
+    out = {}
+    for rule in rules:
+        group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
+        name = group.get("Name", "")
+        if name in _MANAGED_SUB_RULES:
+            for sub in _group_sub_rules(group):
+                out.setdefault(sub, name)
+    return out
+
+
+def _group_sub_rules(group: dict) -> list:
+    """The injection sub-rules of one managed group statement: the listed ones and any override."""
+    names = list(_MANAGED_SUB_RULES.get(group.get("Name", ""), ()))
+    names += [o["Name"] for o in group.get("RuleActionOverrides", []) if o.get("Name")]
+    return [n for n in dict.fromkeys(names) if _is_injection_sub_rule(n)]
 # Statement types that ARE injection detection. Not a name pattern.
 _INJECTION_STATEMENTS = ("SqliMatchStatement", "XssMatchStatement")
 
@@ -109,14 +170,10 @@ def _injection_rules(rules: list) -> tuple[list, list]:
         stmt = rule.get("Statement", {})
         group = stmt.get("ManagedRuleGroupStatement", {})
         if group:
-            if any(g in group.get("Name", "") for g in _INJECTION_GROUPS):
-                found.append(name)
-                # An injection sub-rule overridden to Count is logged under its own name, nested,
-                # and is the shadow-mode detector a user set deliberately, so it is a detector in its
-                # own right. Any other override in the group is not.
-                found += [o["Name"] for o in group.get("RuleActionOverrides", [])
-                          if "Count" in (o.get("ActionToUse") or {})
-                          and o["Name"].startswith(_INJECTION_SUB_RULES)]
+            # The sub-rules, not the group: a match is logged under the sub-rule's name, nested, and
+            # the group's own name is on every block it makes, injection or not.
+            if group.get("Name", "") in _MANAGED_SUB_RULES:
+                found += [n for n in _group_sub_rules(group) if n not in found]
             continue
         # **An `Allow` rule is not a detector whatever its shape**, which is an independent second
         # signal to the statement type. It catches the inverted allowlist even if some future
@@ -139,9 +196,12 @@ def _count_mode(rules: list) -> set:
     overridden to Count, and groups overridden to Count as a whole."""
     out = set()
     for rule in rules:
+        group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
         if "Count" in (rule.get("Action") or {}) or "Count" in (rule.get("OverrideAction") or {}):
             out.add(rule.get("Name", ""))
-        group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
+            # A group in Count as a whole counts every sub-rule's match.
+            if "Count" in (rule.get("OverrideAction") or {}):
+                out |= set(_group_sub_rules(group))
         out |= {o["Name"] for o in group.get("RuleActionOverrides", [])
                 if "Count" in (o.get("ActionToUse") or {})}
     return out
@@ -289,7 +349,15 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
         lines.append(f"\n{CONFIDENCE}")
         return "\n".join(lines)
 
-    lines.append(f"Injection rules configured: {', '.join(targets)}")
+    # By group, since a group contributes up to thirteen sub-rules and each is a name a user never set.
+    groups = _sub_rule_groups(acl_rules)
+    per_group = {}
+    for t in targets:
+        if t in groups:
+            per_group[groups[t]] = per_group.get(groups[t], 0) + 1
+    own = [t for t in targets if t not in groups]
+    lines.append("Injection rules configured: " + ", ".join(
+        own + [f"{n} injection sub-rules of {g}" for g, n in per_group.items()]))
     if unknown:
         lines.append(f"Not inspected: {', '.join(unknown)}")
     lines.append("")
@@ -303,29 +371,18 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
     # order was the first version and picked a rule that had matched nothing. BLOCK-only was the
     # second: it ranked the terminating rule, and a Count-mode detector ends as ALLOW under its
     # sub-rule's name, so the shadow-mode detectors step 1 keeps on purpose could never be the
-    # focus. One query per detector through the six-location rule filter, which reaches a sub-rule
-    # counted inside a managed group.
+    # focus. Counted through the rule filter's predicates, which reach a sub-rule counted inside a
+    # managed group, in one query per engine: managed sub-rules are forty-odd names.
     if not rule_name:
-        ranked, unread = [], {}
-        for target in targets:
-            pairs, reason = _outcome(_agg(group_by="action", filter_by=json.dumps({"rule": target})))
-            if pairs is None:
-                unread[target] = reason
-                continue
-            total = sum(h for _, h in pairs)
-            if total:
-                ranked.append((target, total, dict(pairs).get("BLOCK", 0)))
-        ranked.sort(key=lambda t: t[1], reverse=True)
-        if unread:
-            lines.append("**Some detectors could not be ranked, so the ranking below is partial:**")
-            lines += [f"  - {name}: {why}" for name, why in unread.items()]
-            lines.append("")
-        if not ranked and unread:
-            lines.append("Nothing can be concluded about injection activity in this window: every "
-                         "detector that answered matched nothing, and the ones above did not answer. "
-                         "Re-run once they do. Do NOT report this window as quiet.")
+        from tools.waf_aggregate import rule_match_counts
+        counts, reason = rule_match_counts(targets, start_time, duration)
+        if counts is None:
+            lines.append(f"Nothing can be concluded about injection activity in this window: the query "
+                         f"counting the detectors' matches did not answer ({reason}). Re-run once it "
+                         f"does. Do NOT report this window as quiet.")
             lines += ["", CONFIDENCE]
             return "\n".join(lines)
+        ranked = sorted(((t, m, b) for t, (m, b) in counts.items() if m), key=lambda t: t[1], reverse=True)
         if not ranked:
             # **Stopping here is the answer, not a failure to find one.** Investigating a rule with
             # no activity produces four empty sections and an assessment with nothing behind it,
@@ -356,10 +413,13 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
             start_epoch = _parse_start_time(start_time)
             if start_epoch is not None:
                 end_epoch = min(start_epoch + duration * 60, int(time.time()))
+                # A managed sub-rule's blocks are counted under its group's dimensions, not `Rule`.
+                groups = _sub_rule_groups(acl_rules)
                 for target in targets:
                     warning = missed_data_warning(
                         get_webacl_name(), target, acl_rules, start_epoch, end_epoch, log_rows=0,
-                        metric_name="CountedRequests" if target in count_mode else "BlockedRequests")
+                        metric_name="CountedRequests" if target in count_mode else "BlockedRequests",
+                        group="" if target in count_mode else groups.get(target, ""))
                     if warning:
                         lines.append(warning)
             lines += ["", CONFIDENCE]

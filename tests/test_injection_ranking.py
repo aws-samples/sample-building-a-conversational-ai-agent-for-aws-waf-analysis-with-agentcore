@@ -86,6 +86,14 @@ def _run(monkeypatch, matches, fail=(), acl_error=None, source_fails=False):
         col = {"uri": "httpRequest.uri", "clientIp": "httpRequest.clientIp", "ua": "ua", "ja4": "ja4Fingerprint"}[group_by]
         return _table(col, [("v1", 3)])
     monkeypatch.setattr(waf_aggregate, "aggregate_logs", types.SimpleNamespace(_tool_func=agg))
+
+    def rank(names, start_time, duration_minutes):
+        """The ranking's count, from `matches`; one failed name fails the query, as it is one query."""
+        if any(n in fail for n in names):
+            return None, "RuntimeError: throttled"
+        return {n: (sum(h for _, h in matches.get(n, [])), sum(h for a, h in matches.get(n, []) if a == "BLOCK"))
+                for n in names}, ""
+    monkeypatch.setattr(waf_aggregate, "rule_match_counts", rank)
     from tools import waf_logs, waf_metrics
     monkeypatch.setattr(waf_logs, "analyze_ip", types.SimpleNamespace(_tool_func=lambda *a: "profile"))
     monkeypatch.setattr(waf_metrics, "missed_data_warning", lambda *a, **k: "")
@@ -109,7 +117,7 @@ def test_a_count_mode_detector_with_the_most_matches_is_the_focus(monkeypatch):
 def test_the_busiest_detector_wins_over_config_order(monkeypatch):
     """The first live-found defect: config order picked a rule that had matched nothing. Here the
     first detector in the WebACL has 2 matches and a later one 97, so order and count disagree."""
-    out, _ = _run(monkeypatch, {"AWS-AWSManagedRulesSQLiRuleSet": [("BLOCK", 2)], "my-sqli": [("BLOCK", 97)]})
+    out, _ = _run(monkeypatch, {"SQLi_QUERYARGUMENTS": [("BLOCK", 2)], "my-sqli": [("BLOCK", 97)]})
     assert "Focusing **my-sqli**" in out, out
 
 
@@ -127,7 +135,8 @@ def test_a_window_with_no_matches_still_stops(monkeypatch):
 def test_a_failed_ranking_query_is_not_read_as_no_matches(monkeypatch):
     out, _ = _run(monkeypatch, {}, fail={XSS_SUB})
     assert "No injection rule matched anything" not in out, out
-    assert XSS_SUB in out and "throttled" in out, out
+    # One query counts every detector now, so its reason is what is named.
+    assert "throttled" in out and "Do NOT report this window as quiet" in out, out
 
 
 def test_a_failed_webacl_read_is_not_reported_as_no_coverage(monkeypatch):

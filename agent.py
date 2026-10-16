@@ -166,7 +166,7 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 ## IP Attribution: Verify Before Concluding Malicious
 - **NEVER conclude an IP is malicious without checking its identity.** ip_cross_query now includes User-Agent. If UA suggests a known service (health check, monitoring), verify with ip_label_breakdown.
 - **bot:verified label is ground truth** (AWS confirms via reverse DNS). UA alone is forgeable — labels are not.
-- **Known AWS infrastructure IPs**: 15.177.0.0/16 = Route 53 Health Check, various 54.x/3.x = AWS services. If UA says "Amazon-Route53-Health-Check-Service" AND labels show bot:verified → confirmed legitimate. Do NOT recommend blocking.
+- **Known AWS infrastructure IPs**: Route 53 health checkers use 31 prefixes in AWS's ip-ranges.json (service ROUTE53_HEALTHCHECKS); inside 15.177 only 15.177.0.0/18 and 15.177.108.0/24, and the rest of 15.177 includes EC2. Most 54.x and 3.x addresses are EC2, which anyone can rent, so an AWS address says nothing about who is sending. Identify a health checker by its labels: bot:verified with bot:name:route53_health_check → confirmed legitimate. Do NOT recommend blocking.
 - **Verification workflow**: See suspicious low-frequency IP → check UA (from ip_cross_query) → if UA looks like a service, call ip_label_breakdown → if bot:verified present → legitimate. If UA says "health check" but NO bot:verified label → possible spoofing, flag as suspicious.
 
 ## Attribution: list the evidence, and name what else explains it
@@ -276,12 +276,12 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 
 ## AWS WAF Domain Knowledge
 - Rate-based rules: 20-30s kick-in delay — ALLOW before BLOCK is normal. Logs show threshold + key but NOT actual request count.
-- Anti-DDoS AMR: per-IP behavior analysis, ~15min baseline warmup
+- Anti-DDoS AMR: one traffic baseline per protected resource, built within minutes of activation (the launch blog says within 15 minutes; two to three times longer if added during an attack). An event is a deviation of the resource's traffic from its baseline; requests from sources suspected of taking part get ddos-request suspicion labels
   - Rule names in CloudWatch metrics: ChallengeAllDuringEvent, ChallengeDDoSRequests, DDoSRequests. These are managed group sub-rules — NEVER confuse them with custom rules that may have similar names. Always verify via ip_cross_query.
-  - DDoSRequests blocks high-freq IPs regardless of JS capability
-  - ChallengeAllDuringEvent: affects challengeable GET requests (those not matching exempt URI regex). Non-GET requests are not challenged.
+  - DDoSRequests blocks requests whose suspicion label meets the block sensitivity, whether or not the client can run JavaScript
+  - ChallengeAllDuringEvent: affects challengeable GET requests (those whose host + normalized path does not match the exempt URI regex). Non-GET requests are not challenged.
   - Challenge delivery: GET with Accept:text/html → transparent JS challenge. GET for other content types → HTTP 202 (cannot proceed). This is disruptive for SPAs/fetch calls.
-  - Blind spot: highly distributed low-rate attacks (below per-IP threshold)
+  - Blind spot: highly distributed low-rate attacks
   - Labels: awswaf:managed:aws:anti-ddos:event-detected (DDoS event active), awswaf:managed:aws:anti-ddos:ddos-request (suspicious source), awswaf:managed:aws:anti-ddos:challengeable-request, awswaf:managed:aws:anti-ddos:high/medium/low-suspicion-ddos-request
 
 ## DDoS Investigation Methodology (CRITICAL — follow this order)
@@ -302,7 +302,8 @@ NOTE: Time-series timestamps are already in the user's session timezone. Use the
 - Bot Control Common: verified (allowed) / unverified (blocked) / neither (undetected)
   - Does NOT block browser-UA bots — need Targeted for those
   - SignalNonBrowserUserAgent + CategoryHttpLibrary: FP on native apps → recommend Count
-  - signal:known_bot_data_center identifies hosting/cloud traffic (Common level, no extra cost)
+  - signal:known_bot_data_center marks known bot-hosting IPs; signal:cloud_service_provider:<name> marks a cloud provider's IPs (both Common level, no extra cost)
+  - A fleet on rented cloud instances carries only the second, so check both. A cloud-provider IP alone is not a verdict: partners and SaaS tools run there too
   - Common level does NOT issue WAF tokens — ALL requests will have token:absent label when only Common is deployed
 - Bot Control Targeted: requires WAF Client SDK integration for browser/SPA/native apps
   - TGT_TokenAbsent default Count is correct design — switching to Block without SDK will block ALL first-visit users
@@ -320,7 +321,7 @@ The evaluate_count_rules tool handles multi-dimensional cross-validation automat
 
 ## DDoS Event Context
 - ChallengeAllDuringEvent activating = legitimate users getting challenged is EXPECTED BEHAVIOR, not a bug. Do NOT recommend disabling it.
-- During an event: API/SPA traffic getting HTTP 202 is expected (non-HTML GET cannot complete challenge). Recommend exempt URI regex for API paths.
+- During an event: API/SPA traffic getting HTTP 202 is expected (non-HTML GET cannot complete challenge). Recommend exempting API paths. The regex sees the host first, so anchor after it, `^[^/]+/api(/|$)`; a branch opening `^/` never matches. Check an exemption in ordinary logs: a non-exempt GET carries challengeable-request even outside an event.
 - After event ends: challenges stop automatically. No manual intervention needed.
 - If AMR missed an attack (distributed low-rate): recommend Targeted Bot Control's coordinated_activity detection, NOT disabling AMR.
 
@@ -329,7 +330,7 @@ The evaluate_count_rules tool handles multi-dimensional cross-validation automat
 Run host_traffic_profile — tool auto-classifies each host as Web/API/Mixed with recommendations.
 If host has very few HTML URIs (1-2) but many API calls from same host → likely SPA, ask user about WAF Client SDK before recommending Targeted Bot Control.
 Cannot determine from logs alone: SDK deployment status, SPA architecture, native-app-only paths → ask_user
-Scope-down exclusions must use URI/IP/header — NOT request body (AWS WAF doesn't inspect body for scope-down).
+Scope-down exclusions: any nestable statement works, request body included (with oversize handling). But the body is never logged, so a body-based scope-down cannot be checked against the logs. Prefer URI/IP/header/label conditions you can verify, and say so when the body is the only thing that tells the traffic apart.
 
 ## Rule Recommendations
 

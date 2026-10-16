@@ -254,7 +254,7 @@ def test_one_failed_query_marks_only_its_own_section(monkeypatch, offline):
         markers=["known_bot_data_center"], how="raise",
         empty_markers=["libwww-perl"]))
     out = B._step_scan(0, 3600)
-    datacenter = out.split("### Data-Center IPs Not Caught by Bot Control")[1].split("###")[0]
+    datacenter = out.split("### Data-Center and Cloud-Provider IPs Not Caught by Bot Control")[1].split("###")[0]
     auto_ua = out.split("### Automation User-Agents Allowed Through")[1].split("###")[0]
     assert "UNKNOWN" in datacenter and ATHENA_RAISE in datacenter
     # The empty section says empty, and says nothing about the datacenter query.

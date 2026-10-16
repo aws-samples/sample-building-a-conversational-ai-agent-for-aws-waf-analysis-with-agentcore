@@ -59,14 +59,14 @@ class FakeCwl:
 
 
 def test_the_filter_names_the_webacl_as_a_path_segment():
-    """The same shape as the Athena side's `webaclid LIKE '%/name/%'`, because `webaclId` is the full ARN
-    in WAFv2 and the name is one path segment of it.
+    """The same shape as the Athena side's `webaclid LIKE '%/webacl/name/%'`, because `webaclId` is the
+    full ARN in WAFv2 and the name is the path segment after `webacl/`.
 
     Verified against real records: `filter webaclId like '/test2/'` returned 7 in the window above and
     `'/shield-sample-webacl/'` returned nothing. The substring form is used rather than the regex form
     `like /\\/name\\//`, which also works and needs escaping this one does not."""
     scoped = Q.scope_cwl_query("filter x | stats count(*) as c", "shield-sample-webacl")
-    assert scoped == "filter webaclId like '/shield-sample-webacl/' | filter x | stats count(*) as c"
+    assert scoped == "filter webaclId like '/webacl/shield-sample-webacl/' | filter x | stats count(*) as c"
 
 
 def test_a_missing_or_malformed_name_refuses_instead_of_querying_unscoped():
@@ -96,7 +96,7 @@ def test_a_log_query_is_scoped_to_the_session_webacl(monkeypatch):
     Q.query_logs("filter action = 'BLOCK' | stats count(*) as cnt | limit 5", "SELECT 1", 0, 60, 5)
     # Driven down to the client rather than to `_run_cwl`, because the executor is where the scoping
     # now happens and a stub for it would capture the query before the prefix exists.
-    assert fake.queries[0].startswith("filter webaclId like '/shield-sample-webacl/' | "), fake.queries[0]
+    assert fake.queries[0].startswith("filter webaclId like '/webacl/shield-sample-webacl/' | "), fake.queries[0]
     assert "| limit 6" in fake.queries[0], (
         "the limit+1 rewrite has to survive the prefix; truncation detection depends on it")
 
@@ -110,7 +110,7 @@ def test_patrol_scopes_to_the_webacl_it_was_asked_about_not_the_session_one():
                          log_destination="arn:aws:logs:r:1:log-group:lg")
     fake = FakeCwl()
     P._poll_log_query(fake, "lg", 0, 60, "filter terminatingRuleId = 'r' | limit 5", "patrolled-acl")
-    assert fake.queries[0].startswith("filter webaclId like '/patrolled-acl/' | "), fake.queries[0]
+    assert fake.queries[0].startswith("filter webaclId like '/webacl/patrolled-acl/' | "), fake.queries[0]
     assert "session-acl" not in fake.queries[0]
 
 
@@ -123,7 +123,7 @@ def test_the_report_scopes_the_same_way():
     fake = FakeCwl()
     R._poll_log_query(fake, "lg", 0, 60, "filter @message like 'anti-ddos:event-detected'",
                       "reported-acl")
-    assert fake.queries[0].startswith("filter webaclId like '/reported-acl/' | "), fake.queries[0]
+    assert fake.queries[0].startswith("filter webaclId like '/webacl/reported-acl/' | "), fake.queries[0]
 
 
 def _start_query_sites() -> dict[str, str]:

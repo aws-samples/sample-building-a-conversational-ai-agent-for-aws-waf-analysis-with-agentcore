@@ -50,8 +50,8 @@ CASES = [
     (
         "ranking by config order again, i.e. the defect that reached production",
         "tools/waf_injection.py",
-        "        ranked.sort(key=lambda t: t[1], reverse=True)\n",
-        "",
+        "ranked = sorted(((t, m, b) for t, (m, b) in counts.items() if m), key=lambda t: t[1], reverse=True)",
+        "ranked = [(t, m, b) for t, (m, b) in counts.items() if m]",
         ["tests/test_injection_ranking.py::test_the_busiest_detector_wins_over_config_order"],
     ),
     (
@@ -79,8 +79,8 @@ CASES = [
     (
         "a non-injection managed group treated as injection",
         "tools/waf_injection.py",
-        '_INJECTION_GROUPS = (\n    "AWSManagedRulesSQLiRuleSet",',
-        '_INJECTION_GROUPS = (\n    "AWSManagedRules",',
+        '            if group.get("Name", "") in _MANAGED_SUB_RULES:\n                found += [n for n in _group_sub_rules(group) if n not in found]',
+        '            if True:\n                found += [name] + [n for n in _group_sub_rules(group) if n not in found]',
         [f"{T}::test_managed_groups_are_matched_by_name_and_only_the_injection_ones"],
     ),
     (
@@ -162,8 +162,8 @@ CASES = [
     (
         "every Count override in an injection group promoted again",
         "tools/waf_injection.py",
-        "                          and o[\"Name\"].startswith(_INJECTION_SUB_RULES)]",
-        "                          ]",
+        "    return [n for n in dict.fromkeys(names) if _is_injection_sub_rule(n)]",
+        "    return list(dict.fromkeys(names))",
         [f"{T}::test_only_an_injection_sub_rule_in_count_is_a_detector"],
         TEXTUAL,
     ),

@@ -16,18 +16,19 @@ I = "tools/waf_injection.py"
 
 CASES = [
     ("Count-overridden sub-rules dropped from the detectors",
-     [(I, "                found += [o[\"Name\"] for o in group.get(\"RuleActionOverrides\", [])\n",
-       "                found += [] and [o[\"Name\"] for o in group.get(\"RuleActionOverrides\", [])\n")],
-     [f"{T}::test_overridden_sub_rules_of_injection_groups_are_detectors"], True),
+     [(I, "    names += [o[\"Name\"] for o in group.get(\"RuleActionOverrides\", []) if o.get(\"Name\")]",
+       "    names += []")],
+     ["tests/test_injection_classes.py::test_a_sub_rule_a_later_version_adds_is_found_through_its_override"], True),
 
     ("ranked on blocks again",
-     [(I, "            total = sum(h for _, h in pairs)", '            total = dict(pairs).get("BLOCK", 0)')],
+     [(I, "ranked = sorted(((t, m, b) for t, (m, b) in counts.items() if m),",
+       "ranked = sorted(((t, b, b) for t, (m, b) in counts.items() if b),")],
      [f"{T}::test_a_count_mode_detector_with_the_most_matches_is_the_focus",
       f"{T}::test_a_window_with_only_count_matches_is_not_reported_as_quiet"], True),
 
     ("an unanswered ranking query read as no matches",
-     [(I, "            if pairs is None:\n                unread[target] = reason\n                continue",
-       "            if pairs is None:\n                pairs = []")],
+     [(I, "        if counts is None:\n            lines.append(f\"Nothing can be concluded",
+       "        counts = counts or {}\n        if False:\n            lines.append(f\"Nothing can be concluded")],
      [f"{T}::test_a_failed_ranking_query_is_not_read_as_no_matches"], True),
 
     ("_outcome collapsing a failure into an empty result",

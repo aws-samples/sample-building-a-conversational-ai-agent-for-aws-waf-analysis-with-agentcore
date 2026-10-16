@@ -268,6 +268,64 @@ _RULE_ATHENA = (
 _RULE_CWL = ("(terminatingRuleId = '{v}' or @message like '\"ruleId\":\"{v}\"'"
              " or @message like '\"rateBasedRuleName\":\"{v}\"')")
 
+# `_RULE_CWL` as a value for `sum(if(...))`, where a `like` is not accepted: the same three places.
+_RULE_CWL_SUM = ("(terminatingRuleId = '{v}' or strcontains(@message, '\"ruleId\":\"{v}\"')"
+                 " or strcontains(@message, '\"rateBasedRuleName\":\"{v}\"'))")
+
+
+def rule_match_counts(names: list, start_time: str, duration_minutes: int):
+    """How many requests each rule matched in the window, and how many of those were blocked:
+    `({name: (matches, blocks)}, "")`, or `(None, reason)` when any part did not answer.
+
+    One query per engine rather than an `aggregate_logs` call per rule, and through the predicates
+    `filter_by={"rule": ...}` uses, so a ranking and the sections filtered on its winner agree on what
+    a match is. `investigate_injection` ranks forty-odd managed sub-rules, at a few seconds a query.
+    Measured 2026-10-16 on `shield-sample-webacl`, 14 days: `sum(if(...))` gave LFI_URIPATH 34
+    matches and 17 blocks, as `filter` with the `like` form did. CloudWatch takes the names in as
+    many queries as `CWL_QUERY_MAX` needs."""
+    from tools.waf_logs import _parse_start_time
+    from tools.waf_query import CWL_QUERY_MAX, get_log_type, log_query_error, query_logs
+    start_epoch = _parse_start_time(start_time)
+    if start_epoch is None:
+        return None, f"start_time '{start_time}' does not parse"
+    # Not clamped here: the caller capped the window and said so.
+    end_epoch = min(start_epoch + duration_minutes * 60, int(time.time()))
+    names = list(dict.fromkeys(names))
+    for n in names:
+        if _checked_rule(n)[1]:
+            return None, f"rule name {n!r} cannot be put in a query"
+    try:
+        if get_log_type() == "cwl":
+            chunks = [[]]
+            for i, n in enumerate(names):
+                pred = _RULE_CWL_SUM.format(v=n)
+                field = f"sum(if({pred}, 1, 0)) as m{i}, sum(if(action = 'BLOCK' and {pred}, 1, 0)) as b{i}"
+                if chunks[-1] and len("stats " + ", ".join(chunks[-1] + [field])) > CWL_QUERY_MAX:
+                    chunks.append([])
+                chunks[-1].append(field)
+            queries = [("stats " + ", ".join(c), "") for c in chunks]
+        else:
+            fields = ", ".join(f"count_if({_RULE_ATHENA.format(v=n)}) as m{i},"
+                               f" count_if(action = 'BLOCK' AND {_RULE_ATHENA.format(v=n)}) as b{i}"
+                               for i, n in enumerate(names))
+            queries = [("", f"SELECT {fields} FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}}"
+                            f" AND {{END_MS}} {{PARTITION_FILTER}}")]
+        answers = [query_logs(cwl, athena, start_epoch, end_epoch, 1) for cwl, athena in queries]
+    except Exception as exc:                              # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    row = {}
+    for rows in answers:
+        reason = log_query_error(rows)
+        if reason:
+            return None, reason
+        # No row is a zero: CloudWatch answers a `stats` with no group-by over no records with none.
+        row.update(rows[0] if rows else {f"{k}{i}": "0" for i in range(len(names)) for k in "mb"})
+    try:
+        return {n: (int(float(row[f"m{i}"] or 0)), int(float(row[f"b{i}"] or 0))) for i, n in enumerate(names)}, ""
+    except (KeyError, ValueError, TypeError) as exc:
+        return None, f"the count query answered without a number for {exc}"
+
+
 # filter_by key -> validator plus the pre-written predicate pair.
 _FILTERS = {
     # COUNT and EXCLUDED_AS_COUNT are never the top-level action, which holds only the terminating
@@ -568,9 +626,9 @@ def aggregate_logs(
     row_limit = min(limit, MAX_RESULTS)
     cwl, athena = _build(group_by, metric, filters, bucket_minutes, row_limit)
 
-    # The module's one and only `query_logs` call, guarded in this same scope. That pairing is
-    # what `tests/test_window_cap.py` asserts, and it is why "is the result checked" is a
-    # question about one place here rather than a dataflow problem.
+    # This function's one `query_logs` call, guarded in this same scope. That pairing is what
+    # `tests/test_window_cap.py` asserts, and it is why "is the result checked" is a question
+    # about one place here rather than a dataflow problem. `rule_match_counts` is the other.
     try:
         rows = query_logs(cwl, athena, start_epoch, end_epoch, row_limit)
     except Exception as exc:
