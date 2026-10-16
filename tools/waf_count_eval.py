@@ -212,6 +212,10 @@ def _step_init(rule_name: str = "") -> str:
             peak_idx = counted_series.index(max(counted_series))
             peak_info = timestamps[peak_idx][:16].replace(" ", "T")  # YYYY-MM-DDTHH:MM
 
+    from tools.waf_metrics import summed_sub_rules
+    summed, repeated = summed_sub_rules(cw, webacl_name, webacl_rules, scope, region)
+    mark = lambda r: f"{r}*" if r in summed else r
+
     # Build response
     lines = [
         "## COUNT Rule Evaluation — Inventory Complete",
@@ -221,7 +225,7 @@ def _step_init(rule_name: str = "") -> str:
     ]
     if permanent_count:
         for r, h in permanent_count:
-            lines.append(f"  - {r} ({h:,} hits) — KEEP as Count permanently")
+            lines.append(f"  - {mark(r)} ({h:,} hits) — KEEP as Count permanently")
     else:
         lines.append("  (none found)")
 
@@ -244,7 +248,7 @@ def _step_init(rule_name: str = "") -> str:
     lines.append("### Step 2: Low-FP Rules with Hits (safe to switch based on rule-type prior)")
     if low_fp_nonzero:
         for r, h in low_fp_nonzero:
-            lines.append(f"  - {r} ({h:,} hits) — known low-FP, safe to switch")
+            lines.append(f"  - {mark(r)} ({h:,} hits) — known low-FP, safe to switch")
     else:
         lines.append("  (none)")
 
@@ -252,9 +256,12 @@ def _step_init(rule_name: str = "") -> str:
     lines.append("### Step 3: Rules Requiring Log Analysis (ranked by hit volume)")
     if needs_analysis:
         for r, h in needs_analysis:
-            lines.append(f"  - {r} ({h:,} hits)")
+            lines.append(f"  - {mark(r)} ({h:,} hits)")
     else:
         lines.append("  (none — all rules classified above)")
+    if any(r in summed for r, _ in permanent_count + low_fp_nonzero + needs_analysis):
+        lines.append("")
+        lines.append(repeated)
 
     lines.append("")
     lines.append("---")
@@ -681,7 +688,7 @@ def _get_all_count_rules(waf_region: str, scope: str, rules: list | None = None)
                 if "Count" in rao.get("ActionToUse", {}):
                     count_rules.append(rao["Name"])
 
-    return count_rules
+    return list(dict.fromkeys(count_rules))  # a group deployed twice names its overrides twice
 
 
 

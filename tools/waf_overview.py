@@ -42,6 +42,9 @@ def get_waf_overview(query_type: str, webacl_name: str, minutes: int = 1440, sta
         webacl_name: Name of the WebACL to query.
         minutes: Time window in minutes (default 1440 = 24h, max 20160 = 14 days).
             Use 60 for 1 hour (1-min granularity), 240 for 4 hours (5-min), 1440 for 1 day (15-min).
+            CloudWatch keeps coarser points for older data: at least 5-min past 15 days, 1-hour past
+            63, nothing past 455. A window that is not whole points is widened, and the output says
+            which window it covers.
             Zoom in to shorter windows for finer granularity.
         start_time: Optional start time (e.g. "2026-05-09" or "2026-05-09T14:00").
             If provided, queries from start_time to start_time + minutes.
@@ -365,11 +368,14 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
                      _rate(mitigated + counted)))
 
     rows.sort(reverse=True)
+    from tools.waf_metrics import summed_sub_rules
+    summed, repeated = summed_sub_rules(cw, webacl_name, rules or [], scope, region)
     lines = [f"Top Rules (past {_fmt_window(minutes)}) for {webacl_name}:", ""]
     _hdr = f"{'Rule':<40} {'Blocked':>8} {'Challenge':>10} {'Captcha':>8} {'Counted':>8} {'Change':>7}"
     lines.append(_hdr + (f" {'Hit rate':>9}" if denom_exact else ""))
     lines.append("-" * (95 if denom_exact else 85))
     for _, rule, b, ch, cap, cnt, wow, rate in rows[:15]:
+        rule = rule + "*" if rule in summed else rule
         row = f"{rule:<40} {b:>8,} {ch:>10,} {cap:>8,} {cnt:>8,} {wow:>7}"
         lines.append(row + (f" {rate:>9}" if denom_exact else ""))
 
@@ -384,6 +390,8 @@ def _top_rules(cw, webacl_name, start, end, prev_start, minutes, scope="CLOUDFRO
         return f"No metrics data for {webacl_name} in this time window (start_time + {_fmt_window(minutes)}). Verify the WebACL name and time range."
 
     lines.append("-" * (95 if denom_exact else 85))
+    if any(r[1] in summed for r in rows[:15]):
+        lines.append(repeated)
     if rules is None:
         lines.append(f"⚠️ The WebACL configuration could not be read ({rules_error}), so the rules above "
                      "are only those CloudWatch SEARCH discovered, and SEARCH misses any rule with no "

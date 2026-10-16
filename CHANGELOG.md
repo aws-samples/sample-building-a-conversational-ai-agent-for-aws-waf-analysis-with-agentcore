@@ -57,13 +57,21 @@ the same call. On a WebACL with one bot, that bot came back labelled `AllowedReq
 overview and patrol listed a bot called "AllowedRequests", and the weekly report's verified-bot chart
 and Advanced Bot Detection card were empty for that WebACL. A label with two metrics was listed twice
 in `top_labels`. Every SEARCH query now sets its own label format, and label and signal counts stop
-adding rule-match metrics, which count matches rather than requests: on 2026-10-14, 7 requests carried
-`TGT_TokenAbsent` and its `CountRuleMatch` read 14. Where the Advanced Bot Detection card did have
+adding rule-match metrics, which count matches rather than requests: on 2026-10-14, on a WebACL that
+runs Bot Control twice, 7 requests carried `TGT_TokenAbsent` and its `CountRuleMatch` read 14. Where the Advanced Bot Detection card did have
 data, it showed those matches as "Counted" and every blocked request carrying a targeted label as
 "Mitigated", including the 34 that other rules had blocked. It now lists each targeted label with the
 requests that carried it and how they ended, without crediting the rule that ended them. The report
 also kept the first series it saw for a bot name, so a client merely claiming a verified bot's name
 could land among the verified bots; the two are now counted apart.
+
+### Fixed: a managed rule group deployed twice doubled its sub-rules' counts unannounced
+
+A managed sub-rule's metric names no instance, so with the same rule group in a WebACL twice both
+instances write into one series. On a WebACL running Bot Control twice, `TGT_TokenAbsent` read 3,436
+over 13 days for 2,230 logged requests; with one instance the two agree (440 and 440). The overview's
+`top_rules` and the COUNT evaluation now mark such rows and say why, and the evaluation no longer
+lists an overridden sub-rule once per instance.
 
 ### Fixed: metric searches lost series with nothing saying so
 

@@ -734,11 +734,12 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
 
             # 2. Targeted Bot Control: the requests carrying each TGT_ label, by how they ended.
             # Label request metrics say how a request ended, not which rule ended it, and the
-            # `*RuleMatch` metrics count matches, not requests. Measured on shield-sample-webacl
-            # for 2026-10-14: 7 logged requests carried TGT_TokenAbsent, its label AllowedRequests was
-            # 7, and CountRuleMatch, Rule=TGT_TokenAbsent CountedRequests and the ManagedRuleGroupRule
-            # metric were all 14. Over 13 days its 34 blocked requests were the 17 that
-            # AWS-AWSManagedRulesLinuxRuleSet and the 17 that custom-sensitive-files blocked.
+            # `*RuleMatch` metrics count matches, not requests, once per rule-group instance.
+            # Measured on shield-sample-webacl, which runs Bot Control twice, for 2026-10-14: 7 logged
+            # requests carried TGT_TokenAbsent, its label AllowedRequests was 7, and CountRuleMatch,
+            # Rule=TGT_TokenAbsent CountedRequests and the ManagedRuleGroupRule metric were all 14
+            # (see `waf_metrics.summed_sub_rules`). Over 13 days its 34 blocked requests were the
+            # 17 that AWS-AWSManagedRulesLinuxRuleSet and the 17 that custom-sensitive-files blocked.
             tgt_resp = cw.get_metric_data(
                 MetricDataQueries=[{"Id": "tgt", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} LabelNamespace=\"awswaf:managed:aws:bot-control\" WebACL=\"{webacl_name}\"', 'Sum', 604800)",
                                     "Label": search_label("LabelName")}],
