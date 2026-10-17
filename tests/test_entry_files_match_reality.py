@@ -180,3 +180,18 @@ def test_the_two_roadmaps_list_the_same_planned_items():
     assert len(en) == len(zh), (
         f"docs/roadmap.md lists {len(en)} items, docs/roadmap_zh.md lists {len(zh)}; one gained or "
         f"lost an item without the other")
+
+
+@pytest.mark.parametrize("doc,heading,step", [
+    ("docs/deployment.md", "## Updating the Agent", "./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION"),
+    ("docs/deployment_zh.md", "## 更新 Agent", "./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION"),
+    ("AGENTS.md", "## Updating & cleanup", "re-run `./deploy/sync-kb.sh`")])
+def test_updating_the_agent_says_to_sync_the_knowledge_base(doc, heading, step):
+    """The KB's documents are in their own bucket and no image or stack update touches them. The
+    v0.33.0 deploy followed these steps, left the knowledge base on the previous text, and nothing
+    reported it. Scoped to the update section, since the first deploy's step already names the script."""
+    text = _read(doc)
+    start = text.index(heading) + len(heading)
+    block = text[start:].split("\n## ", 1)[0]
+    # The command, not the script's name: the note also says the first deploy ran the script.
+    assert step in block, f"{doc}'s update steps do not say to re-sync the knowledge base"

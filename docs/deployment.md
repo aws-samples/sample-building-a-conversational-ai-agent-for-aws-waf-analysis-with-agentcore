@@ -147,7 +147,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.34.0 \
+  --parameter-overrides ReleaseTag=v0.34.1 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -493,6 +493,11 @@ aws cloudformation deploy \
 ```
 
 > **Note**: Existing sessions continue running old code. New sessions will use the updated image.
+
+> **Note**: The knowledge base does not follow the image either. Its documents sit in the KB stack's
+> bucket, put there by `./deploy/sync-kb.sh` in Step 2, so a release that changed `kb-docs/` leaves the
+> agent citing the previous text until you run `./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION`
+> again. It uploads only the files that changed and starts an ingestion; nothing else needs redeploying.
 
 > **Note**: The version badge in the bottom-left corner of the UI does not change from any of this.
 > It is baked into the frontend bundle at build time (Step 6), read from `CHANGELOG.md`'s newest

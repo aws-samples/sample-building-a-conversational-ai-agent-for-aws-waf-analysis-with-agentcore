@@ -125,7 +125,7 @@ aws cloudformation deploy \
   --template-file deploy/image-build.yaml \
   --stack-name waf-agent-image \
   --region ap-northeast-1 \
-  --parameter-overrides ReleaseTag=v0.34.0 \
+  --parameter-overrides ReleaseTag=v0.34.1 \
   --capabilities CAPABILITY_IAM
 
 aws cloudformation describe-stacks \
@@ -465,6 +465,10 @@ aws cloudformation deploy \
 ```
 
 > **注意**：已有会话继续运行旧代码，新会话使用更新后的镜像。
+
+> **注意**：知识库也不跟着镜像走。它的文档放在 KB stack 的桶里，是第 2 步用 `./deploy/sync-kb.sh` 传上去的。
+> 新版本如果改了 `kb-docs/`，不重新跑一遍 `./deploy/sync-kb.sh waf-agent-kb ./kb-docs $REGION`，agent
+> 引用的就还是旧内容。脚本只传有变化的文件，再启动一次 ingestion，别的都不用重新部署。
 
 > **注意**：这些操作都不会改变界面左下角的版本号。那个号是第 6 步构建前端时，从 `CHANGELOG.md`
 > 最新的标题行读出来、烧进打包好的 JS 里的，跟这里重建的 backend 容器无关。硬刷浏览器也修不了，不是浏览器缓存旧了，
