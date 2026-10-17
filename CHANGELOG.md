@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.33.0 (2026-10-17)
 
 ### Fixed: the false-positive investigation could name another group's sub-rule
 
