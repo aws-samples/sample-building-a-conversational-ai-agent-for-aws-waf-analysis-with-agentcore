@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.34.0 (2026-10-17)
 
 ### Fixed: every answer stopped at 4,096 output tokens
 
