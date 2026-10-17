@@ -6,6 +6,7 @@ import json
 import re
 from datetime import datetime, timedelta, timezone
 from strands import tool
+from tools.html_safe import escaped, script_json
 from tools.aws_session import get_client
 from tools.query_limits import MAX_POLL, POLL_INTERVAL, stop_query
 from tools.waf_metrics import REQUEST_METRICS, search_label
@@ -870,13 +871,13 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                 f'<script>(function(){{'
                 f'const c = getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#e6edf3";'
                 f'const colors = ["#3fb950","#58a6ff","#d29922","#a371f7","#79c0ff","#f0883e","#8b949e","#db61a2"];'
-                f'const gbd = {json.dumps(good_chart)};'
+                f'const gbd = {script_json(good_chart)};'
                 f'new Chart(document.getElementById("goodBotChart"), {{'
                 f'  type: "doughnut",'
                 f'  data: {{ labels: gbd.labels, datasets: [{{ data: gbd.values, backgroundColor: colors.slice(0, gbd.labels.length), borderWidth: 0 }}] }},'
                 f'  options: {{ responsive: true, plugins: {{ legend: {{ position: "right", labels: {{ color: c, boxWidth: 12 }} }}, tooltip: {{ enabled: false }} }} }}'
                 f'}});'
-                f'const ubd = {json.dumps(unverified_chart)};'
+                f'const ubd = {script_json(unverified_chart)};'
                 f'new Chart(document.getElementById("unverifiedBotChart"), {{'
                 f'  type: "bar",'
                 f'  data: {{ labels: ubd.labels, datasets: ['
@@ -898,7 +899,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
                     n = d["allowed"] + d["mitigated"]
                     pct = round(d["mitigated"] * 100 / n)
                     rows += (
-                        f'<div class="label" style="font-size:1rem;margin-top:1rem">{name} — <strong>{n:,}</strong> {L["requests"]}</div>'
+                        f'<div class="label" style="font-size:1rem;margin-top:1rem">{escaped(name)} — <strong>{n:,}</strong> {L["requests"]}</div>'
                         f'<div style="background:var(--border);border-radius:6px;height:40px;margin:0.5rem 0;overflow:hidden;display:flex">'
                         f'<div style="width:{pct}%;background:#f85149;display:flex;align-items:center;justify-content:center;color:#fff;font-size:1rem;font-weight:600">{d["mitigated"]:,}</div>'
                         f'<div style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:1rem">{d["allowed"]:,}</div>'
@@ -976,8 +977,8 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
     gen_time = _dt.now(timezone(timedelta(hours=_tz_off)) if _tz_off else timezone.utc).strftime('%Y-%m-%d %H:%M')
 
     html = REPORT_TEMPLATE.format(
-        webacl_name=webacl_name,
-        scope=scope,
+        webacl_name=escaped(webacl_name),
+        scope=escaped(scope),
         date_range=date_range,
         gen_time=gen_time,
         tz_label=tz_label,
@@ -996,7 +997,7 @@ def generate_weekly_report(webacl_name: str, start_time: str, days: int = 7, sco
         bot_pct=bot_pct,
         top_country_count=len(countries),
         country_map_svg=country_map_svg,
-        attack_data_json=json.dumps(attack_ts),
+        attack_data_json=script_json(attack_ts),
         L_title=L["title"],
         L_delay_note=L["delay_note"],
         L_generated=L["generated"],
@@ -1318,7 +1319,6 @@ def _get_attack_timeseries(cw, webacl_name: str, start, end, tz_offset=None, sco
 
 def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=None) -> str:
     """Build DDoS chart HTML section. Always renders (flat line if no events)."""
-    import json as _json
     try:
         _dims_ddos = [{"Name": "WebACL", "Value": webacl_name},
                       {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
@@ -1348,7 +1348,7 @@ def _get_ddos_chart_data(cw, webacl_name: str, start, end, L: dict, tz_offset=No
             f'<p style="color:var(--muted);font-size:1rem;text-align:center;">{L["antiddos_chart_note"]}</p>'
             f'<script>'
             f'(function(){{'
-            f'const ddosData = {_json.dumps(ddos_chart_data)};'
+            f'const ddosData = {script_json(ddos_chart_data)};'
             f'const c = getComputedStyle(document.documentElement).getPropertyValue("--chart-text").trim() || "#e6edf3";'
             f'new Chart(document.getElementById("ddosChart"), {{'
             f'  type: "line",'
@@ -1478,10 +1478,12 @@ def set_report_summary(path: str, summary: str) -> str:
     """
     try:
         import markdown
+        from html import escape
         with open(path, "r") as f:
             html = f.read()
-        # Convert Markdown to HTML
-        summary_html = markdown.markdown(summary, extensions=["smarty"])
+        # Markdown passes raw HTML through, and the model writes this summary from log content it is told
+        # not to trust, so markup in it is escaped first. Escaped text is still Markdown.
+        summary_html = markdown.markdown(escape(summary, quote=False), extensions=["smarty"])
         html = html.replace("{{EXECUTIVE_SUMMARY}}", summary_html)
         with open(path, "w") as f:
             f.write(html)

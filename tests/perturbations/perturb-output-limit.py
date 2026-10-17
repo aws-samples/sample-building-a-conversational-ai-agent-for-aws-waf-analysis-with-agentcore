@@ -14,34 +14,23 @@ from _harness import sweep
 
 T = "tests/test_output_limit.py"
 A = "agent.py"
+CALL = ('        _model = BedrockModel(\n'
+        '            model_id=MODEL_ID,\n'
+        '            region_name=MODEL_REGION,\n'
+        '            **({"max_tokens": ceiling} if ceiling else {}),\n'
+        '        )')
 
 CASES = [
-    # The state the release shipped in for four months, and the state the first fix left it in. Anchored on
-    # the whole statement rather than a keyword line, because a keyword inside a multi-line call is a
-    # continuation line and no statement can be inserted ahead of one.
-    ("an output bound back on the request, which is what truncated a real answer",
-     [(A, "        _model = BedrockModel(\n"
-          "            model_id=MODEL_ID,\n"
-          "            region_name=MODEL_REGION,\n"
-          "        )",
-       "        _model = BedrockModel(\n"
-       "            model_id=MODEL_ID,\n"
-       "            region_name=MODEL_REGION,\n"
-       "            max_tokens=4096,\n"
-       "        )")],
-     [f"{T}::test_no_output_bound_reaches_the_request"], True),
+    # The state the release shipped in for four months, a larger picked number, and the state 0.27 to 0.33
+    # shipped, which sent nothing and so stopped at Bedrock's 4,096 default. Anchored on the whole
+    # statement, because a keyword inside a multi-line call is a continuation line.
+    ("4,096 back on the request, which is what truncated a real answer",
+     [(A, CALL, CALL.replace('            **({"max_tokens": ceiling} if ceiling else {}),\n', "            max_tokens=4096,\n"))],
+     [f"{T}::test_the_bound_is_the_model_s_own_ceiling"], True),
 
-    ("a larger bound instead of none, which is the shape the first fix had",
-     [(A, "        _model = BedrockModel(\n"
-          "            model_id=MODEL_ID,\n"
-          "            region_name=MODEL_REGION,\n"
-          "        )",
-       "        _model = BedrockModel(\n"
-       "            model_id=MODEL_ID,\n"
-       "            region_name=MODEL_REGION,\n"
-       "            max_tokens=32768,\n"
-       "        )")],
-     [f"{T}::test_no_output_bound_reaches_the_request"], True),
+    ("no bound at all, which Bedrock reads as 4,096",
+     [(A, CALL, CALL.replace('            **({"max_tokens": ceiling} if ceiling else {}),\n', ""))],
+     [f"{T}::test_the_bound_is_the_model_s_own_ceiling"], True),
 
     ("the SDK's own sentence put back in the report",
      [(A, '    if "max_tokens" in message or "MaxTokens" in message:', "    if False:")],

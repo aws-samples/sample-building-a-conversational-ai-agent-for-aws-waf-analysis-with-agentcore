@@ -50,6 +50,25 @@ CASES = [
      [(P, "    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600, scope=scope, region=region, rules=acl_rules)",
        "    this_week_metrics = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=3600, scope=scope, region=region)")],
      [f"{T}::test_patrol_passes_the_webacl_rules_to_both_windows"]),
+
+    ("providers read off a name list again",
+     [(P, '        if namespace.endswith("cloud_service_provider") and metric_name in _ACTION_METRICS:',
+       '        if lbl_name in ("aws", "gcp", "azure", "oracle") and metric_name in _ACTION_METRICS:')],
+     [f"{T}::test_every_provider_under_the_namespace_is_counted_whatever_its_name"]),
+
+    ("rule-match and Count series counted as requests again",
+     [(P, '        if namespace.endswith("cloud_service_provider") and metric_name in _ACTION_METRICS:',
+       '        if namespace.endswith("cloud_service_provider"):')],
+     [f"{T}::test_every_provider_under_the_namespace_is_counted_whatever_its_name"]),
+
+    ("the provider item calling it a data center",
+     [(P, "                        f'{total:,} requests from cloud provider {name} addresses',",
+       "                        f'{total:,} requests from {name.upper()} data center',")],
+     [f"{T}::test_a_provider_item_names_the_provider_and_the_cdn_reading"]),
+
+    ("the provider items never raised",
+     [(P, '        action_items += _cloud_provider_items(bot_data.get("cloud_providers", {}), lang)\n', "")],
+     [f"{T}::test_patrol_raises_the_items_from_the_parsed_providers"]),
 ]
 
 sys.exit(sweep(CASES))

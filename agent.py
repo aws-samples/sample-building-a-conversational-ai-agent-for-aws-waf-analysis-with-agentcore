@@ -302,7 +302,7 @@ NOTE: Time-series timestamps are already in the user's session timezone. Use the
 - Bot Control Common: verified (allowed) / unverified (blocked) / neither (undetected)
   - Does NOT block browser-UA bots — need Targeted for those
   - SignalNonBrowserUserAgent + CategoryHttpLibrary: FP on native apps → recommend Count
-  - signal:known_bot_data_center marks known bot-hosting IPs; signal:cloud_service_provider:<name> marks a cloud provider's IPs (both Common level, no extra cost)
+  - signal:known_bot_data_center marks known bot-hosting IPs; signal:cloud_service_provider:<name> marks a cloud provider's IPs (both Common level, no extra cost). When <name> is a CDN or proxy service, the client IP is its egress for many clients, so no per-IP conclusion holds for one actor
   - A fleet on rented cloud instances carries only the second, so check both. A cloud-provider IP alone is not a verdict: partners and SaaS tools run there too
   - Common level does NOT issue WAF tokens — ALL requests will have token:absent label when only Common is deployed
 - Bot Control Targeted: requires WAF Client SDK integration for browser/SPA/native apps
@@ -342,7 +342,7 @@ Scope-down exclusions: any nestable statement works, request body included (with
 | COUNT confirmed attack | Switch to BLOCK |
 | COUNT confirmed FP | Add scope-down exclusion |
 | Sophisticated bot (browser automation) | Targeted Bot Control |
-| Token reuse | TGT_TokenReuseIP to BLOCK |
+| Token reuse | TGT_TokenReuseIpMedium (CAPTCHA by default) or TGT_TokenReuseIpLow (Count) to BLOCK; TGT_TokenReuseIpHigh already blocks |
 | Allow rule on forgeable condition (UA/header) | Change to unforgeable (IP set / AWS WAF token / ASN) |
 | Bot signals not visible to origin | Dynamic Label Interpolation (forward bot category/signals as headers) |
 
@@ -644,17 +644,14 @@ def _get_model():
     parameter is not gone, it is pinned, and there is no way to ask this family for low-variance
     sampling. `temperature=0.0` was here for reproducible tool routing.
 
-    **No output bound either, and this one is the maintainer's standing instruction rather than a
-    measurement.** `max_tokens=4096` arrived with the initial skeleton on 2026-05-08 and sat untouched for
-    four months, until one ordinary question exceeded it on the deployed endpoint: country and referer
-    breakdowns for a day, which the 360-minute query cap splits into four windows, produced a table that
-    stopped mid-row with the SDK's own `max_tokens` exception glued to the last cell. The first fix raised
-    the number, which was the wrong shape: a number picked here is a ceiling the model did not choose.
-
-    Measured that nothing needs to be sent: a Converse call with no `inferenceConfig` at all answers and
-    reports `stopReason: end_turn`, and `BedrockModel` with neither keyword sends `inferenceConfig: {}`. For
-    the record, this model does have a Bedrock ceiling, 131,072 is refused with "exceeds the model limit of
-    128000", but the ceiling is the service's to enforce and not this file's to guess.
+    **The output bound is the model's own ceiling, read from Bedrock, because sending none is not "no
+    bound".** `max_tokens=4096` arrived with the initial skeleton on 2026-05-08 and cut a real answer on the
+    deployed endpoint mid-row. Dropping it was meant to leave the ceiling to the service, and it did not:
+    measured 2026-10-17 against `global.anthropic.claude-sonnet-5` in ap-northeast-1, asking for 6,000
+    numbered lines, a request with no `inferenceConfig` stopped at 4,096 output tokens with
+    `stopReason: max_tokens`, while `maxTokens` 32,000 and 128,000 both ran to `end_turn` at about 17,060.
+    The maintainer's instruction still holds, that a number picked here is a ceiling the model did not
+    choose, so the number comes from the service: see `_output_ceiling`.
 
     **Omitting the sampling parameter is AWS's documented migration, and the reason first written here was
     wrong.** That
@@ -672,11 +669,44 @@ def _get_model():
     """
     global _model
     if _model is None:
+        ceiling = _output_ceiling(_bedrock_runtime())
         _model = BedrockModel(
             model_id=MODEL_ID,
             region_name=MODEL_REGION,
+            **({"max_tokens": ceiling} if ceiling else {}),
         )
     return _model
+
+
+# Above every Claude model's output ceiling, so Bedrock refuses it and names the ceiling.
+_ABOVE_ANY_CEILING = 10_000_000
+
+
+def _bedrock_runtime():
+    from tools.aws_session import get_client
+    return get_client("bedrock-runtime", region_name=MODEL_REGION)
+
+
+def _output_ceiling(client) -> int | None:
+    """The model's output ceiling, read off Bedrock's refusal of a request above it, or None.
+
+    Measured 2026-10-17 in ap-northeast-1 with `maxTokens` 200,000: Sonnet 5, Sonnet 4.6 and Opus 5.5 are
+    refused with "exceeds the model limit of 128000", Haiku 4.5 with "... of 64000", and 128,000 itself is
+    accepted. So the ceiling differs by model and the refusal names it, which covers a deployer's
+    `WAF_AGENT_MODEL_ID` as well as the default. The refusal is a validation error, so the model does not
+    run. Any other failure returns None and says so: the request then carries no bound and Bedrock's
+    default of 4,096 applies, which is the state before this existed rather than a failed request."""
+    try:
+        client.converse(modelId=MODEL_ID, messages=[{"role": "user", "content": [{"text": "."}]}],
+                        inferenceConfig={"maxTokens": _ABOVE_ANY_CEILING})
+    except Exception as exc:                              # noqa: BLE001
+        found = re.search(r"exceeds the model limit of (\d+)", str(exc))
+        if found:
+            return int(found.group(1))
+        print(f"[agent] could not read the model's output ceiling, so answers stop at Bedrock's default of "
+              f"4,096 tokens: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return None
+    return _ABOVE_ANY_CEILING
 
 
 _agent_user_id = ""

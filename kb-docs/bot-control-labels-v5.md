@@ -1,4 +1,9 @@
-# Bot Control Labels (v5.0)
+# Bot Control Labels (through Version_7.0)
+
+Checked against `describe-managed-rule-group` for every Bot Control version on 2026-10-17. Its
+`AvailableLabels` lists what each version can add, so read it there for the version a WebACL pins.
+The default version is still Version_1.0, which has no `cloud_service_provider` labels at all; they
+start in Version_2.0.
 
 ## Label Namespace Structure
 
@@ -79,15 +84,15 @@ These are behavioral signals — they don't identify specific bots but flag susp
 | `signal:non_browser_header` | HTTP headers inconsistent with browsers | High — automation indicator |
 | `signal:automated_browser` | Detected browser automation (headless, Selenium) | High — sophisticated bot |
 | `signal:known_bot_data_center` | IP belongs to known bot hosting infrastructure | High — equivalent to HostingProviderIPList but more precise |
-| `signal:cloud_service_provider:aws` | Traffic from AWS IP ranges | Medium — could be legitimate or bot |
-| `signal:cloud_service_provider:azure` | Traffic from Azure IP ranges | Medium |
-| `signal:cloud_service_provider:gcp` | Traffic from GCP IP ranges | Medium |
-| `signal:cloud_service_provider:cloudflare` | Traffic from Cloudflare IP ranges | Low — often legitimate (Workers, proxied) |
-| `signal:cloud_service_provider:digital_ocean` | Traffic from DigitalOcean | Medium-High — common bot hosting |
-| `signal:cloud_service_provider:akamai` | Traffic from Akamai | Low — usually CDN |
-| `signal:cloud_service_provider:alibaba` | Traffic from Alibaba Cloud | Medium |
-| `signal:cloud_service_provider:ibm` | Traffic from IBM Cloud | Medium |
-| `signal:cloud_service_provider:oracle` | Traffic from Oracle Cloud | Medium |
+| `signal:cloud_service_provider:<provider>` | The IP belongs to that cloud provider | Depends on the provider, see below |
+
+Version_7.0's `AvailableLabels` lists nine providers: akamai, alibaba, aws, azure, cloudflare,
+digital_ocean, gcp, ibm and oracle. The 7.0 changelog adds fastly, which that list does not show
+yet, and later versions can add more, so read the provider off the label rather than from a list.
+What it means depends on what the provider sells. A host of rented instances is where automation
+often runs, and partners, SaaS tools and office egresses run there too, so the label is a reason
+to ask rather than a verdict. A CDN or proxy service in front of the site makes the IP its egress
+for many clients, and nothing about that IP describes one client.
 
 ## Targeted Rule Name Prefixes
 
@@ -120,6 +125,28 @@ Behavioral patterns detected across multiple requests from the same session/toke
 | `targeted:aggregate:volumetric:session:token_reuse:asn:{low/medium/high}` | Same token used across multiple ASNs |
 | `targeted:aggregate:volumetric:session:token_reuse:country:{low/medium/high}` | Same token used from multiple countries |
 
+## Token Provenance Labels (Targeted Level, Version_7.0 and Later)
+
+`token_provenance:ip_category_mismatch:<level>` flags a change in the category of IP address between
+the request that acquired the AWS WAF token and the request that presents it, such as a token
+acquired from a data center and presented from a residential address.
+
+| Level | Meaning |
+|---|---|
+| `high` | A change legitimate clients rarely make, such as a token acquired from a data center, proxy or VPN address and presented from a residential or mobile one |
+| `medium`, `low` | Changes with common legitimate causes, such as a residential client turning on a VPN |
+
+Added only for requests that present a token, and never for `bot:verified` requests. No rule in the
+group acts on them: blocking or challenging needs a label match rule placed after Bot Control.
+
+## Device ID Label (Targeted Level)
+
+`device_id:<device_id>` carries the device ID the AWS WAF Android SDK collected when it acquired the
+token. Only tokens from Android SDK 2.1.0 or later carry one, and that SDK version is not released
+yet, so the label does not appear today. Reserved values: `device_id:Unavailable` (the SDK could not
+collect an ID) and `device_id:invalid` (the ID was malformed and replaced). The value identifies a
+device, so treat it like any other identifier taken from a log.
+
 ## Token and CAPTCHA Status Labels
 
 Shared across Bot Control, ATP, ACFP, and Anti-DDoS AMR.
@@ -146,12 +173,13 @@ Shared across Bot Control, ATP, ACFP, and Anti-DDoS AMR.
 When analyzing logs:
 1. `bot:verified` + `bot:category:search_engine` = legitimate crawler, not a threat
 2. `bot:unverified` + `signal:known_bot_data_center` = likely malicious, spoofing bot identity
-3. `signal:cloud_service_provider:*` without `bot:verified` = suspicious automation from cloud infra
+3. `signal:cloud_service_provider:*` without `bot:verified` = traffic from a cloud provider's addresses: worth asking about when the provider hosts rented instances, and an egress for many clients when it is a CDN or proxy
 4. `targeted:aggregate:coordinated_activity:high` = bot farm, recommend immediate Block
 5. `token:absent` on high-volume IP = likely bot that cannot execute JavaScript
 6. `token_reuse:ip:high` = token sharing/theft, recommend TGT_TokenReuseIp to Block
-7. No bot labels on high-frequency IP = undetected bot (Common level insufficient, recommend Targeted)
-8. Token-id cross-IP check: a single issued token (`awswaf:managed:token:id:<id>`) normally maps to 1–2 client IPs. If one token-id appears across **>5 distinct IPs**, that token is being reused/shared across a botnet — a strong fraud/abuse signal, stronger than UA or even JA4 (the token is cryptographically issued by WAF). Investigate those IPs together.
+7. `token_provenance:ip_category_mismatch:high` = a token carried from a data center, proxy or VPN to a residential address, which is what a token acquired by one client and handed to another looks like
+8. No bot labels on high-frequency IP = undetected bot (Common level insufficient, recommend Targeted)
+9. Token-id cross-IP check: a single issued token (`awswaf:managed:token:id:<id>`) normally maps to 1–2 client IPs. If one token-id appears across **>5 distinct IPs**, that token is being reused/shared across a botnet — a strong fraud/abuse signal, stronger than UA or even JA4 (the token is cryptographically issued by WAF). Investigate those IPs together.
 
 When reviewing rules:
 1. If Bot Control is Common level and `signal:known_bot_data_center` traffic is high → recommend Targeted

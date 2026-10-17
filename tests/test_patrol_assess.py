@@ -127,3 +127,39 @@ def test_patrol_passes_the_webacl_rules_to_both_windows():
              if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_get_all_rules_metrics_search"]
     assert len(calls) == 2, len(calls)
     assert all(any(k.arg == "rules" for k in c.keywords) for c in calls), [ast.unparse(c) for c in calls]
+
+
+# --- cloud-provider traffic, by namespace ---------------------------------------------------------
+
+def _label_result(namespace, name, metric, value):
+    return {"Label": f"{namespace}|{name}|{metric}", "Values": [value]}
+
+
+CSP = "awswaf:managed:aws:bot-control:signal:cloud_service_provider"
+
+
+def test_every_provider_under_the_namespace_is_counted_whatever_its_name():
+    """The list was aws, gcp, azure and oracle, so alibaba, digital_ocean, ibm, akamai and cloudflare,
+    in Bot Control since Version_2.0 or 3.2, never raised an item. Measured 2026-10-17 on
+    `shield-sample-webacl`, one day: aws 37,948 AllowedRequests and 1 BlockedRequests."""
+    results = [_label_result(CSP, "aws", "AllowedRequests", 37948), _label_result(CSP, "aws", "BlockedRequests", 1),
+               _label_result(CSP, "newcdn", "AllowedRequests", 2000), _label_result(CSP, "newcdn", "CountedRequests", 2000),
+               _label_result(CSP, "newcdn", "AllowRuleMatch", 5000),
+               _label_result("awswaf:managed:aws:bot-control", "TGT_VolumetricSession", "BlockedRequests", 9)]
+    _, providers = P._targeted_signals(results)
+    assert providers == {"aws": 37949, "newcdn": 2000}, providers
+
+
+def test_a_provider_item_names_the_provider_and_the_cdn_reading():
+    items = P._cloud_provider_items({"newcdn": 2000, "aws": 900}, "en")
+    assert [i["text"] for i in items] == ["2,000 requests from cloud provider newcdn addresses"], items
+    assert "data center" not in items[0]["text"] and "CDN or proxy" in items[0]["suggestion"], items
+    zh = P._cloud_provider_items({"newcdn": 2000}, "zh")
+    assert "newcdn" in zh[0]["text"] and "CDN" in zh[0]["suggestion"], zh
+
+
+def test_patrol_raises_the_items_from_the_parsed_providers():
+    import inspect
+    src = inspect.getsource(P.patrol_scan._tool_func)
+    assert 'bot_data["cloud_providers"] = cloud_providers' in src
+    assert 'action_items += _cloud_provider_items(bot_data.get("cloud_providers", {}), lang)' in src

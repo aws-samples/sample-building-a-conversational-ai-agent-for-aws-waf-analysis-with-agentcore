@@ -385,7 +385,7 @@ def _detect_capabilities(rules: list) -> dict:
         if "RateBasedStatement" in stmt:
             caps["has_rate_based"] = True
 
-        # Token reuse (custom rule checking for TGT_TokenReuseIP label)
+        # Token reuse (custom rule checking for a TGT_TokenReuseIp label)
         name = r.get("Name", "")
         if "TokenReuse" in name or "token_reuse" in name.lower():
             caps["has_token_reuse_rule"] = True

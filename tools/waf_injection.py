@@ -260,7 +260,9 @@ def _classify(ip_rows: list, ja4_rows: list) -> tuple[str, str]:
                 "One client stack behind many addresses. Bot Control targeted mitigation or a "
                 "rate-based rule keyed on the fingerprint fits this better than blocking IPs, "
                 "which will not keep up.")
-    if ips <= 3:
+    # The three branches split every count: five or more on one fingerprint, fewer than five, and five
+    # or more on several. Four fell between the first two and read as "diverse fingerprints".
+    if ips < 5:
         return ("concentrated attack, few sources at high volume",
                 "Few enough to name. An IP set block or a rate-based rule on those addresses is "
                 "proportionate; confirm they are not a shared NAT egress first, which the source "

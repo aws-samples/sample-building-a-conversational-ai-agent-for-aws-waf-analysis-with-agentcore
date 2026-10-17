@@ -19,9 +19,32 @@ own range check, whose maximum is 1.0; `topP=0.9` is refused the same way as tem
 the ceiling and the model's default, and it is the only value that passes.
 """
 
+import pytest
+
 import agent
 
 MESSAGES = [{"role": "user", "content": [{"text": "hi"}]}]
+LIMIT = ("An error occurred (ValidationException) when calling the Converse operation: The maximum tokens "
+         "you requested exceeds the model limit of {n}. Try again with a maximum tokens value that is lower "
+         "than {n}.")
+
+
+class _Bedrock:
+    """Answers the ceiling probe the way Bedrock does, measured 2026-10-17 for four Claude models."""
+    def __init__(self, error):
+        self.error, self.sent = error, []
+
+    def converse(self, **kw):
+        self.sent.append(kw)
+        raise RuntimeError(self.error)
+
+
+@pytest.fixture(autouse=True)
+def bedrock(monkeypatch):
+    fake = _Bedrock(LIMIT.format(n=64000))
+    monkeypatch.setattr(agent, "_model", None)
+    monkeypatch.setattr(agent, "_bedrock_runtime", lambda: fake, raising=False)
+    return fake
 
 
 def _inference_config() -> dict:
@@ -47,18 +70,29 @@ def test_no_sampling_parameter_reaches_the_request():
             f"it except the default, so every invocation fails with ValidationException: {cfg}")
 
 
-def test_the_request_carries_no_inference_parameters_at_all():
-    """**This was the control for the assertion above and it has inverted.** It used to say the request
-    still bounds its own length, on the reasoning that dropping the whole `inferenceConfig` would remove
-    the output bound along with the refused sampling parameters. `max_tokens` is gone now too, for a
-    different reason: a ceiling picked in this repository is one the model did not choose. So there is
-    nothing left to keep, and the assertion is that the dict is empty.
+def test_the_request_carries_the_ceiling_bedrock_reports_and_nothing_else():
+    """**Omitting `inferenceConfig` does not lift the bound, it falls back to 4,096.** Measured 2026-10-17
+    against `global.anthropic.claude-sonnet-5` in ap-northeast-1, asking for 6,000 numbered lines: no
+    `inferenceConfig` stopped at 4,096 output tokens with `stopReason: max_tokens`; `maxTokens` 32,000 and
+    128,000 both ran to `end_turn` at about 17,060. So a long investigation was cut at the length the
+    0.26 bound had. The ceiling is read off Bedrock's own refusal rather than chosen here: Sonnet 5,
+    Sonnet 4.6 and Opus 5.5 report 128,000 and Haiku 4.5 reports 64,000, and a number above a model's
+    ceiling would fail every request."""
+    assert _inference_config() == {"maxTokens": 64000}, _inference_config()
 
-    That makes the sampling assertion above weaker on its own, which is why it stays: it names the two
-    parameters by name, so a future change that adds one back fails there with the reason attached rather
-    than here with "the dict is not empty"."""
-    assert _inference_config() == {}, (
-        f"the request carries inference parameters this repository chose: {_inference_config()}")
+
+def test_the_probe_asks_above_any_ceiling_and_samples_nothing(bedrock):
+    _inference_config()
+    cfg = bedrock.sent[0]["inferenceConfig"]
+    assert list(cfg) == ["maxTokens"] and cfg["maxTokens"] > 128000, cfg
+
+
+def test_an_unread_ceiling_sends_no_bound_and_says_why(bedrock, capsys):
+    """A probe that failed some other way leaves the request as it was, and the real call then fails or
+    answers on its own terms; the reason is on stderr, since the 4,096 default then applies."""
+    bedrock.error = "AccessDeniedException: not authorized to perform bedrock:InvokeModel"
+    assert _inference_config() == {}
+    assert "AccessDeniedException" in capsys.readouterr().err
 
 
 def test_the_model_is_constructed_once():

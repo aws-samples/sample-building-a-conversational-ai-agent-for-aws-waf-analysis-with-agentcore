@@ -27,12 +27,9 @@ warns before you deploy.
 - Network (ASN) concentration as an analysis dimension, alongside the country and referer breakdowns that already ship
 - A cross-WebACL summary in the patrol report
 - Sensitive-file probing as its own investigation: requests for `.env`, `.git/config` or backup files by name, which the injection investigation now leaves out, and which several common files reach with no managed rule matching at all
-- Treat an IP that Bot Control labels as a CDN (`signal:cloud_service_provider:fastly`, added in version 7.0) as a proxy in front of many clients; today the bypass investigation judges it as one client, and a CDN edge's URI count passes the bar for automation easily
 - Read Bot Control's token provenance labels (`token_provenance:ip_category_mismatch:<level>`, targeted level, version 7.0 and later) in the bypass and token-reuse investigations: a token acquired from a data center and presented from a residential address is what they look for
 - Group by Bot Control's device ID label (`device_id:<id>`) once the Android SDK that sets it ships, and decide whether the ID is redacted before it reaches the model or a report
-- Check the Bot Control labels the bypass verdicts read against each version's `describe-managed-rule-group`, as the injection investigation's sub-rule list is checked. A renamed label would read as "Bot Control did not classify this IP" and push the verdict toward a bypass. The knowledge base's Bot Control label reference also stops at version 5
 
 ## Security and privacy
 
-- Escape all report fields on render
 - Automated tests for prompt-injection resistance

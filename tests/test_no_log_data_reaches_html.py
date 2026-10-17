@@ -2,6 +2,12 @@
 # SPDX-License-Identifier: MIT-0
 """ROADMAP 5.3: assert the path does not exist, rather than defend a path that does.
 
+**Since 2026-10-17 the renderers also escape by construction**, which was the durable answer recorded
+below: `_render_patrol_html_v2` escapes its whole input at entry and the weekly report escapes what it
+interpolates (`tests/test_report_escaping.py`). The model's executive summary had reached the weekly
+report as raw HTML all along, through `set_report_summary`, which no call-graph check here could see.
+The pins below stay, since they still say where log rows travel.
+
 **The item was written as "html.escape the patrol HTML interpolations", and looking for the live XSS
 did not find one.** `waf_review_deep._render_html` escapes every line. `_render_patrol_html_v2`
 interpolates counts, localized labels, severities and rule names. So an escaping pass would be a
