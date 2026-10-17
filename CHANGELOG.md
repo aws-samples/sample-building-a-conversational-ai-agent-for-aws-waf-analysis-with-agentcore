@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.35.0 (2026-10-17)
 
 ### Removed: the deep rule review; a full rules audit goes to AWS WAF Rules Reviewer
 
