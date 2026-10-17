@@ -33,7 +33,7 @@ If CloudFront is not in the architecture, Regional WAF Anti-DDoS AMR provides li
 - Challenge sensitivity: same logic for Challenge action
 
 ### Labels produced
-- `awswaf:managed:aws:anti-ddos:challengeable-request` — a GET whose host and path do not match the exempt regex. It is applied while the challenge setting (`ClientSideActionConfig` → `Challenge` → `UsageOfAction`) is `ENABLED`, not only during an event, so ordinary logs show which requests an event would challenge. With it `DISABLED`, no request carries the label. Overriding `ChallengeAllDuringEvent` to Count does not remove it. Note: native apps sending GET requests also receive this label, even though they cannot complete Challenge.
+- `awswaf:managed:aws:anti-ddos:challengeable-request` — a GET whose host and path do not match the exempt regex. It is applied while the challenge setting (`ClientSideActionConfig` → `Challenge` → `UsageOfAction`) is `ENABLED`, not only during an event, so ordinary logs show which requests an event would challenge. With it `DISABLED`, no request carries the label. Note: native apps sending GET requests also receive this label, even though they cannot complete Challenge.
 - `awswaf:managed:aws:anti-ddos:event-detected` — DDoS event detected, applied to ALL requests
 - `awswaf:managed:aws:anti-ddos:ddos-request` — request from suspicious source
 - `awswaf:managed:aws:anti-ddos:high/medium/low-suspicion-ddos-request` — suspicion level

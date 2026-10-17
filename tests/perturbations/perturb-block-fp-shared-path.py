@@ -35,9 +35,14 @@ CASES = [
      [QUERY]),
 
     ("only the investigation window looked at, which missed the scanners",
-     [(F, "rows = _run_query(cwl, athena, start_epoch - pad, min(end_epoch + pad,",
-       "rows = _run_query(cwl, athena, start_epoch, min(end_epoch,")],
+     [(F, "rows = _run_query(cwl, athena, start_epoch - pad - (end_epoch + pad - end), end, limit=_SHARED_PATHS)",
+       "rows = _run_query(cwl, athena, start_epoch, end_epoch, limit=_SHARED_PATHS)")],
      [QUERY]),
+
+    ("the widening past now dropped rather than moved before the window",
+     [(F, "rows = _run_query(cwl, athena, start_epoch - pad - (end_epoch + pad - end), end, limit=_SHARED_PATHS)",
+       "rows = _run_query(cwl, athena, start_epoch - pad, end, limit=_SHARED_PATHS)")],
+     [f"{T}::test_a_window_ending_now_looks_further_back_rather_than_less"]),
 
     ("a day either side again, past the window cap",
      [(F, "    pad = max(MAX_MINUTES * 60 - (end_epoch - start_epoch), 0) // 2", "    pad = 86400")],

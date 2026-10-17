@@ -50,6 +50,17 @@ def test_other_ips_blocked_on_the_same_path_are_counted_by_the_same_sub_rule(mon
     assert start == 1000 - 9000 and end == 4600 + 9000, (start, end)
 
 
+def test_a_window_ending_now_looks_further_back_rather_than_less(monkeypatch):
+    """Centered on the last hour, half the widening would fall in the future."""
+    import time
+    sent = []
+    monkeypatch.setattr(F, "_run_query", lambda cwl, athena, start, end, limit=25: sent.append((start, end)) or [])
+    now = int(time.time())
+    F._shared_path_blocks(FP, SQLI, "SQLi_QUERYARGUMENTS", now - 3600, now)
+    start, end = sent[0]
+    assert end - start >= F.MAX_MINUTES * 60 and end <= int(time.time()), (start, end, now)
+
+
 def test_the_render_warns_that_an_exception_for_the_path_lets_the_others_through():
     out = F._render_investigation(FP, 0, 3600, dict(BASE, shared_paths=({"/search": (60, 10), "/help": (0, 0)}, "")))
     section = out.split("### Other traffic this rule blocks on these paths", 1)[1].split("###", 1)[0]

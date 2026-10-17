@@ -1275,16 +1275,18 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             (("frequency_static", "uri_diversity", "actions"),
              _all(_gt(static_val, 200), None if non_static is None or allowed is None else non_static < 0.1 * allowed),
              _static_traffic(static_val, non_static, allowed, all_val, failures.get("all_uris"), ip)),
-            # Below the rate rungs and the data-center one: a cloud provider's addresses carry partners'
-            # and SaaS tools' traffic too, so the signal alone is LIKELY, and a rung that measured more
-            # speaks first. No rate gate: a fleet spreads its rate, and the one that motivated this
-            # sent 90 allowed requests per host at 11-14 a minute. The volume is the scan's, over 50.
-            (("actions",), _all(bool(providers), not has_datacenter, not has_bot_label, _gt(allowed, 50)), [
+            # Below the rate rungs and the data-center one: a cloud provider's addresses carry partners',
+            # SaaS tools' and offices' traffic too, so the signal alone is LIKELY, and a rung that measured
+            # more speaks first. The probable-scraper rung's URI bar, not a rate: the fleet that motivated
+            # this ran at 11-14 a minute to 79-86 URIs per host, and an Amazon office egress labelled
+            # `cloud_service_provider:aws` carried real browsers. This names the provider that rung omits.
+            (("uri_diversity",), _all(bool(providers), not has_datacenter, not has_bot_label, _gt(uri_val, 50)), [
                 f"**LIKELY: Undetected automation from a cloud provider ({', '.join(providers)})** "
                 f"(needs user confirmation).",
-                f"Evidence: signal:cloud_service_provider:{', '.join(providers)} + {allow_count:,} allowed requests at "
-                f"a {peak_rpm} req/min peak + no bot classification. A fleet on rented instances looks like "
-                f"this, and so does a partner's integration.",
+                f"Evidence: signal:cloud_service_provider:{', '.join(providers)} + {unique_uris} unique URIs at "
+                f"a {dyn_peak} non-static req/min peak + no bot classification. A fleet on rented instances "
+                f"looks like this, and so do a partner's integration and an office or VPN egress on the "
+                f"provider's addresses.",
                 "→ Ask user whether this IP is a known partner or service. If not, Bot Control at "
                 "Targeted, or a rate-based rule, is what would catch it."]),
             (("uri_diversity",), _all(not has_bot_label, _gt(uri_val, 50)), [

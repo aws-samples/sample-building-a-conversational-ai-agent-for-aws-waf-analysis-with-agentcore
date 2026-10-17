@@ -362,7 +362,7 @@ _SHARED_PATHS = 1000
 
 def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, end_epoch: int) -> tuple:
     """On each path where the blocking rule blocked this IP, who else it blocked there, over the window
-    widened evenly to the query window cap: `({uri: (blocks, other IPs)}, "")`, or `(None, reason)`.
+    widened to the query window cap: `({uri: (blocks, other IPs)}, "")`, or `(None, reason)`.
     Never raises, because it annotates a verdict reached without it.
 
     An exception for a false positive's path lets through everything else the rule blocks there.
@@ -387,10 +387,11 @@ def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, 
               " ORDER BY hits DESC LIMIT {LIMIT}")
     # Bounded by the window cap like every other query: a day either side read 13.5 s and 65 MB on
     # Athena for one small WebACL.
+    # What would fall after now goes before the window instead, so the span is the cap either way.
     pad = max(MAX_MINUTES * 60 - (end_epoch - start_epoch), 0) // 2
+    end = min(end_epoch + pad, int(time.time()))
     try:
-        rows = _run_query(cwl, athena, start_epoch - pad, min(end_epoch + pad, int(time.time())),
-                          limit=_SHARED_PATHS)
+        rows = _run_query(cwl, athena, start_epoch - pad - (end_epoch + pad - end), end, limit=_SHARED_PATHS)
     except Exception as exc:                              # noqa: BLE001
         return None, f"{type(exc).__name__}: {exc}"
     # `seen` counts this IP too, which every listed path holds.
@@ -529,8 +530,8 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     shared, shared_note = d.get("shared_paths") or ({}, "")
     if shared or shared is None:
         lines.append("")
-        lines.append(f"### Other traffic this rule blocks on these paths (up to {MAX_MINUTES // 60} hours centered on "
-                     f"the window, {display_rule})")
+        lines.append(f"### Other traffic this rule blocks on these paths (the {MAX_MINUTES // 60} hours around the "
+                     f"window, {display_rule})")
         if shared is None:
             lines.append(f"  UNKNOWN, the query for this section failed: {shared_note}")
         else:

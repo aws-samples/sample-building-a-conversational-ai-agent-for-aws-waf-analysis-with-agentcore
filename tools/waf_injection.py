@@ -81,6 +81,9 @@ _MANAGED_SUB_RULES = {
         "PHPHighRiskMethodsVariables_URIPATH"),
 }
 _INJECTION_GROUPS = tuple(_MANAGED_SUB_RULES)
+# The listed sub-rules whose own action is Count, the rest's is Block: SQLiRuleSet Version_1.0's, in
+# the same read of every version.
+_NATIVE_COUNT = frozenset({"SQLi_QUERYSTRING_COUNT"})
 # Families that find a payload in a request component. `Log4JRCE` with no suffix is the name in
 # KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14, and `Log4JRCE_URI` in Version_1.9.
 _INJECTION_FAMILIES = ("SQLi", "CrossSiteScripting_", "GenericRFI_", "Log4JRCE", "JavaDeserializationRCE_",
@@ -196,33 +199,21 @@ def _injection_rules(rules: list) -> tuple[list, list]:
 
 
 def _count_mode(rules: list) -> set:
-    """Detector names whose matches end as ALLOW: custom rules with a Count action, sub-rules
-    overridden to Count, and groups overridden to Count as a whole."""
-    out = set()
+    """Detector names whose matches end as ALLOW wherever the WebACL runs them: custom rules with a
+    Count action, and sub-rules every instance of their group counts, by a Count override, the group
+    in Count as a whole, or their own Count action. A group deployed twice with one instance blocking
+    a sub-rule does not put that sub-rule in Count mode."""
+    counted, blocking = set(), set()
     for rule in rules:
         group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
-        if "Count" in (rule.get("Action") or {}) or "Count" in (rule.get("OverrideAction") or {}):
-            out.add(rule.get("Name", ""))
-            # A group in Count as a whole counts every sub-rule's match.
-            if "Count" in (rule.get("OverrideAction") or {}):
-                out |= set(_group_sub_rules(group))
-        out |= {o["Name"] for o in group.get("RuleActionOverrides", [])
-                if "Count" in (o.get("ActionToUse") or {})}
-    return out
-
-
-def _whole_group_count(rules: list) -> set:
-    """Sub-rules counted only because their group is in Count as a whole. Each logs the group's
-    terminatingRule with its native action, and CloudWatch counts it under that action: measured on
-    `shield-sample-webacl` for 2026-10-15 20:00, `ManagedRuleGroup`+`ManagedRuleGroupRule` held 5
-    BlockedRequests for `AdminProtection_URIPATH` and no CountedRequests, under either dimension set."""
-    out = set()
-    for rule in rules:
-        group = rule.get("Statement", {}).get("ManagedRuleGroupStatement", {})
-        if "Count" in (rule.get("OverrideAction") or {}):
-            overridden = {o.get("Name") for o in group.get("RuleActionOverrides", [])}
-            out |= set(_group_sub_rules(group)) - overridden
-    return out
+        whole = "Count" in (rule.get("OverrideAction") or {})
+        if "Count" in (rule.get("Action") or {}) or whole:
+            counted.add(rule.get("Name", ""))
+        overrides = {o["Name"]: o.get("ActionToUse") or {} for o in group.get("RuleActionOverrides", []) if o.get("Name")}
+        for sub in dict.fromkeys(_group_sub_rules(group) + list(overrides)):
+            action = overrides.get(sub) or ({"Count": {}} if sub in _NATIVE_COUNT else {})
+            (counted if whole or "Count" in action else blocking).add(sub)
+    return counted - blocking
 
 
 def _outcome(table: str):
@@ -422,23 +413,23 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
             # re-checks each name against it at the line that issues the query.
             import time
             from tools.waf_logs import _parse_start_time
-            from tools.waf_metrics import missed_data_warning
+            from tools.waf_metrics import managed_sub_rule_warnings, missed_data_warning
             # Parsed here rather than passed in. An unparseable `start_time` makes every ranking
             # query an error, which stops above as unread rather than reaching this branch, so None
             # here would mean a parser the primitive disagrees with; the cross-check stands down.
             start_epoch = _parse_start_time(start_time)
             if start_epoch is not None:
                 end_epoch = min(start_epoch + duration * 60, int(time.time()))
-                # A managed sub-rule's blocks are counted under its group's dimensions, not `Rule`, and
-                # so are a whole-group Count's, under the action they log.
+                # A managed sub-rule's matches are counted under its group's dimensions, not `Rule`.
                 groups = _sub_rule_groups(acl_rules)
-                whole = _whole_group_count(acl_rules)
+                managed = {t: groups[t] for t in targets if t in groups}
+                lines += managed_sub_rule_warnings(get_webacl_name(), managed, start_epoch, end_epoch)
                 for target in targets:
-                    counted = target in count_mode and target not in whole
+                    if target in managed:
+                        continue
                     warning = missed_data_warning(
                         get_webacl_name(), target, acl_rules, start_epoch, end_epoch, log_rows=0,
-                        metric_name="CountedRequests" if counted else "BlockedRequests",
-                        group="" if counted else groups.get(target, ""))
+                        metric_name="CountedRequests" if target in count_mode else "BlockedRequests")
                     if warning:
                         lines.append(warning)
             lines += ["", CONFIDENCE]

@@ -36,20 +36,18 @@ CASES = [
       f"{T}::test_blocks_by_a_mixed_groups_other_rules_are_not_injection_activity"], True),
 
     ("a whole-group Count leaving its sub-rules in Block mode",
-     [(I, "                out |= set(_group_sub_rules(group))", "                pass")],
-     [f"{T}::test_a_group_in_whole_group_count_puts_its_sub_rules_in_count_mode"], True),
+     [(I, "            (counted if whole or \"Count\" in action else blocking).add(sub)",
+       "            (counted if \"Count\" in action else blocking).add(sub)")],
+     [f"{T}::test_a_group_in_whole_group_count_puts_its_sub_rules_in_count_mode"]),
 
-    ("the quiet-window cross-check asking Rule=<sub-rule> again",
-     [(I, '                        group="" if counted else groups.get(target, ""))', '                        group="")')],
-     [f"{T}::test_a_quiet_window_cross_checks_each_sub_rule_against_its_group_metric"]),
+    ("a sub-rule one instance blocks put in Count mode by the other",
+     [(I, "    return counted - blocking\n", "    return counted\n")],
+     [f"{T}::test_a_sub_rule_one_instance_blocks_is_not_in_count_mode",
+      f"{T}::test_the_control_a_sub_rule_one_instance_blocks_is_not_said_to_block_nothing"]),
 
-    ("a whole-group Count sub-rule read as CountedRequests under Rule=, which is always empty",
-     [(I, "                    counted = target in count_mode and target not in whole", "                    counted = target in count_mode")],
-     [f"{T}::test_a_whole_group_count_sub_rule_is_cross_checked_under_its_native_action"]),
-
-    ("an override read under the group's BlockedRequests",
-     [(I, "                    counted = target in count_mode and target not in whole", "                    counted = False")],
-     [f"{T}::test_the_control_a_sub_rule_overridden_to_count_is_read_as_counted"]),
+    ("a sub-rule whose own action is Count read as blocking",
+     [(I, '_NATIVE_COUNT = frozenset({"SQLi_QUERYSTRING_COUNT"})', "_NATIVE_COUNT = frozenset()")],
+     [f"{T}::test_a_sub_rule_whose_own_action_is_count_is_in_count_mode"]),
 
     ("a pinned version's detectors missing from the list again",
      [(I, '        "SQLiExtendedPatterns_BODY", "SQLiExtendedPatterns_HEADER", "SQLiExtendedPatterns_QUERYARGUMENTS",',
@@ -65,9 +63,22 @@ CASES = [
      [(I, 'so it blocked none of the requests below; any that "', 'so the requests below matched it and were allowed through; any that "')],
      [f"{T}::test_a_count_mode_focus_says_its_blocks_were_another_rules"]),
 
-    ("the metric ignoring the group it was given",
-     [(M, "    if group:\n        return _metric_sum(", "    if False:\n        return _metric_sum(")],
-     [f"{T}::test_the_group_metric_reads_the_sub_rule_dimensions"], True),
+    ("managed sub-rules cross-checked under Rule= again",
+     [(I, "                    if target in managed:\n                        continue\n", "")],
+     [f"{T}::test_a_quiet_window_cross_checks_a_sub_rule_on_its_group_whatever_its_mode"]),
+
+    ("the group metric reading BlockedRequests only, which a Count override leaves empty",
+     [(M, '              for n in names for metric in ("BlockedRequests", "CountedRequests")]',
+       '              for n in names for metric in ("BlockedRequests",)]'),
+      (M, "        count = None if sums is None else sums[2 * i] + sums[2 * i + 1]",
+       "        count = None if sums is None else sums[i]")],
+     [f"{T}::test_the_group_metric_adds_blocked_and_counted_in_one_call"]),
+
+    ("the group metric read one call per series",
+     [(M, "    sums, reason = _metric_sums(webacl_name, series, start_epoch, end_epoch)\n    out = []",
+       "    sums = []\n    for one in series:\n        got, reason = _metric_sums(webacl_name, [one], start_epoch, end_epoch)\n"
+       "        sums = None if got is None or sums is None else sums + got\n    out = []")],
+     [f"{T}::test_the_group_metric_adds_blocked_and_counted_in_one_call"]),
 
     ("the batched count's blocks counting every match",
      [(A, "sum(if(action = 'BLOCK' and {pred}, 1, 0)) as b{i}", "sum(if({pred}, 1, 0)) as b{i}")],

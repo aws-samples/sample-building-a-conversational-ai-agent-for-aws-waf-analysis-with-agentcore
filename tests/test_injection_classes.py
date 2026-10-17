@@ -130,6 +130,9 @@ def _investigate(monkeypatch, rules, counts):
     monkeypatch.setattr(waf_logs, "analyze_ip", types.SimpleNamespace(_tool_func=lambda *a: "profile"))
     warned = []
     monkeypatch.setattr(waf_metrics, "missed_data_warning", lambda *a, **k: warned.append((a[1], k)) or "")
+    monkeypatch.setattr(waf_metrics, "managed_sub_rule_warnings",
+                        lambda acl, subs, s, e: warned.extend((n, {"group": g}) for n, g in subs.items()) or [],
+                        raising=False)
     out = I.investigate_injection._tool_func(start_time="2026-10-13T03:00", duration_minutes=60)
     return out, asked, warned
 
@@ -148,59 +151,81 @@ def test_the_busiest_injection_sub_rule_is_the_focus(monkeypatch):
     assert "Focusing **CrossSiteScripting_QUERYARGUMENTS**" in out and "40 matches, 38 blocked" in out, out
 
 
-def test_a_quiet_window_cross_checks_each_sub_rule_against_its_group_metric(monkeypatch):
-    """A managed sub-rule's blocks are not under `Rule=<sub-rule>`, measured empty for
-    SQLi_QUERYARGUMENTS on 2026-09-08 while `ManagedRuleGroup`+`ManagedRuleGroupRule` held 122."""
-    _, _, warned = _investigate(monkeypatch, [_group("AWS-AWSManagedRulesSQLiRuleSet", "AWSManagedRulesSQLiRuleSet")], {})
-    by_rule = {r: k for r, k in warned}
-    assert by_rule["SQLi_QUERYARGUMENTS"].get("group") == "AWSManagedRulesSQLiRuleSet", warned
+SQLI = "AWSManagedRulesSQLiRuleSet"
 
 
-def test_a_whole_group_count_sub_rule_is_cross_checked_under_its_native_action(monkeypatch):
-    """CloudWatch counts a sub-rule of a group in whole-group Count under the action it logs, BLOCK.
-    Measured on `shield-sample-webacl` for 2026-10-15 20:00, `ptest-admin-group-count`: 5 requests,
-    `ManagedRuleGroup`+`ManagedRuleGroupRule` BlockedRequests 5, CountedRequests 0, and
-    `Rule=AdminProtection_URIPATH` CountedRequests 0."""
-    _, _, warned = _investigate(monkeypatch, [_group("shadow", "AWSManagedRulesSQLiRuleSet", override_action="Count")], {})
-    kw = dict(warned)["SQLi_QUERYARGUMENTS"]
-    assert kw.get("metric_name") == "BlockedRequests" and kw.get("group") == "AWSManagedRulesSQLiRuleSet", warned
+@pytest.mark.parametrize("rules", [
+    [_group("r", SQLI)],
+    [_group("shadow", SQLI, override_action="Count")],
+    [_group("r", SQLI, overrides=["SQLi_QUERYARGUMENTS"])],
+    [_group("shadow", SQLI, override_action="Count") | {"Statement": {"ManagedRuleGroupStatement": {
+        "VendorName": "AWS", "Name": SQLI,
+        "RuleActionOverrides": [{"Name": "SQLi_QUERYARGUMENTS", "ActionToUse": {"Block": {}}}]}}}],
+    [_group("a", SQLI), _group("b", SQLI, override_action="Count")],
+], ids=["block", "whole-group-count", "override-count", "whole-group-count-override-block", "deployed-twice"])
+def test_a_quiet_window_cross_checks_a_sub_rule_on_its_group_whatever_its_mode(monkeypatch, rules):
+    """Each mode puts the sub-rule's matches under a different metric, so the read is the group's
+    BlockedRequests and CountedRequests together, never `Rule=<sub-rule>`, which a whole-group Count
+    left empty: 5 BlockedRequests on the group's dimensions and no CountedRequests under either."""
+    _, _, warned = _investigate(monkeypatch, rules, {})
+    by_rule = dict(warned)
+    assert by_rule["SQLi_QUERYARGUMENTS"] == {"group": SQLI}, warned
 
 
-def test_the_control_a_sub_rule_overridden_to_count_is_read_as_counted(monkeypatch):
-    """Measured the same day: `CategoryHttpLibrary`, overridden to Count, 75 CountedRequests under
-    `Rule=` and 75 under the group's dimensions."""
-    _, _, warned = _investigate(monkeypatch, [_group("r", "AWSManagedRulesSQLiRuleSet", overrides=["SQLi_BODY"])], {})
-    kw = dict(warned)["SQLi_BODY"]
-    assert kw.get("metric_name") == "CountedRequests" and kw.get("group") == "", warned
-
-
-def test_a_count_mode_focus_says_its_blocks_were_another_rules(monkeypatch):
-    """A Count rule blocks nothing, so its blocked count is requests a later rule blocked. Over 14 days
-    on `shield-sample-webacl`, `TGT_TokenAbsent` had 2,251 matches and 34 of them blocked."""
-    out, _, _ = _investigate(monkeypatch, [_group("shadow", "AWSManagedRulesSQLiRuleSet", override_action="Count")],
-                             {"SQLi_QUERYARGUMENTS": (10, 3)})
-    assert "10 matches, 3 blocked by other rules" in out, out
-    assert "allowed through" not in out, out
-
-
-def test_the_group_metric_reads_the_sub_rule_dimensions(monkeypatch):
+def test_the_group_metric_adds_blocked_and_counted_in_one_call(monkeypatch):
     from tools import waf_metrics as M
-    sent = []
+    calls = []
 
     class CW:
         def get_metric_data(self, MetricDataQueries, **kw):
-            sent.append(MetricDataQueries[0]["MetricStat"]["Metric"]["Dimensions"])
-            return {"MetricDataResults": [{"Values": [122]}]}
+            calls.append(MetricDataQueries)
+            return {"MetricDataResults": [{"Id": q["Id"], "Values": [{"BlockedRequests": 5, "CountedRequests": 2}[
+                q["MetricStat"]["Metric"]["MetricName"]] if q["MetricStat"]["Metric"]["Dimensions"][2]["Value"] == "SQLi_BODY"
+                else 0]} for q in MetricDataQueries]}
     monkeypatch.setattr(M, "get_client", lambda *a, **k: CW())
     monkeypatch.setattr(M, "get_scope", lambda: "CLOUDFRONT")
     monkeypatch.setattr(M, "resolve_region", lambda s: "us-east-1")
     import time
     start = int(time.time()) // 3600 * 3600 - 7200
-    M.missed_data_warning("acl", "SQLi_QUERYARGUMENTS", [], start, start + 3600, log_rows=0,
-                          group="AWSManagedRulesSQLiRuleSet")
-    assert {"Name": "ManagedRuleGroup", "Value": "AWSManagedRulesSQLiRuleSet"} in sent[0], sent
-    assert {"Name": "ManagedRuleGroupRule", "Value": "SQLi_QUERYARGUMENTS"} in sent[0], sent
-    assert not any(d["Name"] == "Rule" for d in sent[0]), sent
+    out = M.managed_sub_rule_warnings("acl", {"SQLi_BODY": SQLI, "SQLi_COOKIE": SQLI}, start, start + 3600)
+    assert len(calls) == 1 and len(calls[0]) == 4, calls
+    for q in calls[0]:
+        dims = q["MetricStat"]["Metric"]["Dimensions"]
+        assert {"Name": "ManagedRuleGroup", "Value": SQLI} in dims and not any(d["Name"] == "Rule" for d in dims), dims
+    assert len(out) == 1 and "7 BlockedRequests + CountedRequests for rule 'SQLi_BODY'" in out[0], out
+
+
+def test_a_custom_count_rule_is_still_read_as_counted(monkeypatch):
+    rule = {"Name": "my-sqli", "Action": {"Count": {}}, "Statement": {"SqliMatchStatement": {"FieldToMatch": {"Body": {}}}}}
+    _, _, warned = _investigate(monkeypatch, [rule], {})
+    assert dict(warned)["my-sqli"].get("metric_name") == "CountedRequests", warned
+
+
+def test_a_sub_rule_one_instance_blocks_is_not_in_count_mode():
+    """Deployed twice, once in whole-group Count, once blocking: the sub-rule does block."""
+    assert "SQLi_QUERYARGUMENTS" not in I._count_mode([_group("a", SQLI), _group("b", SQLI, override_action="Count")])
+    assert "SQLi_QUERYARGUMENTS" in I._count_mode([_group("b", SQLI, override_action="Count")])
+
+
+def test_a_sub_rule_whose_own_action_is_count_is_in_count_mode():
+    """SQLi_QUERYSTRING_COUNT is Count in SQLiRuleSet Version_1.0, the one injection sub-rule that is."""
+    mode = I._count_mode([_group("r", SQLI)])
+    assert "SQLi_QUERYSTRING_COUNT" in mode and "SQLi_QUERYARGUMENTS" not in mode, mode
+
+
+def test_a_count_mode_focus_says_its_blocks_were_another_rules(monkeypatch):
+    """A Count rule blocks nothing, so its blocked count is requests a later rule blocked. Over 14 days
+    on `shield-sample-webacl`, `TGT_TokenAbsent` had 2,251 matches and 34 of them blocked."""
+    out, _, _ = _investigate(monkeypatch, [_group("shadow", SQLI, override_action="Count")],
+                             {"SQLi_QUERYARGUMENTS": (10, 3)})
+    assert "10 matches, 3 blocked by other rules" in out, out
+    assert "allowed through" not in out, out
+
+
+def test_the_control_a_sub_rule_one_instance_blocks_is_not_said_to_block_nothing(monkeypatch):
+    out, _, _ = _investigate(monkeypatch, [_group("a", SQLI), _group("b", SQLI, override_action="Count")],
+                             {"SQLi_QUERYARGUMENTS": (10, 3)})
+    assert "10 matches, 3 blocked)" in out and "is in Count mode" not in out, out
 
 
 # --- the batched count ----------------------------------------------------------------

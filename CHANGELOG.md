@@ -25,9 +25,10 @@ Both keyed the hosting signal on `signal:known_bot_data_center`. A 12-host scrap
 1,080 allowed requests in ten minutes, every one labelled `signal:cloud_service_provider:aws` and
 none `known_bot_data_center`, so neither saw it. The scan's data-center section now lists
 cloud-provider IPs too and names the provider. The investigation gives an unclassified IP on a cloud
-provider "LIKELY: undetected automation" once it has more than 50 allowed requests, whatever its
-rate, since each host of the fleet ran at 11 to 14 a minute. It asks whether the IP is a known
-partner, since partners and SaaS tools run there too. The data-center verdict is unchanged.
+provider "LIKELY: undetected automation" once it has reached more than 50 URIs, whatever its rate:
+each host of the fleet ran at 11 to 14 a minute. The bar is URIs because the label is on people too,
+such as an office egress with real browsers behind it. It asks whether the IP is a known partner,
+an office or a VPN, since all of them run there too. The data-center verdict is unchanged.
 
 ### Fixed: three statements about AWS in the agent's instructions that AWS contradicts
 
@@ -65,11 +66,12 @@ extension, size, path and header checks. LinuxRuleSet, UnixRuleSet, WindowsRuleS
 are read now. The sub-rules are every name any version of these groups has used, since versions add
 and rename them: the test WebACL pins SQLiRuleSet Version_2.3, whose three `SQLiExtendedPatterns`
 rules for the body, URI path and headers the default version lacks. The ranking is one count query
-per engine rather than one per detector, and a window with no match is cross-checked against each
-sub-rule's own metric, which is where a managed sub-rule's blocks are counted. A sub-rule of a group
-in whole-group Count is read as BlockedRequests there, the action it logs, since its
-CountedRequests series is empty. For a Count-mode focus rule, the blocked count now says another
-rule did the blocking.
+per engine rather than one per detector. A window with no match is cross-checked against each
+sub-rule's own metric in one call, the group's BlockedRequests and CountedRequests added together:
+which of the two holds the matches depends on how each instance runs the sub-rule, and a group in
+whole-group Count puts them under BlockedRequests. A sub-rule is in Count mode only when every
+instance counts it, and so is `SQLi_QUERYSTRING_COUNT`, whose own action is Count. For a Count-mode
+focus rule, the blocked count now says another rule did the blocking.
 
 ### Added: the false-positive investigation shows who else the rule blocks on the same paths
 
@@ -78,8 +80,8 @@ through everything else the rule blocks there. On a test window the false-positi
 blocks on `/search`, and 10 scanners took 60 more on `/search` five minutes later, outside the
 window around the user's blocks. The investigation now lists, for each path the rule blocked this
 IP on, how many blocks and how many other IPs the same rule (the same sub-rule, for a managed group)
-had there over the 6 hours centered on the window, and warns when an exception for the path would
-open it to them.
+had there over the 6 hours around the window, and warns when an exception for the path would open
+it to them.
 
 ### Fixed: the knowledge base taught an Anti-DDoS exemption that never matches
 

@@ -35,17 +35,19 @@ CASES = [
      [f"{T}::test_an_unclassified_ip_on_a_cloud_provider_is_a_likely_undetected_bot"]),
 
     ("the provider rung firing on any IP",
-     [(B, "_all(bool(providers), not has_datacenter, not has_bot_label, _gt(allowed, 50))",
-       "_all(True, not has_datacenter, not has_bot_label, _gt(allowed, 50))")],
-     [f"{T}::test_the_control_the_same_ip_without_the_signal_is_undetermined"]),
+     [(B, "_all(bool(providers), not has_datacenter, not has_bot_label, _gt(uri_val, 50))",
+       "_all(True, not has_datacenter, not has_bot_label, _gt(uri_val, 50))")],
+     [f"{T}::test_the_control_the_same_ip_without_the_signal_is_a_scraper_with_no_provider"]),
 
-    ("the 50-a-minute gate back, which the fleet never reached",
-     [(B, "not has_bot_label, _gt(allowed, 50)), [", "not has_bot_label, _gt(allowed, 50), _gt(peak_val, 50)), [")],
-     [f"{T}::test_the_fleet_at_its_own_pace_is_named"]),
+    ("an allowed-request bar instead of URIs, which calls people browsing automation",
+     [(B, "_all(bool(providers), not has_datacenter, not has_bot_label, _gt(uri_val, 50))",
+       "_all(bool(providers), not has_datacenter, not has_bot_label, _gt(allow_count, 50))")],
+     [f"{T}::test_the_control_people_browsing_from_a_cloud_address_are_undetermined"]),
 
-    ("no volume needed, so a handful of requests is called automation",
-     [(B, "not has_bot_label, _gt(allowed, 50)), [", "not has_bot_label), [")],
-     [f"{T}::test_the_control_a_handful_of_requests_is_not_called_automation"]),
+    ("the office and VPN reading dropped from the evidence",
+     [(B, 'f"looks like this, and so do a partner\'s integration and an office or VPN egress on the "\n'
+          '                f"provider\'s addresses.",', 'f"looks like this, and so does a partner\'s integration.",')],
+     [f"{T}::test_an_unclassified_ip_on_a_cloud_provider_is_a_likely_undetected_bot"]),
 ]
 
 sys.exit(sweep(CASES))

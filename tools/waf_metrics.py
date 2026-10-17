@@ -263,7 +263,7 @@ def summed_sub_rules(cw, webacl_name: str, rules: list, scope: str = "CLOUDFRONT
 
 
 def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
-                             end_epoch: int, metric_name: str = "BlockedRequests", group: str = ""):
+                             end_epoch: int, metric_name: str = "BlockedRequests"):
     """What CloudWatch says this rule terminated in this window. `(count, reason)`, never raises.
 
     `count` is None whenever the question could not be asked, and `reason` says which of the four
@@ -282,16 +282,8 @@ def rule_blocked_per_metrics(webacl_name: str, rule_name: str, rules: list, star
     equal for all 20 rules on the measurement account, which is exactly why assuming it would never
     be caught here. Reading the metric name removes the assumption instead of testing it.
 
-    **`group` names the managed rule group a sub-rule belongs to**, and then the query reads
-    `ManagedRuleGroup`+`ManagedRuleGroupRule` instead of `Rule`. A managed sub-rule's blocks are not
-    under `Rule=<sub-rule>`: measured 2026-10-15 on `response-id-on-page` for 2026-09-08 03:00-05:00,
-    `Rule=SQLi_QUERYARGUMENTS` was empty while those two dimensions held 122. The caller's group name
-    comes from the same configuration read, so its provenance is the same.
+    A managed sub-rule's blocks are not under `Rule`; `managed_sub_rule_warnings` reads those.
     """
-    if group:
-        return _metric_sum(webacl_name, rule_name, metric_name, start_epoch, end_epoch,
-                           dimensions=[{"Name": "ManagedRuleGroup", "Value": group},
-                                       {"Name": "ManagedRuleGroupRule", "Value": rule_name}])
     dimension, in_config = resolve_rule_dimension(rule_name, rules)
     if in_config == "metrics-off":
         return None, (f"'{rule_name}' has CloudWatchMetricsEnabled false, so it publishes no "
@@ -357,8 +349,16 @@ def webacl_action_total(webacl_name: str, metric_name: str, start_epoch: int, en
 
 
 def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_epoch: int,
-                end_epoch: int, dimensions: list | None = None):
-    """One `MetricStat` over one window. `(sum, "")`, or `(None, reason)`. Never raises.
+                end_epoch: int):
+    """One `MetricStat` over one window. `(sum, "")`, or `(None, reason)`. Never raises."""
+    sums, reason = _metric_sums(webacl_name, [(metric_name, [{"Name": "Rule", "Value": rule_dimension}])],
+                                start_epoch, end_epoch)
+    return (None, reason) if sums is None else (sums[0], "")
+
+
+def _metric_sums(webacl_name: str, series: list, start_epoch: int, end_epoch: int):
+    """The sum of each `(metric name, dimensions)` series over one window, in one call: `([sums], "")`,
+    or `(None, reason)` when any of them did not answer. Never raises.
 
     The retention guard sits here rather than in each caller, because a period no longer retained
     returns `StatusCode: Complete` with an empty `Values`, so a caller that skipped it would get a
@@ -369,36 +369,65 @@ def _metric_sum(webacl_name: str, rule_dimension: str, metric_name: str, start_e
         return None, ("the window starts more than 455 days ago, beyond every CloudWatch metric "
                       "resolution, so there is no metric to compare against")
 
-    dimensions = [{"Name": "WebACL", "Value": webacl_name}] + (
-        dimensions or [{"Name": "Rule", "Value": rule_dimension}])
     scope = get_scope()
     region = resolve_region(scope)
     if region is None:
         return None, "REGIONAL scope needs get_waf_config first, so the metrics region is unknown"
-    if scope != "CLOUDFRONT":
-        dimensions.append({"Name": "Region", "Value": region})
+    extra = [] if scope == "CLOUDFRONT" else [{"Name": "Region", "Value": region}]
 
     try:
         resp = get_client("cloudwatch", region_name=region).get_metric_data(
-            MetricDataQueries=[{"Id": "m1", "MetricStat": {
+            MetricDataQueries=[{"Id": f"m{i}", "MetricStat": {
                 "Metric": {"Namespace": "AWS/WAFV2", "MetricName": metric_name,
-                           "Dimensions": dimensions},
-                "Period": period, "Stat": "Sum"}}],
+                           "Dimensions": [{"Name": "WebACL", "Value": webacl_name}, *dimensions, *extra]},
+                "Period": period, "Stat": "Sum"}} for i, (metric_name, dimensions) in enumerate(series)],
             StartTime=datetime.fromtimestamp(start_epoch, timezone.utc),
             EndTime=datetime.fromtimestamp(end_epoch, timezone.utc),
             ScanBy="TimestampAscending")
     except Exception as exc:                              # noqa: BLE001
         return None, f"the metric query did not run: {type(exc).__name__}: {exc}"
 
-    results = resp.get("MetricDataResults", [])
-    if not results:
+    values = {r.get("Id", f"m{i}"): r.get("Values", []) for i, r in enumerate(resp.get("MetricDataResults", []))}
+    if any(f"m{i}" not in values for i in range(len(series))):
         return None, "the metric query returned no series, so it answered nothing"
-    return int(sum(results[0].get("Values", []))), ""
+    return [int(sum(values[f"m{i}"])) for i in range(len(series))], ""
+
+
+def managed_sub_rule_warnings(webacl_name: str, sub_rules: dict, start_epoch: int, end_epoch: int) -> list:
+    """The missed-data sentence for each managed sub-rule, `{sub-rule: its group}`, that its group's
+    metrics say matched in a window where the logs hold nothing for it.
+
+    **Read under `ManagedRuleGroup`+`ManagedRuleGroupRule`, never `Rule`**: measured 2026-10-15 on
+    `response-id-on-page` for 2026-09-08 03:00-05:00, `Rule=SQLi_QUERYARGUMENTS` was empty while those
+    two dimensions held 122. **BlockedRequests and CountedRequests are added**, because which one holds
+    a sub-rule's matches depends on how each instance of its group runs it, and an instance cannot be
+    told from the dimensions. Measured on `shield-sample-webacl`: `GenericLFI_URIPATH` in a Block-mode
+    group, 6 BlockedRequests; `CategoryHttpLibrary` overridden to Count, 75 CountedRequests, the same
+    as under `Rule=`; and `AdminProtection_URIPATH` in a group in whole-group Count, 2026-10-15 12:00
+    UTC, 5 BlockedRequests and no CountedRequests, under the action it logs. A group deployed twice
+    sums both instances, as the log side does. One call for every sub-rule.
+
+    The group names come from the configuration read; the sub-rule names are every version's, so one
+    the deployed version lacks reads 0, and 0 says nothing here.
+    """
+    names = list(sub_rules)
+    series = [(metric, [{"Name": "ManagedRuleGroup", "Value": sub_rules[n]}, {"Name": "ManagedRuleGroupRule", "Value": n}])
+              for n in names for metric in ("BlockedRequests", "CountedRequests")]
+    if not series:
+        return []
+    sums, reason = _metric_sums(webacl_name, series, start_epoch, end_epoch)
+    out = []
+    for i, name in enumerate(names):
+        count = None if sums is None else sums[2 * i] + sums[2 * i + 1]
+        warning = _missed_data_sentence(count, reason, f"rule '{name}'", webacl_name,
+                                        "BlockedRequests + CountedRequests")
+        if warning:
+            out.append(warning)
+    return out
 
 
 def missed_data_warning(webacl_name: str, rule_name: str, rules: list, start_epoch: int,
-                        end_epoch: int, log_rows: int, metric_name: str = "BlockedRequests",
-                        group: str = "") -> str:
+                        end_epoch: int, log_rows: int, metric_name: str = "BlockedRequests") -> str:
     """The sentence to add when the metric says a rule fired and the logs hold less than it says.
 
     **Widened past the exactly-zero case on 2026-09-15, and `log_rows` has to mean requests.** The
@@ -441,7 +470,7 @@ def missed_data_warning(webacl_name: str, rule_name: str, rules: list, start_epo
     reached.
     """
     count, reason = rule_blocked_per_metrics(webacl_name, rule_name, rules, start_epoch, end_epoch,
-                                             metric_name, group)
+                                             metric_name)
     if log_rows == 0:
         return _missed_data_sentence(count, reason, f"rule '{rule_name}'", webacl_name, metric_name)
     return _partial_gap_sentence(count, reason, rule_name, webacl_name, metric_name, log_rows,

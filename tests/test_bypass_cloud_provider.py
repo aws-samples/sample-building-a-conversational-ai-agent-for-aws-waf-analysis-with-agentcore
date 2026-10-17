@@ -82,30 +82,33 @@ def _verdict(monkeypatch, labels, **rows):
 
 
 def test_an_unclassified_ip_on_a_cloud_provider_is_a_likely_undetected_bot(monkeypatch):
-    """60 requests a minute to 5 URIs, which reaches no rate rung, so the provider signal decides."""
-    verdict = _verdict(monkeypatch, FLEET)
-    assert "LIKELY" in verdict and "cloud provider" in verdict and "aws" in verdict, verdict
-    assert "HIGH CONFIDENCE" not in verdict, verdict
+    """A host of the fleet: 90 allowed requests to 80 URIs at a peak of 12 a minute, measured on
+    Athena. "Probable scraper" would catch it too, without naming the provider."""
+    verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm="12")],
+                       frequency_dynamic=[dict(ROW, peak_rpm="12")], actions=[dict(ROW, hits="90")],
+                       uri_diversity=[dict(ROW, unique_uris="80")])
+    assert "LIKELY: Undetected automation from a cloud provider (aws)" in verdict, verdict
+    assert "HIGH CONFIDENCE" not in verdict and "office or VPN egress" in verdict, verdict
 
 
-def test_the_control_the_same_ip_without_the_signal_is_undetermined(monkeypatch):
-    verdict = _verdict(monkeypatch, BROWSER)
-    assert "cloud provider" not in verdict and "CANNOT DETERMINE" in verdict, verdict
+@pytest.mark.parametrize("allowed,uris,peak", [("60", "25", "8"), ("1500", "40", "30")], ids=["one-person", "office"])
+def test_the_control_people_browsing_from_a_cloud_address_are_undetermined(monkeypatch, allowed, uris, peak):
+    """An Amazon office egress on `shield-sample-webacl` carries `cloud_service_provider:aws` and real
+    browsers. A browsing session passes 50 requests easily, which is why the bar is URIs."""
+    verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm=peak)],
+                       frequency_dynamic=[dict(ROW, peak_rpm=peak)], actions=[dict(ROW, hits=allowed)],
+                       uri_diversity=[dict(ROW, unique_uris=uris)])
+    assert "automation" not in verdict and "CANNOT DETERMINE" in verdict, verdict
+
+
+def test_the_control_the_same_ip_without_the_signal_is_a_scraper_with_no_provider(monkeypatch):
+    """The fleet host's shape with the label taken away: the URI bar alone is the scraper rung's."""
+    verdict = _verdict(monkeypatch, BROWSER, frequency_dynamic=[dict(ROW, peak_rpm="12")],
+                       uri_diversity=[dict(ROW, unique_uris="80")])
+    assert "cloud provider" not in verdict and "LIKELY: Probable scraper" in verdict, verdict
 
 
 def test_a_data_center_ip_is_still_the_high_confidence_rung(monkeypatch):
     verdict = _verdict(monkeypatch, DATA_CENTER)
     assert "HIGH CONFIDENCE: Undetected bot from data center" in verdict, verdict
 
-
-def test_the_fleet_at_its_own_pace_is_named(monkeypatch):
-    """Each host of the fleet sent 90 allowed requests at a peak of 11-14 a minute, measured on Athena,
-    and the rung's old 50-a-minute gate left it to "Probable scraper", which names no provider."""
-    verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm="12")], actions=[dict(ROW, hits="90")])
-    assert "LIKELY: Undetected automation from a cloud provider (aws)" in verdict, verdict
-
-
-def test_the_control_a_handful_of_requests_is_not_called_automation(monkeypatch):
-    """The scan lists a hosting IP from 50 requests; fewer than that is not enough to call it."""
-    verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm="12")], actions=[dict(ROW, hits="40")])
-    assert "cloud provider" not in verdict, verdict

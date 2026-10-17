@@ -56,8 +56,8 @@ def test_an_exemption_is_checked_from_ordinary_logs():
 @pytest.mark.parametrize("name,text", [("kb-docs/antiddos-amr.md", KB), ("agent.py", agent.SYSTEM_PROMPT)],
                          ids=["kb", "prompt"])
 def test_the_check_names_the_setting_the_label_needs(name, text):
-    """Overriding `ChallengeAllDuringEvent` to Count does not stop the label, so "the challenge action"
-    is the wrong thing to name."""
+    """AWS documents the label as the rule group's own, set by `UsageOfAction`, so "the challenge
+    action" names the wrong thing: it reads as `ChallengeAllDuringEvent`'s rule action."""
     lines = [l for l in text.splitlines() if "challengeable-request" in l and "outside an event" in l
              or "not only during an event" in l]
     assert lines and all("UsageOfAction" in l for l in lines), f"{name}: {lines}"

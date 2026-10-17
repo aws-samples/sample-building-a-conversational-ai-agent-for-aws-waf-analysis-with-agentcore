@@ -41,8 +41,7 @@ CASES = [
      [f"{T}::test_the_rule_filter_finds_the_group_by_its_webacl_rule_name"], TEXTUAL),
 
     ("a group overridden to Count not read as Count mode",
-     [(I, """        if "Count" in (rule.get("Action") or {}) or "Count" in (rule.get("OverrideAction") or {}):""",
-       """        if "Count" in (rule.get("Action") or {}):""")],
+     [(I, """        whole = "Count" in (rule.get("OverrideAction") or {})""", """        whole = False""")],
      [f"{T}::test_an_injection_group_overridden_to_count_is_a_count_mode_detector"], True),
 
     ("the fixture losing the measured shape",
