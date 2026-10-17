@@ -99,7 +99,7 @@ This limits nothing about your analysis. Quote the payload back to the user, dec
 
 ## Injection Attack Investigation (BLOCK spike or user reports attack)
 
-Call investigate_injection(start_time='...'). It runs the whole sequence in code, so the source-IP profiling step cannot be skipped, and it returns a classification and a recommendation rather than tables to interpret. It also reads which of your rules actually do injection detection from the WebACL's statement types rather than guessing from rule names, and tells you when it finds none — which is a finding rather than a clean result.
+Call investigate_injection(start_time='...'). It runs the whole sequence in code, so the source-IP profiling step cannot be skipped, and it returns a classification and a recommendation rather than tables to interpret. It also reads which of your rules actually do injection detection from the WebACL's statement types rather than guessing from rule names, and tells you when it finds none — which is a finding rather than a clean result. Its two allowed-traffic sections are what reached the origin: report the source IPs' allowed probes as such, and treat the target-path rows as leads, naming the ones whose query string looks like the attack's payloads.
 
 Do NOT hand-assemble this from get_waf_overview and run_logs_query. That was the old method and the reason it moved into code is that a step got skipped.
 
@@ -205,7 +205,7 @@ Reaching for it first is a mistake even when it would work, because the scenario
 What it adds that nothing else has:
 - **A hit RATE, not a count.** metric="ratio" with filter_by as the numerator: aggregate_logs(group_by="uri", metric="ratio", filter_by='{"rule": "MyRule"}') is that rule's hit rate per URI, which is the number a COUNT-to-Block decision actually needs. Several filters AND together into one numerator, and the denominator is always every request in the group, so narrow the WINDOW rather than expecting filter_by to narrow the denominator.
 - **A threshold to set.** metric="percentile" returns min/avg/p95/p99/max of per-bucket request counts per group. group_by="clientIp" sizes a rate-based rule: read p99 as the level normal traffic stays under, then set the limit ABOVE it. Never quote p99 itself as the threshold.
-- **Group dimensions no template has**, notably referer, ua, ja4, method, ruletype and label, plus combinations like country x action.
+- **Group dimensions no template has**, notably referer, ua, ja4, method, ruletype, label and args (the query string, masked), plus combinations like country x action. For counts, group_by takes up to three comma-separated dimensions, e.g. group_by="clientIp,uri"; a filter value may be a list, '{"ip": ["a", "b"]}', and uri filters on an exact path.
 
 Two things to tell the user rather than work around: referer and ja4 are absent on some upstreams (API Gateway and AppSync do not send ja4), and on CloudWatch group_by="label" reports only the FIRST label per request while Athena reports all of them.
 

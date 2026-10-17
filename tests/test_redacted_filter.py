@@ -134,7 +134,7 @@ def test_every_filter_that_reads_a_redactable_field_declares_it():
     happens and nothing says so. Enumerated at 5 sites and 2 field types, so the count is pinned; if a
     new filter dimension arrives on a redactable field, this fails rather than shipping quiet."""
     declared_agg = {k: v.redactable_filter for k, v in _FILTERS.items() if v.redactable_filter}
-    assert declared_agg == {"method": ("Method",), "host": ("SingleHeader:host",)}, declared_agg
+    assert declared_agg == {"method": ("Method",), "host": ("SingleHeader:host",), "uri": ("UriPath",)}, declared_agg
     declared_tpl = {k: tuple(v["redactable_filter"]) for k, v in TEMPLATES.items()
                     if "redactable_filter" in v}
     assert declared_tpl == {
@@ -160,19 +160,21 @@ def test_no_declaration_names_a_field_the_predicate_does_not_read():
     for key, spec in _FILTERS.items():
         for field in spec.redactable_filter:
             probe = spec.athena + " " + spec.cwl
-            token = "httpmethod" if field == "Method" else "host"
+            token = {"Method": "httpmethod", "UriPath": "httprequest.uri"}.get(field, "host")
             assert token in probe.lower(), \
                 f"filter {key!r} declares {field} and its predicate does not read it: {probe}"
 
 
-def test_two_of_the_four_redaction_types_have_no_filter_surface_at_all():
-    """Stated as a test because it is the thing that makes the surface small, and a future filter on
-    a URI or a query string would need a declaration this file does not yet require."""
+def test_one_of_the_four_redaction_types_has_no_filter_surface_at_all():
+    """Stated as a test because it is the thing that makes the surface small. UriPath gained one with
+    aggregate_logs' `uri` filter (ROADMAP 7.14) and is declared above; a future filter on the query
+    string would need a declaration this file does not yet require. Grouping by `args` is not a filter:
+    a redacted query string lands in a REDACTED group rather than dropping the record."""
     everything = {f for v in _FILTERS.values() for f in v.redactable_filter}
     everything |= {f for v in TEMPLATES.values() for f in v.get("redactable_filter", ())}
-    assert not {"UriPath", "QueryString"} & everything, (
-        f"a filter now reads UriPath or QueryString: {sorted(everything)}. Add it to the expected "
-        f"sets above rather than deleting this test.")
+    assert "QueryString" not in everything, (
+        f"a filter now reads QueryString: {sorted(everything)}. Add it to the expected sets above "
+        f"rather than deleting this test.")
 
 
 # --- the notice -------------------------------------------------------------

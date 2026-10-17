@@ -51,6 +51,24 @@ rules, 160 of 160 counted XSS requests carried the label a reader matched, and a
 custom rule's label on 3 of 3. The client lists now hold the matches that ended allowed, the only ones a
 switch changes; the rest are reported by the action that stopped them.
 
+### Fixed: the injection investigation looked only at what was blocked
+
+`investigate_injection` found sources only through detector matches, so a sender whose payloads passed
+every rule was never a source, and it profiled the top source over the attack's window only, while
+reconnaissance comes first. Two sections now follow the profile: everything the top five source IPs
+were allowed, from as far before the window as the 360-minute query cap leaves, and allowed requests
+with a query string on the attack's target paths, from any IP, as possible bypass leads, with sensitive
+values masked. On a test WebACL on 2026-10-13, a sensitive-path probe's allowed requests included
+`/.git/config`, `/.ssh/id_rsa` and `/wp-config.php`, which no blocked-traffic view shows. Both go through
+`aggregate_logs`, so an empty answer carries the Log Filter warning and the log-path cross-check, and
+neither stops the investigation.
+
+### Added: aggregate_logs takes lists, an exact path, several group dimensions and the query string
+
+`filter_by` values may be lists of up to 20, matched as any of them, and a `uri` filter matches an exact
+path. For counts, `group_by` takes up to three comma-separated dimensions, such as `clientIp,uri`. A new
+`args` dimension groups by query string, leaves out requests without one, and masks sensitive values.
+
 ### Fixed: the scan's spike note never printed
 
 The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's

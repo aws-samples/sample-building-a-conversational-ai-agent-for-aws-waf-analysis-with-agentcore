@@ -531,6 +531,11 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
                   "Skipped: no source IP was found, so there is nothing to profile. That also "
                   "means the classification below has no IP evidence behind it.", ""]
 
+    # Step 5b and 5c. What a selection by matches cannot see: a source's requests that no rule matched,
+    # which reached the origin, and allowed requests on the paths the attack targeted.
+    lines += _allowed_sections(aggregate_logs._tool_func, ips, _extract_column(paths, "httpRequest.uri"),
+                               start_time, duration)
+
     # Step 6. The matrix, in code.
     classification, recommendation = _classify(ips, ja4s)
     if unread_steps:
@@ -546,6 +551,47 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
               f"Next: call record_finding(title='Injection activity on {focus}', "
               f"severity='medium', detail='...') to keep this in the report."]
     return "\n".join(lines)
+
+
+_SOURCES_ALLOWED, _TARGETS = 5, 5
+
+
+def _allowed_sections(agg, ips: list, target_paths: list, start_time: str, duration: int) -> list:
+    """What a selection by matches cannot see, in two aggregate_logs calls: everything the top source
+    IPs were allowed, from as far before the window as the cap leaves, since reconnaissance comes
+    first and a probe no rule matches shows only there; and allowed requests with a query string on
+    the attack's target paths, from any IP, since a payload that passed every rule has no match. Both
+    are leads, so each says why it is empty, the Log Filter and the log-path cross-check included,
+    the way any aggregate does."""
+    from datetime import datetime, timezone
+    from tools.waf_aggregate import _FILTERS
+    from tools.waf_logs import _parse_start_time, naive_time_tz
+    start = _parse_start_time(start_time)
+    if start is None:
+        return []
+    sources = [ip for ip in ips if not _FILTERS["ip"].check(ip)[1]][:_SOURCES_ALLOWED]
+    paths = [p for p in target_paths[:_TARGETS] if not _FILTERS["uri"].check(p)[1]]
+    skipped = len(target_paths[:_TARGETS]) - len(paths)
+    out = []
+    if sources:
+        lookback = max(MAX_MINUTES - duration, 0)
+        earlier = datetime.fromtimestamp(start - lookback * 60, timezone.utc).astimezone(naive_time_tz())
+        out += [f"### What the source IPs were allowed (the top {len(sources)}, from "
+                f"{lookback // 60}h{lookback % 60:02d} before the window to its end)",
+                "These reached the origin. A probe no rule matches (a config file, an admin path) appears "
+                "only here, never in the blocked traffic above.",
+                agg(start_time=earlier.strftime("%Y-%m-%dT%H:%M"), duration_minutes=lookback + duration,
+                    group_by="clientIp,uri", filter_by=json.dumps({"ip": sources, "action": "ALLOW"})), ""]
+    if paths:
+        out += ["### Allowed requests with a query string on the attack's target paths (possible bypass leads)",
+                "Ordinary use of these paths appears here too: a lead is a query string shaped like the "
+                "attack's payloads, not any row.",
+                agg(start_time=start_time, duration_minutes=duration, group_by="clientIp,uri,args",
+                    filter_by=json.dumps({"uri": paths, "action": "ALLOW"}))]
+        if skipped:
+            out.append(f"({skipped} target path(s) not queried: they hold characters a path filter refuses)")
+        out.append("")
+    return out
 
 
 def _extract_pairs(table: str, column: str) -> list:

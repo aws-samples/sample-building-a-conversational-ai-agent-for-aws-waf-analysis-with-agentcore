@@ -46,7 +46,7 @@ Lists all URIs/methods being challenged, flags incompatible requests (non-GET, A
 
 > "What injection attacks were blocked in the last hour?"
 
-The agent investigates SQLi / XSS / LFI activity in one call: it runs the whole sequence in code, so the source-IP profiling step is never skipped, and returns a classification and a recommendation rather than raw tables to interpret. Point it at a rule with a name, or let it survey all injection rules.
+The agent investigates SQLi / XSS / LFI activity in one call: it runs the whole sequence in code, so the source-IP profiling step is never skipped, and returns a classification and a recommendation rather than raw tables to interpret. It also lists what the source IPs were allowed, from hours before the attack (probes no rule matched reached the origin), and allowed requests with a query string on the paths the attack targeted, as possible bypass leads. Point it at a rule with a name, or let it survey all injection rules.
 
 > "What client is JA4 t13d1516h2_8daaf6152771_b186095e22b6?"
 

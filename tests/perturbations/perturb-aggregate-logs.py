@@ -110,9 +110,9 @@ CASES = [
     (
         "the refusal no longer naming the valid dimensions, so the model guesses again",
         "tools/waf_aggregate.py",
-        "        return (f\"Error: '{group_by}' is not a group_by dimension. Available: \"\n"
+        "        return (f\"Error: '{unknown[0]}' is not a group_by dimension. Available: \"\n"
         '                f"{\', \'.join(sorted(_GROUP_BY))}.")',
-        '        return f"Error: \'{group_by}\' is not a group_by dimension."',
+        '        return f"Error: \'{unknown[0]}\' is not a group_by dimension."',
         [f"{T}::test_an_unknown_key_or_metric_is_refused_with_the_valid_ones_listed"],
     ),
     (
@@ -169,16 +169,16 @@ CASES = [
     (
         "a filter dimension undocumented, so the model is never told it exists",
         "tools/waf_aggregate.py",
-        "            action, rule, ip, country, method, ruletype, ja4, label, host. A label value is",
-        "            action, rule, ip, country, method, ruletype, ja4, label. A label value is",
+        "            action, rule, ip, country, method, ruletype, ja4, label, host, uri (an exact path). A",
+        "            action, rule, ip, country, method, ruletype, ja4, label, uri (an exact path). A",
         [f"{T}::test_a_filter_dimension_is_named_where_filter_by_is_documented"],
         TEXTUAL,
     ),
     (
         "a group dimension undocumented, same defect one table over",
         "tools/waf_aggregate.py",
-        "            ruletype, ja4, host, ua, referer, label, time_bucket.",
-        "            ruletype, ja4, host, ua, label, time_bucket.",
+        "            ruletype, ja4, host, ua, referer, label, args, time_bucket. For metric=\"count\", up to",
+        "            ruletype, ja4, host, ua, label, args, time_bucket. For metric=\"count\", up to",
         [f"{T}::test_a_group_dimension_is_named_where_group_by_is_documented"],
         TEXTUAL,
     ),
