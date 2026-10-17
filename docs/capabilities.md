@@ -22,9 +22,9 @@ The agent inventories all COUNT rules, classifies them by risk level, finds the 
 
 Generates a comprehensive HTML report covering rule effectiveness, anomaly detection, week-over-week trends, and bot activity — all in one click.
 
-> "Do a deep review of my WAF rules"
+> "Why didn't my rate-based rule block this IP?"
 
-Produces a full security audit: checks for overly broad Allow rules, missing protections, label dependency issues, and configuration anti-patterns.
+Reads the rule from the WebACL and answers from its statement, action and position. For a full audit of every rule in a WebACL, use [AWS WAF Rules Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer), which your coding agent runs on an exported WebACL.
 
 ## Incident Investigation (user has a specific problem)
 

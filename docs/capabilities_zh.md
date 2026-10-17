@@ -22,9 +22,9 @@ Agent 盘点所有 COUNT 规则，按风险分级，找到流量高峰时段，�
 
 一键生成 HTML 报告：规则有效性、异常检测、周环比趋势、Bot 活动概览。
 
-> "帮我审查 WAF 规则"
+> "我的 rate-based 规则为什么没拦住这个 IP？"
 
-全面安全审计：检查过宽的 Allow 规则、缺失的防护、标签依赖问题、配置反模式。
+从 WebACL 读出这条规则，根据它的语句、动作和位置来回答。要对 WebACL 里所有规则做全面审计，请用 [AWS WAF Rules Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer)，由你的 coding agent 在导出的 WebACL 上运行。
 
 ## 事件调查（用户有具体问题）
 

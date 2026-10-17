@@ -22,7 +22,6 @@ from tools.waf_injection import investigate_injection
 from tools.query_limits import MAX_MINUTES
 from tools.ja4 import lookup_ja4
 from tools.report import generate_weekly_report, set_report_summary
-from tools.waf_review_deep import review_waf_rules_deep, finalize_review_report
 from tools.waf_knowledge import search_waf_knowledge
 from tools.waf_patrol import patrol_scan
 from tools.waf_count_eval import evaluate_count_rules
@@ -40,7 +39,7 @@ MODEL_REGION = os.environ.get("WAF_AGENT_MODEL_REGION", "ap-northeast-1")
 SSE_HEARTBEAT_SECONDS = 10
 
 SYSTEM_PROMPT = """\
-You are an AWS WAF Analysis Agent. You help security engineers investigate AWS WAF issues, generate weekly summaries, and produce comprehensive rule review reports.
+You are an AWS WAF Analysis Agent. You help security engineers investigate AWS WAF issues and generate patrol and weekly reports.
 
 ## Behavior
 - Respond in the same language as the user's message
@@ -74,7 +73,7 @@ This limits nothing about your analysis. Quote the payload back to the user, dec
 
 ## Tool Selection (user intent → tool)
 - "what's happening" / "any anomalies" / "bot situation" / "overview" → get_waf_overview
-- "review" / "audit" / "check my WAF rules" → review_waf_rules_deep
+- "review" / "audit" / "check my WAF rules", a full configuration audit → not a tool here. Point the user to AWS WAF Rules Reviewer, https://github.com/chenghit/aws-waf-rules-reviewer, which their coding agent runs on an exported WebACL. A question about one rule or one behavior → get_waf_config, then answer it yourself.
 - "patrol" / "security scan" / "daily report" → patrol_scan
 - "weekly report" / "executive summary" → generate_weekly_report
 - AWS WAF best practice questions → search_waf_knowledge
@@ -135,7 +134,6 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 - **generate_weekly_report**: `webacl_name` + `start_time`. Max 7 days.
 - ALL get_waf_overview query_types support zoom in. ALWAYS zoom in after finding a spike.
 - DDoS traffic action depends on user config (Challenge/Block/Count). Use top_ips_by_volume (all actions).
-- After review_waf_rules_deep → MUST call finalize_review_report.
 - patrol_scan generates an HTML report + text summary. Present the summary to the user AND tell them the full interactive HTML report is available via the download button in the UI.
 - generate_weekly_report: if user says "the week of May 9th" or "5月9日那一周", calculate the calendar week start (Monday). May 9 2026 is Friday → calendar week starts May 4 (Monday). Pass start_time='2026-05-04', days=7.
 
@@ -614,7 +612,7 @@ _model = None
 _TOOLS = [list_webacls, get_waf_config, get_waf_metrics, get_waf_overview, run_logs_query, analyze_ip,
           set_log_granularity, aggregate_logs, investigate_injection,
           lookup_ja4, generate_weekly_report, set_report_summary,
-          review_waf_rules_deep, finalize_review_report, search_waf_knowledge,
+          search_waf_knowledge,
           patrol_scan, evaluate_count_rules, investigate_block_fp, check_challenge_compatibility, detect_bypass,
           record_finding, ask_user]
 
@@ -1113,17 +1111,6 @@ def create_app():
                 yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
                 yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
             return StreamingResponse(report_generator(), media_type="text/event-stream")
-
-        if prompt == '__get_review_report__':
-            from tools.waf_review_deep import _latest_review_html
-            async def review_report_generator():
-                run_id = str(_uuid.uuid4())
-                yield _make_sse({"type": "RUN_STARTED", "threadId": thread_id, "runId": run_id})
-                yield _make_sse({"type": "TEXT_MESSAGE_START", "messageId": "msg-1", "role": "assistant"})
-                yield _make_sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-1", "delta": _latest_review_html or ""})
-                yield _make_sse({"type": "TEXT_MESSAGE_END", "messageId": "msg-1"})
-                yield _make_sse({"type": "RUN_FINISHED", "threadId": thread_id, "runId": run_id})
-            return StreamingResponse(review_report_generator(), media_type="text/event-stream")
 
         if prompt == '__get_patrol_report__':
             from tools.waf_patrol import _latest_patrol_html

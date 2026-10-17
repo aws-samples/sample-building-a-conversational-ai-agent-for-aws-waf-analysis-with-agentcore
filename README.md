@@ -22,10 +22,11 @@ An AI-powered AWS WAF analysis agent that investigates security incidents, detec
 
 ![WAF Analyst Screenshot](docs/screenshot.png)
 
-- **Proactive security checks** — scan for bypasses, evaluate COUNT rules, audit WAF configuration
+- **Proactive security checks** — scan for bypasses, evaluate COUNT rules
 - **Incident investigation** — false positive analysis, attack source identification, IP profiling
 - **Bypass detection** — find crawlers, bots, and DDoS traffic that evade WAF rules
-- **Reports** — security patrol, weekly summaries, deep rule reviews (all as downloadable HTML)
+- **Reports** — security patrol and weekly summaries (both as downloadable HTML)
+- **Rule questions** — explains what a given rule does and why it did or didn't match; for a full audit of a WebACL's rules, use [AWS WAF Rules Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer) with your coding agent
 - **Best practice guidance** — WAF configuration advice backed by AWS documentation
 - **Privacy-aware** — masks secret values (cookies, auth/session tokens, API keys) when showing inspected request content; it will not display or judge attacks inside those secrets. See [Data Privacy](docs/data-privacy.md).
 
@@ -192,7 +193,6 @@ This changes the header, browser tab title, and conversation exports. Defaults t
 │   ├── waf_block_fp.py   # False positive investigation + proactive scan
 │   ├── waf_bypass.py     # Bypass/evasion detection (scan + volume + IP)
 │   ├── waf_challenge_check.py # Challenge/CAPTCHA compatibility check
-│   ├── waf_review_deep.py # Comprehensive rules audit pipeline
 │   ├── waf_patrol.py     # Security patrol (deterministic HTML report)
 │   ├── report.py         # Weekly summary HTML generation
 │   ├── waf_knowledge.py  # Bedrock Knowledge Base search

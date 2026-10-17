@@ -1,7 +1,7 @@
 # AWSManagedRulesCommonRuleSet (CRS) Notes
 
-- Provides OWASP Top 10 protection (SQLi, XSS, etc.)
-- `SizeRestrictions_Body` rule blocks request bodies larger than 8KB. This frequently causes false positives on file upload endpoints, API endpoints with large payloads, form submissions with rich content, etc. Most users don't know which of their endpoints need large bodies. When recommending CRS, always advise overriding `SizeRestrictions_Body` to Count.
+- Covers cross-site scripting, local and remote file inclusion, SSRF to the EC2 metadata service, bad User-Agents and size limits. It has no SQL injection rules: those are in `AWSManagedRulesSQLiRuleSet`
+- `SizeRestrictions_BODY` rule blocks request bodies larger than 8KB. This frequently causes false positives on file upload endpoints, API endpoints with large payloads, form submissions with rich content, etc. Most users don't know which of their endpoints need large bodies. When recommending CRS, always advise overriding `SizeRestrictions_BODY` to Count.
 
 
 ## AWSManagedRulesKnownBadInputsRuleSet Notes
@@ -40,11 +40,12 @@ Key principles:
 ## Managed Rule Group Action Overrides
 
 ### Version recommendations
-Only these managed rule groups have significant version upgrades worth flagging:
-- **AWSManagedRulesSQLiRuleSet**: version 2.0 has significantly higher SQLi detection coverage than the default 1.0. Recommend upgrading if pinned below 2.0.
-- **AWSManagedRulesBotControlRuleSet**: version 5.0's Common level can identify close to 700 bot types (up from far fewer in 1.0) based on UA and IP, and Targeted level includes substantially more detection rules. The default version is still 1.0, which is outdated. Recommend upgrading if pinned below 5.0.
+Only this managed rule group has a version upgrade worth flagging:
+- **AWSManagedRulesBotControlRuleSet**: Version_7.0 (2026-10-15) is the latest static version; recommend pinning it. 5.0 "added 400+ new bots across multiple categories" (changelog, 2026-02-25), with the `CategoryPagePreview` and `CategoryWebhooks` rules, and by 6.1 the Common level identifies more than 600 bots. A group with no `Version` runs AWS's current default, which AWS moves without a changelog entry: the docs only say it pointed to Version_1.0 in May 2024, and `ListAvailableManagedRuleGroupVersions` still returned `CurrentDefaultVersion` Version_1.0 on 2026-10-17. Check it rather than assume.
 
-For all other managed rule groups, the version shown in JSON is just the current snapshot and requires no action.
+**SQLi is not an upgrade path.** `AWSManagedRulesSQLiRuleSet` has two lineages. Version_2.0 (2022-01) added JSON inspection to `SQLi_BODY` and removed `SQLi_URIPATH`; 1.2 (2024) and 1.3 (2025) added transformations to the 1.x line; and the changelog says "Version_2.3 is the successor to Version_1.3, not Version_2.0". So a higher number is not a newer detection, and "upgrade to 2.0" is wrong advice. Flag the group only when it is unpinned.
+
+For other managed rule groups, a pinned version needs no action.
 
 ### How overrides work
 - Each rule inside a managed rule group has a default action (Block, Count, Challenge, etc.)
@@ -65,8 +66,8 @@ For all other managed rule groups, the version shown in JSON is just the current
 When reviewing rules:
 1. CRS present but SizeRestrictions_Body not overridden to Count → recommend override (frequent FP)
 2. No CRS and no KnownBadInputs → recommend both as baseline (unless DDoS-only WebACL)
-3. SQLiRuleSet pinned below 2.0 → recommend upgrade
-4. BotControlRuleSet pinned below 5.0 → recommend upgrade (700 bot types vs far fewer)
+3. SQLiRuleSet pinned at any version → no version advice; the lineages differ in trade-offs, not in age
+4. BotControlRuleSet unpinned or pinned below the latest version → recommend pinning Version_7.0
 5. Any rule overridden to Allow → check if it bypasses all subsequent rules (most dangerous override)
 6. Token domain missing apex domain → subdomains not covered
 7. WCU approaching 5000 → warn before recommending additional rules

@@ -65,16 +65,17 @@ Full behavioral profile of a specific IP address.
 
 **What the agent does:** Checks UA/JA4 diversity (NAT detection) → request frequency → URI breakdown → AWS WAF labels → cross-query with all rules → top query strings (redacted).
 
-### 5. AWS WAF Rule Review
+### 5. Questions about a rule
 
-Comprehensive security audit of your WebACL configuration with a downloadable HTML report.
+What one rule does, and why it did or didn't match a request.
 
 **Good prompts:**
-- "Review the rules on my-webacl"
-- "Audit my AWS WAF configuration for security issues"
-- "Generate a review report for production-webacl"
+- "Why didn't my rate-based rule block 203.0.113.9?"
+- "What does the CategoryHttpLibrary override on my-webacl change?"
 
-**What the agent does:** Runs a deterministic analysis pipeline (18+ checks: forgeable Allow rules, label dependency chains, scope-down issues, Bot Control config, priority ordering, etc.) → Agent adds cross-rule impact analysis → generates styled HTML report with Mermaid flow diagram → auto-downloads.
+**What the agent does:** Reads the WebACL's rules and answers from the rule's statement, action and priority, with the logs when the question is about a request.
+
+A full audit of every rule in a WebACL is not something the agent does. Use [AWS WAF Rules Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer), which your coding agent runs on an exported WebACL.
 
 ### 6. Security Patrol (Weekly Summary)
 

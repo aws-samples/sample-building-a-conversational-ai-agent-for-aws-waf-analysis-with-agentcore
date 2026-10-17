@@ -48,7 +48,8 @@ If CloudFront is not in the architecture, Regional WAF Anti-DDoS AMR provides li
 - To check an exemption, look at ordinary traffic rather than waiting for an event: with `UsageOfAction` `ENABLED`, an API GET that carries `challengeable-request` is not exempt
 
 ### Pricing
-- $20/month per AMR instance + $0.15/million requests
+- The June 2025 launch blog gives $20 a month for each web ACL using it, plus $0.15 per million requests on top of the base AWS WAF request fee. See AWS WAF pricing for current rates
+- A Shield Advanced subscription includes the rule group, with up to 50 billion requests to Shield-protected AWS WAF resources per payer account in a calendar month; requests Shield Advanced detects as DDoS don't count toward it
 - DDoS traffic detected and mitigated is NOT charged
 
 ### Recommended deployment patterns

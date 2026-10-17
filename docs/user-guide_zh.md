@@ -65,16 +65,17 @@ Agent 可以访问你的 AWS WAF 配置、CloudWatch 指标、CloudWatch 日志�
 
 **Agent 的工作流程：** 检查 UA/JA4 多样性（NAT 检测）→ 请求频率 → URI 分布 → AWS WAF 标签 → 与所有规则交叉查询 → top query string（已脱敏）。
 
-### 5. AWS WAF 规则审查
+### 5. 关于某条规则的问题
 
-对 WebACL 配置进行全面安全审计，生成可下载的 HTML 报告。
+某条规则做什么，为什么匹配或没匹配某个请求。
 
 **好的提问方式：**
-- "审查 my-webacl 的规则"
-- "帮我 review production-webacl 的 AWS WAF 配置"
-- "检查我的 AWS WAF 配置有没有安全问题"
+- "我的 rate-based 规则为什么没拦住 203.0.113.9？"
+- "my-webacl 上对 CategoryHttpLibrary 的 override 改变了什么？"
 
-**Agent 的工作流程：** 运行确定性分析管线（18+ 项检查：可伪造的 Allow 规则、标签依赖链、scope-down 问题、Bot Control 配置、优先级顺序等）→ Agent 补充跨规则影响分析 → 生成带 Mermaid 流程图的 HTML 报告 → 自动下载。
+**Agent 的工作流程：** 读出 WebACL 的规则，根据规则的语句、动作和优先级回答；问题涉及某个请求时，再结合日志。
+
+Agent 不做整个 WebACL 的全面规则审计。请用 [AWS WAF Rules Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer)，由你的 coding agent 在导出的 WebACL 上运行。
 
 ### 6. 安全巡检（周报）
 

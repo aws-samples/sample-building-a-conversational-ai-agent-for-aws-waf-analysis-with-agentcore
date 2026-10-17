@@ -41,9 +41,9 @@ function ReportDownload({ sessionId, type = 'roi' }) {
   const [showPreview, setShowPreview] = useState(false);
   const fetched = useRef(false);
 
-  const prompts = { roi: '__get_report__', review: '__get_review_report__', patrol: '__get_patrol_report__' };
-  const titles = { roi: '📊 WAF Weekly Summary', review: '🔍 WAF Review Report', patrol: '🛡️ Security Patrol Report' };
-  const filenames = { roi: 'waf-weekly-summary.html', review: 'waf-review-report.html', patrol: 'waf-patrol-report.html' };
+  const prompts = { roi: '__get_report__', patrol: '__get_patrol_report__' };
+  const titles = { roi: '📊 WAF Weekly Summary', patrol: '🛡️ Security Patrol Report' };
+  const filenames = { roi: 'waf-weekly-summary.html', patrol: 'waf-patrol-report.html' };
   const prompt = prompts[type] || prompts.roi;
   const title = titles[type] || titles.roi;
   const filename = filenames[type] || filenames.roi;
@@ -365,9 +365,6 @@ export default function App() {
               if (completedTool?.name === 'set_report_summary') {
                 assistantMsg = { ...assistantMsg, hasReport: true };
               }
-              if (completedTool?.name === 'finalize_review_report') {
-                assistantMsg = { ...assistantMsg, hasReviewReport: true };
-              }
               if (completedTool?.name === 'patrol_scan') {
                 assistantMsg = { ...assistantMsg, hasPatrolReport: true };
               }
@@ -613,7 +610,6 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
             )}
             {msg.content && <MessageContent content={msg.content} onShare={() => { setSelectMode(true); setSelected(new Set([i])); }} selectMode={selectMode} />}
             {msg.hasReport && <ReportDownload sessionId={sessionId.current} type="roi" />}
-            {msg.hasReviewReport && <ReportDownload sessionId={sessionId.current} type="review" />}
             {msg.hasPatrolReport && <ReportDownload sessionId={sessionId.current} type="patrol" />}
           </div>
         ))}

@@ -7,8 +7,6 @@ RUN UV_HTTP_TIMEOUT=300 uv sync --frozen --no-cache --extra serve --no-install-p
 
 COPY agent.py ./
 COPY tools/ ./tools/
-COPY scripts/ ./scripts/
-COPY references/ ./references/
 
 ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown

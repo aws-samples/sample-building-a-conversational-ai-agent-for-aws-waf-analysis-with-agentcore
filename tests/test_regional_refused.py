@@ -51,10 +51,10 @@ def test_the_helper_keys_on_regional_only():
 def test_the_walk_found_the_scope_tools():
     """A floor, not an inventory: if an import breakage hid every tool the parametrised test would
     vacuously pass, so require the discovery to have found the known population."""
-    assert len(SCOPE_TOOLS) >= 6, sorted(SCOPE_TOOLS)
+    assert len(SCOPE_TOOLS) >= 5, sorted(SCOPE_TOOLS)
     names = {label.rsplit(".", 1)[1] for label in SCOPE_TOOLS}
     assert {"list_webacls", "get_waf_config", "get_waf_overview",
-            "patrol_scan", "generate_weekly_report", "review_waf_rules_deep"} <= names, names
+            "patrol_scan", "generate_weekly_report"} <= names, names
 
 
 @pytest.mark.parametrize("label", sorted(SCOPE_TOOLS))

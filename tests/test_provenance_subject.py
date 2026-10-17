@@ -93,14 +93,10 @@ def test_every_tool_taking_a_webacl_name_says_which_one_it_queried():
     A criterion like "the tools that read metrics" needs re-deciding every time a tool changes what it
     reads, and nothing would notice when one starts. So: a tool that takes a `webacl_name` either writes it
     to session state, which makes `get_webacl_name()` correct by construction, or declares it. Exactly one
-    does the first, `get_waf_config`, and it is the reason the other five were wrong rather than an
-    exception to anything.
-
-    `review_waf_rules_deep` queries nothing and still declares, which costs one line and no output:
-    declaring creates no record, so no `SOURCE:` line is appended. The day it reads a metric, its
-    disclosure is already right."""
+    does the first, `get_waf_config`, and it is the reason the other four were wrong rather than an
+    exception to anything."""
     tools = _tools_taking_a_webacl_name()
-    assert len(tools) >= 6, f"extraction found only {sorted(tools)}, so this proves nothing"
+    assert len(tools) >= 5, f"extraction found only {sorted(tools)}, so this proves nothing"
     silent = [name for name, node in tools.items()
               if not {"declare_query_subject", "set_webacl_context"} & set(_called_names(node))]
     assert not silent, (
@@ -123,7 +119,7 @@ def test_the_declaration_comes_before_the_first_query():
             f"{name} declares its subject at line {calls['declare_query_subject']}, after a query at "
             f"{first_query}, so that query is recorded against the session's WebACL")
         checked += 1
-    assert checked >= 5, f"only {checked} tools declare a subject, so this proves nothing"
+    assert checked >= 4, f"only {checked} tools declare a subject, so this proves nothing"
 
 
 def test_a_metric_read_names_the_declared_webacl_not_the_session_one():
@@ -156,9 +152,10 @@ def test_the_line_does_not_tell_the_model_to_reload_a_context_the_tool_never_rea
 
 
 def test_declaring_creates_no_record_so_a_tool_that_queries_nothing_stays_silent():
-    """`review_waf_rules_deep` reads wafv2 and queries no logs or metrics. A declaration that created the
-    record eagerly would give it `SOURCE: acl via no engine`, a claim about a query that never ran, which
-    is the state `test_query_provenance.py` already forbids for every config-only tool."""
+    """A tool that declares and then queries nothing, because it refused or read only wafv2, must append
+    no `SOURCE:` line. A declaration that created the record eagerly would give it `SOURCE: acl via no
+    engine`, a claim about a query that never ran, which is the state `test_query_provenance.py` already
+    forbids for every config-only tool."""
     S.declare_query_subject("shield-sample-webacl")
     assert "provenance" not in S._state, "declaring a subject invented a record with no query behind it"
 

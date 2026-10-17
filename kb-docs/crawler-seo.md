@@ -57,7 +57,7 @@ This single labeling rule serves both downstream consumers — no duplication of
 - Always-on Challenge is preventive, not reactive: it filters non-browser traffic on landing page paths continuously, without waiting for AntiDDoS AMR to detect an attack
 - **Covers the detection delay window of all other protections** — rate-based rules and AntiDDoS AMR both have an inherent delay between attack start and mitigation activation. Always-on Challenge takes effect immediately with zero detection delay, blocking attack traffic from the first request on landing page paths.
 - Legitimate users with a valid AWS WAF token are not affected: Challenge acts like Count for requests with an unexpired token, so real users experience the JS verification only once, then browse uninterrupted for the token's lifetime
-- **Severity when absent**: Medium — this is the most effective proactive DDoS defense for browser traffic; its absence means the Web ACL relies entirely on reactive protections with unavoidable delay windows
+- **Severity when absent**: Medium when the Web ACL serves browser landing pages and DDoS protection is an objective — this is the most effective proactive DDoS defense for browser traffic; its absence means the Web ACL relies entirely on reactive protections with unavoidable delay windows
 
 ### Implementation: two-rule pattern (Count+Label → Challenge)
 
