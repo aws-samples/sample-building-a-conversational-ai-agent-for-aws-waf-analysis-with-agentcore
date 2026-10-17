@@ -38,7 +38,7 @@ Compares that window's metrics with the same window a week earlier and the hours
 
 > "Check IP 203.0.113.42, last 2 hours"
 
-Profiles the IP across all dimensions: frequency, URI diversity, JA4 fingerprint, bot labels, action breakdown, NAT detection, and the top query strings it sent (secrets redacted).
+Profiles the IP across all dimensions: frequency, URI diversity, JA4 fingerprint, bot labels, action breakdown, NAT detection, the attack categories of what blocked it, and the top query strings it sent (secrets redacted). An IP blocked for several attack categories is named an attack source before any bot verdict.
 
 > "Our API is returning 202 after enabling Challenge, check the past hour"
 

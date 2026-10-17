@@ -11,6 +11,20 @@ the busiest hour of ALLOW traffic in the last seven days, with the same window a
 the six hours either side. The same flood reads 20.9x. A rise in mitigated traffic from none counts as
 a rise; the first run of the new code called 562,445 mitigated requests against none "did NOT rise".
 
+### Fixed: analyze_ip called scanners scrapers
+
+`analyze_ip`'s verdicts described bots only, and its URI count included blocked requests, so a scanner
+that probed more than 50 paths was "Probable crawler/scraper", or "Automated scraper" at speed. A first
+verdict now names an attack source: an IP blocked for three attack categories, or for two with more
+blocks than allowed requests. Categories come from the sub-rule that ended evaluation (SQL injection,
+cross-site scripting, path probing and so on), for AWS managed groups only, and from the statement of a
+custom rule. Rate limits, reputation lists, Bot Control and size checks are not categories, so a flood
+source still reads as hammering. Blocks whose category cannot be read (a third-party or customer rule
+group, a rule no longer in the WebACL) stop the verdict when they could change it. The bot verdicts no
+longer count blocks set aside as attacks. On the 2026-09-08 test traffic, each of 10 scanners (SQL
+injection 12, path probing 1, against 3 allowed) is now an attack source and the false-positive user
+(SQL injection 2, against 35 allowed) is not.
+
 ### Fixed: the scan's spike note never printed
 
 The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's

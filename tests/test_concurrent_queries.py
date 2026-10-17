@@ -387,6 +387,9 @@ def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
 AIP_ROW = {"action": "ALLOW", "terminatingRuleId": "r", "cnt": "9", "avg_rpm": "1",
            "peak_rpm": "1", "active_minutes": "1", "ja4Fingerprint": "t13d1516h2",
            "unique_uris": "1", "total_non_static": "1", "unique_uris_all": "1", "args": "?a=1", "hits": "1"}
+# What blocked the IP and how much it was allowed: the attack-source rung's inputs, and the exclusion
+# the bot rungs' queries carry, so they run as a wave of their own before phase 2.
+AIP_PHASE1B = {"attack_categories", "allowed"}
 AIP_PHASE2 = {"actions", "request_rate", "request_rate_dynamic", "request_rate_static", "all_uris", "ja4", "uri_diversity", "query_strings"}
 
 
@@ -438,6 +441,8 @@ def test_analyze_ip_runs_its_phase_two_queries_concurrently(monkeypatch):
     def q(cwl, athena, start, end, limit=25, **kw):
         if _is_diversity(cwl, athena):
             return [{"ua_count": "1", "ja4_count": "1", "total": "9"}]
+        if kw.get("label") in AIP_PHASE1B:
+            return []
         if next(arrivals) < 5:
             gate.wait()
         return [dict(AIP_ROW)]
@@ -472,7 +477,7 @@ def test_an_analyze_ip_batch_timeout_says_so_not_no_rows(monkeypatch):
     seen: dict = {}
     real = Q.run_concurrently
     monkeypatch.setattr(WQ, "run_concurrently",
-                        lambda jobs, **k: (seen.update({"k": set(jobs)}), real(jobs, budget=1))[1])
+                        lambda jobs, **k: (seen.setdefault("k", set()).update(jobs), real(jobs, budget=1))[1])
     try:
         out = L.analyze_ip._tool_func("203.0.113.9", "2026-09-10 00:00", 60)
     finally:

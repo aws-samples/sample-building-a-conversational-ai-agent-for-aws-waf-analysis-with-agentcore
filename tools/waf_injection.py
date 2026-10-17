@@ -104,6 +104,46 @@ def _is_injection_sub_rule(name: str) -> bool:
     return not (name.startswith(("GenericLFI_", "LFI_")) and name.endswith("_URIPATH"))
 
 
+# The attack categories `analyze_ip` counts an IP's blocks in. A family names the kind of payload a
+# sub-rule finds, and families finding the same kind share a category, so an IP blocked by
+# `SQLi_QUERYARGUMENTS` and `SQLiExtendedPatterns_BODY` has sent one kind of attack, not two.
+_CATEGORY_OF_FAMILY = {
+    "SQLi": "SQL injection", "CrossSiteScripting_": "cross-site scripting",
+    "GenericRFI_": "remote file inclusion", "GenericLFI_": "local file inclusion", "LFI_": "local file inclusion",
+    "Log4JRCE": "Log4j", "JavaDeserializationRCE_": "Java deserialization",
+    "ReactJSRCE_": "React server code execution", "UNIXShellCommandsVariables_": "command injection",
+    "WindowsShellCommands_": "command injection", "PowerShellCommands_": "command injection",
+    "PHPHighRiskMethodsVariables_": "PHP code injection", "EC2MetaDataSSRF_": "server-side request forgery",
+}
+_CATEGORY_OF_STATEMENT = {"SqliMatchStatement": "SQL injection", "XssMatchStatement": "cross-site scripting"}
+# Asking for a file or path by name: what `_is_injection_sub_rule` keeps out of the injection set, plus
+# the Core rule set's restricted file extensions in the path. Measured 2026-10-13 on the CloudWatch test
+# WebACL, a probe of sensitive paths was blocked by LFI_URIPATH 17 times, RestrictedExtensions_URIPATH
+# 12, ExploitablePaths_URIPATH 10 and GenericLFI_URIPATH 2, all asking for a file by name.
+_PATH_PROBE_RULES = frozenset({"ExploitablePaths_URIPATH", "RestrictedExtensions_URIPATH"})
+
+
+def attack_category(sub_rule: str) -> str | None:
+    """The attack category of an AWS managed sub-rule that inspects what a request asks for or carries,
+    or None for one that does not: rate, reputation, geography, bots, size, missing headers. Only for
+    AWS managed groups, whose names say what they inspect; a customer's rule named `SQLi_x` says nothing."""
+    if sub_rule in _PATH_PROBE_RULES or (sub_rule.startswith(("GenericLFI_", "LFI_")) and sub_rule.endswith("_URIPATH")):
+        return "path probing"
+    if not _is_injection_sub_rule(sub_rule):
+        return None
+    return _CATEGORY_OF_FAMILY[next(f for f in _INJECTION_FAMILIES if sub_rule.startswith(f))]
+
+
+def custom_rule_categories(rules: list) -> dict:
+    """`{rule name: category or None}` for the WebACL's own rules, read off their statements. Several
+    injection statements in one rule are one category, since a block does not say which one matched."""
+    out = {}
+    for rule in rules:
+        found = sorted(_CATEGORY_OF_STATEMENT[t] for t in _injection_statements(rule.get("Statement", {})))
+        out[rule.get("Name", "")] = " or ".join(found) if found else None
+    return out
+
+
 def _sub_rule_groups(rules: list) -> dict:
     """Each injection sub-rule named by `_injection_rules`, mapped to its managed group's name, which
     is the `ManagedRuleGroup` dimension its blocks are counted under."""
@@ -135,8 +175,8 @@ CONFIDENCE = (
 )
 
 
-def _has_injection_statement(stmt: dict) -> bool:
-    """Whether a rule's statement tree contains injection detection.
+def _injection_statements(stmt: dict) -> set:
+    """The injection statement types in a rule's statement tree, empty when there are none.
 
     Recursive because the statement can be nested under `AndStatement`, `OrStatement` or a
     rate-based rule's scope-down, and a top-level-only check would miss a rule that pairs SQLi
@@ -152,16 +192,20 @@ def _has_injection_statement(stmt: dict) -> bool:
     `And[Not(uri /upload), SqliMatchStatement]` still returns True, because the injection statement
     is a SIBLING of the `Not` rather than inside it. So this is strictly better, not a trade."""
     if not isinstance(stmt, dict):
-        return False
-    if any(key in stmt for key in _INJECTION_STATEMENTS):
-        return True
+        return set()
+    found = {key for key in _INJECTION_STATEMENTS if key in stmt}
     for key in ("AndStatement", "OrStatement"):
         if key in stmt:
-            if any(_has_injection_statement(sub) for sub in stmt[key].get("Statements", [])):
-                return True
+            for sub in stmt[key].get("Statements", []):
+                found |= _injection_statements(sub)
     if "RateBasedStatement" in stmt:
-        return _has_injection_statement(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))
-    return False
+        found |= _injection_statements(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))
+    return found
+
+
+def _has_injection_statement(stmt: dict) -> bool:
+    """Whether a rule's statement tree contains injection detection; see `_injection_statements`."""
+    return bool(_injection_statements(stmt))
 
 
 def _injection_rules(rules: list) -> tuple[list, list]:

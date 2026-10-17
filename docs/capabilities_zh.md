@@ -38,7 +38,7 @@ Agent 定位拦截规则、计算该 IP 的 Allow Ratio，给出置信度评估�
 
 > "查一下 IP 203.0.113.42，最近 2 小时"
 
-全维度画像：频率、URI 多样性、JA4 指纹、Bot 标签、Action 分布、NAT 检测，以及它发送的 top query string（密钥已脱敏）。
+全维度画像：频率、URI 多样性、JA4 指纹、Bot 标签、Action 分布、NAT 检测、拦截它的规则属于哪些攻击类别，以及它发送的 top query string（密钥已脱敏）。被多类攻击规则拦过的 IP，会先被判为攻击源，再看是不是机器人。
 
 > "开了 Challenge 之后 API 返回 202，查一下最近 1 小时"
 
