@@ -185,6 +185,10 @@ predates it.
 - **Update the agent:** rebuild with a new commit tag, redeploy backend re-passing all non-default
   params (principles 3 & 4). Exact commands: [`docs/deployment.md` → Updating the Agent](docs/deployment.md#updating-the-agent).
   Existing sessions finish on old code; new sessions pick up the new image.
+- **The knowledge base does not follow the image.** Its documents live in the KB stack's bucket, so if
+  the release changed `kb-docs/`, re-run `./deploy/sync-kb.sh` as
+  [`docs/deployment.md` → Updating the Agent](docs/deployment.md#updating-the-agent) says, or the agent
+  keeps citing the old text. Nothing reports it: the v0.33.0 deploy missed it and it was caught by hand.
 - **The frontend's version badge does not follow the backend.** It is baked into the built JS at
   Step 6 from `CHANGELOG.md`'s newest heading, so redeploying only the backend leaves the UI showing
   whatever it last read there. No browser refresh fixes it, because the file being served genuinely

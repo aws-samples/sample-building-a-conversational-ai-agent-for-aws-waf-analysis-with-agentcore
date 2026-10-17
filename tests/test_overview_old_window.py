@@ -369,10 +369,32 @@ def test_an_old_window_off_the_clock_reads_whole_points(overview):
     assert total == span.total_seconds() // 60, (total, covered.groups())
 
 
-def test_the_control_a_window_ending_now_carries_no_note(overview):
+@pytest.fixture
+def mid_minute_clock(monkeypatch):
+    """`now` thirty seconds into a minute, an hour before the real one.
+
+    **The control below read the real clock, and once a minute it could not fail.** Its window starts
+    at now less 24 hours and is rounded down to the minute; at a whole second there is nothing to round,
+    the window is exactly 96 points of 15 minutes, and its end is now, so `read_end = end` gave no note
+    either and the perturbation that drops the clamp survived. Measured: the CI sweep of 78cb98b on
+    2026-10-17 reported it caught 23 of 24, and the rerun passed."""
+    from tools import waf_metrics as M
+    import types
+    now = datetime.fromtimestamp(int(NOW.timestamp()) // 60 * 60 - 3600 + 30, timezone.utc)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz else now.replace(tzinfo=None)
+    monkeypatch.setattr(O, "datetime", Clock)
+    monkeypatch.setattr(M, "time", types.SimpleNamespace(time=lambda: now.timestamp()))
+    return now
+
+
+def test_the_control_a_window_ending_now_carries_no_note(overview, mid_minute_clock):
     """A default "past 24 hours" ends at now, mid-minute, so whole points run past it, and reading
     past now reads nothing. No start_time, or the window would end on a whole minute instead."""
-    cw = ClockCW({("ALL", "AllowedRequests"): 1})
+    cw = ClockCW({("ALL", "AllowedRequests"): 1}, now=mid_minute_clock)
     out = overview("top_rules", cw, start=None, minutes=1440)
     assert "Note: CloudWatch answers" not in out, out
 

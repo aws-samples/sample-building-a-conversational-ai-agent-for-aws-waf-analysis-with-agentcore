@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.34.1 (2026-10-17)
+
+### Fixed: the update steps left the knowledge base on the previous release's text
+
+Updating the agent rebuilds the image and the backend stack, and neither touches the knowledge base,
+whose documents sit in the KB stack's bucket. `docs/deployment.md`, its Chinese twin and `AGENTS.md`
+now say to re-run `./deploy/sync-kb.sh` when a release changed `kb-docs/`. The v0.33.0 deploy
+followed the old steps and left the knowledge base a release behind until it was synced by hand.
+
 ## 0.34.0 (2026-10-17)
 
 ### Fixed: every answer stopped at 4,096 output tokens
