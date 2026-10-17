@@ -237,17 +237,19 @@ def test_every_query_logs_caller_calls_it_from_exactly_one_place():
     dataflow analysis while staying a location check, which is the only reason they can be read
     off the syntax at all. Weakening either half puts the residual back.
 
-    Phrased per module because that is where it currently bites, and the invariant asserted is
-    per scope. A module with two separately-guarded wrappers would be correct and would fail
-    this wording; if that ever happens, widen the wording rather than deleting the check."""
+    Phrased per function since 2026-10-16, when `waf_aggregate` gained a second wrapper,
+    `rule_match_counts`, beside `aggregate_logs`, each with its one call and its own guard. The
+    per-module wording said in advance that such a module would be correct and fail it, and that
+    the wording should widen rather than the check go. The guard test below is per function
+    already, so the pair still holds."""
     sites = {p.name: _query_logs_sites(p) for p in TOOLS}
     callers = {name: s for name, s in sites.items() if s}
     assert callers, "no query_logs callers found, so this test proves nothing"
-    spread = {name: s for name, s in callers.items()
-              if sum(len(v) for v in s.values()) != 1}
+    spread = {name: {fn: v for fn, v in s.items() if len(v) != 1} for name, s in callers.items()}
+    spread = {name: s for name, s in spread.items() if s}
     assert not spread, (
         f"call query_logs from more than one place, so no wrapper owns the result: {spread}. "
-        f"Route them through one function per module.")
+        f"Route them through one call per function.")
 
 
 def test_every_query_logs_caller_checks_for_an_error_row():

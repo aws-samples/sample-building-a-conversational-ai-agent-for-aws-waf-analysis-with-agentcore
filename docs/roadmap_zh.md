@@ -22,6 +22,11 @@
 
 - 网络（ASN）集中度作为分析维度，与已经支持的国家、referer 维度并列
 - 巡检报告里跨 WebACL 的汇总
+- 敏感文件探测单独做成一项调查：按文件名请求 `.env`、`.git/config` 或备份文件的流量。注入调查现在不再把它算进去，而且有好几种常见文件根本没有托管规则能匹配
+- Bot Control 标成 CDN 的 IP（7.0 版新加的 `signal:cloud_service_provider:fastly`）当作代理出口处理，背后是很多客户端。现在 bypass 调查把它当一个客户端来判，CDN 出口的 URI 数又很容易过自动化的门槛
+- bypass 调查和 token 复用调查读 Bot Control 的 token 来源标签（`token_provenance:ip_category_mismatch:<level>`，targeted 级别，7.0 版起）。token 在数据中心 IP 上拿到、拿到住宅 IP 上用，正是这两项调查要找的
+- Bot Control 的设备 ID 标签（`device_id:<id>`）等打这个标签的 Android SDK 发布后用来分组，并定下这个 ID 交给模型、写进报告之前要不要脱敏
+- bypass 判定读的 Bot Control 标签，按每个版本的 `describe-managed-rule-group` 核对，像注入调查的 sub-rule 列表那样。标签一改名，就会被读成"Bot Control 没给这个 IP 分类"，判定会往 bypass 那边偏。知识库里的 Bot Control 标签说明也还停在 5.x 版
 
 ## 安全与隐私
 

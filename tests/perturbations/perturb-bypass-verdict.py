@@ -150,7 +150,7 @@ CASES = [
      [f"{T}::test_many_count_rules_are_counted_in_queries_under_the_length_limit"]),
 
     ("the length budget leaving no room for the WebACL filter",
-     [(B, '_CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128))', "_CWL_QUERY_MAX = 10_000")],
+     [("tools/waf_query.py", 'CWL_QUERY_MAX = 10_000 - len(scope_cwl_query("", "w" * 128))', "CWL_QUERY_MAX = 10_000")],
      [f"{T}::test_many_count_rules_are_counted_in_queries_under_the_length_limit"]),
 
     ("a failed counting query after the first one rendered as a partial list",
@@ -172,7 +172,7 @@ CASES = [
      [f"{T}::test_a_failed_distinct_uri_count_is_said_in_the_static_verdict"]),
 
     ("the length budget leaving out the limit the API adds",
-     [(B, ' - len(" | limit 100000")', "")],
+     [("tools/waf_query.py", ' - len(" | limit 100000")', "")],
      [f"{T}::test_the_count_queries_fit_the_limit_with_the_longest_webacl_name"]),
 ]
 

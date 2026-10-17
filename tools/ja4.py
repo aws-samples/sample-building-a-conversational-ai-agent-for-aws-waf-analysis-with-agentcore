@@ -88,5 +88,6 @@ def lookup_ja4(fingerprints: str) -> str:
     lines.append("Note: JA4 fingerprints alone cannot definitively identify applications.")
     lines.append("Cross-reference with: User-Agent, request frequency, URI patterns.")
     lines.append("Same JA4 across multiple IPs = same TLS library (possible botnet).")
-    lines.append("Multiple UAs but single JA4 = UA spoofing (same client rotating UAs).")
+    lines.append("Multiple UAs but single JA4 = one TLS stack: one client rotating UAs, or several users of "
+                 "one browser build behind a shared address. analyze_ip's UA breakdown tells which.")
     return "\n".join(lines)

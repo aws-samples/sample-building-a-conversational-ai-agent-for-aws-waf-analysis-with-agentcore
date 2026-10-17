@@ -890,8 +890,14 @@ def _is_nat_traffic(ua_rows: list[dict]) -> bool | None:
     Real NAT: diverse OS/browser combos (Windows+Mac+iPhone, Chrome+Safari+Firefox)
     UA rotation: same template with only version numbers changing, or sequential versions.
 
-    Returns True if likely NAT, False if suspicious (possible rotation), and None when there are
-    too few UAs to judge. None used to be True, which the caller printed as "Confidence: HIGH".
+    Returns True if likely NAT, False if suspicious (possible rotation), and None when the UAs do not
+    tell. None used to be True, which the caller printed as "Confidence: HIGH".
+
+    **Rotation needs its shape, and anything short of it is None**, decided with the maintainer
+    2026-10-16 without real browser traffic to measure. A JA4 names a TLS stack, so an office on one
+    browser build behind one egress shares one, and the old heuristic called one OS and one browser
+    rotation even with several templates, and four UAs rotation too. Only five or more UAs that differ
+    in nothing but version numbers are False; a wrong False here leads to blocking a shared IP.
     """
     uas = [row.get("ua", "") for row in ua_rows if row.get("ua")]
     if len(uas) < 4:
@@ -941,14 +947,9 @@ def _is_nat_traffic(ua_rows: list[dict]) -> bool | None:
         return False  # Same template, only versions differ → rotation
     if len(os_set) >= 2 and len(browser_set) >= 2:
         return True  # Genuine diversity → NAT
-    if len(os_set) <= 1 and len(browser_set) <= 1 and len(templates) <= 2:
-        return False  # Single OS + single browser + same template → rotation
-
-    # Edge case: many templates but all same OS/browser (could be version rotation with minor diffs)
-    if len(os_set) <= 1 and len(browser_set) <= 1:
-        return False  # Suspicious even with template diversity
-
-    return True  # Default: assume NAT if genuinely diverse
+    if (len(os_set) >= 2 or len(browser_set) >= 2) and len(templates) >= 3:
+        return True  # Diverse on one axis, with the templates to show it
+    return None  # One OS and browser with several templates, or too few UAs: cannot tell
 
 
 def _execute_query_internal(client, log_group: str, start_time: int, end_time: int, query: str, limit: int = 25) -> list:
@@ -1080,21 +1081,24 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     ja4_count = int(d.get("ja4_count", "0"))
     total = int(d.get("total", "0"))
 
+    ua_list_cwl = (
+        f'filter httpRequest.clientIp = "{safe_ip}"'
+        ' | parse @message /(?i)\\{"name":"user-agent","value":"(?<ua>.*?)"\\}/'
+        ' | stats count(*) as cnt by ua | sort cnt desc | limit 20'
+    )
+    ua_list_athena = (
+        f"SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua,"
+        f" count(*) as cnt"
+        f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND httprequest.clientip = '{safe_ip}'"
+        f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
+        f" ORDER BY cnt DESC LIMIT {{LIMIT}}"
+    )
+    # The rotation rung's input: whether five or more UAs on one JA4 differ only by version. Known
+    # False when there are not five UAs on one JA4, so the rung needs no query then.
+    rotation = False
     # High diversity → check if NAT or UA rotation
     if ua_count > 3 and ja4_count > 3:
-        ua_list_cwl = (
-            f'filter httpRequest.clientIp = "{safe_ip}"'
-            ' | parse @message /(?i)\\{"name":"user-agent","value":"(?<ua>.*?)"\\}/'
-            ' | stats count(*) as cnt by ua | sort cnt desc | limit 20'
-        )
-        ua_list_athena = (
-            f"SELECT element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value as ua,"
-            f" count(*) as cnt"
-            f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-            f" AND httprequest.clientip = '{safe_ip}'"
-            f" GROUP BY element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
-            f" ORDER BY cnt DESC LIMIT {{LIMIT}}"
-        )
         ua_rows = _safe_query(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20,
                               failures=failures, label="user_agents", notes=notes)
         nat = _is_nat_traffic(ua_rows) if ua_rows else None
@@ -1103,8 +1107,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
             # verdict below refuses a direction: a shared IP is exactly the one not to block.
             nat_unknown = (f"the user_agents query failed: {failures['user_agents']}"
                            if failures.get("user_agents") else
-                           f"only {len(ua_rows)} User-Agent value(s) came back, too few to tell "
-                           f"a shared IP from one client rotating its UA")
+                           f"the {len(ua_rows)} User-Agent value(s) that came back do not tell a "
+                           f"shared IP from one client rotating its UA")
         if nat:
             lines = [
                 f"## {ip} — NAT/Shared IP (skipped)",
@@ -1118,6 +1122,10 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
             if is_log_filter_active():
                 lines.append("\n⚠️  Log Filter active — diversity counts may be incomplete.")
             return "\n".join(lines)
+    elif ua_count >= 5 and ja4_count == 1:
+        ua_rows = _safe_query(ua_list_cwl, ua_list_athena, start_epoch, end_epoch, limit=20,
+                              failures=failures, label="user_agents", notes=notes)
+        rotation = None if failures.get("user_agents") else _is_nat_traffic(ua_rows) is False
 
     # Phase 2: Full analysis (not NAT)
     cross_cwl = (
@@ -1276,7 +1284,9 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # Diversity summary
     lines.append(f"**Diversity**: {ua_count} UAs, {ja4_count} JA4 fingerprints, {total} total requests")
     if ua_count > 1 and ja4_count == 1:
-        lines.append("⚠️ Multiple UAs but single JA4 = likely UA spoofing (same TLS stack)")
+        lines.append("⚠️ Multiple UAs but a single JA4: one TLS stack. That fits one client rotating its "
+                     "User-Agent, and also several people on one browser build behind one egress; these "
+                     "signals alone cannot tell which.")
     elif ua_count == 1 and ja4_count == 1:
         lines.append("Single UA + single JA4 = single client")
     if nat_unknown:
@@ -1387,7 +1397,8 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     uri_val = _known(uri_div, "unique_uris", int, "uri_diversity")
     non_static = _known(uri_div, "total_non_static", int, "uri_diversity")
     all_uri_val = _known(all_uris, "unique_uris_all", int, "all_uris")
-    unknown = {"request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
+    unknown = {"user_agents": rotation is None,
+               "request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
                "request_rate_static": static_peak is None,
                "uri_diversity": uri_val is None or non_static is None}
 
@@ -1413,8 +1424,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # skipped: the rung might have fired, so every rung after it would be answering the wrong
     # question. Each rung names what it reads.
     rungs = [
-        (("request_rate",), lambda: ua_count > 1 and ja4_count == 1 and peak_val > 50,
-         "**HIGH CONFIDENCE: Bot with UA rotation.** Multiple UAs but single JA4 fingerprint = same TLS client spoofing User-Agent."),
+        # Five or more UAs differing only by version, one JA4, at machine pace: an office on one
+        # browser build shares the first two, so pace is what is left to tell them apart.
+        (("user_agents", "request_rate"), lambda: rotation and ja4_count == 1 and peak_val > 200,
+         lambda: f"**HIGH CONFIDENCE: Bot with UA rotation.** {ua_count} User-Agents that differ only in "
+                 f"their version numbers, one TLS fingerprint, peak {peak_val:g} req/min."),
         (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val > 50,
          "**HIGH CONFIDENCE: Automated scraper.** Peak >200 non-static req/min + >50 unique URIs."),
         (("request_rate_dynamic", "uri_diversity"), lambda: dyn_peak > 200 and uri_val < 10,

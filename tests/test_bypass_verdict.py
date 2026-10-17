@@ -455,3 +455,16 @@ def test_the_static_peak_reads_only_static_allowed_requests():
     for name, frag in (("static_cwl", "CWL_ONLY_STATIC"), ("static_athena", "ATHENA_ONLY_STATIC")):
         body = src.split(f"{name} = (", 1)[1].split("\n    )", 1)[0]
         assert frag in body and "action = 'ALLOW'" in body, body
+
+
+def test_the_scan_does_not_call_one_fingerprint_behind_many_uas_spoofing(monkeypatch):
+    """A JA4 names a TLS stack, so an office on one browser build behind one egress looks the same."""
+    monkeypatch.setattr(B, "is_log_filter_active", lambda: False)
+    monkeypatch.setattr(B, "_check_coverage_gaps", lambda: [])
+    monkeypatch.setattr(B, "query_logs", lambda cwl, athena, s, e, limit=25, notes=None, label="", **kw:
+                        [{"ja4Fingerprint": "t13d1516h2", "total": "900", "unique_uas": "8", "unique_ips": "1"}]
+                        if label == "ua_rotation" else [])
+    out = B._step_scan(0, 3600)
+    section = out.split("### UA Rotation Candidates", 1)[1].split("###", 1)[0]
+    assert "t13d1516h2" in section and "spoofing indicator" not in section, section
+    assert "an office on one browser build" in section, section

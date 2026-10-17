@@ -346,7 +346,9 @@ def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
 
     def classify(cwl, athena):
         text = f"{cwl}\n{athena}"
-        if "ruleGroupList" in cwl or "UNNEST(rulegrouplist)" in athena:
+        if "as seen by httpRequest.uri" in cwl:
+            return "other"  # the shared-path look, which follows the sub-rule lookup and reads its answer
+        if "ruleGroupId" in cwl or "filter(rulegrouplist" in athena:
             return "sub"
         for label, marker in ONLY_IN.items():
             if marker in text:

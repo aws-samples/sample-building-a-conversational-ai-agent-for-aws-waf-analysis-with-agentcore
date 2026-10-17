@@ -636,7 +636,7 @@ def _get_log_details_athena(log_dest: str, webacl_name: str, scope: str, region:
         # the requested s3_path: matches are ancestor-or-equal, so the requested
         # path can contain the WebACL name while the table above it does not.
         if not _athena_state.get("webacl_scoped", True) and _re.fullmatch(r"[A-Za-z0-9_-]+", webacl_name):
-            time_cond += f" AND webaclid LIKE '%/{webacl_name}/%'"
+            time_cond += f" AND webaclid LIKE '%/webacl/{webacl_name}/%'"
 
         # Query top IPs and URIs per rule (parallel)
         from tools.waf_query import inspection_location, athena_content_expr

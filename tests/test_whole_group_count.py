@@ -59,4 +59,7 @@ def test_an_injection_group_overridden_to_count_is_a_count_mode_detector():
     rules = [{"Name": "sqli-shadow", "OverrideAction": {"Count": {}},
               "Statement": {"ManagedRuleGroupStatement": {"VendorName": "AWS", "Name": "AWSManagedRulesSQLiRuleSet"}}}]
     found, _ = _injection_rules(rules)
-    assert found == ["sqli-shadow"] and _count_mode(rules) == {"sqli-shadow"}
+    # Its sub-rules, which are what the record names: the group logs each matching one as its
+    # `terminatingRule` with the native BLOCK, and the rule filter reaches that entry.
+    assert "SQLi_QUERYARGUMENTS" in found and "sqli-shadow" not in found, found
+    assert set(found) <= _count_mode(rules), _count_mode(rules)

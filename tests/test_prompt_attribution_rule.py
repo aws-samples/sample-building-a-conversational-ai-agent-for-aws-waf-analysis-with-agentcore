@@ -59,7 +59,7 @@ def test_the_rule_names_the_evidence_combination_that_produced_the_wrong_answer(
     """**Same User-Agent, different JA4, and nothing in the repository ruled on it.**
 
     `lookup_ja4`'s own trailer covers the two neighbouring combinations: same JA4 across several IPs means
-    one TLS library, several User-Agents behind one JA4 means UA spoofing. The pair the wrong answer
+    one TLS library, several User-Agents behind one JA4 means one TLS stack. The pair the wrong answer
     actually held, one User-Agent across two differing JA4s, had no ruling anywhere, so the model resolved
     it by weighing the signal that agreed with the conclusion.
 

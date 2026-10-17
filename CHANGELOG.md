@@ -1,5 +1,112 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: the false-positive investigation could name another group's sub-rule
+
+`investigate_block_fp` took the first rule group in the record that logged a `terminatingRule`. A
+group in whole-group Count logs one too, with the native BLOCK, and evaluation goes on past it, so
+the sub-rule named could belong to a group that only counted: over 14 days on a test WebACL, 6 of 17
+LinuxRuleSet blocks were attributed to `ExploitablePaths_URIPATH` or `RestrictedExtensions_URIPATH`.
+It also read every block from the IP, so a second group blocking the same IP could supply the
+sub-rule. It now reads only the blocking rule's requests, and the last group with a
+`terminatingRule`, which is the one that ended evaluation.
+
+### Fixed: a WebACL named `webacl` read every WebACL's log records
+
+Where a log group or a bucket holds several WebACLs, each query keeps one WebACL's records by
+finding its name as a segment of `webaclId`, which is the WebACL's ARN. Every ARN contains
+`/webacl/`, so a WebACL named `webacl` kept all of them. The CloudWatch and both Athena filters now
+match `/webacl/<name>/`.
+
+### Fixed: the bypass scan and investigation missed a fleet on cloud instances
+
+Both keyed the hosting signal on `signal:known_bot_data_center`. A 12-host scraper fleet on AWS sent
+1,080 allowed requests in ten minutes, every one labelled `signal:cloud_service_provider:aws` and
+none `known_bot_data_center`, so neither saw it. The scan's data-center section now lists
+cloud-provider IPs too and names the provider. The investigation gives an unclassified IP on a cloud
+provider "LIKELY: undetected automation" once it has reached more than 50 URIs, whatever its rate:
+each host of the fleet ran at 11 to 14 a minute. The bar is URIs because the label is on people too,
+such as an office egress with real browsers behind it. It asks whether the IP is a known partner,
+an office or a VPN, since all of them run there too. The data-center verdict is unchanged.
+
+### Fixed: three statements about AWS in the agent's instructions that AWS contradicts
+
+- Route 53 health checkers were "15.177.0.0/16". AWS's `ip-ranges.json` lists 31 prefixes for
+  them, and inside 15.177 only `15.177.0.0/18` and `15.177.108.0/24`; the rest includes EC2. The
+  agent now identifies a health checker by `bot:verified` with `bot:name:route53_health_check`.
+- Anti-DDoS AMR was "per-IP behavior analysis", here and in the knowledge base, twice. AWS
+  documents one baseline per protected resource, built within minutes; requests from sources
+  suspected of taking part in an event get suspicion labels.
+- Scope-down statements were said not to inspect the request body. Any nestable statement works,
+  body included. What holds is that WAF logs no body beyond the fragments a SQLi or XSS match
+  records, so a body-based scope-down cannot be checked against the logs, and the agent now says
+  that instead.
+
+### Added: the Count evaluation shows what a Count rule matched
+
+A Count match's details are on its own entry, and `terminatingRuleMatchDetails` stays empty, so the
+client check showed the inspected component and never the matched tokens. It now lists the
+`ruleMatchDetails` of the rule's Count entries, once per request: for a test window, 160 of 160
+`CrossSiteScripting_QUERYARGUMENTS` matches, four payload shapes such as `< script` and
+`onerror alert(1)`. WAF records the tokens for SQLi and XSS statements; for some other rules it
+records the location only, and the section says so. On CloudWatch the list comes from up to 50
+sampled requests.
+
+### Fixed: the injection investigation counted file probing and missed four rule groups
+
+`investigate_injection` took CommonRuleSet and KnownBadInputs whole, so every block either group
+made was an injection match. Over 14 days on a test WebACL, 12 blocks on
+`RestrictedExtensions_URIPATH` made CommonRuleSet the busiest injection detector, and the tool
+offered to record injection activity for `.bak` probing. It now ranks managed sub-rules, and only
+those that find a payload in a request component: SQLi, XSS, local file inclusion in a query, body
+or header, RFI, Log4j, Java deserialisation, React RCE, shell and PowerShell commands, PHP, and EC2
+metadata SSRF. Local file inclusion on the URI path is file probing and is left out, and so are the
+extension, size, path and header checks. LinuxRuleSet, UnixRuleSet, WindowsRuleSet and PHPRuleSet
+are read now. The sub-rules are every name any version of these groups has used, since versions add
+and rename them: the test WebACL pins SQLiRuleSet Version_2.3, whose three `SQLiExtendedPatterns`
+rules for the body, URI path and headers the default version lacks. The ranking is one count query
+per engine rather than one per detector. A window with no match is cross-checked against each
+sub-rule's own metric in one call, the group's Blocked, Counted, Challenge and CAPTCHA requests
+added together: which of them holds the matches depends on how each instance runs the sub-rule, and
+a group in whole-group Count puts them under BlockedRequests. A sub-rule is in Count mode only when every
+instance counts it, and so is `SQLi_QUERYSTRING_COUNT`, whose own action is Count. For a Count-mode
+focus rule, the blocked count now says another rule did the blocking.
+
+### Added: the false-positive investigation shows who else the rule blocks on the same paths
+
+A confirmed false positive went straight to scope-down design, and an exception for its path lets
+through everything else the rule blocks there. On a test window the false-positive user took 2 SQLi
+blocks on `/search`, and 10 scanners took 60 more on `/search` five minutes later, outside the
+window around the user's blocks. The investigation now lists, for each path the rule blocked this
+IP on, how many blocks and how many other IPs the same rule (the same sub-rule, for a managed group)
+had there over the 6 hours around the window, and warns when an exception for the path would open
+it to them.
+
+### Fixed: the knowledge base taught an Anti-DDoS exemption that never matches
+
+The exempt-URI regex is matched against the host followed by the normalized path, such as
+`www.example.com/api/orders`, so a branch opening `^/` or `^\/` never matches. The knowledge base
+told users to anchor every API branch that way, which leaves the exemption silently doing nothing and
+the API's GET requests challenged during an event. Measured on a test WebACL: under `^\/api\/`,
+`/api/orders` stayed challengeable, and `^[^/]+\/api(\/|$)` exempted `/api`, `/api/` and
+`/api/orders` while leaving `/x/api/orders` challengeable. The knowledge base and the agent's
+instructions now give the host-anchored forms, flag a path-anchored branch in a review, and check an
+exemption from ordinary logs, since a non-exempt GET carries `challengeable-request` outside an event
+too while the challenge setting's `UsageOfAction` is `ENABLED`. Two Anti-DDoS instances with different scope-downs are now the last resort, for a frontend and
+API on one host whose API paths cannot be written as an exemption; AWS recommends against a
+scope-down on this rule group because it limits the requests the group observes.
+
+### Fixed: one TLS fingerprint behind several User-Agents was called UA rotation on its own
+
+`analyze_ip` gave "HIGH CONFIDENCE: Bot with UA rotation" to any IP with more than one User-Agent, one
+JA4 and more than 50 requests a minute, and printed "likely UA spoofing". A JA4 names a TLS stack,
+so an office on one browser build behind one egress shares one. The verdict now needs five or more
+User-Agents that differ only in version numbers, one JA4, and more than 200 requests a minute; the
+shared-IP check no longer calls one OS and one browser rotation; and that line, the bypass scan's
+UA-rotation section and `lookup_ja4`'s note all say the signal fits either. An office whose browsers all report one build
+can still meet the bar at that pace, which only real browser traffic or a JA4 lookup can rule out.
+
 ## 0.32.0 (2026-10-16)
 
 ### Fixed: Count matches recorded inside a managed rule group were invisible to several queries
