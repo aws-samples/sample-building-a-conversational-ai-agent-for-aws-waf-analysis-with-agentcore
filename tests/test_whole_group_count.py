@@ -3,9 +3,9 @@
 """A rule group overridden to Count as a whole is found by the counted predicate and the rule filter.
 
 `RECORD` is a real WAF log record, trimmed, captured 2026-10-15 after adding
-`AWSManagedRulesAdminProtectionRuleSet` to `shield-sample-webacl` as rule `ptest-admin-group-count`
+`AWSManagedRulesAdminProtectionRuleSet` to `test-webacl-cwl` as rule `test-admin-group-count`
 with `OverrideAction: Count` and sending `/admin` requests. Athena logged the same shape for
-`response-id-on-page`, the counted predicate matched 5 of 5 there, and `CountedRequests` for the rule
+`test-webacl-s3`, the counted predicate matched 5 of 5 there, and `CountedRequests` for the rule
 read 5. Kept in WAF's compact serialisation, because the CloudWatch predicates are substring matches
 over exactly that text.
 
@@ -21,7 +21,7 @@ from tools.waf_aggregate import _RULE_ATHENA, _RULE_CWL
 from tools.waf_injection import _count_mode, _injection_rules
 
 RECORD = ('{"action":"ALLOW","terminatingRuleId":"Default_Action","nonTerminatingMatchingRules":[{"ruleId":'
-          '"ptest-admin-group-count","action":"COUNT","ruleMatchDetails":[{"conditionType":"REGEX","location":'
+          '"test-admin-group-count","action":"COUNT","ruleMatchDetails":[{"conditionType":"REGEX","location":'
           '"URI","matchedData":null,"matchedFieldName":""}]}],"ruleGroupList":[{"ruleGroupId":'
           '"AWS#AWSManagedRulesAdminProtectionRuleSet","terminatingRule":{"ruleId":"AdminProtection_URIPATH",'
           '"action":"BLOCK","ruleMatchDetails":null},"nonTerminatingMatchingRules":[],"excludedRules":null,'
@@ -40,7 +40,7 @@ def test_the_record_has_the_measured_shape():
     group = rec["ruleGroupList"][0]
     assert group["terminatingRule"]["action"] == "BLOCK" and not group["nonTerminatingMatchingRules"]
     assert rec["nonTerminatingMatchingRules"] == [
-        {**rec["nonTerminatingMatchingRules"][0], "ruleId": "ptest-admin-group-count", "action": "COUNT"}]
+        {**rec["nonTerminatingMatchingRules"][0], "ruleId": "test-admin-group-count", "action": "COUNT"}]
 
 
 def test_the_counted_predicate_matches_a_whole_group_count():
@@ -50,7 +50,7 @@ def test_the_counted_predicate_matches_a_whole_group_count():
 
 
 def test_the_rule_filter_finds_the_group_by_its_webacl_rule_name():
-    lits = _cwl_literals(_RULE_CWL.replace("{v}", "ptest-admin-group-count"))
+    lits = _cwl_literals(_RULE_CWL.replace("{v}", "test-admin-group-count"))
     assert any(lit in RECORD for lit in lits), lits
     assert "any_match(nonterminatingmatchingrules, r -> r.ruleid = '{v}')" in _RULE_ATHENA
 

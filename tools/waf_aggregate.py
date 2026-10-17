@@ -280,7 +280,7 @@ def rule_match_counts(names: list, start_time: str, duration_minutes: int):
     One query per engine rather than an `aggregate_logs` call per rule, and through the predicates
     `filter_by={"rule": ...}` uses, so a ranking and the sections filtered on its winner agree on what
     a match is. `investigate_injection` ranks forty-odd managed sub-rules, at a few seconds a query.
-    Measured 2026-10-16 on `shield-sample-webacl`, 14 days: `sum(if(...))` gave LFI_URIPATH 34
+    Measured 2026-10-16 on `test-webacl-cwl`, 14 days: `sum(if(...))` gave LFI_URIPATH 34
     matches and 17 blocks, as `filter` with the `like` form did. CloudWatch takes the names in as
     many queries as `CWL_QUERY_MAX` needs."""
     from tools.waf_logs import _parse_start_time

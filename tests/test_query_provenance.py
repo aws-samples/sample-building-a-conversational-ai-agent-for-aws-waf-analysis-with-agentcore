@@ -7,8 +7,8 @@
 WebACL A is answered from WebACL B's logs whenever the context holds B, with no error.
 
 **Measured on a real investigation, 2026-09-12.** The maintainer asked about a WebACL logging to
-CloudWatch Logs (`aws-waf-logs-group`) while the session context held one logging to Firehose. The
-runtime log records `dest=arn:aws:firehose:...:deliverystream/aws-waf-logs-kinesis-s3`. The answer was
+CloudWatch Logs (`aws-waf-logs-test`) while the session context held one logging to Firehose. The
+runtime log records `dest=arn:aws:firehose:...:deliverystream/aws-waf-logs-stream-test`. The answer was
 "Query returned 0 results" followed by three candidate causes: wrong action filter, wrong time window,
 no matching traffic. None of them was it.
 
@@ -34,8 +34,8 @@ from tools.session_state import provenance_source_line
 
 import agent
 
-FIREHOSE = "arn:aws:firehose:us-east-1:111122223333:deliverystream/aws-waf-logs-kinesis-s3"
-LOG_GROUP_DEST = "arn:aws:logs:us-east-1:111122223333:log-group:aws-waf-logs-group"
+FIREHOSE = "arn:aws:firehose:us-east-1:111122223333:deliverystream/aws-waf-logs-stream-test"
+LOG_GROUP_DEST = "arn:aws:logs:us-east-1:111122223333:log-group:aws-waf-logs-test"
 CWL, ATHENA = "CloudWatch Logs Insights", "Athena over S3"
 
 
@@ -71,9 +71,9 @@ class _FakeEvent:
 
 def test_the_line_names_the_webacl_and_the_engine_that_answered():
     """Both halves of what went wrong: which WebACL, and which engine that implies."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     cwl = provenance_source_line(_record(CWL))
-    assert "shield-sample-webacl" in cwl and "CloudWatch" in cwl, cwl
+    assert "test-webacl-cwl" in cwl and "CloudWatch" in cwl, cwl
 
     _context("some-other-webacl", FIREHOSE)
     athena = provenance_source_line(_record(ATHENA))
@@ -89,7 +89,7 @@ def test_the_engine_named_is_the_one_the_query_used():
 
     Asserted by making them disagree: the context says CloudWatch and the record says Athena. The record
     wins, because the record is the only one of the two that observed the query."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     line = provenance_source_line(_record(ATHENA))
     assert "Athena" in line and "CloudWatch" not in line, line
 
@@ -103,8 +103,8 @@ def test_an_explicit_log_group_is_named_instead_of_the_session_webacl():
     dropped: the tool would answer, the chip would show nothing and the line would name a WebACL that was
     not consulted."""
     _context("some-other-webacl", FIREHOSE)
-    explicit = provenance_source_line(_record(CWL, subject="log group aws-waf-logs-group"))
-    assert "aws-waf-logs-group" in explicit
+    explicit = provenance_source_line(_record(CWL, subject="log group aws-waf-logs-test"))
+    assert "aws-waf-logs-test" in explicit
     assert "some-other-webacl" not in explicit, "named a WebACL that had nothing to do with the query"
 
     src = pathlib.Path(session_state.__file__).with_name("waf_logs.py").read_text()
@@ -128,7 +128,7 @@ def test_the_line_does_not_tell_the_model_to_undo_an_explicit_log_group():
     checks which names appear and would have passed on that line forever; the lie sat thirty characters
     later in prose."""
     _context("some-other-webacl", FIREHOSE)
-    explicit = provenance_source_line(_record(CWL, subject="log group aws-waf-logs-group"))
+    explicit = provenance_source_line(_record(CWL, subject="log group aws-waf-logs-test"))
     assert "get_waf_config" not in explicit, explicit
     assert "not consulted" in explicit, "it has to say the session context was bypassed, not imply it"
 
@@ -155,13 +155,13 @@ def test_every_tool_result_that_queried_carries_the_line():
     appended as its own text block, and one that queried nothing gets nothing. The second half is not a
     detail. A config-only tool carrying `SOURCE: ... via no engine` would be a claim about a query that
     never happened, and there are more tools like that than like the first kind."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     _record(CWL)
     event = _FakeEvent([{"text": "Query 'top_blocked_ips' returned 25 results"}])
     agent.SourceDisclosure().append_source(event)
     blocks = [c["text"] for c in event.result["content"]]
     assert len(blocks) == 2, f"the line has to be its own block, not spliced into a table: {blocks}"
-    assert "SOURCE:" in blocks[1] and "shield-sample-webacl" in blocks[1]
+    assert "SOURCE:" in blocks[1] and "test-webacl-cwl" in blocks[1]
 
     session_state._state.pop("provenance", None)
     quiet = _FakeEvent([{"text": "WebACL config loaded"}])
@@ -173,12 +173,12 @@ def test_every_tool_result_that_queried_carries_the_line():
 def test_the_hook_hands_the_record_to_the_chip_by_tool_call_id():
     """Two readers, one record. The hook drains and stashes under this tool call's id; the streaming loop
     collects it with that id, which it already has as the `TOOL_END` payload."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     _record(CWL)
     agent.SourceDisclosure().append_source(_FakeEvent([{"text": "rows"}]))
     assert session_state.take_query_provenance("other-tool") == {}, (
         "another tool call collected this one's record")
-    assert session_state.take_query_provenance("t1").get("webacl") == "shield-sample-webacl", (
+    assert session_state.take_query_provenance("t1").get("webacl") == "test-webacl-cwl", (
         "the record never reached the chip, so the model got the line and the user got nothing")
     assert session_state.take_query_provenance("t1") == {}, "collected twice"
 
@@ -196,7 +196,7 @@ def test_the_stash_lives_where_the_isolation_fixture_can_clear_it():
     which turns the suite green and brings the leak back. **A guard has to say the property when it fires**,
     not name a neighbour of the symptom, which is the same lesson as the sweep reporting an unreachable line
     for what was really a stale anchor."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     session_state.begin_tool_call("t1")
     session_state.note_query_provenance(CWL, 1000, 2000)
     session_state.stash_query_provenance("t1")
@@ -215,7 +215,7 @@ def test_a_cleared_state_drops_the_stash():
     perturbation `take_query_provenance("t1")` returns the whole record after `_state.clear()`, so it is
     red, and the only thing hiding it was sharing a function. One `def` turns a gap I had recorded into a
     property that is guarded, with no new case."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     session_state.begin_tool_call("t1")
     session_state.note_query_provenance(CWL, 1000, 2000)
     session_state.stash_query_provenance("t1")
@@ -228,9 +228,9 @@ def test_the_chip_still_gets_a_record_if_the_hook_never_ran():
     post-deploy checklist, because nothing in this suite can answer it: a unit test calls it directly. If
     it does not fire, the model loses its line, and without this the chip would lose its window in the
     same breath. One degradation at a time."""
-    _context("shield-sample-webacl", LOG_GROUP_DEST)
+    _context("test-webacl-cwl", LOG_GROUP_DEST)
     _record(CWL)
-    assert session_state.take_query_provenance("t1").get("webacl") == "shield-sample-webacl", (
+    assert session_state.take_query_provenance("t1").get("webacl") == "test-webacl-cwl", (
         "the live record is unreachable once the stash is empty, so a hook that did not fire loses both")
 
 

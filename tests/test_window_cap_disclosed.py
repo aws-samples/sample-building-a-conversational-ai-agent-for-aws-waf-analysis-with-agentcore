@@ -173,7 +173,7 @@ def test_a_window_that_fitted_adds_nothing_to_the_result():
 def test_the_cap_and_the_source_line_arrive_in_one_block_with_the_cap_first():
     """Both disclosures come from this hook now, so their order is a decision. The cap changes how the rows
     above it should be read; the `SOURCE:` line is the signature under both."""
-    session_state.set_webacl_context("shield-sample-webacl", "arn:x", "CLOUDFRONT", "us-east-1",
+    session_state.set_webacl_context("test-webacl-cwl", "arn:x", "CLOUDFRONT", "us-east-1",
                                      log_destination="arn:aws:logs:us-east-1:1:log-group:lg")
     session_state.begin_tool_call("t1")
     session_state.note_window_capped(2880, 360)
@@ -187,7 +187,7 @@ def test_the_cap_and_the_source_line_arrive_in_one_block_with_the_cap_first():
 def test_a_tool_call_that_clamped_nothing_but_queried_still_gets_its_source_line():
     """The two are independent, and reading the cap must not have made the line conditional on it. The
     reverse pairing is the one above."""
-    session_state.set_webacl_context("shield-sample-webacl", "arn:x", "CLOUDFRONT", "us-east-1",
+    session_state.set_webacl_context("test-webacl-cwl", "arn:x", "CLOUDFRONT", "us-east-1",
                                      log_destination="arn:aws:logs:us-east-1:1:log-group:lg")
     session_state.begin_tool_call("t1")
     session_state.note_query_provenance("CloudWatch Logs Insights", 1000, 2000)

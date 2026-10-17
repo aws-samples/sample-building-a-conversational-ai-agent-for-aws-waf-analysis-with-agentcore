@@ -4,7 +4,7 @@
 
 It counted any `anti-ddos` text: Athena `LIKE '%anti-ddos%'` over label names, CloudWatch an
 unanchored `@message like 'anti-ddos'` that also matches a URI or a header. Measured 2026-10-15 on
-`shield-sample-webacl`, 14 days: 640,593 records matched that, every one of them carrying
+`test-webacl-cwl`, 14 days: 640,593 records matched that, every one of them carrying
 `awswaf:managed:aws:anti-ddos:challengeable-request`, which AMR applies to the requests it evaluates,
 and 0 carried `event-detected`. So every challenge check on a WebACL with the AMR said "Anti-DDoS
 event detected ... ChallengeAllDuringEvent was likely active" through a fortnight with no event.

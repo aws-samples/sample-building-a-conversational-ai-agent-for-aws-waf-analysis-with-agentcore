@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """Every CloudWatch metric read is answered whole, by the client every tool gets.
 
-Measured 2026-10-15 on `shield-sample-webacl`: one `GetMetricData` call answers at most 500 series and
+Measured 2026-10-15 on `test-webacl-cwl`: one `GetMetricData` call answers at most 500 series and
 cuts SEARCH results to fit, with `StatusCode: Complete` and no message. A label SEARCH answering 45
 series alone answered 20 beside 480 MetricStats and 5 beside 495. 501 queries is a `ValidationError`.
 Patrol reads five metrics per configured rule beside five SEARCH queries, so a WebACL of about 50

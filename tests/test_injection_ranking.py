@@ -6,7 +6,7 @@
 shadow-mode detector is exactly what you investigate, and then ranked with
 `filter_by={"action": "BLOCK"}` over the terminating rule. A Count match ends as ALLOW and is
 recorded under the sub-rule's name, nested in `rulegrouplist`. Measured 2026-10-15 on
-`response-id-on-page`, 2026-09-08: 160 `CrossSiteScripting_QUERYARGUMENTS` matches, all Count, all
+`test-webacl-s3`, 2026-09-08: 160 `CrossSiteScripting_QUERYARGUMENTS` matches, all Count, all
 nested, beside 122 SQLi blocks. A window with only the XSS traffic answered "No injection rule
 blocked anything" and stopped. The downstream sections filtered on BLOCK too.
 

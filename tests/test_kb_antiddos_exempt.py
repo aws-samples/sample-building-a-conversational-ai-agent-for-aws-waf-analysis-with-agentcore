@@ -4,7 +4,7 @@
 
 `ExemptUriRegularExpressions` is matched against the host followed by the normalized path, e.g.
 `www.example.com/api/orders`, so a branch opening `^/` or `^\\/` never matches (API Reference,
-`ClientSideAction`). Measured 2026-10-16 on `shield-sample-webacl` with GETs read back by their
+`ClientSideAction`). Measured 2026-10-16 on `test-webacl-cwl` with GETs read back by their
 `challengeable-request` label: under `^\\/api\\/` the request to `/api/orders` stayed challengeable;
 a temporary `^d2uloqf425puyh\\.cloudfront\\.net/api/` exempted it; `^[^/]+\\/api(\\/|$)` exempted
 `/api`, `/api/` and `/api/orders` and left `/x/api/orders` challengeable. The knowledge base told

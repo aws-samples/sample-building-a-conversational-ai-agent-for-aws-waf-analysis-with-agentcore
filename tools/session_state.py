@@ -238,9 +238,9 @@ def declare_query_subject(name: str | None):
     """The WebACL this tool call is reporting on, for a tool that takes its own `webacl_name`.
 
     **Measured 2026-09-14 against the live account, before this existed.** Session context held
-    `response-id-on-page`; `get_waf_metrics(webacl_name="shield-sample-webacl", ...)` answered
-    `## BlockedRequests — shield-sample-webacl (last 24h) / Total: 6` and its `SOURCE:` line read
-    `response-id-on-page via CloudWatch metrics. That is the WebACL from the last get_waf_config call ...
+    `test-webacl-s3`; `get_waf_metrics(webacl_name="test-webacl-cwl", ...)` answered
+    `## BlockedRequests — test-webacl-cwl (last 24h) / Total: 6` and its `SOURCE:` line read
+    `test-webacl-s3 via CloudWatch metrics. That is the WebACL from the last get_waf_config call ...
     call get_waf_config(webacl_name='...') and run this again.` So the disclosure credited one WebACL's
     number to another and then told the model to discard a correct answer. That is the misattribution the
     record exists to remove, produced by the record itself.

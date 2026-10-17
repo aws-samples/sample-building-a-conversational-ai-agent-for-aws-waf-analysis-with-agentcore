@@ -719,7 +719,7 @@ def _memory_safe_id(user_id: str) -> str:
     """Turn a JWT-derived user id into something AgentCore Memory will accept.
 
     **This existed as a bug from v0.13.0 to v0.22.0.** `_get_user_id_from_jwt` returns an email, so
-    `actor_id` and all three namespaces were built from `chencch@amazon.com`, every memory call was
+    `actor_id` and all three namespaces were built from the user's email address, every memory call was
     rejected with a `ValidationException` on the charset, and the bare `except` below swallowed it. The
     deployed agent reported memory as configured and wrote nothing: `list_memory_records`,
     `retrieve_memory_records` and `list_actors` all returned empty after four months and six sessions.

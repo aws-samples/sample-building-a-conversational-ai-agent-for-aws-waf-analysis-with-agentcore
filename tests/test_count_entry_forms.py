@@ -5,7 +5,7 @@
 **A rule's Count is one rule entry, `{"ruleId":"X","action":"COUNT",...}`.** The `count_rule_top_*`
 templates matched `'"ruleId":"X"'` and `'"action":"COUNT"'` as two separate substrings, so a record
 where X blocked and some other rule counted matched both. Measured 2026-10-16 on
-`shield-sample-webacl` over 14 days, for LFI_URIPATH, which only ever blocks: 34 records matched
+`test-webacl-cwl` over 14 days, for LFI_URIPATH, which only ever blocks: 34 records matched
 the separate form, 0 the adjacent one, and 0 on the Athena twin, which compares the two fields of
 one entry. So the tool reported 34 Count hits for a rule that counted nothing.
 

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """The overview reads a window weeks old as CloudWatch still holds it.
 
-Measured 2026-10-15 on `response-id-on-page`, window 2026-09-08 04:00-05:00, where the SQLi rule
+Measured 2026-10-15 on `test-webacl-s3`, window 2026-09-08 04:00-05:00, where the SQLi rule
 blocked 120 and 1,923 requests were allowed. `get_waf_overview(top_rules)` said "No metrics data
 ... Verify the WebACL name and time range", for two independent reasons:
 

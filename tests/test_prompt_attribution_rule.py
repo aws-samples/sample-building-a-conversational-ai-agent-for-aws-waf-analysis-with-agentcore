@@ -11,8 +11,8 @@ was a generator artifact. The agent could not know that, which is why this is no
 with a staging environment gets the same confident wrong attribution.
 
 **Recall inside one conversation, measured 2026-09-13, and cleaner because the ground truth is a number.**
-Asked about `shield-sample-webacl`, the answer's history table listed `2026-09-08 11:00–13:00 | 122 | SQLi`
-under that WebACL. The 122 is `response-id-on-page`'s, and `shield-sample-webacl`'s SQLi series is empty
+Asked about `test-webacl-cwl`, the answer's history table listed `2026-09-08 11:00–13:00 | 122 | SQLi`
+under that WebACL. The 122 is `test-webacl-s3`'s, and `test-webacl-cwl`'s SQLi series is empty
 for the whole day. Both numbers came from tools in earlier turns and both were labelled correctly at the
 time. The answer merged them.
 

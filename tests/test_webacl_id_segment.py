@@ -4,8 +4,8 @@
 
 `webaclId` is the WebACL's ARN, `arn:aws:wafv2:<region>:<account>:global/webacl/<name>/<id>`, and
 the filters matched `/<name>/`. A WebACL may be named `webacl`, and every ARN holds `/webacl/`:
-measured 2026-10-15 on `aws-waf-logs-group`, `'/webacl/'` matched all 46,192 records of
-`shield-sample-webacl`, as many as `'/webacl/shield-sample-webacl/'`.
+measured 2026-10-15 on `aws-waf-logs-test`, `'/webacl/'` matched all 46,192 records of
+`test-webacl-cwl`, as many as `'/webacl/test-webacl-cwl/'`.
 """
 
 import ast
@@ -15,7 +15,7 @@ import re
 from tools import waf_query as Q
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ARN = "arn:aws:wafv2:us-east-1:636696231660:global/webacl/{}/f7e012b0-0915-4efd-84cf-f04428eafb38"
+ARN = "arn:aws:wafv2:us-east-1:111122223333:global/webacl/{}/22222222-3333-4444-5555-666666666666"
 
 
 def _cwl_literal(name):
@@ -23,12 +23,12 @@ def _cwl_literal(name):
 
 
 def test_a_webacl_named_webacl_does_not_match_another_webacls_records():
-    assert _cwl_literal("webacl") not in ARN.format("shield-sample-webacl")
+    assert _cwl_literal("webacl") not in ARN.format("test-webacl-cwl")
     assert _cwl_literal("webacl") in ARN.format("webacl")
 
 
 def test_the_control_a_webacl_still_matches_its_own_records():
-    assert _cwl_literal("shield-sample-webacl") in ARN.format("shield-sample-webacl")
+    assert _cwl_literal("test-webacl-cwl") in ARN.format("test-webacl-cwl")
 
 
 def test_every_webacl_filter_in_the_package_names_the_webacl_segment():

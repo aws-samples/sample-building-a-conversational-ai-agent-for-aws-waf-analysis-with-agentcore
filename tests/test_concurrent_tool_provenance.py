@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: MIT-0
 """Two tool calls running at once collapsed into one provenance record, naming the wrong WebACL.
 
-**Measured on the deployed v0.27.0.** One question, "the BlockedRequests total for shield-sample-webacl and
-for response-id-on-page on 2026-09-08". The stream shows `TOOL_CALL_START, TOOL_CALL_START, TOOL_CALL_END,
+**Measured on the deployed v0.27.0.** One question, "the BlockedRequests total for test-webacl-cwl and
+for test-webacl-s3 on 2026-09-08". The stream shows `TOOL_CALL_START, TOOL_CALL_START, TOOL_CALL_END,
 TOOL_CALL_END`, so the two `get_waf_metrics` calls overlap, and exactly one provenance event arrived:
 
-    {"webacl": "response-id-on-page", "subject_explicit": true, "queries": 2, ...}
+    {"webacl": "test-webacl-s3", "subject_explicit": true, "queries": 2, ...}
 
-So the chip for the shield call named the other WebACL, and the second call got no chip at all. A second
+So the chip for the test-webacl-cwl call named the other WebACL, and the second call got no chip at all. A second
 case the same session, two `run_logs_query` calls, produced one record whose window spanned 855 days.
 
 **This is the defect `declare_query_subject` was built to remove, reintroduced by concurrency.** The record

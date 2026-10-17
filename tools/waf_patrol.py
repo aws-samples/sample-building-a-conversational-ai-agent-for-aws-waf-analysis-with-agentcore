@@ -315,7 +315,7 @@ def _get_all_rules_metrics_search(cw, webacl_name: str, start, end, period: int 
 
     **SEARCH alone misses any rule that has been quiet for the last 14 days, whatever window is
     asked for**, because its discovery window is anchored to now. Measured 2026-10-15 on
-    `response-id-on-page`, window 2026-09-08 04:00-05:00: SEARCH returned no SQLi rule and 0
+    `test-webacl-s3`, window 2026-09-08 04:00-05:00: SEARCH returned no SQLi rule and 0
     blocks, while a MetricStat for `AWS-AWSManagedRulesSQLiRuleSet` returned 120. So pass the
     WebACL's `rules` and each one, plus `ALL`, is also read with an explicit MetricStat, which has
     no discovery step. Its metric name comes from `VisibilityConfig.MetricName`. SEARCH stays,

@@ -3,10 +3,10 @@
 """The Count evaluation shows what a Count rule matched, from its entries' `ruleMatchDetails`.
 
 `terminatingRuleMatchDetails` is empty for a Count match; the details are on the Count entry
-itself. Measured on `response-id-on-page`, 2026-09-08 03:00-05:00: 160 of 160
+itself. Measured on `test-webacl-s3`, 2026-09-08 03:00-05:00: 160 of 160
 `CrossSiteScripting_QUERYARGUMENTS` Count records carried them, four payload shapes at 40 each
 (`< iframe`, `< svg`, `< script`, `onerror alert(1)`, location `ALL_QUERY_ARGS`). On
-`shield-sample-webacl` a whole-group Count entry carries one too, `REGEX` at `URI` with
+`test-webacl-cwl` a whole-group Count entry carries one too, `REGEX` at `URI` with
 `matchedData` null. The tool read only the inspected component, so the strongest signal for
 "attack-shaped or legitimate" was never shown.
 """

@@ -9,7 +9,7 @@ every log-side failure mode: no partition layout, engine difference, logging fil
 reaches them.
 
 Verified against the live account for the 2026-09-08 window, which is a ready-made pair of controls:
-`response-id-on-page` SQLi 122 with an empty log answer, and `shield-sample-webacl` SQLi genuinely
+`test-webacl-s3` SQLi 122 with an empty log answer, and `test-webacl-cwl` SQLi genuinely
 empty while that same WebACL's rate-limit rule blocked 566,070. The second is why the comparison is per
 rule: at the WebACL level the check would fire there and be wrong, and **a check that is always on is
 not a check**.
@@ -128,7 +128,7 @@ def test_the_dimension_and_the_state_come_from_the_configuration(name, expected_
 def test_a_name_the_configuration_does_not_know_is_queried_rather_than_refused(cw):
     """**The guard that was here refused this case, and refusing cost a real signal.** Measured on the
     live account 2026-09-13: `TGT_TokenAbsent` publishes `CountedRequests` 33,932 for 2026-09-08 on
-    `shield-sample-webacl` while appearing in no `Rules[].Name` and in no `RuleActionOverrides`. A
+    `test-webacl-cwl` while appearing in no `Rules[].Name` and in no `RuleActionOverrides`. A
     managed rule group publishes metrics for its internal rules and the config carries only the
     overridden ones, so the configuration is not a complete list of the names that publish a `Rule`
     dimension. `SEARCH` finds it, but SEARCH's 14-day discovery window means absent there does not

@@ -5,8 +5,8 @@ are listed once.
 
 A managed sub-rule's metric (`Rule=<sub-rule>`, `ManagedRuleGroupRule`, the label `*RuleMatch`)
 names no instance, so both instances write into one series. Measured 2026-10-16 on
-`shield-sample-webacl`, which runs AWSManagedRulesBotControlRuleSet at priorities 10 and 11: over
-13 days TGT_TokenAbsent read 3,436 against 2,230 logged requests. `response-id-on-page` runs it once
+`test-webacl-cwl`, which runs AWSManagedRulesBotControlRuleSet at priorities 10 and 11: over
+13 days TGT_TokenAbsent read 3,436 against 2,230 logged requests. `test-webacl-s3` runs it once
 and read 440 against 440. So with one instance the figure is exact and nothing is marked.
 """
 

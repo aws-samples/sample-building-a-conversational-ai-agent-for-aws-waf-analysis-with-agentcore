@@ -70,7 +70,7 @@ def _read_whole(client, kwargs: dict) -> dict:
     calls of at most 500 queries, every page joined. Raises when a SEARCH may have been cut.
 
     **One call answers at most 500 series, and it cuts SEARCH results silently to fit.** Measured
-    2026-10-15 on `shield-sample-webacl`: a label SEARCH answering 45 series alone answered 20 beside
+    2026-10-15 on `test-webacl-cwl`: a label SEARCH answering 45 series alone answered 20 beside
     480 MetricStats and 5 beside 495, with `StatusCode: Complete` and no `Messages`. So a SEARCH that
     shares a call can lose series with nothing saying so, and one alone that answers 500 may have
     been cut the same way. Patrol's per-rule reads are five per rule beside five SEARCH queries, so a

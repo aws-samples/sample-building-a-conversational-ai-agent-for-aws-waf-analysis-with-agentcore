@@ -4,8 +4,8 @@
 
 A SEARCH result's default label has no fixed format. Measured 2026-10-15:
 
-- bot names on `shield-sample-webacl` (three bots) came back `go_http`, `googlebot`,
-  `route53_health_check`; on `response-id-on-page` (one bot) the only series came back
+- bot names on `test-webacl-cwl` (three bots) came back `go_http`, `googlebot`,
+  `route53_health_check`; on `test-webacl-s3` (one bot) the only series came back
   `AllowedRequests`, so `get_waf_overview(bot_names)` listed a bot called AllowedRequests;
 - one geo label with two metrics came back `AllowRuleMatch` and `AllowedRequests`, so
   `top_labels` printed `awswaf:clientip:geo:country:US` twice;

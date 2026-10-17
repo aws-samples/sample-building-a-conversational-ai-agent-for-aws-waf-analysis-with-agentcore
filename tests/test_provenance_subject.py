@@ -3,11 +3,11 @@
 """A tool that takes its own `webacl_name` must disclose that one, not the session's.
 
 **Measured 2026-09-14 on the live account, and the disclosure was the thing lying.** Session context held
-`response-id-on-page`. `get_waf_metrics(webacl_name="shield-sample-webacl", metric_name="BlockedRequests")`
-answered `## BlockedRequests — shield-sample-webacl (last 24h) / Total: 6`, and the `SOURCE:` line
+`test-webacl-s3`. `get_waf_metrics(webacl_name="test-webacl-cwl", metric_name="BlockedRequests")`
+answered `## BlockedRequests — test-webacl-cwl (last 24h) / Total: 6`, and the `SOURCE:` line
 appended to that answer read:
 
-    SOURCE: response-id-on-page via CloudWatch metrics. That is the WebACL from the last get_waf_config
+    SOURCE: test-webacl-s3 via CloudWatch metrics. That is the WebACL from the last get_waf_config
     call, not from your question. If it is not the one you asked about, call get_waf_config(...) and run
     this again.
 
@@ -124,10 +124,10 @@ def test_the_declaration_comes_before_the_first_query():
 
 def test_a_metric_read_names_the_declared_webacl_not_the_session_one():
     """The measured defect, driven through the funnel the tools actually use."""
-    S.declare_query_subject("shield-sample-webacl")
+    S.declare_query_subject("test-webacl-cwl")
     record = _read()
-    assert record["webacl"] == "shield-sample-webacl", (
-        f"the read was about shield-sample-webacl and the record says {record['webacl']!r}")
+    assert record["webacl"] == "test-webacl-cwl", (
+        f"the read was about test-webacl-cwl and the record says {record['webacl']!r}")
     line = S.provenance_source_line(record)
     assert "session-acl" not in line, line
 
@@ -140,7 +140,7 @@ def test_the_line_does_not_tell_the_model_to_reload_a_context_the_tool_never_rea
 
     Asserted on the whole string rather than on the subject inside it, because the identifier was already
     right in the version that carried this instruction."""
-    S.declare_query_subject("shield-sample-webacl")
+    S.declare_query_subject("test-webacl-cwl")
     line = S.provenance_source_line(_read())
     assert "get_waf_config" not in line, line
     assert "not consulted" in line, "it has to say the session context did not decide this, not imply it"
@@ -156,7 +156,7 @@ def test_declaring_creates_no_record_so_a_tool_that_queries_nothing_stays_silent
     no `SOURCE:` line. A declaration that created the record eagerly would give it `SOURCE: acl via no
     engine`, a claim about a query that never ran, which is the state `test_query_provenance.py` already
     forbids for every config-only tool."""
-    S.declare_query_subject("shield-sample-webacl")
+    S.declare_query_subject("test-webacl-cwl")
     assert "provenance" not in S._state, "declaring a subject invented a record with no query behind it"
 
 
@@ -164,7 +164,7 @@ def test_the_pin_does_not_outlive_the_tool_call_that_set_it():
     """Same shape as the accumulation the hook's drain fixed: a subject that survives its tool call labels
     the next one's numbers. Driven as two tool calls, the second being a tool with no `webacl_name` at
     all, which is the eight that read the session context."""
-    S.declare_query_subject("shield-sample-webacl")
+    S.declare_query_subject("test-webacl-cwl")
     S.stash_query_provenance("t1")
 
     S.begin_tool_call("t2")          # the next tool call, which is what must not inherit
@@ -179,7 +179,7 @@ def test_a_tool_that_declared_and_then_refused_leaves_nothing_behind():
     five declares before validating its arguments, so `patrol_scan(webacl_name="x", start_time="")`
     declares and then returns an error with no query behind it. Nothing is stashed on that path, so a pop
     inside the guard would leave the subject standing."""
-    S.declare_query_subject("shield-sample-webacl")
+    S.declare_query_subject("test-webacl-cwl")
     assert S.stash_query_provenance("t1") == {}, "a refusal has no record to stash"
     S.begin_tool_call("t2")
     assert _read()["webacl"] == "session-acl", "the refused tool's subject labelled the next tool's read"
@@ -189,7 +189,7 @@ def test_the_fallback_drain_clears_the_pin_too():
     """`take_query_provenance` is the fallback for a hook that never fires, and in that world no `SOURCE:`
     line is appended at all, so the pin's only remaining reader is the next tool call's record. The chip
     would then name a WebACL that tool never asked about."""
-    S.declare_query_subject("shield-sample-webacl")
+    S.declare_query_subject("test-webacl-cwl")
     S.take_query_provenance("t1")
     S.begin_tool_call("t2")
     assert _read()["webacl"] == "session-acl", "the pin outlived the fallback drain"

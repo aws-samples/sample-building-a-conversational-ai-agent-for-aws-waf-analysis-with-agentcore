@@ -201,7 +201,7 @@ def test_a_table_predating_labels_is_accepted():
 
 
 def test_the_older_17_column_shape_in_the_verification_account():
-    """Two real tables in account 636696231660 declare exactly this. Kept alongside the
+    """Two real tables in the verification account declare exactly this. Kept alongside the
     pre-labels case because it is the shape actually present, and it does have `labels`,
     which is why on its own it could not have caught the required-tier mistake."""
     old = {"ja3fingerprint": None, "ja4fingerprint": None, "challengeresponse": None,

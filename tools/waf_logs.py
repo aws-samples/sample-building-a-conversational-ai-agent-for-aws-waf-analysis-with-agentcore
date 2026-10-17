@@ -287,7 +287,7 @@ TEMPLATES = {
     },
     # **Groups by the `awswaf:managed:token:id` label, WAF's own session identifier, not by any part of
     # the Cookie header.** The session id is what a botnet shares; the cookie value is not stable enough to
-    # stand in for it. Measured on a live replay, 2026-09-16: one session (`token:id 75d4ae85...`) spanned
+    # stand in for it. Measured on a live replay, 2026-09-16: one session (one `token:id`) spanned
     # 18 IPs and 253 requests but carried FIVE distinct full `aws-waf-token` values, because the token is
     # `<uuid>:<iv>:<ciphertext>` and each fresh acquisition re-encrypts the last two segments. So grouping
     # by the whole Cookie header (the first bug, ALB stickiness cookies) OR by the extracted token value

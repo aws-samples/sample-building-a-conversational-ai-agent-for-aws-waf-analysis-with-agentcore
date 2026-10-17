@@ -156,7 +156,7 @@ def _count_section(monkeypatch, log_type, rows=(), cwl=None, config=("CategoryHt
 
 def test_the_count_rules_read_nested_entries_once_per_request(monkeypatch):
     """A managed sub-rule's Count is nested in `rulegrouplist`. Measured 2026-10-16 on
-    `response-id-on-page`, 2026-10-01 to 10-16: 5 top-level COUNT entries against 2,142 nested, and
+    `test-webacl-s3`, 2026-10-01 to 10-16: 5 top-level COUNT entries against 2,142 nested, and
     the Athena query unnested only the top level, so TGT_TokenAbsent's Counts read "(none)"."""
     _, seen = _count_section(monkeypatch, "athena")
     athena = seen["athena"]
@@ -184,11 +184,11 @@ def _records(per_request):
 
 def test_cloudwatch_finds_a_top_level_count_rule_behind_a_nested_one(monkeypatch):
     """`ruleGroupList` comes before the top-level entries in the record, so a first-match parse
-    always took the nested one: over 24 hours on `shield-sample-webacl` the whole-group Count rule
-    `ptest-admin-group-count` read 0 for 5 requests, while TGT_TokenAbsent read 514 for 520."""
+    always took the nested one: over 24 hours on `test-webacl-cwl` the whole-group Count rule
+    `test-admin-group-count` read 0 for 5 requests, while TGT_TokenAbsent read 514 for 520."""
     section, _ = _count_section(monkeypatch, "cwl", cwl=_records(
-        [["TGT_TokenAbsent", "TGT_TokenAbsent", "ptest-admin-group-count"]] * 5 + [["TGT_TokenAbsent"]] * 2))
-    assert "TGT_TokenAbsent (7 hits)" in section and "ptest-admin-group-count (5 hits)" in section, section
+        [["TGT_TokenAbsent", "TGT_TokenAbsent", "test-admin-group-count"]] * 5 + [["TGT_TokenAbsent"]] * 2))
+    assert "TGT_TokenAbsent (7 hits)" in section and "test-admin-group-count (5 hits)" in section, section
 
 
 def test_cloudwatch_finds_a_middle_count_rule_the_configuration_names(monkeypatch):

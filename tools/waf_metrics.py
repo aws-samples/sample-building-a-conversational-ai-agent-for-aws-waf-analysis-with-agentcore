@@ -222,10 +222,10 @@ def summed_sub_rules(cw, webacl_name: str, rules: list, scope: str = "CLOUDFRONT
     **A managed sub-rule's metric names no instance.** `Rule=<sub-rule>`, `ManagedRuleGroupRule`
     and the label `*RuleMatch` metrics carry the sub-rule's name and nothing about which WebACL rule
     ran it, so a group deployed twice writes both instances into one series. Measured 2026-10-16 on
-    `shield-sample-webacl`, which runs AWSManagedRulesBotControlRuleSet at priorities 10 and 11:
+    `test-webacl-cwl`, which runs AWSManagedRulesBotControlRuleSet at priorities 10 and 11:
     over 13 days TGT_TokenAbsent read 3,436 against 2,230 logged requests, CategoryHttpLibrary 65
     against 35, SignalNonBrowserUserAgent 6 against 3, while the label request metrics matched the
-    logs exactly. `response-id-on-page` runs it once, and all three read 440 for 2026-10-15.
+    logs exactly. `test-webacl-s3` runs it once, and all three read 440 for 2026-10-15.
 
     A sub-rule is the group's when the configuration overrides it there, or when CloudWatch has a
     `ManagedRuleGroupRule` series for it under that group, which covers sub-rules nothing overrides
@@ -306,7 +306,7 @@ def resolve_rule_dimension(rule_name: str, rules: list):
     the field exists so that adding one is a decision instead of an oversight.
 
     **The WebACL configuration is not a complete list of the names that publish a `Rule`
-    dimension, and that is measured rather than assumed.** On `shield-sample-webacl`,
+    dimension, and that is measured rather than assumed.** On `test-webacl-cwl`,
     `TGT_TokenAbsent` publishes `CountedRequests` 33,932 for 2026-09-08 while appearing in no
     `Rules[].Name` and in no `RuleActionOverrides`: a managed rule group publishes metrics for its
     internal rules, and only the overridden ones are written into the config. A `SEARCH` over
@@ -398,10 +398,10 @@ def managed_sub_rule_warnings(webacl_name: str, sub_rules: dict, start_epoch: in
     metrics say matched in a window where the logs hold nothing for it.
 
     **Read under `ManagedRuleGroup`+`ManagedRuleGroupRule`, never `Rule`**: measured 2026-10-15 on
-    `response-id-on-page` for 2026-09-08 03:00-05:00, `Rule=SQLi_QUERYARGUMENTS` was empty while those
+    `test-webacl-s3` for 2026-09-08 03:00-05:00, `Rule=SQLi_QUERYARGUMENTS` was empty while those
     two dimensions held 122. **Every action's metric is added**, because a sub-rule's matches are under
     the metric of the action it ends with, which depends on how each instance of its group runs it, and
-    an instance cannot be told from the dimensions. Measured on `shield-sample-webacl`:
+    an instance cannot be told from the dimensions. Measured on `test-webacl-cwl`:
     `GenericLFI_URIPATH` in a Block-mode group, 6 BlockedRequests; `CategoryHttpLibrary` overridden to
     Count, 75 CountedRequests, the same as under `Rule=`; and `AdminProtection_URIPATH` in a group in
     whole-group Count, 2026-10-15 12:00 UTC, 5 BlockedRequests and no CountedRequests, under the action it
@@ -631,7 +631,7 @@ def log_path_warning(webacl_name: str, action: str | None, start_epoch: int, end
     | = 0 | > 0 | one line. Metrics lag or a dimension mismatch, not a verdict |
 
     **The control alone would flag every quiet hour, which is measured rather than argued.** 2026-09-08
-    12:00 to 13:00 UTC on `shield-sample-webacl`: the narrow query for one IP returned 0 rows, the
+    12:00 to 13:00 UTC on `test-webacl-cwl`: the narrow query for one IP returned 0 rows, the
     unfiltered control returned 0 rows, and the WebACL `BlockedRequests` metric returned no datapoints. The
     hour was genuinely quiet. The hour before it: metric sum 1, log query 1 row, both agree. So a zero
     control is not evidence of a broken path, and requiring both witnesses is what keeps this check off

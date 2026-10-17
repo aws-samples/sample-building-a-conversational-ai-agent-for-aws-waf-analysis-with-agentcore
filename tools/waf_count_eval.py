@@ -311,7 +311,7 @@ def _count_rule_matches(rule_name: str, start_epoch: int, end_epoch: int) -> int
     from tools.waf_query import log_query_error
     # Adjacent keys on purpose. WAF writes a rule entry as {"ruleId":..,"action":..,
     # "overriddenAction":..}, and the two keys searched separately pair one entry's ruleId with another
-    # entry's COUNT: measured 2026-10-16 on shield-sample-webacl over 14 days, LFI_URIPATH, which only
+    # entry's COUNT: measured 2026-10-16 on test-webacl-cwl over 14 days, LFI_URIPATH, which only
     # blocks, matched 34 records that way and none in this form.
     cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
            " | stats count(*) as cnt")
@@ -348,7 +348,7 @@ def _count_match_details(rule_name: str, start_epoch: int, end_epoch: int) -> tu
     The details are on the Count entry itself, top-level or inside its group, and
     `terminatingRuleMatchDetails` stays empty. WAF fills them for SQLi and XSS statements, with the
     matched tokens, and for some others with the location only. Measured 2026-09-08 on
-    `response-id-on-page`: 160 of 160 `CrossSiteScripting_QUERYARGUMENTS` Count records carried them.
+    `test-webacl-s3`: 160 of 160 `CrossSiteScripting_QUERYARGUMENTS` Count records carried them.
     Counted once per request, because a group deployed twice logs its sub-rule's entry twice.
 
     CloudWatch has no array accessor that holds up, so it reads up to `_MATCH_SAMPLE` raw records and

@@ -8,8 +8,8 @@ a guard makes it speak where it cannot know, and this check's only output is a s
 path, so a false one is worse than none.
 
 The mismatch guard has its own case because its failure is measured rather than argued:
-`response-id-on-page`'s metric was 132 on 2026-09-08 while a control query for that WebACL inside
-`shield-sample-webacl`'s log group returned 0, so the pair fires falsely without it.
+`test-webacl-s3`'s metric was 132 on 2026-09-08 while a control query for that WebACL inside
+`test-webacl-cwl`'s log group returned 0, so the pair fires falsely without it.
 """
 
 import sys
