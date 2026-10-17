@@ -399,28 +399,35 @@ def managed_sub_rule_warnings(webacl_name: str, sub_rules: dict, start_epoch: in
 
     **Read under `ManagedRuleGroup`+`ManagedRuleGroupRule`, never `Rule`**: measured 2026-10-15 on
     `response-id-on-page` for 2026-09-08 03:00-05:00, `Rule=SQLi_QUERYARGUMENTS` was empty while those
-    two dimensions held 122. **BlockedRequests and CountedRequests are added**, because which one holds
-    a sub-rule's matches depends on how each instance of its group runs it, and an instance cannot be
-    told from the dimensions. Measured on `shield-sample-webacl`: `GenericLFI_URIPATH` in a Block-mode
-    group, 6 BlockedRequests; `CategoryHttpLibrary` overridden to Count, 75 CountedRequests, the same
-    as under `Rule=`; and `AdminProtection_URIPATH` in a group in whole-group Count, 2026-10-15 12:00
-    UTC, 5 BlockedRequests and no CountedRequests, under the action it logs. A group deployed twice
-    sums both instances, as the log side does. One call for every sub-rule.
+    two dimensions held 122. **Every action's metric is added**, because a sub-rule's matches are under
+    the metric of the action it ends with, which depends on how each instance of its group runs it, and
+    an instance cannot be told from the dimensions. Measured on `shield-sample-webacl`:
+    `GenericLFI_URIPATH` in a Block-mode group, 6 BlockedRequests; `CategoryHttpLibrary` overridden to
+    Count, 75 CountedRequests, the same as under `Rule=`; and `AdminProtection_URIPATH` in a group in
+    whole-group Count, 2026-10-15 12:00 UTC, 5 BlockedRequests and no CountedRequests, under the action it
+    logs. On the account's WebACL `webACL` over 455 days, `TGT_TokenAbsent` and
+    `TGT_VolumetricIpTokenAbsent`, Challenge by their own action, held 375 and 24 ChallengeRequests and
+    nothing else. A group deployed twice sums both instances, as the log side does. One call for every
+    sub-rule: 60 of them are 240 series, under the 500 a call takes.
 
     The group names come from the configuration read; the sub-rule names are every version's, so one
     the deployed version lacks reads 0, and 0 says nothing here.
     """
     names = list(sub_rules)
+    metrics = ("BlockedRequests", "CountedRequests", "ChallengeRequests", "CaptchaRequests")
     series = [(metric, [{"Name": "ManagedRuleGroup", "Value": sub_rules[n]}, {"Name": "ManagedRuleGroupRule", "Value": n}])
-              for n in names for metric in ("BlockedRequests", "CountedRequests")]
+              for n in names for metric in metrics]
     if not series:
         return []
     sums, reason = _metric_sums(webacl_name, series, start_epoch, end_epoch)
+    if sums is None:
+        print(f"[waf_metrics] no metric cross-check for {len(names)} managed sub-rules: {reason}",
+              file=sys.stderr, flush=True)
+        return []
     out = []
     for i, name in enumerate(names):
-        count = None if sums is None else sums[2 * i] + sums[2 * i + 1]
-        warning = _missed_data_sentence(count, reason, f"rule '{name}'", webacl_name,
-                                        "BlockedRequests + CountedRequests")
+        warning = _missed_data_sentence(sum(sums[len(metrics) * i:len(metrics) * (i + 1)]), "", f"rule '{name}'",
+                                        webacl_name, "matched requests")
         if warning:
             out.append(warning)
     return out

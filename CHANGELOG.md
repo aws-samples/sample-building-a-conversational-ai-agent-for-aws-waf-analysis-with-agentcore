@@ -67,9 +67,9 @@ are read now. The sub-rules are every name any version of these groups has used,
 and rename them: the test WebACL pins SQLiRuleSet Version_2.3, whose three `SQLiExtendedPatterns`
 rules for the body, URI path and headers the default version lacks. The ranking is one count query
 per engine rather than one per detector. A window with no match is cross-checked against each
-sub-rule's own metric in one call, the group's BlockedRequests and CountedRequests added together:
-which of the two holds the matches depends on how each instance runs the sub-rule, and a group in
-whole-group Count puts them under BlockedRequests. A sub-rule is in Count mode only when every
+sub-rule's own metric in one call, the group's Blocked, Counted, Challenge and CAPTCHA requests
+added together: which of them holds the matches depends on how each instance runs the sub-rule, and
+a group in whole-group Count puts them under BlockedRequests. A sub-rule is in Count mode only when every
 instance counts it, and so is `SQLi_QUERYSTRING_COUNT`, whose own action is Count. For a Count-mode
 focus rule, the blocked count now says another rule did the blocking.
 

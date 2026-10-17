@@ -172,27 +172,49 @@ def test_a_quiet_window_cross_checks_a_sub_rule_on_its_group_whatever_its_mode(m
     assert by_rule["SQLi_QUERYARGUMENTS"] == {"group": SQLI}, warned
 
 
-def test_the_group_metric_adds_blocked_and_counted_in_one_call(monkeypatch):
+VALUES = {"SQLi_BODY": {"BlockedRequests": 5, "CountedRequests": 2},
+          "SQLi_COOKIE": {"ChallengeRequests": 3}, "SQLi_URIPATH": {"CaptchaRequests": 4}}
+
+
+def _group_metric(monkeypatch, values, fail=False):
     from tools import waf_metrics as M
     calls = []
 
     class CW:
         def get_metric_data(self, MetricDataQueries, **kw):
             calls.append(MetricDataQueries)
-            return {"MetricDataResults": [{"Id": q["Id"], "Values": [{"BlockedRequests": 5, "CountedRequests": 2}[
-                q["MetricStat"]["Metric"]["MetricName"]] if q["MetricStat"]["Metric"]["Dimensions"][2]["Value"] == "SQLi_BODY"
-                else 0]} for q in MetricDataQueries]}
+            if fail:
+                raise RuntimeError("ThrottlingException")
+            return {"MetricDataResults": [{"Id": q["Id"], "Values": [values.get(
+                q["MetricStat"]["Metric"]["Dimensions"][2]["Value"], {}).get(q["MetricStat"]["Metric"]["MetricName"], 0)]}
+                for q in MetricDataQueries]}
     monkeypatch.setattr(M, "get_client", lambda *a, **k: CW())
     monkeypatch.setattr(M, "get_scope", lambda: "CLOUDFRONT")
     monkeypatch.setattr(M, "resolve_region", lambda s: "us-east-1")
     import time
     start = int(time.time()) // 3600 * 3600 - 7200
-    out = M.managed_sub_rule_warnings("acl", {"SQLi_BODY": SQLI, "SQLi_COOKIE": SQLI}, start, start + 3600)
-    assert len(calls) == 1 and len(calls[0]) == 4, calls
+    subs = dict.fromkeys(["SQLi_BODY", "SQLi_COOKIE", "SQLi_URIPATH", "SQLi_QUERYARGUMENTS"], SQLI)
+    return M.managed_sub_rule_warnings("acl", subs, start, start + 3600), calls
+
+
+def test_the_group_metric_adds_every_action_in_one_call(monkeypatch):
+    """A sub-rule's matches are under the metric of the action it ends with. Measured on the account's
+    WebACL `webACL` over 455 days: `TGT_TokenAbsent` and `TGT_VolumetricIpTokenAbsent`, both Challenge
+    by their own action, 375 and 24 ChallengeRequests on the group's dimensions and no Blocked or
+    Counted. So a sub-rule overridden to Challenge or CAPTCHA would read 0 from those two."""
+    out, calls = _group_metric(monkeypatch, VALUES)
+    assert len(calls) == 1 and len(calls[0]) == 16, [len(c) for c in calls]
     for q in calls[0]:
         dims = q["MetricStat"]["Metric"]["Dimensions"]
         assert {"Name": "ManagedRuleGroup", "Value": SQLI} in dims and not any(d["Name"] == "Rule" for d in dims), dims
-    assert len(out) == 1 and "7 BlockedRequests + CountedRequests for rule 'SQLi_BODY'" in out[0], out
+    text = "\n".join(out)
+    assert len(out) == 3 and "7 matched requests for rule 'SQLi_BODY'" in text, out
+    assert "3 matched requests for rule 'SQLi_COOKIE'" in text and "4 matched requests for rule 'SQLi_URIPATH'" in text, out
+
+
+def test_a_failed_group_metric_says_nothing_and_says_why_once(monkeypatch, capsys):
+    out, _ = _group_metric(monkeypatch, VALUES, fail=True)
+    assert out == [] and capsys.readouterr().err.count("ThrottlingException") == 1
 
 
 def test_a_custom_count_rule_is_still_read_as_counted(monkeypatch):

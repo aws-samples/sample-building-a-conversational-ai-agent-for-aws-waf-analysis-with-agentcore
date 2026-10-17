@@ -68,17 +68,26 @@ CASES = [
      [f"{T}::test_a_quiet_window_cross_checks_a_sub_rule_on_its_group_whatever_its_mode"]),
 
     ("the group metric reading BlockedRequests only, which a Count override leaves empty",
-     [(M, '              for n in names for metric in ("BlockedRequests", "CountedRequests")]',
-       '              for n in names for metric in ("BlockedRequests",)]'),
-      (M, "        count = None if sums is None else sums[2 * i] + sums[2 * i + 1]",
-       "        count = None if sums is None else sums[i]")],
-     [f"{T}::test_the_group_metric_adds_blocked_and_counted_in_one_call"]),
+     [(M, '    metrics = ("BlockedRequests", "CountedRequests", "ChallengeRequests", "CaptchaRequests")',
+       '    metrics = ("BlockedRequests",)')],
+     [f"{T}::test_the_group_metric_adds_every_action_in_one_call"]),
+
+    ("Challenge and CAPTCHA left out, which an override to either leaves at 0",
+     [(M, '    metrics = ("BlockedRequests", "CountedRequests", "ChallengeRequests", "CaptchaRequests")',
+       '    metrics = ("BlockedRequests", "CountedRequests")')],
+     [f"{T}::test_the_group_metric_adds_every_action_in_one_call"]),
 
     ("the group metric read one call per series",
-     [(M, "    sums, reason = _metric_sums(webacl_name, series, start_epoch, end_epoch)\n    out = []",
-       "    sums = []\n    for one in series:\n        got, reason = _metric_sums(webacl_name, [one], start_epoch, end_epoch)\n"
-       "        sums = None if got is None or sums is None else sums + got\n    out = []")],
-     [f"{T}::test_the_group_metric_adds_blocked_and_counted_in_one_call"]),
+     [(M, "    sums, reason = _metric_sums(webacl_name, series, start_epoch, end_epoch)\n    if sums is None:",
+       "    sums, reason = [], \"\"\n    for one in series:\n        got, why = _metric_sums(webacl_name, [one], start_epoch, end_epoch)\n"
+       "        sums, reason = (None, why) if got is None or sums is None else (sums + got, reason)\n    if sums is None:")],
+     [f"{T}::test_the_group_metric_adds_every_action_in_one_call"]),
+
+    ("a failed read said once per sub-rule",
+     [(M, '        print(f"[waf_metrics] no metric cross-check for {len(names)} managed sub-rules: {reason}",\n'
+          '              file=sys.stderr, flush=True)\n        return []',
+       '        return [w for n in names for w in [_missed_data_sentence(None, reason, n, webacl_name, "")] if w]')],
+     [f"{T}::test_a_failed_group_metric_says_nothing_and_says_why_once"]),
 
     ("the batched count's blocks counting every match",
      [(A, "sum(if(action = 'BLOCK' and {pred}, 1, 0)) as b{i}", "sum(if({pred}, 1, 0)) as b{i}")],
