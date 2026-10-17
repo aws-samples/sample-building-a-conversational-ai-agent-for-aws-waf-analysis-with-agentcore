@@ -9,7 +9,7 @@ report as raw HTML all along, through `set_report_summary`, which no call-graph 
 The pins below stay, since they still say where log rows travel.
 
 **The item was written as "html.escape the patrol HTML interpolations", and looking for the live XSS
-did not find one.** `waf_review_deep._render_html` escapes every line. `_render_patrol_html_v2`
+did not find one.** `_render_patrol_html_v2`
 interpolates counts, localized labels, severities and rule names. So an escaping pass would be a
 mechanism in front of a signal, and it would rot the moment someone adds a URI column to the patrol
 report, which is the natural next enrichment.
@@ -62,7 +62,7 @@ TOOLS = pathlib.Path(__file__).resolve().parents[1] / "tools"
 # catches both shapes.
 HTML_MARKERS = ("<div", "<html", "<td", "<span", "<!DOCTYPE", "<tr", "<p>")
 # Kept for the floor below: these must still exist, or a rename would empty the search space.
-RENDERERS = {"_render_patrol_html_v2", "_render_html", "_render_investigation"}
+RENDERERS = {"_render_patrol_html_v2", "_render_investigation"}
 # Every way a module reaches log rows, including the raw path `report.py` uses.
 LOG_CALLS = {"query_logs", "_safe_query", "_run_query", "_run_q", "_run_log_query",
              "aggregate_logs", "_poll_log_query"}
@@ -177,28 +177,6 @@ def test_a_renderer_does_not_query_logs_itself(renderer):
         if fn.name == renderer:
             assert not _calls_in_own_scope(fn, LOG_CALLS), \
                 f"{path.name}:{renderer} queries logs itself"
-
-
-def test_review_deep_escapes_what_it_renders():
-    """The one renderer that DOES take free text escapes it, and that is worth pinning rather than
-    assuming, because it is the precedent the other two would copy if they ever need to."""
-    src = (TOOLS / "waf_review_deep.py").read_text()
-    # **The html MODULE's escape, not any function called escape.** The first version fell back to
-    # `"escape(" in src`, which would pass on a local helper of that name doing nothing, and it is
-    # the fallback that was actually matching: this module imports html as `html_mod`.
-    assert "html_mod.escape(" in src or "html.escape(" in src, \
-        "waf_review_deep no longer escapes the markdown it renders with the html module"
-    # **Every append of the source line, not a count of escape calls.** A count bound tolerates
-    # losing one: dropping escaping from the plain-line branch left the other calls in place and a
-    # `>= 4` assertion passed. Each markdown case is its own append, so the property is per append.
-    unescaped = [ln.strip() for ln in src.splitlines()
-                 if "html_lines.append(" in ln and re.search(r"\bline\b", ln)
-                 and "escape(" not in ln]
-    assert not unescaped, (
-        f"these render the source line into HTML without escaping it: {unescaped}")
-
-
-# --- the declared exemption's substance, asserted rather than argued -----------
 
 
 def _generate_weekly_report():

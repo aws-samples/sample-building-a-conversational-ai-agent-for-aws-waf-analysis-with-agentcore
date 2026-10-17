@@ -18,9 +18,6 @@ def search_waf_knowledge(query: str) -> str:
     practice for rate-based rules?", "How should I configure Bot Control for a
     native app?").
 
-    Do NOT use during review_waf_rules_deep workflow — reference documents are
-    already provided in that tool's output.
-
     Args:
         query: The question or topic to search for.
     """

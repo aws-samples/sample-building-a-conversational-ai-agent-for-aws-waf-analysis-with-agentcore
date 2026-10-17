@@ -31,7 +31,6 @@ USER_FACING = {
     "patrol_scan": "security patrol",
     "detect_bypass": "crawlers bypassing",
     "evaluate_count_rules": "COUNT rules",
-    "review_waf_rules_deep": "deep review",
     "investigate_block_fp": "Allow Ratio",
     "get_waf_metrics": "spiked 5x",
     "analyze_ip": "Profiles the IP across all dimensions",
@@ -50,7 +49,7 @@ USER_FACING = {
 PRIMITIVE = {"get_waf_config", "list_webacls"}
 
 # Orchestration: these move data between turns or into a report, never a standalone answer.
-INTERNAL = {"ask_user", "record_finding", "set_report_summary", "finalize_review_report"}
+INTERNAL = {"ask_user", "record_finding", "set_report_summary"}
 
 
 def _registered_tool_names() -> set:

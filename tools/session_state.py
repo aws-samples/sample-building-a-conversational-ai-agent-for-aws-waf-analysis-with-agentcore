@@ -245,15 +245,14 @@ def declare_query_subject(name: str | None):
     number to another and then told the model to discard a correct answer. That is the misattribution the
     record exists to remove, produced by the record itself.
 
-    Six `@tool` entry points take a `webacl_name` and use it as the metric dimension:
-    `get_waf_metrics`, `get_waf_overview`, `patrol_scan`, `generate_weekly_report`,
-    `review_waf_rules_deep` and `get_waf_config`. Only the last writes it to session state, which is why
-    only the last was right by construction. The other five declare it here.
-    `test_provenance_subject.py` requires every tool taking that parameter to do one or the other, so a
-    seventh cannot arrive quietly.
+    Five `@tool` entry points take a `webacl_name` and use it as the metric dimension:
+    `get_waf_metrics`, `get_waf_overview`, `patrol_scan`, `generate_weekly_report` and `get_waf_config`.
+    Only the last writes it to session state, which is why only the last was right by construction. The
+    other four declare it here. `test_provenance_subject.py` requires every tool taking that parameter to
+    do one or the other, so a sixth cannot arrive quietly.
 
-    **Declaring creates no record**, which is what keeps a config-only tool silent. `review_waf_rules_deep`
-    reads wafv2 and queries nothing, so nothing merges this in and no `SOURCE:` line is appended. The pin
+    **Declaring creates no record**, which is what keeps a tool that queries nothing silent: nothing
+    merges this in and no `SOURCE:` line is appended. The pin
     is popped in `stash_query_provenance`, on every tool call whether or not a query ran, so a tool that
     declared and then refused cannot leave its subject behind for the next one.
 

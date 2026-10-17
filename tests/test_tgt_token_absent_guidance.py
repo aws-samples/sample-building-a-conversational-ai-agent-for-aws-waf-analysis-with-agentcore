@@ -9,7 +9,7 @@ Its default action is Count. Measured 2026-10-15 two ways: `describe-managed-rul
 forbids a no-op, and the deep review rated that no-op Critical. The harmful direction is Block:
 without the SDK or a token-issuing rule in front, it matches every request that has no token.
 
-`references/` is read into the deep-review prompt; `kb-docs/` is what the agent retrieves.
+`kb-docs/` is what the agent retrieves.
 """
 
 import pathlib
@@ -22,7 +22,7 @@ HARMFUL_COUNT = re.compile(r"(NEVER|Do not|Don't|Critical)[^.\n]*(override|overr
 
 
 def _lines():
-    for folder in ("references", "kb-docs"):
+    for folder in ("kb-docs",):
         for path in sorted((ROOT / folder).glob("*.md")):
             for n, line in enumerate(path.read_text().splitlines(), 1):
                 if "TGT_TokenAbsent" in line:
@@ -38,5 +38,4 @@ def test_no_guide_treats_a_count_override_of_token_absent_as_harmful():
 
 
 def test_the_guides_name_block_as_the_harmful_direction():
-    assert any("Block" in line for where, line in _lines() if where.startswith("references/"))
     assert any("Block" in line for where, line in _lines() if where.startswith("kb-docs/"))

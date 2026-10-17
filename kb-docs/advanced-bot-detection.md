@@ -2,8 +2,8 @@
 
 ## When to Recommend Upgrading to Targeted Bot Control
 
-Bot Control Common level detects bots that self-identify via User-Agent. It cannot detect:
-- Automated tools using standard browser User-Agents
+Bot Control Common level identifies bots from static request data: the User-Agent, the source IP and automated-browser indicators (see bot-control.md). It cannot detect:
+- Automated tools that send a standard browser User-Agent from an address that isn't a known bot data center, with no automated-browser indicator
 - Headless browsers with engine-level stealth modifications
 - Coordinated bot farms using real browser instances with human-like behavior
 
@@ -15,10 +15,12 @@ Do NOT recommend Targeted solely because `signal:known_bot_data_center` traffic 
 
 ## TGT_ML_ CoordinatedActivity: When to Recommend Block
 
-Default actions:
-- `TGT_ML_CoordinatedActivityLow` → Count
+Default actions from Version_3.0 through 7.0:
+- `TGT_ML_CoordinatedActivityLow` → Challenge
 - `TGT_ML_CoordinatedActivityMedium` → CAPTCHA
 - `TGT_ML_CoordinatedActivityHigh` → CAPTCHA
+
+Version_2.0 sets all three to Count. Version_1.0, the default for an unpinned group, has only Medium and High, both at Count. Read the version before calling an action a default or an override.
 
 Recommending Block on High requires sufficient evidence that CAPTCHA is ineffective (being solved by automation).
 
@@ -57,7 +59,7 @@ Before recommending Block:
 If evidence supports Block:
 - Recommend Block on `TGT_ML_CoordinatedActivityHigh` only
 - Keep Medium at CAPTCHA (lower confidence, higher FP risk)
-- Keep Low at Count (monitoring only)
+- Keep Low at its default Challenge
 - Always recommend monitoring for 24-48 hours after change
 - Always ask user: "Do you have a rollback plan if legitimate users are affected?"
 
@@ -88,11 +90,11 @@ When Agent finds high-volume traffic with no bot labels and no ML signals → re
 
 When analyzing bypass incidents:
 1. Check if Bot Control is Common or Targeted level
-2. If Common → check for `signal:known_bot_data_center` or `signal:non_browser_user_agent` on suspicious IPs. If absent → bot is using browser UA from non-data-center IP → Common cannot detect, recommend Targeted
+2. If Common → check for `signal:known_bot_data_center`, `signal:non_browser_user_agent` or `signal:automated_browser` on suspicious IPs. If absent → bot is using browser UA from non-data-center IP → Common cannot detect, recommend Targeted
 3. If Targeted → check for `coordinated_activity` labels. If present but traffic continues → CAPTCHA being solved → recommend Block escalation (with evidence framework above)
 4. If Targeted with no ML labels on suspicious traffic → truly sophisticated single-IP bot → recommend application-layer defenses
 
 When reviewing rules:
-1. `TGT_ML_CoordinatedActivityHigh` at default CAPTCHA → not a misconfiguration (default is correct)
+1. `TGT_ML_CoordinatedActivityHigh` at CAPTCHA on Version_3.0 or later → the default, not a misconfiguration. At Count on an unpinned group, Version_1.0 or 2.0 → that version's default, not an override; recommend pinning Version_7.0
 2. `TGT_ML_CoordinatedActivityHigh` overridden to Count → Awareness finding (reduces protection)
 3. `TGT_ML_CoordinatedActivityHigh` overridden to Block → verify user has monitoring in place

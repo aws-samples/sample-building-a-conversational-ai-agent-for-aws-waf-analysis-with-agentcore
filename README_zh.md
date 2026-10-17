@@ -22,10 +22,11 @@
 
 ![WAF Analyst 截图](docs/screenshot.png)
 
-- **主动安全检查** — 扫描漏杀、评估 COUNT 规则、审计 WAF 配置
+- **主动安全检查** — 扫描漏杀、评估 COUNT 规则
 - **事件调查** — 误杀分析、攻击源定位、IP 行为画像
 - **漏杀检测** — 发现绕过 WAF 的爬虫、Bot 和 DDoS 流量
-- **报告** — 安全巡检、周报摘要、深度规则审查（均为可下载 HTML）
+- **报告** — 安全巡检、周报摘要（均为可下载 HTML）
+- **规则问题** — 解释某条规则做什么、为什么匹配或没匹配；要对整个 WebACL 的规则做全面审计，请用你的 coding agent 运行 [AWS WAF Rules Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer)
 - **最佳实践指导** — 基于 AWS 文档的 WAF 配置建议
 - **隐私保护** — 展示被检查的请求内容时，对密钥类字段（cookie、认证/会话 token、API key）打码；不会显示或判定这些密钥内部的攻击内容。见[数据隐私](docs/data-privacy_zh.md)。
 
@@ -183,7 +184,6 @@ VITE_BRAND_NAME=我的公司 WAF Analyst
 │   ├── waf_block_fp.py   # 误杀排查 + 主动扫描
 │   ├── waf_bypass.py     # 漏杀检测（扫描 + 流量异常 + IP 分析）
 │   ├── waf_challenge_check.py # Challenge/CAPTCHA 兼容性检查
-│   ├── waf_review_deep.py # 全面规则审计管线
 │   ├── waf_patrol.py     # 安全巡检（确定性 HTML 报告）
 │   ├── report.py         # 周报摘要 HTML 生成
 │   ├── waf_knowledge.py  # Bedrock Knowledge Base 搜索

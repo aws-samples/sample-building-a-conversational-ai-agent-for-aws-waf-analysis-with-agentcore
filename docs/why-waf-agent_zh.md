@@ -1,6 +1,6 @@
 # 为什么需要 WAF Analyst？
 
-截至 2026 年 10 月，把 AI agent 接到 AWS WAF 日志上有三条路，深浅不同。DevOps Agent 自己能拿到数据，但没有 WAF 方法。开源的 `aws-waf-log-investigation` skill（[aws/tools-for-devops-agent#142](https://github.com/aws/tools-for-devops-agent/pull/142)）把方法教给 DevOps Agent，覆盖调查类场景。WAF Analyst 最深，有专用工具和直连数据，还覆盖 skill 不做的报告和规则评审。三者在同一组留出题上的实测对比，见下文「原生 / skill / WAF Analyst」。
+截至 2026 年 10 月，把 AI agent 接到 AWS WAF 日志上有三条路，深浅不同。DevOps Agent 自己能拿到数据，但没有 WAF 方法。开源的 `aws-waf-log-investigation` skill（[aws/tools-for-devops-agent#142](https://github.com/aws/tools-for-devops-agent/pull/142)）把方法教给 DevOps Agent，覆盖调查类场景。WAF Analyst 最深，有专用工具和直连数据，还覆盖 skill 不做的报告。三者在同一组留出题上的实测对比，见下文「原生 / skill / WAF Analyst」。
 
 ## 能力差距分析
 
@@ -23,7 +23,6 @@ DevOps Agent 一列拆成两列：`原生`是不带 skill 的 agent，`+Skill`�
 | DDoS 事件调查 | ❌ | △ | ✓ | ❌ | ◎ |
 | REGIONAL WebACL（ALB、API Gateway）调查 | ❌ | △ | ✓ | ❌ | ❌ |
 | 每周安全巡检报告 | ❌ | ❌ | ❌ | ❌ | ◎ |
-| WAF 规则深度评审 | ❌ | ❌ | ❌ | ❌ | ◎ |
 | 面向管理层的 周报摘要 | ❌ | ❌ | ❌ | ❌ | ◎ |
 | WAF 最佳实践知识库 | ❌ | ❌ | ❌ | ❌ | ◎ |
 
@@ -42,7 +41,7 @@ DevOps Agent 一列拆成两列：`原生`是不带 skill 的 agent，`+Skill`�
 - **定位**：生产事件响应——部署失败、基础设施问题、运维指标
 - **原生**：能读 WebACL 配置、CloudWatch 指标和 WAF 日志，查询也基本正确。缺的是 WAF 方法：会把被拦的正常用户算进攻击里，漏掉被放行的绕过流量，只看攻击那段时间就决定 COUNT 转 BLOCK。
 - **加上 skill（#142）**：`aws-waf-log-investigation` skill 补上方法，agent 就能处理上面这些调查。见下文「原生 / skill / WAF Analyst」。
-- **加了 skill 仍缺**：巡检、周报、规则评审这些报告，以及 WAF Analyst 专用工具的分析深度。
+- **加了 skill 仍缺**：巡检、周报这些报告，以及 WAF Analyst 专用工具的分析深度。
 
 ### AWS Security Incident Response
 
@@ -56,11 +55,11 @@ DevOps Agent 一列拆成两列：`原生`是不带 skill 的 agent，`+Skill`�
 
 **DevOps Agent 原生。** 数据拿得到，查询也基本正确，但没有 WAF 方法就会把结论下错：把被拦的正常用户算进攻击里，漏掉被放行的绕过流量，只看攻击那段时间就决定 COUNT 转 BLOCK。还有个 IAM 的坑：DevOps Agent 的会话策略砍掉了 `s3:PutObject`，拿 Athena 查 S3 里的 WAF 日志会失败，必须给它配一个用 managed query results 的 workgroup。
 
-**DevOps Agent 加 skill（#142）。** skill 把方法带到这个通用 agent 上：该问什么、怎么读答案、结论能下到哪。覆盖误报、注入和绕过、COUNT→BLOCK、DDoS、IP 画像，Athena 和 CloudWatch Logs 都支持，CloudFront 和 REGIONAL 两种 WebACL 也都支持。客户用自己已有的 DevOps Agent 就能跑，不用额外部署，在没有 AgentCore 权限的 CDN/WAF 账号里也能用。它不做巡检、周报、规则评审这些报告。
+**DevOps Agent 加 skill（#142）。** skill 把方法带到这个通用 agent 上：该问什么、怎么读答案、结论能下到哪。覆盖误报、注入和绕过、COUNT→BLOCK、DDoS、IP 画像，Athena 和 CloudWatch Logs 都支持，CloudFront 和 REGIONAL 两种 WebACL 也都支持。客户用自己已有的 DevOps Agent 就能跑，不用额外部署，在没有 AgentCore 权限的 CDN/WAF 账号里也能用。它不做巡检、周报这些报告。
 
 **WAF Analyst。** 专用工具（`analyze_ip`、`lookup_ja4`、`detect_bypass`、`check_challenge_compatibility`、`get_waf_overview`）、直连数据、验证过的方法，让它在能跑的地方分析最深：跨 IP 读 JA4 指纹、发现一个 token 被多个 IP 重放、检查 challenge 兼容性、把自定义限速规则和 Anti-DDoS AMR 的事件检测区分开。它也守在证据边界内，日志证不了意图时就说证不了，不猜。它的限制在于能跑在哪、怎么部署，不在分析质量：只支持 CloudFront scope，不支持 REGIONAL，而且要作为独立 agent 部署在有 AgentCore 权限的账号里。
 
-**怎么选。** CloudFront WebACL 上要最深的分析、或者要巡检/周报/规则评审报告，用 WAF Analyst。想在已有的 DevOps Agent 里做 WAF 调查、或者 WebACL 是 REGIONAL、或者账号没有 AgentCore 权限，用 skill。光靠原生 agent 不够做 WAF 的活。
+**怎么选。** CloudFront WebACL 上要最深的分析、或者要巡检/周报报告，用 WAF Analyst。想在已有的 DevOps Agent 里做 WAF 调查、或者 WebACL 是 REGIONAL、或者账号没有 AgentCore 权限，用 skill。光靠原生 agent 不够做 WAF 的活。
 
 ## WAF Analyst 的核心能力
 
@@ -79,7 +78,6 @@ DevOps Agent 一列拆成两列：`原生`是不带 skill 的 agent，`+Skill`�
 |---------|------|------|
 | 安全巡检报告 | 运维工程师 | 7 天全量扫描、异常检测、15 分钟粒度图表、攻击源 Top 5 |
 | 周报摘要 | 管理层 | 拦截量、趋势对比、Bot 分类、国家分布、投资回报可视化 |
-| 规则评审报告 | 安全架构师 | 10 项确定性检查 + LLM 深度分析、规则交互图、修复建议 |
 
 ### 3. 领域知识
 

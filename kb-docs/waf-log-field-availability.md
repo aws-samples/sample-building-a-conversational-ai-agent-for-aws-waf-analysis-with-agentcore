@@ -9,7 +9,7 @@ missing field as "no data" or as a tool failure.
 
 These appear on every record, on both backends:
 
-- `action` (ALLOW / BLOCK / COUNT / CHALLENGE / CAPTCHA)
+- `action` (ALLOW / BLOCK / CHALLENGE / CAPTCHA), the terminating action. COUNT never appears here; Count matches are in `nonTerminatingMatchingRules`
 - `httpRequest.clientIp`, `httpRequest.uri`, `httpRequest.args`, `httpRequest.httpMethod`,
   `httpRequest.headers` (the full header array — this is where **Referer**, **User-Agent**,
   **Host**, **Cookie** live)

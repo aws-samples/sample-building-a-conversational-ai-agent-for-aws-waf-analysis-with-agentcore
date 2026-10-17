@@ -1,6 +1,6 @@
 # Why WAF Analyst?
 
-As of October 2026 there are three ways to put an AI agent on AWS WAF logs, and they sit at different depths. AWS DevOps Agent on its own can reach the data but has no WAF method. The open-source `aws-waf-log-investigation` skill ([aws/tools-for-devops-agent#142](https://github.com/aws/tools-for-devops-agent/pull/142)) teaches that method to DevOps Agent and covers the investigation cases. WAF Analyst goes deepest, with purpose-built tools and direct data access, and also covers the reporting and rule-review cases the skill does not. The three-way comparison, measured against the same held-out questions, is in [Native vs skill vs WAF Analyst](#native-vs-skill-vs-waf-analyst) below.
+As of October 2026 there are three ways to put an AI agent on AWS WAF logs, and they sit at different depths. AWS DevOps Agent on its own can reach the data but has no WAF method. The open-source `aws-waf-log-investigation` skill ([aws/tools-for-devops-agent#142](https://github.com/aws/tools-for-devops-agent/pull/142)) teaches that method to DevOps Agent and covers the investigation cases. WAF Analyst goes deepest, with purpose-built tools and direct data access, and also covers the reporting cases the skill does not. The three-way comparison, measured against the same held-out questions, is in [Native vs skill vs WAF Analyst](#native-vs-skill-vs-waf-analyst) below.
 
 ## Gap Analysis
 
@@ -23,7 +23,6 @@ The DevOps Agent column is split: `native` is the agent with no skill, `+Skill` 
 | DDoS event investigation | ❌ | △ | ✓ | ❌ | ◎ |
 | REGIONAL WebACL (ALB, API Gateway) investigation | ❌ | △ | ✓ | ❌ | ❌ |
 | Weekly security patrol report | ❌ | ❌ | ❌ | ❌ | ◎ |
-| Deep WAF rule configuration review | ❌ | ❌ | ❌ | ❌ | ◎ |
 | weekly summary for management | ❌ | ❌ | ❌ | ❌ | ◎ |
 | WAF best practices knowledge base | ❌ | ❌ | ❌ | ❌ | ◎ |
 
@@ -42,7 +41,7 @@ The investigation rows read left to right as the whole point of this comparison:
 - **Focus**: Production incident response — deployment failures, infrastructure issues, operational metrics
 - **Native**: Reads WebACL config, CloudWatch metrics and WAF logs, and its queries are usually correct. What it lacks is WAF method: it files a blocked legitimate user under the attack, misses allowed bypass traffic, and reads a COUNT-to-BLOCK call off the attack window alone.
 - **With the skill (#142)**: the `aws-waf-log-investigation` skill supplies that method, and the agent then handles the investigation cases. See [Native vs skill vs WAF Analyst](#native-vs-skill-vs-waf-analyst).
-- **Still missing even with the skill**: scheduled patrol, weekly, and rule-review reports, and the depth of WAF Analyst's purpose-built tools.
+- **Still missing even with the skill**: scheduled patrol and weekly reports, and the depth of WAF Analyst's purpose-built tools.
 
 ### AWS Security Incident Response
 
@@ -56,11 +55,11 @@ Measured on the same held-out WAF questions (false positives, injection, bypass,
 
 **DevOps Agent, native.** It fetches the right data and its queries are usually correct, but without WAF method it draws the wrong conclusion: it files a blocked legitimate user under the attack, misses bypass traffic that WAF allowed, and bases a COUNT-to-BLOCK call on the attack window alone. There is also an IAM trap: DevOps Agent's session policy drops `s3:PutObject`, so Athena queries over WAF logs in S3 fail unless the agent is given a workgroup with managed query results.
 
-**DevOps Agent + the skill (#142).** The skill carries the method onto the generic agent: which question to ask, how to read the answer, and where WAF evidence stops. It covers false positives, injection and bypass, COUNT-to-BLOCK, DDoS and IP profiling, on both Athena and CloudWatch Logs, and on both CloudFront and REGIONAL WebACLs. The customer runs it inside a DevOps Agent they already have, with no extra deployment, and it works in CDN/WAF accounts that have no AgentCore access. It does not produce the scheduled patrol, weekly, or rule-review reports.
+**DevOps Agent + the skill (#142).** The skill carries the method onto the generic agent: which question to ask, how to read the answer, and where WAF evidence stops. It covers false positives, injection and bypass, COUNT-to-BLOCK, DDoS and IP profiling, on both Athena and CloudWatch Logs, and on both CloudFront and REGIONAL WebACLs. The customer runs it inside a DevOps Agent they already have, with no extra deployment, and it works in CDN/WAF accounts that have no AgentCore access. It does not produce the scheduled patrol or weekly reports.
 
 **WAF Analyst.** Purpose-built tools (`analyze_ip`, `lookup_ja4`, `detect_bypass`, `check_challenge_compatibility`, `get_waf_overview`), direct data access and validated methods make it the deepest of the three where it runs. It reads JA4 fingerprints across IPs, detects one token replayed across many IPs, checks challenge compatibility, and separates a custom rate rule from Anti-DDoS AMR event detection. It also stays inside the evidence, saying when a log cannot prove intent instead of guessing. Its limits are about where it runs and how it is deployed, not about analysis quality: it supports CloudFront-scope WebACLs only, not REGIONAL, and it has to be deployed as its own agent in an account with AgentCore access.
 
-**Choosing.** For the deepest analysis on a CloudFront WebACL, and for the patrol, weekly, and rule-review reports, use WAF Analyst. For WAF investigation inside an existing DevOps Agent, or on a REGIONAL WebACL, or in an account without AgentCore access, use the skill. The native agent alone is not enough for WAF work.
+**Choosing.** For the deepest analysis on a CloudFront WebACL, and for the patrol and weekly reports, use WAF Analyst. For WAF investigation inside an existing DevOps Agent, or on a REGIONAL WebACL, or in an account without AgentCore access, use the skill. The native agent alone is not enough for WAF work.
 
 ## Core Capabilities
 
@@ -79,7 +78,6 @@ Conversational, iterative investigation of security events:
 |------------|----------|---------|
 | Security Patrol | Operations engineers | 7-day full scan, anomaly detection, 15-min charts, top attack sources |
 | Weekly Summary | Management | Block counts, trend comparison, bot classification, country distribution, protection value |
-| Rule Review | Security architects | 10 deterministic checks + LLM deep analysis, rule interaction diagram, fix recommendations |
 
 ### 3. Domain Knowledge
 
