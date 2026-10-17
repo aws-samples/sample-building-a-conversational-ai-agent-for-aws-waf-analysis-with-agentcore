@@ -30,7 +30,7 @@ Agent 盘点所有 COUNT 规则，按风险分级，找到流量高峰时段，�
 
 > "我的客户说被拦截了，大概今天上午 10 点左右"
 
-Agent 定位拦截规则、计算该 IP 的 Allow Ratio，给出置信度评估。并展示实际命中的内容——规则的 match detail（SQLi/XSS）**以及**被检查的请求组件（query string、URI、cookie 或 headers）——让你看清请求*为什么*被标记。密钥值（cookie、auth/会话令牌）会被掩码。
+Agent 定位拦截规则、计算被拦客户端的 Allow Ratio（多个客户端共用一个 IP 时，比如办公室 NAT，会按 User-Agent 和 JA4 拆开，只看被拦的那个），给出置信度评估。并展示实际命中的内容——规则的 match detail（SQLi/XSS）**以及**被检查的请求组件（query string、URI、cookie 或 headers）——让你看清请求*为什么*被标记。密钥值（cookie、auth/会话令牌）会被掩码。
 
 > "昨天下午流量暴增 5 倍，是不是 DDoS？"
 

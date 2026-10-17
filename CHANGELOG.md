@@ -25,6 +25,18 @@ longer count blocks set aside as attacks. On the 2026-09-08 test traffic, each o
 injection 12, path probing 1, against 3 allowed) is now an attack source and the false-positive user
 (SQL injection 2, against 35 allowed) is not.
 
+### Fixed: a false-positive check behind a shared address read every user's traffic as one
+
+`investigate_block_fp` judged the IP's allowed-to-blocked ratio and pace. Behind an office NAT both mix
+every user behind it: the pace rises past the human threshold, and other users' allowed requests set
+the ratio, so an attacker there could read as a likely false positive. The address is now split into
+clients by User-Agent and JA4. When several share it and one was blocked, the ratio, pace and rules are
+that client's own; when blocks come from more than one, the check refuses a direction. User-Agents
+that differ only in version numbers still count as one client. On a test WebACL on 2026-10-16, an
+office egress with 3 clients read 17:1, "suggests legitimate user", while the blocked client, a
+headless Chrome, had 0 allowed. The proactive scan's looser 5:1, against the check's 10:1, is now
+stated: it only picks IPs for the check.
+
 ### Fixed: the scan's spike note never printed
 
 The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's

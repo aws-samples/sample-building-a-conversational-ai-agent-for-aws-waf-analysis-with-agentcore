@@ -231,9 +231,12 @@ BLOCK_ROW = {"terminatingRuleId": "SomeRule", "terminatingRuleType": "RATE_BASED
 ONLY_IN = {
     "block": "by terminatingRuleId, terminatingRuleType",
     "ratio": "as hits by action",
-    "freq": "as peak_rpm",
-    "multi": "action != 'ALLOW'",
+    "freq": "max(hits) as peak_rpm",
+    "multi": "as hits by terminatingRuleId |",
     "uri": "httpRequest.httpMethod",
+    "clients": "as block by ua",
+    "client_pace": "max(c) as peak_rpm by ua",
+    "client_rules": "by ua, ja4Fingerprint, terminatingRuleId",
 }
 
 
@@ -246,7 +249,7 @@ def _fake_block_query(fail_marker=None):
 
 
 def test_the_investigation_registers_exactly_the_independent_queries(monkeypatch):
-    """Five of six. The sub-rule lookup is excluded because whether it runs depends on the
+    """Eight of nine. The sub-rule lookup is excluded because whether it runs depends on the
     primary rule's TYPE, which only the block query can tell us, so it cannot join the wave.
     Asserted as a set: adding a sixth job without checking its dependencies is the way this
     change turns into a wrong answer rather than a slow one."""
@@ -258,7 +261,7 @@ def test_the_investigation_registers_exactly_the_independent_queries(monkeypatch
     monkeypatch.setattr(F, "run_concurrently",
                         lambda jobs, **k: (seen.update({"k": set(jobs)}), real(jobs, **k))[1])
     F._investigate_gather("203.0.113.9", 0, 3600)
-    assert seen["k"] == {"block", "ratio", "freq", "multi", "uri"}, seen["k"]
+    assert seen["k"] == {"block", "ratio", "freq", "multi", "uri", "clients", "client_pace", "client_rules"}, seen["k"]
 
 
 def test_each_markers_string_identifies_exactly_one_query(monkeypatch):
@@ -370,8 +373,9 @@ def test_the_sub_rule_query_is_not_in_the_wave(monkeypatch):
     monkeypatch.setattr(F, "query_logs", run)
     data = F._investigate_gather("203.0.113.9", 0, 3600)
     assert order.count("sub") == 1, order
-    assert set(order[:5]) == set(ONLY_IN), f"the wave is not the first five: {order}"
-    assert order.index("sub") > 4, f"the sub-rule query ran inside the wave: {order}"
+    wave = len(ONLY_IN)
+    assert set(order[:wave]) == set(ONLY_IN), f"the wave is not the first {wave}: {order}"
+    assert order.index("sub") >= wave, f"the sub-rule query ran inside the wave: {order}"
     assert data["sub_rule"] == "SubRule"
 
 

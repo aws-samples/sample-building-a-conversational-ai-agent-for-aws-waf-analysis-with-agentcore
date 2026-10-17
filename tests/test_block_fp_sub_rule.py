@@ -62,7 +62,7 @@ def _gather(monkeypatch):
               {"terminatingRuleId": COMMON, "terminatingRuleType": "MANAGED_RULE_GROUP", "hits": "4"}]
     monkeypatch.setattr(F, "run_concurrently", lambda jobs: (
         {"block": blocks, "ratio": [{"action": "BLOCK", "hits": "9"}], "freq": [{"peak_rpm": "1"}],
-         "multi": blocks, "uri": []}, {}))
+         "multi": blocks, "uri": [], "clients": [], "client_pace": [], "client_rules": []}, {}))
     sent = []
 
     def run(cwl, athena, start, end, limit=25):

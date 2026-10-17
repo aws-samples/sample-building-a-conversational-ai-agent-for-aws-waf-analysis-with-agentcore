@@ -30,7 +30,7 @@ Reads the rule from the WebACL and answers from its statement, action and positi
 
 > "My customer says they're being blocked, around 10am today"
 
-The agent locates the blocking rule, computes the IP's Allow Ratio, and provides a confidence-level assessment of whether it's a true false positive. It shows the actual content that matched — the rule's match detail (SQLi/XSS) **and** the inspected request component (query string, URI, cookie, or headers) — so you can see *why* the request was flagged. Secret values (cookies, auth/session tokens) are masked.
+The agent locates the blocking rule, computes the Allow Ratio of the blocked client (when several clients share the IP, such as an office NAT, it splits them by User-Agent and JA4 and judges the blocked one), and provides a confidence-level assessment of whether it's a true false positive. It shows the actual content that matched — the rule's match detail (SQLi/XSS) **and** the inspected request component (query string, URI, cookie, or headers) — so you can see *why* the request was flagged. Secret values (cookies, auth/session tokens) are masked.
 
 > "Traffic spiked 5x yesterday afternoon, is it DDoS?"
 
