@@ -8,7 +8,7 @@ Contains three rules:
 
 AWSManagedIPDDoSList defaults to Count because these IPs may belong to legitimate users whose devices were temporarily compromised — blocking them outright would cause false positives.
 
-**Relationship with AntiDDoS AMR**: AntiDDoS AMR has built-in capability to handle IPs on the ManagedIPDDoSList. When AntiDDoS AMR is deployed, AWSManagedIPDDoSList is not needed — AMR subsumes its functionality. However, if the user does not deploy AntiDDoS AMR, AWSManagedIPDDoSList at default Count only adds a label without taking action. A downstream rule (e.g., a rate-based rule with the DDoS IP label as scope-down) is needed to make it effective.
+**Relationship with AntiDDoS AMR**: AWS doesn't say AntiDDoS AMR replaces AWSManagedIPDDoSList, and the DDoS resiliency whitepaper still recommends the list: move it to Block or Challenge, or keep it at Count with a rate-based rule on its label. The two work differently. AMR compares traffic with the resource's baseline during an event, and the list is a reputation list of source IPs. At default Count the list only adds a label without taking action. A downstream rule (e.g., a rate-based rule with the DDoS IP label as scope-down) is needed to make it effective.
 
 ### AWSManagedRulesAnonymousIpList (WCU: 50)
 - `AnonymousIPList` (default Block): TOR nodes, temporary proxies, masking services

@@ -15,6 +15,16 @@ too, each checked against AWS documentation on 2026-10-17:
 - Bot Control's Common level as a User-Agent classifier: AWS calls it "static request data analysis",
   and its rules read the source IP and automated-browser indicators too;
 - a quoted Anti-DDoS price with no source, where Shield Advanced's inclusion went unsaid.
+
+A second pass over the files the first did not touch found more, each checked against AWS
+documentation or `describe-managed-rule-group` on 2026-10-17: a Fraud Control price 1,000 times too
+high and a free tier the pricing examples never deduct; ACFP `AutomatedBrowser` and
+`TGT_ML_CoordinatedActivityLow` at Count or Block where AWS ships CAPTCHA and Challenge; every Targeted
+rule said to need a token, where `TGT_TokenAbsent` and `TGT_VolumetricIpTokenAbsent` match its absence;
+ASN match and JA3/JA4 called unforgeable, where `ForwardedIPConfig` reads a header AWS says attackers
+alter and a fingerprint comes from the client's own TLS hello; COUNT as a top-level log action; the
+Anti-DDoS rule group said to replace `AWSManagedIPDDoSList`, which the DDoS whitepaper still
+recommends; and DDoS traffic said to be free in Count mode too.
 """
 
 import pathlib
@@ -52,10 +62,48 @@ def test_the_vendored_pipeline_is_gone():
     ("bot-control.md", "Common level is a UA-based classifier", "static request data analysis"),
     ("managed-overrides.md", "Recommend upgrading if pinned below 5.0", "recommend pinning it"),
     ("antiddos-amr.md", "$20/month per AMR instance", "50 billion requests"),
+    ("bot-control.md", "by 6.1 the Common level identifies more than 600", "Version_6.1 lists 697 `bot:name:` labels"),
+    ("managed-overrides.md", "by 6.1 the Common level identifies more than 600 bots", "Version_6.1 lists 697 `bot:name:` labels"),
+    ("bot-control.md", "mostly runs the Common rules plus the ML rules", "`TGT_VolumetricIpTokenAbsent` (Challenge)"),
+    ("fraud-control-atp-acfp.md", "$1/request for first 2M", "$0.001 a request"),
+    ("fraud-control-atp-acfp.md", "| `AutomatedBrowser` | `signal:automated_browser` | Block |",
+     "| `AutomatedBrowser` | `signal:automated_browser` | CAPTCHA |"),
+    ("fraud-control-atp-acfp.md", "| Free | First 10,000 | $0 |", "without deducting anything"),
+    ("fraud-control-atp-acfp.md", "phone number or custom username formats not supported", "only contains usernames in email format"),
+    ("advanced-bot-detection.md", "`TGT_ML_CoordinatedActivityLow` → Count", "`TGT_ML_CoordinatedActivityLow` → Challenge"),
+    ("advanced-bot-detection.md", "Keep Low at Count", "Keep Low at its default Challenge"),
+    ("advanced-bot-detection.md", "detects bots that self-identify via User-Agent", "static request data"),
+    ("bot-control-labels-v5.md", "Yes — requires AWS WAF token for session tracking", "match its absence"),
+    ("bot-control-labels-v5.md", "all 700+", "without memorizing them all"),
+    ("bot-control-labels-v5.md", "bot farm, recommend immediate Block", "evidence in advanced-bot-detection.md"),
+    ("asn-match.md", "ASN match is unforgeable", "might alter the contents of the header"),
+    ("asn-match.md", "| JA3/JA4 | No |", "TLS Client Hello"),
+    ("common-patterns.md", "ASN match (based on source IP's network).\n", "`ForwardedIPConfig`"),
+    ("crawler-seo.md", "unforgeable", "`ForwardedIPConfig`"),
+    ("waf-log-field-availability.md", "ALLOW / BLOCK / COUNT / CHALLENGE / CAPTCHA", "`nonTerminatingMatchingRules`"),
+    ("ip-reputation.md", "AMR subsumes its functionality", "whitepaper still recommends"),
+    ("antiddos-amr.md", "DDoS traffic detected and mitigated is NOT charged", "NOT in Count mode"),
+    ("antiddos-amr.md", "$20 a month for each web ACL using it", "prorated hourly"),
 ])
 def test_the_knowledge_base_carries_the_corrected_statement(doc, wrong, right):
     text = _kb(doc)
     assert wrong not in text and right in text, doc
+
+
+@pytest.mark.parametrize("wrong,right", [
+    ("Change to unforgeable (IP set / AWS WAF token / ASN)", "ASN without `ForwardedIPConfig`"),
+    ("TGT_* rules only work properly when Targeted level is deployed AND SDK is integrated",
+     "TGT_TokenAbsent and TGT_VolumetricIpTokenAbsent match the token's absence"),
+])
+def test_the_prompt_carries_the_corrected_statement(wrong, right):
+    assert wrong not in agent.SYSTEM_PROMPT and right in agent.SYSTEM_PROMPT
+
+
+def test_the_sidebar_offers_no_audit():
+    app = (ROOT / "frontend" / "src" / "App.jsx").read_text()
+    guide = app[app.index("const guideItems"):app.index("return (", app.index("const guideItems"))]
+    assert "Security patrol" in guide and "安全巡检" in guide, guide
+    assert not any(w in guide for w in ("Review my WAF", "audit", "审查", "审计")), guide
 
 
 def test_the_reviewer_is_named_where_users_look():

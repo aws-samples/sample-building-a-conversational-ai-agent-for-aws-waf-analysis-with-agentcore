@@ -8,13 +8,14 @@
 Reviewer](https://github.com/chenghit/aws-waf-rules-reviewer)'s pipeline taken in May 2026, 3,976
 lines against 8,577 at the reviewer's v0.9.0, and it gave conclusions the reviewer has since
 corrected: that the Core rule set covers SQL injection, and that the SQLi rule set should be upgraded
-to 2.0. The copy, its reference files and the review report card are gone. Asked for a full audit, the
-agent now points to the reviewer, which a coding agent runs on an exported WebACL. A question about
-one rule is still answered here, from the WebACL's configuration.
+to 2.0. The copy, its reference files, the review report card and the sidebar's "Review my WAF
+rules" example are gone. Asked for a full audit, the agent now points to the reviewer, which a coding
+agent runs on an exported WebACL. A question about one rule is still answered here, from the WebACL's
+configuration.
 
 ### Fixed: knowledge-base statements AWS documentation does not support
 
-Each checked against AWS documentation on 2026-10-17:
+Each checked against AWS documentation or `describe-managed-rule-group` on 2026-10-17:
 
 - The SQLi rule set is not an upgrade path. Version_2.0 (2022) is older than 1.2 (2024) and 1.3 (2025),
   and the changelog says "Version_2.3 is the successor to Version_1.3, not Version_2.0". The knowledge
@@ -26,10 +27,25 @@ Each checked against AWS documentation on 2026-10-17:
 - Bot Control's Common level is "static request data analysis", reading the source IP and
   automated-browser indicators as well as the User-Agent; the knowledge base called it a User-Agent
   classifier. The knowledge base now recommends pinning Version_7.0, the latest static version, and
-  says 5.0 added 400+ bots and 6.1 identifies more than 600; an unpinned group's default was still
-  Version_1.0 when checked. The Targeted rules that need a token are named.
+  says 5.0 added 400+ bots, and that Version_6.1 lists 697 `bot:name:` labels and 7.0 lists 701; an
+  unpinned group's default was still Version_1.0 when checked. The Targeted rules that need a token
+  are named, and so are the two that match its absence: `TGT_VolumetricIpTokenAbsent` challenges a
+  client after five tokenless requests in five minutes, so without the SDKs it reaches API and
+  native-app clients.
 - The Anti-DDoS price is attributed to its launch blog, and Shield Advanced's inclusion of the rule
-  group, up to 50 billion requests a month per payer account, is stated.
+  group, up to 50 billion requests a month per payer account, is stated. DDoS traffic goes unbilled
+  only while the rule group mitigates, not in Count, and the blog prices "each AntiDDoS AMR", not
+  each web ACL.
+- Fraud Control costs $1,000 per million requests, not $1 a request, and the pricing examples never
+  deduct the 10,000 free requests they list. ACFP `AutomatedBrowser` defaults to CAPTCHA, not Block.
+- `TGT_ML_CoordinatedActivityLow` defaults to Challenge in every version from 3.0 to 7.0, and Count
+  only in 2.0; the knowledge base said Count.
+- ASN, IP set and geo match read a header the client can set once `ForwardedIPConfig` is on, and
+  AWS warns attackers alter it; the knowledge base and the prompt called ASN match unforgeable.
+  JA3/JA4 come from the client's own TLS Client Hello and are no longer listed as unforgeable.
+- The top-level log `action` is never COUNT.
+- AWS doesn't say the Anti-DDoS rule group replaces `AWSManagedIPDDoSList`, and the DDoS resiliency
+  whitepaper still recommends the list.
 
 ## 0.34.1 (2026-10-17)
 

@@ -3,13 +3,13 @@
 - Match requests by source IP's Autonomous System Number
 - Syntax: `"AsnMatchStatement": { "AsnList": [15169, 8075] }`
 - Use case: identify legitimate search engine crawlers. Confirmed ASNs: Google ASN 15169, Bing ASN 8075, Yandex ASN 13238 and 208722. For other search engines (Baidu, Yahoo Japan, etc.), verify the current ASN list from their official documentation — these engines may use multiple ASNs.
-- Combine with User-Agent for double verification (ASN is unforgeable, UA is forgeable)
+- Combine with User-Agent for double verification (the client can't set the source IP's ASN, but can set the UA; with `ForwardedIPConfig` the ASN comes from a header it can set)
 
 
 ## ASN + UA Crawler Labeling Rule
 
 The recommended way to identify verified search engine crawlers is a dedicated Count+Label rule placed **before** any rule that needs to exclude crawlers. This rule uses ASN + User-Agent double verification:
-- **ASN** is unforgeable — it identifies the actual network the request originates from
+- **ASN** of the source IP can't be set by the client — it identifies the network the request comes from
 - **User-Agent** alone is forgeable, but combined with ASN it becomes reliable
 
 Once labeled, downstream rules (AntiDDoS AMR, Always-on Challenge, etc.) can exclude crawlers via a simple `LabelMatchStatement` in their scope-down, without duplicating the ASN+UA logic.

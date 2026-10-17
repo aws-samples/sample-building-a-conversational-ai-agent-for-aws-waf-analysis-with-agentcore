@@ -546,8 +546,8 @@ code{background:#f0f0f0;padding:2px 6px;border-radius:3px}pre{background:#f5f5f5
   }
 
   const guideItems = sidebarLang === 'zh'
-    ? [{text: '"安全巡检"', tip: '生成过去24小时的规则有效性、异常检测和Bot活动报告'}, {text: '"管理层周报"', tip: '生成过去7天的流量趋势、攻击摘要和ROI分析报告'}, {text: '"检测绕过攻击"', tip: '扫描ALLOW流量中的异常模式，发现绕过WAF的爬虫和Bot'}, {text: '"审查我的WAF规则"', tip: '全面审计规则配置，检查Allow规则风险、标签依赖和配置反模式'}, {text: '"你能做什么？"', tip: '查看所有可用功能和示例问题'}]
-    : [{text: '"Security patrol"', tip: 'Generate a 24-hour report on rule effectiveness, anomaly detection, and bot activity'}, {text: '"Executive summary"', tip: 'Generate a 7-day report with traffic trends, attack summary, and ROI analysis'}, {text: '"Detect bypass attacks"', tip: 'Scan ALLOW traffic for anomalies — crawlers and bots evading WAF rules'}, {text: '"Review my WAF rules"', tip: 'Full security audit: Allow rule risks, label dependencies, and config anti-patterns'}, {text: '"What can you do?"', tip: 'See all available capabilities and example questions'}];
+    ? [{text: '"安全巡检"', tip: '生成过去24小时的规则有效性、异常检测和Bot活动报告'}, {text: '"管理层周报"', tip: '生成过去7天的流量趋势、攻击摘要和ROI分析报告'}, {text: '"检测绕过攻击"', tip: '扫描ALLOW流量中的异常模式，发现绕过WAF的爬虫和Bot'}, {text: '"你能做什么？"', tip: '查看所有可用功能和示例问题'}]
+    : [{text: '"Security patrol"', tip: 'Generate a 24-hour report on rule effectiveness, anomaly detection, and bot activity'}, {text: '"Executive summary"', tip: 'Generate a 7-day report with traffic trends, attack summary, and ROI analysis'}, {text: '"Detect bypass attacks"', tip: 'Scan ALLOW traffic for anomalies — crawlers and bots evading WAF rules'}, {text: '"What can you do?"', tip: 'See all available capabilities and example questions'}];
 
   return (
     <div className="app-layout">

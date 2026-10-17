@@ -57,7 +57,7 @@ Without the SDK, many ATP/ACFP rules cannot function (they rely on token presenc
 - Must configure `LoginPath` (e.g., `/api/login`)
 - Must specify `PayloadType` (JSON or FORM_ENCODED) and field identifiers
 - Response inspection: CloudFront only, requires defining success/failure status codes
-- Stolen credentials DB only works with **email-format usernames**
+- The stolen credentials database "only contains usernames in email format"
 - Not compatible with Amazon Cognito user pools
 
 ## ACFP — Account Creation Fraud Prevention
@@ -74,7 +74,7 @@ Without the SDK, many ATP/ACFP rules cannot function (they rely on token presenc
 | `RiskScoreHigh` | `risk_score:high` | Block | ML-based risk score combining IP reputation + stolen credentials + behavioral signals |
 | `SignalCredentialCompromised` | `signal:credential_compromised` | Block | Email+password found in stolen credentials DB |
 | `SignalClientHumanInteractivityAbsentLow` | `signal:client:human_interactivity:low` | CAPTCHA | No genuine mouse/keyboard interaction detected (bot filling form) |
-| `AutomatedBrowser` | `signal:automated_browser` | Block | Selenium/Puppeteer/Playwright detected via browser interrogation |
+| `AutomatedBrowser` | `signal:automated_browser` | CAPTCHA | Selenium/Puppeteer/Playwright detected via browser interrogation |
 | `BrowserInconsistency` | `signal:browser_inconsistency` | CAPTCHA | Browser settings inconsistent with claimed UA |
 | `VolumetricIpHigh` | `aggregate:volumetric:ip:creation:high` | CAPTCHA | >10 account creation attempts from same IP in 10 min |
 | `VolumetricSessionHigh` | `aggregate:volumetric:session:creation:high` | Block | >10 creation attempts from same session in 30 min |
@@ -95,14 +95,13 @@ Without the SDK, many ATP/ACFP rules cannot function (they rely on token presenc
 
 | Tier | Requests/month | Price per million |
 |---|---|---|
-| Free | First 10,000 | $0 |
 | Tier 1 | First 2M | $1,000/million |
 | Tier 2 | Next 3M (2M–5M) | $700/million |
 | Tier 3 | Next 10M (5M–15M) | $400/million |
 | Tier 4 | Next 15M (15M–30M) | $200/million |
 | Tier 5 | Over 30M | $50/million |
 
-Plus $10/month subscription per WebACL per rule group.
+Plus $10/month subscription per WebACL per rule group. AWS's pricing examples add "10,000 free requests" to the request charge without deducting anything, and the page doesn't say what that allowance covers; check AWS WAF pricing before quoting it.
 
 ### Real cost examples
 - ATP only, 15M login requests/month: **~$8,110/month** in Fraud Control fees alone
@@ -139,9 +138,9 @@ The per-request fee applies to ALL requests evaluated by the rule group — not 
 
 ## Limitations
 
-- **Extremely expensive at low-to-moderate volumes** — $1/request for first 2M makes it impractical for many organizations, especially in price-sensitive markets
+- **Extremely expensive at low-to-moderate volumes** — $1,000 per million ($0.001 a request) for the first 2M makes it impractical for many organizations, especially in price-sensitive markets
 - Response inspection (failed login tracking) only works on CloudFront — ALB/API Gateway users lose this capability
-- Stolen credentials DB only matches email-format usernames — phone number or custom username formats not supported
+- The stolen credentials database only contains usernames in email format, so a phone number or custom username finds no match in it
 - JavaScript SDK requires HTTPS and browser environment — native apps need custom integration
 - ACFP's `AllRequests` Challenge on registration page can break SPAs that don't handle challenge flow
 - No protection against attacks using completely unique, never-leaked credentials (novel passwords)

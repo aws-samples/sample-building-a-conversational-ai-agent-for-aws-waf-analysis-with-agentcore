@@ -7,7 +7,7 @@ start in Version_2.0.
 
 ## Label Namespace Structure
 
-Bot Control labels follow a hierarchical namespace. Understanding the structure lets you interpret any label without memorizing all 700+.
+Bot Control labels follow a hierarchical namespace. Understanding the structure lets you interpret any label without memorizing them all.
 
 ```
 awswaf:managed:aws:bot-control:{category}
@@ -98,7 +98,7 @@ for many clients, and nothing about that IP describes one client.
 
 | Prefix | Meaning | Detection Method | Token Required? |
 |---|---|---|---|
-| `TGT_` | Targeted protection rules | Browser interrogation, fingerprinting, behavior heuristics | Yes — requires AWS WAF token for session tracking |
+| `TGT_` | Targeted protection rules | Browser interrogation, fingerprinting, behavior heuristics | Mostly. Five rules "only apply when the web request has a token" and the `TGT_TokenReuse*` rules inspect a token's use, but `TGT_TokenAbsent` and `TGT_VolumetricIpTokenAbsent` match its absence |
 | `TGT_ML_` | Targeted ML rules | Machine learning on traffic statistics (timestamps, browser characteristics, previous URL). Enabled by default, can be disabled in rule group config. When disabled, these rules are not evaluated. | **No** — does not require AWS WAF token or Challenge/CAPTCHA as prerequisite. Works on raw traffic patterns without client-side instrumentation. |
 
 ## Targeted Signal Labels (Targeted Level Only)
@@ -174,7 +174,7 @@ When analyzing logs:
 1. `bot:verified` + `bot:category:search_engine` = legitimate crawler, not a threat
 2. `bot:unverified` + `signal:known_bot_data_center` = likely malicious, spoofing bot identity
 3. `signal:cloud_service_provider:*` without `bot:verified` = traffic from a cloud provider's addresses: worth asking about when the provider hosts rented instances, and an egress for many clients when it is a CDN or proxy
-4. `targeted:aggregate:coordinated_activity:high` = bot farm, recommend immediate Block
+4. `targeted:aggregate:coordinated_activity:high` = coordinated bot activity, CAPTCHA by default. Recommend Block only on the evidence in advanced-bot-detection.md
 5. `token:absent` on high-volume IP = likely bot that cannot execute JavaScript
 6. `token_reuse:ip:high` = token sharing/theft, recommend TGT_TokenReuseIp to Block
 7. `token_provenance:ip_category_mismatch:high` = a token carried from a data center, proxy or VPN to a residential address, which is what a token acquired by one client and handed to another looks like

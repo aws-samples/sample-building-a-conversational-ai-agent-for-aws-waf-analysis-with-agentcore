@@ -15,7 +15,7 @@
 
 **Forgeable conditions** (attacker can set freely): User-Agent, cookies, custom headers, query parameters, request body content.
 
-**Unforgeable conditions** (attacker cannot control): IP set, WAF token (`aws-waf-token` cookie — cryptographically signed by AWS), HMAC signature (if validated server-side), ASN match (based on source IP's network).
+**Unforgeable conditions** (attacker cannot control): IP set, WAF token (`aws-waf-token` cookie — cryptographically signed by AWS), HMAC signature (if validated server-side), ASN match (based on source IP's network). An IP set or ASN match with `ForwardedIPConfig` reads a header instead, which the client can set.
 
 ### HostingProviderIPList misconfiguration
 - Default Block → frequent false positives for enterprise traffic routed through cloud platforms. Override to Count.

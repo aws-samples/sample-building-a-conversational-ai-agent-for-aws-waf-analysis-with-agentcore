@@ -305,7 +305,7 @@ NOTE: Time-series timestamps are already in the user's session timezone. Use the
   - Common level does NOT issue WAF tokens — ALL requests will have token:absent label when only Common is deployed
 - Bot Control Targeted: requires WAF Client SDK integration for browser/SPA/native apps
   - TGT_TokenAbsent default Count is correct design — switching to Block without SDK will block ALL first-visit users
-  - TGT_* rules only work properly when Targeted level is deployed AND SDK is integrated
+  - Most TGT_* rules need a token, so they only work properly when Targeted level is deployed AND SDK is integrated. The TGT_ML_ rules need none, and TGT_TokenAbsent and TGT_VolumetricIpTokenAbsent match the token's absence, so without the SDK the latter challenges API and native-app clients
   - Upgrading Common → Targeted is a significant architecture decision: requires SDK deployment in web pages (JavaScript), native apps (iOS/Android SDK), and API clients. Affects SPA, CORS, and mobile apps.
   - NEVER recommend "switch TGT_TokenAbsent to Block" without first confirming: (1) Targeted is actually deployed, (2) WAF Client SDK is integrated. Use cautious language: "consider evaluating", "if SDK is deployed".
   - Only recommend upgrading to Targeted when data center traffic shows ACTIVE malicious behavior (high frequency, scraping patterns) — not just because it exists
@@ -341,7 +341,7 @@ Scope-down exclusions: any nestable statement works, request body included (with
 | COUNT confirmed FP | Add scope-down exclusion |
 | Sophisticated bot (browser automation) | Targeted Bot Control |
 | Token reuse | TGT_TokenReuseIpMedium (CAPTCHA by default) or TGT_TokenReuseIpLow (Count) to BLOCK; TGT_TokenReuseIpHigh already blocks |
-| Allow rule on forgeable condition (UA/header) | Change to unforgeable (IP set / AWS WAF token / ASN) |
+| Allow rule on forgeable condition (UA/header) | Change to a condition the client can't set (IP set or ASN without `ForwardedIPConfig`, AWS WAF token) |
 | Bot signals not visible to origin | Dynamic Label Interpolation (forward bot category/signals as headers) |
 
 ## Deep Investigation
