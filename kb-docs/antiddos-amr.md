@@ -50,7 +50,7 @@ If CloudFront is not in the architecture, Regional WAF Anti-DDoS AMR provides li
 ### Pricing
 - The June 2025 launch blog says "Each AntiDDoS AMR costs $20 per month, prorated hourly", plus $0.15 per million requests on top of the base AWS WAF request fee. It doesn't say how a Web ACL with two instances is billed (the dual-instance pattern below). See AWS WAF pricing for current rates
 - A Shield Advanced subscription includes the rule group, with up to 50 billion requests to Shield-protected AWS WAF resources per payer account in a calendar month; requests Shield Advanced detects as DDoS don't count toward it
-- The same blog says AWS doesn't charge for requests "detected as DDoS when protection rules are actively mitigating and are NOT in Count mode". In Count, DDoS traffic is billed like any other
+- The same blog says AWS doesn't charge for requests "detected as DDoS when protection rules are actively mitigating and are NOT in Count mode". In Count, DDoS traffic is billed like any other, with one dated exception: from July 27 to October 24, 2026, the Shield Advanced web ACLs AWS auto-enrolled "don't incur per-request fees or WCU consumption, even when configured in Count mode" (AWS Security Blog). A rule group you add yourself pays standard pricing from the moment you enable it
 
 ### Recommended deployment patterns
 

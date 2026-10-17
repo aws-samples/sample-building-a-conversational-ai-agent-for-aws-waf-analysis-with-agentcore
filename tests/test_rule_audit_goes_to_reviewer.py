@@ -84,6 +84,12 @@ def test_the_vendored_pipeline_is_gone():
     ("ip-reputation.md", "AMR subsumes its functionality", "whitepaper still recommends"),
     ("antiddos-amr.md", "DDoS traffic detected and mitigated is NOT charged", "NOT in Count mode"),
     ("antiddos-amr.md", "$20 a month for each web ACL using it", "prorated hourly"),
+    ("advanced-bot-detection.md", "`TGT_ML_CoordinatedActivityHigh` at default CAPTCHA → not a misconfiguration (default is correct)",
+     "Version_1.0, the default for an unpinned group, has only Medium and High, both at Count"),
+    ("bot-control-labels-v5.md", "coordinated bot activity, CAPTCHA by default.", "CAPTCHA by default from Version_3.0"),
+    ("bot-control.md", "using an unforgeable label", "only as trustworthy as the condition"),
+    ("asn-match.md", "AWS doesn't address it", "request-level randomization"),
+    ("antiddos-amr.md", "In Count, DDoS traffic is billed like any other\n", "even when configured in Count mode"),
 ])
 def test_the_knowledge_base_carries_the_corrected_statement(doc, wrong, right):
     text = _kb(doc)

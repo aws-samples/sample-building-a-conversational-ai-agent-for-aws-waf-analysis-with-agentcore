@@ -30,7 +30,7 @@ On the source IP, ASN match reads the address the connection comes from, which t
 | IP Set | No on the source IP; yes with `ForwardedIPConfig` | Individual IPs/CIDRs | Known good/bad IPs |
 | ASN Match | No on the source IP; yes with `ForwardedIPConfig` | Entire network org | Partner networks, hosting providers |
 | Geo Match | No on the source IP; yes with `ForwardedIPConfig` | Country level | Geographic blocking |
-| JA3/JA4 | Yes: computed from the TLS Client Hello, which the client sends. AWS doesn't address it | TLS fingerprint | Bot detection |
+| JA3/JA4 | Yes: computed from the TLS Client Hello, which the client sends. AWS's June 2025 launch blog says attackers are "evading fingerprinting techniques like TLS JA3 through request-level randomization" | TLS fingerprint | Bot detection |
 | AWS WAF Token | No | Per-client token | Verified browsers |
 
 ### ASN Match vs IP Set for Allow Rules

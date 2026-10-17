@@ -174,7 +174,7 @@ When analyzing logs:
 1. `bot:verified` + `bot:category:search_engine` = legitimate crawler, not a threat
 2. `bot:unverified` + `signal:known_bot_data_center` = likely malicious, spoofing bot identity
 3. `signal:cloud_service_provider:*` without `bot:verified` = traffic from a cloud provider's addresses: worth asking about when the provider hosts rented instances, and an egress for many clients when it is a CDN or proxy
-4. `targeted:aggregate:coordinated_activity:high` = coordinated bot activity, CAPTCHA by default. Recommend Block only on the evidence in advanced-bot-detection.md
+4. `targeted:aggregate:coordinated_activity:high` = coordinated bot activity, CAPTCHA by default from Version_3.0 and Count before it. Recommend Block only on the evidence in advanced-bot-detection.md
 5. `token:absent` on high-volume IP = likely bot that cannot execute JavaScript
 6. `token_reuse:ip:high` = token sharing/theft, recommend TGT_TokenReuseIp to Block
 7. `token_provenance:ip_category_mismatch:high` = a token carried from a data center, proxy or VPN to a residential address, which is what a token acquired by one client and handed to another looks like

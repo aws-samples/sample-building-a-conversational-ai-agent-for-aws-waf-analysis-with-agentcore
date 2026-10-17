@@ -92,8 +92,8 @@ CASES = [
      [KB]),
 
     ("CoordinatedActivityLow at Count again",
-     [("kb-docs/advanced-bot-detection.md", "- `TGT_ML_CoordinatedActivityLow` → Challenge (Count only in Version_2.0)",
-       "- `TGT_ML_CoordinatedActivityLow` → Count")],
+     [("kb-docs/advanced-bot-detection.md", "- `TGT_ML_CoordinatedActivityLow` → Challenge\n",
+       "- `TGT_ML_CoordinatedActivityLow` → Count\n")],
      [KB]),
 
     ("every TGT_ rule said to need a token again",
@@ -125,6 +125,30 @@ CASES = [
     ("DDoS traffic free in Count too, again",
      [("kb-docs/antiddos-amr.md", "- The same blog says AWS doesn't charge for requests \"detected as DDoS when protection rules are actively mitigating and are NOT in Count mode\". In Count, DDoS traffic is billed like any other",
        "- DDoS traffic detected and mitigated is NOT charged")],
+     [KB]),
+
+    ("the ML rules' 3.0 defaults stated for every version again",
+     [("kb-docs/advanced-bot-detection.md", "1. `TGT_ML_CoordinatedActivityHigh` at CAPTCHA on Version_3.0 or later → the default, not a misconfiguration. At Count on an unpinned group, Version_1.0 or 2.0 → that version's default, not an override; recommend pinning Version_7.0",
+       "1. `TGT_ML_CoordinatedActivityHigh` at default CAPTCHA → not a misconfiguration (default is correct)")],
+     [KB]),
+
+    ("the coordinated-activity label CAPTCHA in every version again",
+     [("kb-docs/bot-control-labels-v5.md", "CAPTCHA by default from Version_3.0 and Count before it.", "CAPTCHA by default.")],
+     [KB]),
+
+    ("a label scope-down called unforgeable again",
+     [("kb-docs/bot-control.md", "using a label applied by an earlier Count rule. The label is only as trustworthy as the condition",
+       "using an unforgeable label (e.g., a label applied by an earlier Count rule). The label is only as dependable as the condition")],
+     [KB]),
+
+    ("JA3/JA4 said to be something AWS is silent on again",
+     [("kb-docs/asn-match.md", "AWS's June 2025 launch blog says attackers are \"evading fingerprinting techniques like TLS JA3 through request-level randomization\"",
+       "AWS doesn't address it")],
+     [KB]),
+
+    ("the Count-mode billing exception dropped",
+     [("kb-docs/antiddos-amr.md", ", with one dated exception: from July 27 to October 24, 2026, the Shield Advanced web ACLs AWS auto-enrolled \"don't incur per-request fees or WCU consumption, even when configured in Count mode\" (AWS Security Blog). A rule group you add yourself pays standard pricing from the moment you enable it\n",
+       "\n")],
      [KB]),
 ]
 

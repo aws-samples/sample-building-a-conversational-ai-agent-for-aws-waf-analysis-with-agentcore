@@ -62,7 +62,7 @@ Both block requests with non-browser User-Agents by default.
 ### Key rules for native app considerations
 
 **Short-term: scope-down Bot Control to exclude native app traffic**
-- Apply a scope-down to the entire Bot Control managed rule group using an unforgeable label (e.g., a label applied by an earlier Count rule). This bypasses the entire rule group — both Common and Targeted levels — for native app traffic. `SignalNonBrowserUserAgent` and `TGT_TokenAbsent` are irrelevant in this scenario since the rule group is not evaluated at all.
+- Apply a scope-down to the entire Bot Control managed rule group using a label applied by an earlier Count rule. The label is only as trustworthy as the condition of the rule that adds it: for native-app traffic that is usually a User-Agent or a custom header, which the client sets, so anyone who sends it skips the whole rule group. This bypasses the entire rule group — both Common and Targeted levels — for native app traffic. `SignalNonBrowserUserAgent` and `TGT_TokenAbsent` are irrelevant in this scenario since the rule group is not evaluated at all.
 
 **Medium-term: integrate AWS WAF Mobile SDK**
 - The SDK generates valid AWS WAF tokens for native app requests. Remove the scope-down once SDK is integrated.

@@ -34,15 +34,20 @@ Each checked against AWS documentation or `describe-managed-rule-group` on 2026-
   native-app clients.
 - The Anti-DDoS price is attributed to its launch blog, and Shield Advanced's inclusion of the rule
   group, up to 50 billion requests a month per payer account, is stated. DDoS traffic goes unbilled
-  only while the rule group mitigates, not in Count, and the blog prices "each AntiDDoS AMR", not
-  each web ACL.
+  only while the rule group mitigates, not in Count, except on the Shield Advanced web ACLs AWS
+  auto-enrolled, which pay nothing for it until 2026-10-24 even in Count. The blog prices "each
+  AntiDDoS AMR", not each web ACL.
 - Fraud Control costs $1,000 per million requests, not $1 a request, and the pricing examples never
   deduct the 10,000 free requests they list. ACFP `AutomatedBrowser` defaults to CAPTCHA, not Block.
-- `TGT_ML_CoordinatedActivityLow` defaults to Challenge in every version from 3.0 to 7.0, and Count
-  only in 2.0; the knowledge base said Count.
+- The coordinated-activity ML rules default to Challenge (Low) and CAPTCHA (Medium, High) from
+  Version_3.0. Version_2.0 sets all three to Count, and Version_1.0, which an unpinned group runs, has
+  only Medium and High, both at Count. The knowledge base said Low was Count and called CAPTCHA on
+  High the default in every version.
 - ASN, IP set and geo match read a header the client can set once `ForwardedIPConfig` is on, and
   AWS warns attackers alter it; the knowledge base and the prompt called ASN match unforgeable.
-  JA3/JA4 come from the client's own TLS Client Hello and are no longer listed as unforgeable.
+  JA3/JA4 come from the client's own TLS Client Hello and are no longer listed as unforgeable. A
+  label used to scope Bot Control down is as trustworthy as the rule that adds it, usually a
+  User-Agent or header check for native-app traffic.
 - The top-level log `action` is never COUNT.
 - AWS doesn't say the Anti-DDoS rule group replaces `AWSManagedIPDDoSList`, and the DDoS resiliency
   whitepaper still recommends the list.

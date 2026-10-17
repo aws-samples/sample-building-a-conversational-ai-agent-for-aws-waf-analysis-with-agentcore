@@ -15,10 +15,12 @@ Do NOT recommend Targeted solely because `signal:known_bot_data_center` traffic 
 
 ## TGT_ML_ CoordinatedActivity: When to Recommend Block
 
-Default actions:
-- `TGT_ML_CoordinatedActivityLow` → Challenge (Count only in Version_2.0)
+Default actions from Version_3.0 through 7.0:
+- `TGT_ML_CoordinatedActivityLow` → Challenge
 - `TGT_ML_CoordinatedActivityMedium` → CAPTCHA
 - `TGT_ML_CoordinatedActivityHigh` → CAPTCHA
+
+Version_2.0 sets all three to Count. Version_1.0, the default for an unpinned group, has only Medium and High, both at Count. Read the version before calling an action a default or an override.
 
 Recommending Block on High requires sufficient evidence that CAPTCHA is ineffective (being solved by automation).
 
@@ -93,6 +95,6 @@ When analyzing bypass incidents:
 4. If Targeted with no ML labels on suspicious traffic → truly sophisticated single-IP bot → recommend application-layer defenses
 
 When reviewing rules:
-1. `TGT_ML_CoordinatedActivityHigh` at default CAPTCHA → not a misconfiguration (default is correct)
+1. `TGT_ML_CoordinatedActivityHigh` at CAPTCHA on Version_3.0 or later → the default, not a misconfiguration. At Count on an unpinned group, Version_1.0 or 2.0 → that version's default, not an override; recommend pinning Version_7.0
 2. `TGT_ML_CoordinatedActivityHigh` overridden to Count → Awareness finding (reduces protection)
 3. `TGT_ML_CoordinatedActivityHigh` overridden to Block → verify user has monitoring in place
