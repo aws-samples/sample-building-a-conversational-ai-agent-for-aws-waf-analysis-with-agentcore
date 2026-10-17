@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: the volume check compared week totals, so an hour-long flood read as normal
+
+`detect_bypass(step="volume_anomaly")` set seven days of `AllowedRequests` against the seven before.
+An anomaly that lasts an hour barely moves a week: on a test WebACL, a rate-limited flood on 2026-10-16
+read as 1.1x, "within normal range". The step now compares one window, the `start_time` given or else
+the busiest hour of ALLOW traffic in the last seven days, with the same window a week earlier and with
+the six hours either side. The same flood reads 20.9x. A rise in mitigated traffic from none counts as
+a rise; the first run of the new code called 562,445 mitigated requests against none "did NOT rise".
+
+### Fixed: the scan's spike note never printed
+
+The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's
+raised `UnboundLocalError` on every scan from 0.27.0: an import further down the same function made the
+name local, and `except Exception: pass` hid it. The note now compares the scan's own window with the
+same window a week earlier. A new test fails on any function in `tools/` that uses a name before a local
+import of it.
+
 ## 0.35.0 (2026-10-17)
 
 ### Removed: the deep rule review; a full rules audit goes to AWS WAF Rules Reviewer

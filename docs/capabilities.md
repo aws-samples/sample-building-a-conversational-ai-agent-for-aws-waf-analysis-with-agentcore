@@ -34,7 +34,7 @@ The agent locates the blocking rule, computes the IP's Allow Ratio, and provides
 
 > "Traffic spiked 5x yesterday afternoon, is it DDoS?"
 
-Compares this week vs last week metrics, checks if Anti-DDoS AMR triggered, and classifies the anomaly (distributed DDoS vs scraper vs cache-bypass attack).
+Compares that window's metrics with the same window a week earlier and the hours around it, checks if Anti-DDoS AMR triggered, and classifies the anomaly (distributed DDoS vs scraper vs cache-bypass attack).
 
 > "Check IP 203.0.113.42, last 2 hours"
 

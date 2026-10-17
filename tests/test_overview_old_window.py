@@ -285,8 +285,8 @@ def test_top_rules_gap_detection_names_both_possible_causes():
 
 
 def test_bypass_volume_reads_all_without_search(monkeypatch):
-    """Bypass uses only the `ALL` series. Its windows end now, so SEARCH would usually find it, but
-    nothing it consumes should depend on discovery."""
+    """Bypass uses only the `ALL` series, read by MetricStat. Its window can be days old, and SEARCH
+    discovers only series with data in the 14 days before now."""
     from tools import waf_bypass as B
     cw = RetainingCW({("ALL", "AllowedRequests"): 1000, ("ALL", "BlockedRequests"): 40},
                      discoverable=frozenset(), retained=60)

@@ -266,11 +266,11 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 **Use the detect_bypass tool.** It handles anomaly filtering, volume analysis, and IP profiling automatically.
 
 - Proactive scan: call detect_bypass(step="scan", start_time="...", duration_minutes=60)
-- Volume anomaly: call detect_bypass(step="volume_anomaly") — no start_time needed (metrics-based)
+- Volume anomaly: call detect_bypass(step="volume_anomaly", start_time="...") for a window the user names; without start_time it checks the busiest hour of the last 7 days. Metrics-based, compared with the same window a week earlier
 - One JA4 fingerprint from a scan: call detect_bypass(step="ja4_ips", ja4="...", start_time="...") for the IPs behind it. One query, so ask which fingerprint rather than walking the table.
 - Specific IP: call detect_bypass(step="investigate_ip", ip="...", start_time="...")
 - Follow the tool's "Your Next Action" instructions.
-- Key workflow: volume_anomaly detects spike → ask user for time window → scan around peak (duration_minutes covers the spike) → investigate_ip for the IPs the scan named. If what the scan named is a JA4 fingerprint rather than an IP, ja4_ips is the step between the two.
+- Key workflow: volume_anomaly detects a spike and names its window → scan that window (the tool prints the call) → investigate_ip for the IPs the scan named. If what the scan named is a JA4 fingerprint rather than an IP, ja4_ips is the step between the two.
 
 ## AWS WAF Domain Knowledge
 - Rate-based rules: 20-30s kick-in delay — ALLOW before BLOCK is normal. Logs show threshold + key but NOT actual request count.

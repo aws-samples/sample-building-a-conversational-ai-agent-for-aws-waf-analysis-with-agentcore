@@ -352,6 +352,17 @@ def _sanitize_param(value: str) -> str:
     return re.sub(r"['\"|;`\\]", "", value)
 
 
+def naive_time_tz():
+    """The zone a time written without an offset is read in: the session's, else
+    `WAF_AGENT_TIMEZONE_OFFSET`, else UTC. A tool that prints a start_time for the model to pass back
+    formats it in this zone, so the time it prints is the time that gets parsed."""
+    from datetime import timezone, timedelta
+    from tools.session_state import get_user_timezone
+    session_tz = get_user_timezone()
+    tz_offset = session_tz if session_tz is not None else float(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
+    return timezone(timedelta(hours=tz_offset))
+
+
 def _parse_start_time(value: str) -> int | None:
     """Parse a date/datetime string to epoch seconds. Supports explicit offset or falls back to session/env. Returns None on failure."""
     from datetime import datetime, timezone, timedelta
@@ -378,10 +389,7 @@ def _parse_start_time(value: str) -> int | None:
             return int(dt.timestamp())
     except (ValueError, IndexError):
         pass
-    # No explicit offset — use session state > env var > UTC+0
-    session_tz = get_user_timezone()
-    tz_offset = session_tz if session_tz is not None else float(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
-    user_tz = timezone(timedelta(hours=tz_offset))
+    user_tz = naive_time_tz()
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:
             dt = datetime.strptime(value, fmt).replace(tzinfo=user_tz)

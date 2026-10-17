@@ -15,7 +15,6 @@ from _harness import sweep
 T = "tests/test_overview_old_window.py"
 O = "tools/waf_overview.py"
 P = "tools/waf_patrol.py"
-B = "tools/waf_bypass.py"
 
 CASES = [
     ("the period chosen by window length alone",
@@ -128,11 +127,6 @@ CASES = [
      [(O, "    if tot_ch > 0 and not solved_error:  # none solved is the low-rate case, not a missing one",
        "    if tot_ch > 0 and cs:")],
      [f"{T}::test_challenges_none_solved_is_a_low_solve_rate"], True),
-
-    ("bypass reading ALL through SEARCH",
-     [(B, "    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region, rules=[])",
-       "    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region)")],
-     [f"{T}::test_bypass_volume_reads_all_without_search"], True),
 
     ("the gap line no longer naming the 14-day cause",
      [(O, "or a managed sub-rule whose metric CloudWatch's SEARCH-based discovery has not indexed in the last 14 days (rules in the WebACL's configuration are read directly).",
