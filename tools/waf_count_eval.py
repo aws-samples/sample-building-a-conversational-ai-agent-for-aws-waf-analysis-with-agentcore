@@ -3,12 +3,14 @@
 """COUNT-to-BLOCK evaluation workflow tool — guided skill for LLM."""
 
 import json
+import re
 import sys
 import time
 from strands import tool
 from tools.aws_session import get_client
 from tools.session_state import get_webacl_name, get_scope, resolve_region, is_log_filter_active
 from tools.waf_query import query_logs, log_query_error, get_log_type
+from tools.waf_aggregate import _LABELS_ARRAY
 
 # Rules that should NEVER be recommended to switch from Count.
 # These have known high false-positive rates in production environments.
@@ -142,6 +144,7 @@ def _step_init(rule_name: str = "") -> str:
     region = resolve_region(scope)
     webacl_rules = _get_webacl_rules(region, scope)
     all_count_rules = _get_all_count_rules(region, scope, webacl_rules)
+    prefix = label_prefix()
 
     # Filter to target rules if specified
     if target_rules:
@@ -178,18 +181,28 @@ def _step_init(rule_name: str = "") -> str:
                 continue
         found_rules[rule_id] = counted
 
-    # Classify rules
+    # Classify rules. A Count rule a later rule reads the label of is kept whatever its hits say.
+    designed = {r: by_design(webacl_rules, r, prefix) for r in all_count_rules}
+    designed = {r: readers for r, readers in designed.items() if readers}
+    managed_readers = {r: [(n, p, k) for n, p, sc, k in label_readers(webacl_rules, r) if k.startswith("awswaf:managed:")]
+                       for r in all_count_rules if r not in designed}
+    managed_readers = {r: v for r, v in managed_readers.items() if v}
     permanent_count = []
     zero_hit = []
     low_fp_nonzero = []
     needs_analysis = []
 
     for rule_id in all_count_rules:
-        if rule_id in no_metric:
+        if rule_id in no_metric or rule_id in designed:
             continue
         hits = found_rules[rule_id]
         if rule_id in PERMANENT_COUNT_RULES:
             permanent_count.append((rule_id, hits))
+        elif rule_id in managed_readers and (hits == 0 or rule_id in LOW_FP_RULES
+                                             or rule_id.startswith(("CVE_", "CVE-"))):
+            # Not safe to switch on its hits or its type: a later rule may read its label, which only the
+            # logs can tell. Listed with the later rules instead.
+            continue
         elif hits == 0:
             zero_hit.append(rule_id)
         elif rule_id in LOW_FP_RULES or any(rule_id.startswith(p) for p in ("CVE_", "CVE-")):
@@ -230,6 +243,14 @@ def _step_init(rule_name: str = "") -> str:
     else:
         lines.append("  (none found)")
 
+    if designed:
+        lines.append("")
+        lines.append("### Keep in Count by design (a later rule reads its label)")
+        for r, readers in designed.items():
+            named = "; ".join(f"{n} (priority {p}, key {k})" for n, p, k in readers)
+            lines.append(f"  - {r} — read by {named}. Switching it to Block stops those requests here, so the "
+                         f"later rule never sees them; that is usually a scope-down. Keep it in Count.")
+
     lines.append("")
     lines.append("### Step 1: Zero Hits (safe to switch to default action)")
     if zero_hit:
@@ -263,6 +284,15 @@ def _step_init(rule_name: str = "") -> str:
     if any(r in summed for r, _ in permanent_count + low_fp_nonzero + needs_analysis):
         lines.append("")
         lines.append(repeated)
+    if managed_readers:
+        lines.append("")
+        lines.append("### Later rules that read managed labels (check before switching these)")
+        for r, readers in managed_readers.items():
+            named = "; ".join(f"{n} (priority {p}, key {k})" for n, p, k in readers)
+            hits = f"{found_rules[r]:,} hits" if r in found_rules else "hits unknown"
+            lines.append(f"  - {mark(r)} ({hits}): {named}. A managed sub-rule's label is not in the configuration, "
+                         f"so check_low_volume_clients counts how many of the requests {r} counted carry it. Not "
+                         f"safe to switch on its hits alone.")
 
     lines.append("")
     lines.append("---")
@@ -533,8 +563,10 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     # Get both ends of client distribution
     # Note: RuleActionOverride COUNT entries appear in ruleGroupList[].nonTerminatingMatchingRules,
     # not in the top-level nonTerminatingMatchingRules. Check both locations.
+    # The clients are read on the matches that ended ALLOW, which are the only ones a switch to Block
+    # changes; a match another rule blocked or challenged ends the same way after the switch.
     cwl_bottom = (
-        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' and action = 'ALLOW'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits asc | limit 5"
     )
@@ -542,12 +574,13 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND action = 'ALLOW'"
         f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
         f" GROUP BY httprequest.clientip ORDER BY hits ASC LIMIT {{LIMIT}}"
     )
     cwl_top = (
-        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
+        f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' and action = 'ALLOW'"
         " | stats count(*) as hits by httpRequest.clientIp"
         " | sort hits desc | limit 5"
     )
@@ -555,12 +588,29 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         f"SELECT httprequest.clientip as \"httpRequest.clientIp\", count(*) as hits"
         f" FROM {{TABLE}}"
         f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+        f" AND action = 'ALLOW'"
         f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
         f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
         f" GROUP BY httprequest.clientip ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
 
+    # One read of the WebACL for the two sections that need it. Both are additive, so a failure here is
+    # theirs to report, never the answer's.
     try:
+        acl_rules, acl_error = _get_webacl_rules(resolve_region(get_scope() or "CLOUDFRONT"), get_scope() or "CLOUDFRONT"), ""
+    except Exception as exc:                              # noqa: BLE001
+        acl_rules, acl_error = None, f"{type(exc).__name__}: {exc}"
+
+    cwl_outcomes = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"'"
+                    " | stats count(*) as n by action")
+    athena_outcomes = (f"SELECT action, count(*) as n FROM {{TABLE}}"
+                       f" WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                       f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+                       f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))"
+                       f" GROUP BY action")
+    try:
+        outcomes = {r.get("action", "?"): int(float(r.get("n") or 0))
+                    for r in _run_log_query(cwl_outcomes, athena_outcomes, start_epoch, end_epoch, limit=10)}
         bottom = _run_log_query(cwl_bottom, athena_bottom, start_epoch, end_epoch, limit=5)
         top = _run_log_query(cwl_top, athena_top, start_epoch, end_epoch, limit=5)
     except LogQueryFailed as exc:
@@ -570,34 +620,47 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
                 f"The log query did not run, so this says nothing about {rule_name}'s "
                 f"clients.\n{exc}")
 
+    allowed = outcomes.get("ALLOW", 0)
+    stopped = {a: n for a, n in sorted(outcomes.items()) if a != "ALLOW" and n}
     lines = [
         f"## Client Distribution: {rule_name}",
         f"**Window**: {start_time} + {duration_minutes}min",
         "",
-        "### Low-Volume Clients (check these for FP first)",
+        f"**What a switch to Block changes**: {sum(outcomes.values()):,} requests counted, {allowed:,} of them "
+        f"allowed in the end. Only those change outcome."
+        + (f" The other {sum(stopped.values()):,} were already stopped by later rules ("
+           + ", ".join(f"{a} {n:,}" for a, n in stopped.items()) + ") and end the same way." if stopped else ""),
+        "",
+        "### Low-Volume Clients, allowed matches (check these for FP first)",
     ]
     if bottom:
         for r in bottom:
             lines.append(f"  {r.get('httpRequest.clientIp', '?'):>15}  {r.get('hits', '?'):>6} hits")
+    elif outcomes and not allowed:
+        lines.append("  (none: every request it counted was already stopped by another rule)")
     else:
         lines.append("  (no results — check if Log Filter drops COUNT logs)")
 
     lines.append("")
-    lines.append("### High-Volume Clients (double-confirm)")
+    lines += _reader_lines(rule_name, acl_rules, acl_error, start_epoch, end_epoch)
+    lines.append("")
+    lines.append("### High-Volume Clients, allowed matches (double-confirm)")
     if top:
         for r in top:
             lines.append(f"  {r.get('httpRequest.clientIp', '?'):>15}  {r.get('hits', '?'):>6} hits")
+    elif outcomes and not allowed:
+        lines.append("  (none: every request it counted was already stopped by another rule)")
     else:
         lines.append("  (no results)")
 
-    # ROADMAP 7.7. `bottom` and `top` are the same COUNT matches ordered two ways, so both empty
-    # means the logs report no COUNT match for this rule in this window. `CountedRequests` for the
+    # ROADMAP 7.7. `outcomes` holds every COUNT match by final action, so all of it empty means the
+    # logs report no COUNT match for this rule in this window. `CountedRequests` for the
     # same rule is recorded upstream of every log-side failure, and it is the one witness whose
     # subject is this question. **This is the tool whose output the user executes against
     # production**, by switching the rule from Count to Block, so a zero here that is really a
     # missed query is the most expensive absence on the list.
     # **Widened 2026-09-15 to the case where the logs DO hold rows**, which is the more common shape
-    # and was unreported. `bottom` and `top` cannot supply the number: they are
+    # and was unreported. `bottom` and `top` cannot supply the number: they hold allowed matches only, and are
     # `stats count(*) as hits by httpRequest.clientIp | limit 5`, so their row count is a number of
     # distinct IPs capped at five, and summing their `hits` column would give a lower bound that goes
     # silent exactly on windows with many clients, which are the busy ones. One ungrouped count with
@@ -614,12 +677,10 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
         # `test_a_padded_rule_name_reaches_the_query_without_its_padding` drives this branch with no
         # credentials and the unguarded read turned a passing test into `NoCredentialsError`. That
         # test failing was the cheap version of a user losing a working answer.
-        try:
-            rules = _get_webacl_rules(resolve_region(scope), scope)
-        except Exception as exc:                          # noqa: BLE001
-            print(f"[waf_count_eval] no metric cross-check for {rule_name}: "
-                  f"{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
-            rules = None
+        rules = acl_rules
+        if rules is None:
+            print(f"[waf_count_eval] no metric cross-check for {rule_name}: {acl_error}",
+                  file=sys.stderr, flush=True)
         if rules is not None:
             warning = missed_data_warning(get_webacl_name(), rule_name, rules, start_epoch,
                                           end_epoch, log_rows=_matched,
@@ -684,6 +745,44 @@ def _step_check_clients(rule_name: str, start_time: str, duration_minutes: int) 
     return "\n".join(lines)
 
 
+def _reader_lines(rule_name: str, rules, acl_error: str, start_epoch: int, end_epoch: int) -> list:
+    """The section naming each later rule that reads a label the requests this rule counted carry.
+    Read off the logs, so it holds for a managed sub-rule whose label the configuration does not name."""
+    head = ["### Later rules that read labels these requests carry"]
+    if rules is None:
+        return head + [f"  UNKNOWN: the WebACL's rules could not be read ({acl_error}), so whether a later "
+                       f"rule depends on this one is unknown. Do not recommend Block until it is."]
+    readers = label_readers(rules, rule_name)
+    if not readers:
+        return head + ["  (none: no rule after this one matches on a label)"]
+    prefix = label_prefix()
+    pattern = lambda sc, k: _label_pattern(sc, k, prefix)
+    cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | {_LABELS_ARRAY}"
+           " | stats count(*) as total, " + ", ".join(
+               f"sum(if(lbls like /\"name\":\"{pattern(sc, k)[1:].rstrip('$')}{chr(34) if sc == 'LABEL' else ''}/, 1, 0)) as l{i}"
+               for i, (_, _, sc, k) in enumerate(readers)))
+    athena = (f"SELECT count(*) as total, " + ", ".join(
+                  f"count_if(any_match(labels, l -> regexp_like(l.name, '{pattern(sc, k)}'))) as l{i}"
+                  for i, (_, _, sc, k) in enumerate(readers))
+              + f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+              f" AND (any_match(nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')"
+              f"   OR any_match(rulegrouplist, rg -> any_match(rg.nonterminatingmatchingrules, r -> r.ruleid = '{rule_name}' AND r.action = 'COUNT')))")
+    try:
+        rows = _run_log_query(cwl, athena, start_epoch, end_epoch, limit=1)
+    except LogQueryFailed as exc:
+        return head + [f"  UNKNOWN, the query for this section failed: {exc}. Do not recommend Block until it answers."]
+    row = rows[0] if rows else {}
+    total = int(float(row.get("total") or 0))
+    out = []
+    for i, (name, pri, sc, key) in enumerate(readers):
+        n = int(float(row.get(f"l{i}") or 0))
+        out.append(f"  - {name} (priority {pri}, {sc} {key}): {n:,} of the {total:,} requests counted here carry it")
+    if any(int(float(row.get(f"l{i}") or 0)) for i in range(len(readers))):
+        out.append("  ⚠️  Switching this rule to Block stops these requests here, so those rules never see them. "
+                   "Where a rule matches on this rule's own label, the Count is a scope-down design: keep it.")
+    return head + out
+
+
 # Known rule-type priors for no-logging fallback
 _RULE_PRIORS = {
     "CrossSiteScripting_BODY": "Medium-high FP rate. Rich text editors and HTML form submissions commonly trigger this. Recommend enabling logging before switching.",
@@ -735,6 +834,97 @@ def _get_webacl_rules(waf_region: str, scope: str) -> list[dict]:
 
     resp = waf.get_web_acl(Name=webacl_name, Scope=scope, Id=match["Id"])
     return resp["WebACL"].get("Rules", [])
+
+
+# --- the labels a later rule reads -----------------------------------------------------------------
+#
+# A Count rule whose label a later rule matches is part of a design, often a scope-down: the sub-rule
+# counts and labels, and a later rule blocks on the label outside an excluded slice. Switching it to
+# Block ends evaluation there, so the later rule, and every rate-based rule after it, never sees those
+# requests. How a `LabelMatchStatement` key matches, from AWS documentation read 2026-10-18 (label
+# match, label match examples, label requirements): a key starting `awswaf:` is fully qualified, and
+# for LABEL matches that label exactly; any other key is resolved in the rule's own context,
+# `awswaf:<account>:webacl:<name>:`, so it never reaches a managed group's `awswaf:managed:...` label;
+# a short LABEL key is the end of the label, with any namespaces between the prefix and it; NAMESPACE
+# matches from the prefix on. Matching is case-sensitive. The documentation does not say whether a
+# short NAMESPACE key may match a run in the middle, so that counts as a match: an extra reader
+# reported is a question for the user, a missed one is a design broken in production.
+_LABEL_CHARS = r"[0-9A-Za-z_\-:]+"
+
+
+def label_prefix() -> str:
+    """`awswaf:<account>:webacl:<name>:`, the context a short key and a custom rule's label live in, for
+    the WebACL `get_waf_config` selected."""
+    from tools.session_state import get_webacl_arn
+    arn = get_webacl_arn() or ""
+    return f"awswaf:{arn.split(':')[4] if arn.count(':') >= 5 else ''}:webacl:{get_webacl_name() or ''}:"
+
+
+def _label_pattern(scope: str, key: str, prefix: str) -> str:
+    """The regex a label must match to be read by `(scope, key)`, anchored at both ends for LABEL. Not
+    escaped: a key and the prefix hold only `[0-9A-Za-z_:-]`, none of it special outside a class, so the
+    one pattern reads the same in Python, CloudWatch and Athena."""
+    if not re.fullmatch(_LABEL_CHARS, key) or not re.fullmatch(_LABEL_CHARS, prefix):
+        raise ValueError(f"outside WAF's label charset: {key!r}, {prefix!r}")
+    head = key if key.startswith("awswaf:") else prefix + "([0-9A-Za-z_-]+:)*" + key
+    return "^" + head + ("$" if scope == "LABEL" else "")
+
+
+def label_key_matches(label: str, scope: str, key: str, prefix: str) -> bool:
+    return re.search(_label_pattern(scope, key, prefix), label) is not None
+
+
+def _label_matches(stmt) -> list:
+    """Every `(scope, key)` a statement tree matches on, including under Not and in scope-downs."""
+    if not isinstance(stmt, dict):
+        return []
+    found = []
+    if "LabelMatchStatement" in stmt:
+        lm = stmt["LabelMatchStatement"]
+        found.append((lm.get("Scope", "LABEL"), lm.get("Key", "")))
+    for key in ("AndStatement", "OrStatement"):
+        for sub in (stmt.get(key) or {}).get("Statements", []):
+            found += _label_matches(sub)
+    if "NotStatement" in stmt:
+        found += _label_matches(stmt["NotStatement"].get("Statement", {}))
+    for key in ("RateBasedStatement", "ManagedRuleGroupStatement"):
+        if key in stmt:
+            found += _label_matches(stmt[key].get("ScopeDownStatement", {}))
+    return found
+
+
+def _rule_of(rules: list, count_rule: str):
+    """The WebACL rule a Count rule runs in: itself, or the managed group a sub-rule override sits in."""
+    for r in rules:
+        group = (r.get("Statement") or {}).get("ManagedRuleGroupStatement") or {}
+        if r.get("Name") == count_rule or any(o.get("Name") == count_rule for o in group.get("RuleActionOverrides", [])):
+            return r
+    return None
+
+
+def label_readers(rules: list, count_rule: str) -> list:
+    """`[(rule name, priority, scope, key)]` for each label match in a rule evaluated after `count_rule`.
+    Empty when `count_rule` is not in the WebACL, since then nothing is known about its position."""
+    own = _rule_of(rules, count_rule)
+    if own is None:
+        return []
+    return [(r.get("Name", ""), r.get("Priority"), scope, key)
+            for r in sorted(rules, key=lambda r: r.get("Priority", 0))
+            if r.get("Priority", 0) > own.get("Priority", 0)
+            for scope, key in _label_matches(r.get("Statement", {}))
+            if re.fullmatch(_LABEL_CHARS, key)]
+
+
+def by_design(rules: list, count_rule: str, prefix: str) -> list:
+    """The later rules that read a label this Count rule adds, from the configuration alone: exact for
+    a custom rule's `RuleLabels`. A managed sub-rule's label is not in the configuration, so for those
+    the log check in check_low_volume_clients is the evidence."""
+    own = _rule_of(rules, count_rule)
+    if own is None or own.get("Name") != count_rule:
+        return []
+    labels = [prefix + l.get("Name", "") for l in own.get("RuleLabels", [])]
+    return [(name, pri, key) for name, pri, scope, key in label_readers(rules, count_rule)
+            if any(label_key_matches(l, scope, key, prefix) for l in labels)]
 
 
 def _get_all_count_rules(waf_region: str, scope: str, rules: list | None = None) -> list[str]:

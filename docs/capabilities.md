@@ -16,7 +16,7 @@ The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI div
 
 > "Evaluate my COUNT rules — can I switch them to Block?"
 
-The agent inventories all COUNT rules, classifies them by risk level, finds the peak traffic hour, and analyzes client behavior to determine if switching is safe. For each rule it surfaces the triggering request content (redacted) so you can tell a real attack from a false positive by the actual payload.
+The agent inventories all COUNT rules, classifies them by risk level, finds the peak traffic hour, and analyzes client behavior to determine if switching is safe. It keeps a rule in Count when a later rule reads its label, since that is usually a scope-down, and judges clients on the matches that ended allowed, the only ones a switch changes. For each rule it surfaces the triggering request content (redacted) so you can tell a real attack from a false positive by the actual payload.
 
 > "Run a security patrol for today"
 

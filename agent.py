@@ -316,7 +316,7 @@ NOTE: Time-series timestamps are already in the user's session timezone. Use the
 
 ## COUNT Rule Evaluation Logic
 
-The evaluate_count_rules tool handles multi-dimensional cross-validation automatically. Follow its "Your Next Action" instructions. Key dimensions it evaluates: rule type prior, IP behavior, URI patterns, time distribution, UA/JA4 fingerprints.
+The evaluate_count_rules tool handles multi-dimensional cross-validation automatically. Follow its "Your Next Action" instructions. Key dimensions it evaluates: rule type prior, IP behavior, URI patterns, time distribution, UA/JA4 fingerprints, which later rules read the rule's labels, and how many of its matches ended allowed. A rule a later rule reads the label of stays in Count: do not recommend Block for it.
 
 ## DDoS Event Context
 - ChallengeAllDuringEvent activating = legitimate users getting challenged is EXPECTED BEHAVIOR, not a bug. Do NOT recommend disabling it.

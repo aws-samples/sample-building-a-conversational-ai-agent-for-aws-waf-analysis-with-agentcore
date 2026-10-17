@@ -37,6 +37,20 @@ office egress with 3 clients read 17:1, "suggests legitimate user", while the bl
 headless Chrome, had 0 allowed. The proactive scan's looser 5:1, against the check's 10:1, is now
 stated: it only picks IPs for the check.
 
+### Fixed: Count-to-Block recommended breaking a scope-down, and judged clients on matches a switch does not change
+
+`evaluate_count_rules` did not look at what reads a Count rule's labels. A Count rule whose label a
+later rule matches is part of a design, often the scope-down this tool's own false-positive advice
+recommends, and switching it to Block stops those requests before the later rule, and every rate-based
+rule after it, sees them. The inventory now keeps a custom rule in Count when a later rule's
+`LabelMatchStatement` reads its `RuleLabels`, and no longer calls a managed sub-rule safe on its hits
+alone when a later rule reads managed labels. `check_low_volume_clients` counts, from the logs, how
+many of the requests the rule counted carry each label a later rule reads; keys are matched as AWS
+documents them, a short key only in the WebACL's own context. On the S3 test WebACL with temporary
+rules, 160 of 160 counted XSS requests carried the label a reader matched, and a short key read a
+custom rule's label on 3 of 3. The client lists now hold the matches that ended allowed, the only ones a
+switch changes; the rest are reported by the action that stopped them.
+
 ### Fixed: the scan's spike note never printed
 
 The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's

@@ -135,13 +135,11 @@ CASES = [
     # needs two wafv2 calls in a branch that previously touched no AWS, so an unguarded read turns a
     # working answer into an exception wherever those calls fail.
     ("the WebACL read unguarded again, so a cross-check failure costs the answer",
-     [(I2, "        try:\n"
-           "            rules = _get_webacl_rules(resolve_region(scope), scope)\n"
-           "        except Exception as exc:                          # noqa: BLE001\n"
-           "            print(f\"[waf_count_eval] no metric cross-check for {rule_name}: \"\n"
-           "                  f\"{type(exc).__name__}: {exc}\", file=sys.stderr, flush=True)\n"
-           "            rules = None\n",
-       "        rules = _get_webacl_rules(resolve_region(scope), scope)\n")],
+     [(I2, "    try:\n"
+           "        acl_rules, acl_error = _get_webacl_rules(resolve_region(get_scope() or \"CLOUDFRONT\"), get_scope() or \"CLOUDFRONT\"), \"\"\n"
+           "    except Exception as exc:                              # noqa: BLE001\n"
+           "        acl_rules, acl_error = None, f\"{type(exc).__name__}: {exc}\"\n",
+       "    acl_rules, acl_error = _get_webacl_rules(resolve_region(get_scope() or \"CLOUDFRONT\"), get_scope() or \"CLOUDFRONT\"), \"\"\n")],
      [f"{T}::test_a_cross_check_that_cannot_run_does_not_cost_the_answer_it_annotates"], True),
 
     # The wiring. No probe: the target reads the tool's source, so a raise inserted there would sit in
