@@ -7,6 +7,7 @@ import time
 import concurrent.futures
 from datetime import datetime, timedelta, timezone
 from strands import tool
+from tools.html_safe import escaped, script_json
 from tools.aws_session import get_client
 from tools.query_limits import MAX_FANOUT_WAIT, MAX_POLL, POLL_INTERVAL, stop_query
 from tools.waf_metrics import REQUEST_METRICS, search_label
@@ -906,6 +907,61 @@ def _get_log_details(logs_client, log_group: str, start: int, end: int, attentio
 
 
 
+def _targeted_signals(results: list) -> tuple[dict, dict]:
+    """`({label name: {metric: count}}, {cloud provider: requests})` from the targeted-label SEARCH
+    results, labelled `LabelNamespace|LabelName|MetricName`.
+
+    **A provider is anything under `signal:cloud_service_provider`, by namespace, never by name.** The
+    list that was here named aws, gcp, azure and oracle, so Alibaba, DigitalOcean, IBM, Akamai and
+    Cloudflare, all in Bot Control's labels since Version_2.0 or 3.2, never raised an item, and
+    neither would Fastly, which the 7.0 changelog adds. A provider's requests are counted once per
+    request, from the metric it ended with."""
+    signals, providers = {}, {}
+    for r in results:
+        val = int(sum(r.get("Values", [])))
+        parts = r.get("Label", "").split("|")
+        if val == 0 or len(parts) != 3:
+            continue
+        namespace, lbl_name, metric_name = parts
+        if namespace.endswith("cloud_service_provider") and metric_name in _ACTION_METRICS:
+            providers[lbl_name] = providers.get(lbl_name, 0) + val
+        # Skip low-severity informational signals (only show medium/high)
+        if lbl_name.endswith("Low") or lbl_name == "TGT_TokenAbsent":
+            continue
+        if lbl_name.startswith("TGT_") or lbl_name.startswith("Signal") or lbl_name in ("token_absent", "non_browser_user_agent") or namespace.endswith("cloud_service_provider"):
+            signals.setdefault(lbl_name, {})
+            signals[lbl_name][metric_name] = signals[lbl_name].get(metric_name, 0) + val
+    return signals, providers
+
+
+# The metrics a request ends in, one per request. The label SEARCH also returns CountedRequests, which a
+# request also ends Allowed or Blocked in, and *RuleMatch series, which count rule matches.
+_ACTION_METRICS = ("AllowedRequests", "BlockedRequests", "ChallengeRequests", "CaptchaRequests")
+
+
+def _cloud_provider_items(providers: dict, lang: str) -> list:
+    """An action item for each cloud provider with more than 1,000 requests in the window. The
+    provider is named as Bot Control labels it; whether it is a CDN or proxy, which makes its
+    addresses an egress for many clients, is left to the reader, since the list of such services is
+    not this module's to keep."""
+    out = []
+    for name, total in sorted(providers.items()):
+        if total > 1000:
+            out.append({
+                "severity": "moderate",
+                "rule": "Bot Control",
+                "text": f'来自云厂商 {name} 地址的请求 {total:,} 次' if lang == "zh" else
+                        f'{total:,} requests from cloud provider {name} addresses',
+                "suggestion": ("如果它是你网站前面的 CDN 或代理，这些是它替很多客户端转发的出口地址；否则确认是否为预期的服务调用（监控、API），再考虑拦截"
+                               if lang == "zh" else
+                               "If it is a CDN or proxy in front of your site, these are its egress addresses for many "
+                               "clients; otherwise check whether they are expected service calls (monitoring, API) "
+                               "before blocking"),
+                "source": "traffic",
+            })
+    return out
+
+
 @tool
 def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "", hours: int = 24, lang: str = "zh") -> str:
     """Run a security patrol scan for a specific WebACL.
@@ -1187,23 +1243,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                     {"Id": "tgt_csp", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:signal:cloud_service_provider\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
                     {"Id": "tgt_vol", "Expression": f"SEARCH('{{AWS/WAFV2,LabelName,LabelNamespace,WebACL}} WebACL=\"{webacl_name}\" LabelNamespace=\"awswaf:managed:aws:bot-control:targeted:aggregate:volumetric:ip\"', 'Sum', {int(hours*3600)})", "Label": tgt_label},
                 ], StartTime=start, EndTime=end)
-                # Parse: group by LabelName, aggregate by action type
-                targeted_signals = {}  # {label_name: {metric: count}}
-                for r in tgt_resp.get("MetricDataResults", []):
-                    val = int(sum(r.get("Values", [])))
-                    if val == 0:
-                        continue
-                    parts = r.get("Label", "").split("|")
-                    if len(parts) != 3:
-                        continue
-                    namespace, lbl_name, metric_name = parts
-                    # Skip low-severity informational signals (only show medium/high)
-                    if lbl_name.endswith("Low") or lbl_name == "TGT_TokenAbsent":
-                        continue
-                    if lbl_name.startswith("TGT_") or lbl_name.startswith("Signal") or lbl_name in ("token_absent", "non_browser_user_agent") or namespace.endswith("cloud_service_provider"):
-                        if lbl_name not in targeted_signals:
-                            targeted_signals[lbl_name] = {}
-                        targeted_signals[lbl_name][metric_name] = targeted_signals[lbl_name].get(metric_name, 0) + val
+                targeted_signals, cloud_providers = _targeted_signals(tgt_resp.get("MetricDataResults", []))
+                bot_data["cloud_providers"] = cloud_providers
                 if targeted_signals:
                     bot_data["targeted_signals"] = targeted_signals
                 else:
@@ -1254,19 +1295,8 @@ def patrol_scan(webacl_name: str, scope: str = "CLOUDFRONT", start_time: str = "
                 "suggestion": "评估切换到 Block 模式以拦截未验证 bot" if lang == "zh" else "Evaluate switching to Block mode to mitigate unverified bots",
                 "source": "traffic",
             })
-        # High CSP traffic (any label under cloud_service_provider namespace)
+        action_items += _cloud_provider_items(bot_data.get("cloud_providers", {}), lang)
         tgt_sigs = bot_data.get("targeted_signals", {})
-        for name, metrics in tgt_sigs.items():
-            if name.lower() in ("aws", "gcp", "azure", "oracle"):
-                csp_total = sum(metrics.values())
-                if csp_total > 1000:
-                    action_items.append({
-                        "severity": "moderate",
-                        "rule": "Bot Control",
-                        "text": f'来自 {name.upper()} 数据中心的请求 {csp_total:,} 次' if lang == "zh" else f'{csp_total:,} requests from {name.upper()} data center',
-                        "suggestion": "确认是否为合法服务调用（监控、API），否则考虑拦截" if lang == "zh" else "Verify if legitimate service calls (monitoring, API); consider blocking otherwise",
-                        "source": "traffic",
-                    })
         # High targeted challenge/captcha volume
         for name, metrics in tgt_sigs.items():
             if name.startswith("TGT_"):
@@ -1546,7 +1576,12 @@ def _missing_sections(wr: dict, chart_data) -> dict[str, str]:
 
 
 def _render_patrol_html_v2(webacl_results: list, all_action_items: list, start, end, hours: int, lang: str = "en") -> str:
-    """Render deterministic patrol report HTML — chart-first, minimal tables."""
+    """Render deterministic patrol report HTML — chart-first, minimal tables.
+
+    Every string it receives is escaped once, at the top, so no value can become markup whichever
+    key it arrives under; the embedded report JSON is built from the raw values instead."""
+    raw_results, raw_items = webacl_results, all_action_items
+    webacl_results, all_action_items = escaped(webacl_results), escaped(all_action_items)
     L = _PATROL_I18N.get(lang, _PATROL_I18N["en"])
     now = datetime.now(timezone.utc)
     from tools.session_state import get_user_timezone
@@ -1758,15 +1793,15 @@ new Chart(document.getElementById('{rl_id}'),{{type:'bar',data:{{labels:{rl_labe
         action_html = f'<p class="banner banner-ok">{L["no_action"]}</p>'
 
     # Embedded JSON
-    report_json = json.dumps({
+    report_json = script_json({
         "version": "2.0",
         "generated_at": now.isoformat(),
         "period": {"start": start.isoformat(), "end": end.isoformat(), "hours": hours},
         "webacls": [{
             "name": wr["name"], "scope": wr.get("scope", ""),
-            "action_items": [a for a in all_action_items if a.get("webacl") == wr["name"]],
-        } for wr in webacl_results if "error" not in wr],
-    }, default=str)
+            "action_items": [a for a in raw_items if a.get("webacl") == wr["name"]],
+        } for wr in raw_results if "error" not in wr],
+    })
 
     # Donut init script
     donut_calls = []

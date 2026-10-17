@@ -167,6 +167,13 @@ CASES = [
         [f"{T}::test_only_an_injection_sub_rule_in_count_is_a_detector"],
         TEXTUAL,
     ),
+    (
+        "four IPs between the branches again",
+        "tools/waf_injection.py",
+        "    if ips < 5:\n        return (\"concentrated attack",
+        "    if ips <= 3:\n        return (\"concentrated attack",
+        [f"{T}::test_the_classification_says_nothing_its_own_counts_contradict"],
+    ),
 ]
 
 # A case with no marker gets the reachability probe: a bare raise goes in above the anchor's line

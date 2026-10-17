@@ -25,23 +25,22 @@ and a request can still be cut short by it.
 import agent
 
 
-def test_no_output_bound_reaches_the_request():
-    """**Nothing is sent, rather than a larger number.** The first fix raised 4,096 to 32,768, which is the
-    wrong shape: a number picked in this file is a ceiling the model did not choose, and the maintainer's
-    standing instruction is not to set one.
-
-    Measured that omitting works end to end: a Converse call with no `inferenceConfig` at all answers and
-    reports `stopReason: end_turn`, and `BedrockModel` with neither keyword sends `inferenceConfig: {}`. The
-    service still has its own ceiling, 131,072 is refused with "exceeds the model limit of 128000", and
-    enforcing it is the service's job.
+def test_the_bound_is_the_model_s_own_ceiling(monkeypatch):
+    """Not 4,096, and not nothing, which turned out to be 4,096 again: measured 2026-10-17, a request with
+    no `inferenceConfig` stopped at 4,096 output tokens with `stopReason: max_tokens`. The bound is the
+    ceiling Bedrock reports for the model, so it is the model's and not a number picked here.
 
     Read from the request the SDK would send rather than from the constructor's keywords, because a keyword
     dropped between the two would satisfy an assertion on the constructor while the request still carried
-    a bound."""
+    a different bound."""
+    class Bedrock:
+        def converse(self, **kw):
+            raise RuntimeError("ValidationException: The maximum tokens you requested exceeds the model limit "
+                               "of 128000. Try again with a maximum tokens value that is lower than 128000.")
+    monkeypatch.setattr(agent, "_model", None)
+    monkeypatch.setattr(agent, "_bedrock_runtime", lambda: Bedrock(), raising=False)
     cfg = agent._get_model()._format_request([{"role": "user", "content": [{"text": "hi"}]}])
-    assert "maxTokens" not in cfg["inferenceConfig"], cfg["inferenceConfig"]
-    assert cfg["inferenceConfig"] == {}, (
-        f"the request carries inference parameters this file chose: {cfg['inferenceConfig']}")
+    assert cfg["inferenceConfig"] == {"maxTokens": 128000}, cfg["inferenceConfig"]
 
 
 def test_a_truncated_answer_says_so_in_the_reader_s_terms():

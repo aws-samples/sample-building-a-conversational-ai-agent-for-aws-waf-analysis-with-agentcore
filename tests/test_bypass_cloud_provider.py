@@ -112,3 +112,27 @@ def test_a_data_center_ip_is_still_the_high_confidence_rung(monkeypatch):
     verdict = _verdict(monkeypatch, DATA_CENTER)
     assert "HIGH CONFIDENCE: Undetected bot from data center" in verdict, verdict
 
+
+
+@pytest.mark.parametrize("provider", ["fastly", "newcdn"])
+def test_any_provider_is_named_with_the_cdn_reading_whatever_rung_spoke(monkeypatch, provider):
+    """The provider is read off the label, never from a list: `newcdn` is a name no version uses.
+    A CDN or proxy egress at scraper volume reaches the HIGH rung before the provider one, so the
+    caveat goes after whichever rung spoke."""
+    labels = [f"awswaf:managed:aws:bot-control:signal:cloud_service_provider:{provider}"]
+    verdict = _verdict(monkeypatch, labels, frequency_dynamic=[dict(ROW, peak_rpm="300")],
+                       uri_diversity=[dict(ROW, unique_uris="80")])
+    assert "HIGH CONFIDENCE: Automated scraper" in verdict, verdict
+    assert f"signal:cloud_service_provider:{provider}. If that is a CDN or proxy service" in verdict, verdict
+
+
+def test_the_control_no_provider_no_cdn_reading(monkeypatch):
+    verdict = _verdict(monkeypatch, BROWSER, frequency_dynamic=[dict(ROW, peak_rpm="300")],
+                       uri_diversity=[dict(ROW, unique_uris="80")])
+    assert "CDN or proxy" not in verdict, verdict
+
+
+def test_analyze_ip_names_the_provider_too():
+    from tools.waf_logs import _interpret_ip_labels
+    out = _interpret_ip_labels([{"Labels": '[{"name":"awswaf:managed:aws:bot-control:signal:cloud_service_provider:newcdn"}]'}])
+    assert "cloud provider address (newcdn)" in out and "CDN or proxy" in out, out

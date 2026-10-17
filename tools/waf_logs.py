@@ -823,6 +823,10 @@ def _interpret_ip_labels(rows: list[dict]) -> str:
         findings.append("⚠️ Signal: Non-browser User-Agent detected")
     if "signal:automated_browser" in all_labels:
         findings.append("🔴 Signal: Automated browser detected")
+    providers = sorted(set(re.findall(r"signal:cloud_service_provider:([a-z_]+)", all_labels)))
+    if providers:
+        findings.append(f"☁️ Signal: cloud provider address ({', '.join(providers)}). A CDN or proxy service "
+                        f"here makes the IP its egress for many clients")
 
     # Targeted Bot Control
     tgt_signals = []
@@ -830,7 +834,7 @@ def _interpret_ip_labels(rows: list[dict]) -> str:
         tgt_signals.append("VolumetricSession (abnormal session behavior)")
     if "TGT_SignalAutomatedBrowser" in all_labels:
         tgt_signals.append("AutomatedBrowser")
-    if "TGT_TokenReuseIP" in all_labels:
+    if "TGT_TokenReuseIp" in all_labels:
         tgt_signals.append("TokenReuseIP (token shared across IPs)")
     if "TGT_TokenAbsent" in all_labels:
         tgt_signals.append("TokenAbsent (no AWS WAF token)")

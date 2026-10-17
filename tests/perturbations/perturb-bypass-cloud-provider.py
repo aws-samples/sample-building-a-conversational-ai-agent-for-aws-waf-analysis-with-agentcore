@@ -48,6 +48,15 @@ CASES = [
      [(B, 'f"looks like this, and so do a partner\'s integration and an office or VPN egress on the "\n'
           '                f"provider\'s addresses.",', 'f"looks like this, and so does a partner\'s integration.",')],
      [f"{T}::test_an_unclassified_ip_on_a_cloud_provider_is_a_likely_undetected_bot"]),
+
+    ("the CDN reading only on the provider rung, not after whichever spoke",
+     [(B, "        if providers:\n            lines.append(f\"Provider signal: ", "        if False:\n            lines.append(f\"Provider signal: ")],
+     [f"{T}::test_any_provider_is_named_with_the_cdn_reading_whatever_rung_spoke"]),
+
+    ("analyze_ip blind to the provider label",
+     [("tools/waf_logs.py", '    providers = sorted(set(re.findall(r"signal:cloud_service_provider:([a-z_]+)", all_labels)))',
+       '    providers = []')],
+     [f"{T}::test_analyze_ip_names_the_provider_too"]),
 ]
 
 sys.exit(sweep(CASES))

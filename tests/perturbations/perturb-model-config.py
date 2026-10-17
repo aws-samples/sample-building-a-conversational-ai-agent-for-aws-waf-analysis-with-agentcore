@@ -19,6 +19,7 @@ A = "agent.py"
 CALL = ('        _model = BedrockModel(\n'
         '            model_id=MODEL_ID,\n'
         '            region_name=MODEL_REGION,\n'
+        '            **({"max_tokens": ceiling} if ceiling else {}),\n'
         '        )')
 
 CASES = [
@@ -32,12 +33,24 @@ CASES = [
                              "            region_name=MODEL_REGION,\n            top_p=0.9,\n"))],
      [f"{T}::test_no_sampling_parameter_reaches_the_request"], True),
 
-    # The output bound is gone too now, for its own reason, so what this pins is that the request carries
-    # nothing this repository chose. Adding either parameter back is what it catches.
-    ("an output bound added back beside the sampling ones",
-     [(A, CALL, CALL.replace("            region_name=MODEL_REGION,\n",
-                             "            region_name=MODEL_REGION,\n            max_tokens=4096,\n"))],
-     [f"{T}::test_the_request_carries_no_inference_parameters_at_all"], True),
+    # The bound is the model's own ceiling, read from Bedrock. Each way of losing that is caught.
+    ("no bound sent, which is Bedrock's 4,096 default, the state 0.27 to 0.33 shipped",
+     [(A, CALL, CALL.replace('            **({"max_tokens": ceiling} if ceiling else {}),\n', ""))],
+     [f"{T}::test_the_request_carries_the_ceiling_bedrock_reports_and_nothing_else"], True),
+
+    ("a number picked here instead of the model's ceiling",
+     [(A, CALL, CALL.replace('            **({"max_tokens": ceiling} if ceiling else {}),\n',
+                             "            max_tokens=32768,\n"))],
+     [f"{T}::test_the_request_carries_the_ceiling_bedrock_reports_and_nothing_else"], True),
+
+    ("the probe asking within the ceiling, so it reads nothing",
+     [(A, "_ABOVE_ANY_CEILING = 10_000_000", "_ABOVE_ANY_CEILING = 4096")],
+     [f"{T}::test_the_probe_asks_above_any_ceiling_and_samples_nothing"], False),
+
+    ("an unread ceiling failing silently",
+     [(A, '        print(f"[agent] could not read the model\'s output ceiling, so answers stop at Bedrock\'s default of "\n'
+          '              f"4,096 tokens: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)\n', "")],
+     [f"{T}::test_an_unread_ceiling_sends_no_bound_and_says_why"], True),
 
     ("the model rebuilt on every call, which builds a boto3 client per turn",
      [(A, "    if _model is None:", "    if True:")],

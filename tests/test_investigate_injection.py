@@ -196,6 +196,19 @@ def test_the_classification_matrix_is_in_code_and_covers_every_branch():
     assert "probing" in I._classify(many_ips, ["ja4a", "ja4b", "ja4c"])[0]
 
 
+@pytest.mark.parametrize("ips", range(1, 9))
+@pytest.mark.parametrize("ja4s", range(1, 4))
+def test_the_classification_says_nothing_its_own_counts_contradict(ips, ja4s):
+    """Every IP count against every fingerprint count. Live on v0.33.0, 2026-10-17: 4 source IPs on one
+    JA4 read "distributed probing, diverse sources and diverse fingerprints", since 4 fell between the
+    branch for 5 or more and the one for 3 or fewer, and the deployed agent pointed out the
+    contradiction itself."""
+    text = I._classify([f"10.0.0.{i}" for i in range(ips)], [f"ja4{j}" for j in range(ja4s)])[0]
+    assert ("diverse fingerprints" in text) == (ja4s > 1 and ips >= 5), (ips, ja4s, text)
+    assert ("one TLS fingerprint" in text) == (ja4s == 1 and ips >= 5), (ips, ja4s, text)
+    assert ("few sources" in text) == (ips < 5), (ips, ja4s, text)
+
+
 def test_no_evidence_is_not_reported_as_missing_ja4():
     """**Found by running it live.** With nothing matched, the first version answered "unknown, no
     JA4 data", which sends the reader after field availability when the truth is that nothing

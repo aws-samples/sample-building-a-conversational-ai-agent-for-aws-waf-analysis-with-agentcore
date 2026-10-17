@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased
+
+### Fixed: every answer stopped at 4,096 output tokens
+
+0.27.0 dropped the 4,096 output bound so that the model's own ceiling would apply, and sent no
+`inferenceConfig` at all. Bedrock then applies a default, and the default is 4,096: measured on
+2026-10-17 against `global.anthropic.claude-sonnet-5`, a request with no `inferenceConfig` stopped at
+4,096 output tokens with `stopReason: max_tokens`, and the same request with `maxTokens` 128,000 ran to
+`end_turn` at 17,060. So a long investigation was cut where 0.26 cut it. The agent now reads the
+model's ceiling once, from Bedrock's refusal of a request above it, and sends that: 128,000 for Sonnet
+5, Sonnet 4.6 and Opus 5.5, 64,000 for Haiku 4.5, so a different `ModelId` gets its own. If the ceiling
+cannot be read, the request goes without one, as before, and the reason is logged.
+
+### Fixed: the weekly report put the model's summary into the page as raw HTML
+
+`set_report_summary` turned the model's Markdown into HTML with a converter that passes HTML through,
+and the model writes that summary from log content it is told not to trust, so a User-Agent or URI
+quoted in it could become markup in the downloaded report. The summary's markup is now escaped
+first, and still renders as Markdown. The patrol report escapes every string it is given at entry,
+and both reports encode the JSON they put inside a script so that no value can close the element.
+
+### Fixed: a token shared across IPs never reached `analyze_ip`'s label findings
+
+It looked for `TGT_TokenReuseIP`, and Bot Control's rules are `TGT_TokenReuseIpLow`, `...Medium`
+and `...High`, so the match never happened. The prompt recommended the same missing name. A test
+now checks every Bot Control rule and label name in the tools, the prompt and the Bot Control
+knowledge base against `describe-managed-rule-group` for every version, read on 2026-10-17, and the
+label reference in the knowledge base is brought up to Version_7.0.
+
+### Fixed: cloud-provider traffic, read by provider name
+
+Patrol raised an item for AWS, GCP, Azure and Oracle only, called them data centers, and summed
+rule-match series into the request count. It now counts every provider under the
+`cloud_service_provider` label namespace from the request metrics, so Alibaba, DigitalOcean, IBM,
+Akamai and Cloudflare raise one too, and so will a provider Bot Control adds later. The bypass
+investigation, `analyze_ip` and the agent's instructions now name the provider and say that a CDN or
+proxy service makes the IP its egress for many clients, which no per-IP verdict describes. Which
+providers are CDNs is left to the model rather than listed in code.
+
+### Fixed: four source IPs on one fingerprint read as diverse fingerprints
+
+`investigate_injection` classified five or more IPs on one JA4 as a distributed bot and three or fewer
+as a concentrated attack, so four fell through to "distributed probing, diverse sources and diverse
+fingerprints". Found on v0.33.0's deployment, which pointed out the contradiction itself. Fewer than
+five is now concentrated.
+
 ## 0.33.0 (2026-10-17)
 
 ### Fixed: the false-positive investigation could name another group's sub-rule

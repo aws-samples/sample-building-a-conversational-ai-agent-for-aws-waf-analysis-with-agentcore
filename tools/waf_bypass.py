@@ -764,7 +764,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             lines.append(f"| {r.get('httpRequest.clientIp', '?'):<15} | {r.get('total', '?'):>8} | {signal:<20} |")
         lines.append("  (signal:known_bot_data_center or signal:cloud_service_provider:* present, but not "
                      "classified as a bot. Partners and SaaS tools run on cloud providers too, so a "
-                     "cloud-provider row needs the user to say whether the IP is expected.)")
+                     "cloud-provider row needs the user to say whether the IP is expected. A provider "
+                     "that is a CDN or proxy service makes the IP its egress for many clients.)")
     else:
         lines.append(_empty_reason(failures, "datacenter"))
 
@@ -1312,6 +1313,13 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
             "**CANNOT DETERMINE** — signals are mixed or insufficient.",
             f"Evidence: {peak_rpm} req/min, {unique_uris} URIs, country={country}.",
             "→ Ask user: is this IP expected? Is this a known service/partner?"])
+        # After whichever rung spoke, since every rung reads this IP as one client. The provider is
+        # named rather than classified here: which providers are CDNs or proxies is the model's to say.
+        if providers:
+            lines.append(f"Provider signal: signal:cloud_service_provider:{', '.join(providers)}. If that is a CDN "
+                         f"or proxy service rather than a host for rented instances, this IP is its egress for "
+                         f"many clients and every reading above is about all of them together: say so, and look "
+                         f"for the client address it forwards before naming one actor.")
 
     lines.append("")
     lines.append(CONFIDENCE_RULES)
