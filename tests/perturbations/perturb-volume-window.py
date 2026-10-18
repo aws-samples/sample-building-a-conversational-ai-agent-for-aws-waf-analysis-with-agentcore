@@ -11,7 +11,7 @@ from _harness import sweep
 B = "tools/waf_bypass.py"
 T = "tests/test_volume_window.py"
 # The whole if/elif chain, so the reachability probe goes ahead of its `if`, not an `elif` header.
-CHAIN = '    if prev_peak is not None:\n        allowed_x, base = peak_allowed / prev_peak[1], prev\n        basis = f"the busiest hour of the week before ({prev_peak[0].astimezone(naive_time_tz()).strftime(\'%Y-%m-%d %H:%M\')})"\n    elif week_allowed is not None:\n'
+CHAIN = '    if peak_x is not None:\n        allowed_x, base, basis = peak_x, peak_prev, peak_label\n    elif week_allowed is not None:\n'
 
 CASES = [
     ("the volume step compares seven-day totals again",
@@ -52,8 +52,8 @@ CASES = [
      [f"{T}::test_the_scan_compares_its_own_window_a_week_earlier",
       "tests/test_local_import_shadowing.py::test_no_function_in_tools_shadows_a_name_it_already_used"], False),
     ("a picked hour set against its own hour a week earlier",
-     [(B, "    if prev_peak is not None:\n        allowed_x, base = peak_allowed / prev_peak[1], prev\n",
-       "    if False:\n        allowed_x, base = peak_allowed / prev_peak[1], prev\n")],
+     [(B, "    if peak_x is not None:\n        allowed_x, base, basis = peak_x, peak_prev, peak_label\n",
+       "    if False:\n        allowed_x, base, basis = peak_x, peak_prev, peak_label\n")],
      [f"{T}::test_a_picked_hour_is_set_against_the_busiest_hour_of_the_week_before"], True),
 
     ("the week before's peak read from this week",
@@ -70,6 +70,14 @@ CASES = [
      [(B, "    return start, max(min(end, last), start + timedelta(seconds=period)), period, has_week\n",
        "    return start, end, period, has_week\n")],
      [f"{T}::test_the_scan_reads_whole_points_and_stops_at_the_last_one"], True),
+    ("mitigated traffic set against the same window while ALLOW is set against the peak",
+     [(B, "        allowed_x, base, basis = peak_x, peak_prev, peak_label\n",
+       "        allowed_x, base, basis = peak_x, prev, peak_label\n")],
+     [f"{T}::test_the_table_and_the_mitigated_comparison_use_the_same_peak"], True),
+
+    ("the week before's busiest hour left out of the table",
+     [(B, '        + (f" {peak_prev[\'allowed\']:,.0f} |" if peak_prev else ""),\n', '        + "",\n')],
+     [f"{T}::test_the_table_and_the_mitigated_comparison_use_the_same_peak"], False),
 ]
 
 sys.exit(sweep(CASES))

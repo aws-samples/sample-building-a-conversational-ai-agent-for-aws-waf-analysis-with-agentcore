@@ -22,9 +22,9 @@ CASES = [
 
     ("counted per WebACL rule, so reputation lists and Bot Control count",
      [(L, "        if why:\n            blocks, reasons = unknown.get(rule, (0, why))\n            unknown[rule] = (blocks + n, reasons)\n"
-           "            excluded.add((rule, \"\"))\n            paths[rule] = max(paths.get(rule, 0), uris)\n        elif cat:\n            cats[cat] = cats.get(cat, 0) + n\n",
+           "            excluded.add((rule, \"\"))\n            paths[rule] = (max(paths.get(rule, (0, 0))[0], uris), paths.get(rule, (0, 0))[1] + 1)\n        elif cat:\n            cats[cat] = cats.get(cat, 0) + n\n",
        "        if why:\n            blocks, reasons = unknown.get(rule, (0, why))\n            unknown[rule] = (blocks + n, reasons)\n"
-           "            excluded.add((rule, \"\"))\n            paths[rule] = max(paths.get(rule, 0), uris)\n        else:\n"
+           "            excluded.add((rule, \"\"))\n            paths[rule] = (max(paths.get(rule, (0, 0))[0], uris), paths.get(rule, (0, 0))[1] + 1)\n        else:\n"
            "            cat = cat or rule\n            cats[cat] = cats.get(cat, 0) + n\n")],
      [f"{T}::test_rate_limits_reputation_lists_and_bot_control_are_not_categories"], True),
 
@@ -84,6 +84,19 @@ CASES = [
        "        lines.append(\"  \" + (\", \".join(f\"{c} {b:,}{paths(c)}\" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))\n"
            "                             or (\"none: its blocks came from rules that do not inspect what a request asks for or carries\" if not attack[\"blocked\"] else")],
      [f"{T}::test_not_blocked_and_blocked_by_other_rules_read_differently"], True),
+    ("a category of several rules shown as if its paths were the category's",
+     [(L, '            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} rules on {where})"\n',
+       '            return "" if not rows else f" on {where}"\n')],
+     [f"{T}::test_a_category_of_several_sub_rules_names_its_widest_and_counts_only_that"], True),
+    ("two categories on the floor called certain",
+     [(L, "        if len(cats) >= ATTACK_CATEGORIES_ALONE:\n            return (f\"**HIGH CONFIDENCE: Attack source",
+       "        if True:\n            return (f\"**HIGH CONFIDENCE: Attack source")],
+     [f"{T}::test_two_categories_on_the_floor_are_likely_not_certain"], True),
+
+    ("three categories called only likely",
+     [(L, "        if len(cats) >= ATTACK_CATEGORIES_ALONE:\n            return (f\"**HIGH CONFIDENCE: Attack source",
+       "        if False:\n            return (f\"**HIGH CONFIDENCE: Attack source")],
+     [f"{T}::test_three_categories_are_high_confidence"], True),
 ]
 
 sys.exit(sweep(CASES))

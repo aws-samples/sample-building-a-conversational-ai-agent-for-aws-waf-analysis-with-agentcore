@@ -995,8 +995,9 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 # The smaller number also needs one category's blocks on several paths: a real client whose every save
 # trips SQL injection and XSS, a CMS post with code in it, takes two categories on one path and may have
 # almost nothing allowed. Measured the same day: each scanner's SQL-injection blocks fell on 2 paths, the
-# false-positive user's on 1. The widest category, not the sum, because two categories on one path would
-# sum to two.
+# false-positive user's on 1, with no margin, since 2 is the floor. Counted per rule and sub-rule, the
+# widest one, because the block query groups by them: two categories on one path would sum to two, and a
+# category whose two sub-rules hit one path each counts 1, which only makes the rung harder to reach.
 ATTACK_CATEGORIES_ALONE = 3
 ATTACK_CATEGORIES_WITH_MAJORITY = 2
 ATTACK_PATHS_WITH_MAJORITY = 2
@@ -1011,8 +1012,9 @@ def _block_classes(rows: list, custom, custom_error: str = "") -> dict:
     """What blocked an IP, per attack category, from `(type, rule, group id, sub-rule, blocks)` rows.
 
     `custom` is `waf_injection.custom_rule_categories` for the WebACL's rules, or None when it could not
-    be read, with `custom_error` saying why. Returns `categories` `{category: blocks}`, `paths`, the
-    most distinct paths one category's or one unknown rule's blocks fell on, `unknown`
+    be read, with `custom_error` saying why. Returns `categories` `{category: blocks}`, `paths`
+    `{category or unknown rule: (paths, rows)}`, the most distinct paths one of its rules' or sub-rules'
+    blocks fell on and how many rules and sub-rules it holds, `unknown`
     `{rule: (blocks, why)}` for blocks whose category cannot be read, and `excluded`, the
     `(rule, sub-rule or "")` pairs whose blocks the bot rungs leave out: every content block, and every
     block whose category is unknown, since either could be an attack's request."""
@@ -1049,11 +1051,11 @@ def _block_classes(rows: list, custom, custom_error: str = "") -> dict:
             blocks, reasons = unknown.get(rule, (0, why))
             unknown[rule] = (blocks + n, reasons)
             excluded.add((rule, ""))
-            paths[rule] = max(paths.get(rule, 0), uris)
+            paths[rule] = (max(paths.get(rule, (0, 0))[0], uris), paths.get(rule, (0, 0))[1] + 1)
         elif cat:
             cats[cat] = cats.get(cat, 0) + n
             excluded.add((rule, sub if kind == "MANAGED_RULE_GROUP" else ""))
-            paths[cat] = max(paths.get(cat, 0), uris)
+            paths[cat] = (max(paths.get(cat, (0, 0))[0], uris), paths.get(cat, (0, 0))[1] + 1)
     return {"categories": cats, "unknown": unknown, "excluded": excluded, "blocked": blocked, "paths": paths}
 
 
@@ -1462,7 +1464,10 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         lines.append(_empty_reason(failures, "attack_categories"))
     else:
         cats = attack["categories"]
-        paths = lambda k: f" on {attack['paths'][k]} path{'s' if attack['paths'][k] != 1 else ''}" if k in attack["paths"] else ""
+        def paths(k):
+            n, rows = attack["paths"].get(k, (0, 0))
+            where = f"{n} path{'s' if n != 1 else ''}"
+            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} rules on {where})"
         lines.append("  " + (", ".join(f"{c} {b:,}{paths(c)}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
                              or ("none: it was not blocked" if not attack["blocked"] else
                                  "none: its blocks came from rules that do not inspect what a request asks for or carries")))
@@ -1586,17 +1591,27 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     def _is_attack_source(cats, content, unknown_rules=0, unknown_blocks=0):
         n = len(cats) + unknown_rules
-        spread = max([attack["paths"].get(k, 0) for k in [*cats, *(attack["unknown"] if unknown_rules else ())]] or [0])
+        spread = max([attack["paths"].get(k, (0, 0))[0] for k in [*cats, *(attack["unknown"] if unknown_rules else ())]] or [0])
         return n >= ATTACK_CATEGORIES_ALONE or (n >= ATTACK_CATEGORIES_WITH_MAJORITY and content + unknown_blocks > allowed
                                                 and spread >= ATTACK_PATHS_WITH_MAJORITY)
 
     def _attack_source():
         cats, content = _attack_counts()
         named = ", ".join(f"{c} {b:,}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
-        return (f"**HIGH CONFIDENCE: Attack source or scanner.** Blocked for {len(cats)} attack categories "
-                f"({named}), {content:,} blocked requests against {allowed:,} allowed. The blocks already "
-                f"stopped what they matched; what reached the origin is what it was allowed, so list that: "
-                f"aggregate_logs(group_by='uri', filter_by='{{\"ip\": \"{ip}\", \"action\": \"ALLOW\"}}').")
+        allowed_call = (f"what reached the origin is what it was allowed, so list that: aggregate_logs(group_by='uri', "
+                        f"filter_by='{{\"ip\": \"{ip}\", \"action\": \"ALLOW\"}}').")
+        if len(cats) >= ATTACK_CATEGORIES_ALONE:
+            return (f"**HIGH CONFIDENCE: Attack source or scanner.** Blocked for {len(cats)} attack categories "
+                    f"({named}), {content:,} blocked requests against {allowed:,} allowed. The blocks already "
+                    f"stopped what they matched; {allowed_call}")
+        spread = max(attack["paths"].get(c, (0, 0))[0] for c in cats)
+        # The floor, measured once: one script's scanners sat exactly on it, so it is not called certain.
+        return (f"**LIKELY: Attack source or scanner.** Blocked for {len(cats)} attack categories ({named}), "
+                f"{content:,} blocked requests against {allowed:,} allowed, one rule's blocks on {spread} paths. "
+                f"That is the floor for this verdict ({ATTACK_CATEGORIES_WITH_MAJORITY} categories, "
+                f"{ATTACK_PATHS_WITH_MAJORITY} paths), measured once, on test traffic. Ask the user whether the "
+                f"blocked requests are their own application's; if so, run the false-positive check. Otherwise "
+                f"{allowed_call}")
 
     def _attack_source_unread():
         cats, content = _attack_counts()

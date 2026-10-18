@@ -113,6 +113,20 @@ def test_a_picked_hour_is_set_against_the_busiest_hour_of_the_week_before(volume
     assert any(NOW - timedelta(days=7) <= e <= week_before for _, e in peaks), peaks
 
 
+def test_the_table_and_the_mitigated_comparison_use_the_same_peak(volume):
+    """The ratio read against the week before's busiest hour, the table against the same hour a week
+    earlier, and mitigated traffic against that same hour: three bases for one verdict."""
+    h1 = (NOW - timedelta(days=2)).replace(minute=0)
+    h0 = (NOW - timedelta(days=9, hours=5)).replace(minute=0)
+    busy = lambda t: _in(t, h1) or _in(t, h0)
+    out = volume(TimelineCW(lambda t: 300 if _in(t, h1) else 65 if _in(t, h0) else 30,
+                            blocked=lambda t: 50 if busy(t) else 5))
+    week_before = f"The busiest hour of the week before ({h0.strftime('%Y-%m-%d %H:%M')})"
+    assert week_before in out and "| ALLOW | 18,000 | 1,800 |" in out and "| 3,900 |" in out, out
+    assert "| ALLOW ratio | | 10.0x |" in out and "| 4.6x |" in out, out
+    assert "did NOT rise as much (1.0x)" in out and "WAF IS catching" not in out, out
+
+
 def test_a_window_the_user_names_is_not_set_against_a_peak(volume):
     out = volume(TimelineCW(steady_with_burst), start=BURST, minutes=60)
     assert "**33.3x** the same window a week earlier" in out and "busiest hour of the week before" not in out, out

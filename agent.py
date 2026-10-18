@@ -159,7 +159,7 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 - **analyze_ip**: General-purpose IP profiling. Looks at ALL actions (BLOCK + ALLOW + COUNT). Includes NAT detection. Use when user says "check IP X" without specifying direction (FP or bypass).
 - **detect_bypass(step='investigate_ip')**: Bypass-specific. Focuses on ALLOW traffic anomalies. Includes confidence judgment + remediation suggestions. Use when already in bypass investigation context.
 - If analyze_ip reveals the IP is mostly ALLOW'd with suspicious patterns → suggest detect_bypass for deeper bypass analysis.
-- If analyze_ip names an attack source, follow its pointer to what the IP was allowed; that is what reached the origin. Do not run an FP check on it unless the user says the blocked requests are their own application's.
+- If analyze_ip names an attack source with HIGH CONFIDENCE, follow its pointer to what the IP was allowed; that is what reached the origin. Do not run an FP check on it unless the user says the blocked requests are their own application's. A LIKELY attack source sits on the verdict's floor: ask that question first, and run the FP check if the answer is yes.
 - If analyze_ip reveals the IP is mostly BLOCK'd otherwise → suggest investigate_block_fp for FP analysis.
 
 ## IP Attribution: Verify Before Concluding Malicious

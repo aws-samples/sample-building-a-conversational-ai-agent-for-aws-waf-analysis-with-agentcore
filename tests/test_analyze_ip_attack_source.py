@@ -111,6 +111,17 @@ def test_two_categories_on_one_path_are_not_an_attack_source(monkeypatch):
     assert "SQL injection 40 on 1 path, cross-site scripting 40 on 1 path" in out, out
 
 
+def test_a_category_of_several_sub_rules_names_its_widest_and_counts_only_that(monkeypatch):
+    """The block query groups by sub-rule, so two SQL-injection sub-rules on one path each read as one
+    path, not two. That only makes the rung harder to reach, and the output says which number it is."""
+    qa = managed("AWSManagedRulesSQLiRuleSet", "SQLi_QUERYARGUMENTS", 20)
+    body = managed("AWSManagedRulesSQLiRuleSet", "SQLi_BODY", 20)
+    xss = managed("AWSManagedRulesCommonRuleSet", "CrossSiteScripting_BODY", 1)
+    verdict, out, *_ = _run(monkeypatch, [qa, body, xss], allowed=0)
+    assert "SQL injection 40 (the widest of its 2 rules on 1 path), cross-site scripting 1 on 1 path" in out, out
+    assert "Attack source" not in verdict, verdict
+
+
 def test_the_paths_are_read_on_both_engines(monkeypatch):
     *_, seen, _ = _run(monkeypatch, [SQLI, PROBE], allowed=3)
     cwl, athena = seen["attack_categories"]
@@ -120,6 +131,20 @@ def test_the_paths_are_read_on_both_engines(monkeypatch):
 def test_two_categories_need_more_blocks_than_allowed_requests(monkeypatch):
     verdict, *_ = _run(monkeypatch, [SQLI, PROBE], allowed=13)
     assert "Attack source" not in verdict, verdict
+
+
+def test_two_categories_on_the_floor_are_likely_not_certain(monkeypatch):
+    """The scanners sat exactly on the floor, 2 categories and 2 paths, in one sample from one script."""
+    verdict, *_ = _run(monkeypatch, [SQLI, PROBE], allowed=3)
+    assert "**LIKELY: Attack source or scanner.**" in verdict and "HIGH CONFIDENCE" not in verdict, verdict
+    assert "one rule's blocks on 2 paths" in verdict and "(2 categories, 2 paths), measured once" in verdict, verdict
+    assert "Ask the user whether the blocked requests are their own application's" in verdict, verdict
+
+
+def test_three_categories_are_high_confidence(monkeypatch):
+    xss = managed("AWSManagedRulesCommonRuleSet", "CrossSiteScripting_BODY", 1)
+    verdict, *_ = _run(monkeypatch, [SQLI, PROBE, xss], allowed=3)
+    assert "**HIGH CONFIDENCE: Attack source or scanner.**" in verdict and "LIKELY" not in verdict, verdict
 
 
 def test_three_categories_need_no_majority(monkeypatch):

@@ -10,7 +10,7 @@ read as 1.1x, "within normal range". The step now compares one window, the `star
 the busiest hour of ALLOW traffic in the last seven days, with the same window a week earlier and with
 the six hours either side. The same flood reads 20.9x. A busiest hour picked out of seven days sits
 above its own hour a week earlier by selection alone, so when the hour was picked, the busiest hour of the
-week before decides. A rise in mitigated traffic from none counts as a rise; the first run of the new
+week before decides, and the table shows it and sets mitigated traffic against it too. A rise in mitigated traffic from none counts as a rise; the first run of the new
 code called 562,445 mitigated requests against none "did NOT rise". The bypass scan's own week-on-week
 note now reads whole metric points and stops at the last one, as this step does.
 
@@ -19,12 +19,14 @@ note now reads whole metric points and stops at the last one, as this step does.
 `analyze_ip`'s verdicts described bots only, and its URI count included blocked requests, so a scanner
 that probed more than 50 paths was "Probable crawler/scraper", or "Automated scraper" at speed. A first
 verdict now names an attack source: an IP blocked for three attack categories, or for two with more
-blocks than allowed requests and one category's blocks on at least two paths. A client whose every save
-trips two categories on one path, a CMS post with code in it, is left to the false-positive check.
-Categories come from the sub-rule that ended evaluation (SQL injection,
-cross-site scripting, path probing and so on), for AWS managed groups only, and from the statement of a
-custom rule. Rate limits, reputation lists, Bot Control and size checks are not categories, so a flood
-source still reads as hammering. Blocks whose category cannot be read (a third-party or customer rule
+blocks than allowed requests and one rule's or sub-rule's blocks on at least two paths. A client whose
+every save trips two categories on one path, a CMS post with code in it, is left to the false-positive
+check. The two-category verdict is LIKELY, not HIGH CONFIDENCE, because the test scanners sat exactly on
+its floor; it asks whether the blocked requests are the user's own application's. Categories come from
+the sub-rule that ended evaluation (SQL injection, cross-site scripting,
+path probing and so on), for AWS managed groups only, and from the statement of a custom rule. Rate
+limits, reputation lists, Bot Control and size checks are not categories, so a flood source still
+reads as hammering. Blocks whose category cannot be read (a third-party or customer rule
 group, a rule no longer in the WebACL) stop the verdict when they could change it. The bot verdicts no
 longer count blocks set aside as attacks. On the 2026-09-08 test traffic, each of 10 scanners (SQL
 injection 12 on 2 paths, path probing 1, against 3 allowed) is now an attack source and the

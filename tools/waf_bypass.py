@@ -486,7 +486,7 @@ def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None =
                 return (f"## Volume Anomaly Analysis\n\nNo ALLOW traffic was recorded for {webacl_name} in the "
                         f"last 7 days, so there is no busiest hour to compare. Give a start_time to check a "
                         f"specific window.")
-            start, peak_allowed = peak
+            start = peak[0]
             prev_peak = _peak_hour(cw, webacl_name, scope, region, now - week)
             end, chosen = min(start + timedelta(hours=1), now), "the busiest hour of ALLOW traffic in the last 7 days"
         else:
@@ -507,6 +507,9 @@ def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None =
         before = _volume_reads(cw, webacl_name, start - around, start, period, scope, region)
         after = (_volume_reads(cw, webacl_name, end, after_end, period, scope, region)
                  if after_end > end else {"allowed": 0, "mitigated": 0, "event": 0})
+        # Read like the window itself, so the table, the ratio and the mitigated comparison share it.
+        peak_prev = (_volume_reads(cw, webacl_name, prev_peak[0], prev_peak[0] + span, period, scope, region)
+                     if prev_peak else None)
     except Exception as e:                                # noqa: BLE001
         return (f"## Volume Anomaly Analysis\n\nThe CloudWatch metric read failed ({type(e).__name__}: {e}), so "
                 f"nothing here says whether traffic was normal. Retry, or query the logs for the window.")
@@ -515,10 +518,11 @@ def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None =
     scale = span / around_span
     near = {k: (before[k] + after[k]) * scale for k in ("allowed", "mitigated")}
     ratio = lambda k, base: this[k] / base[k] if base and base[k] else None
-    week_allowed, near_allowed = ratio("allowed", prev), ratio("allowed", near)
-    if prev_peak is not None:
-        allowed_x, base = peak_allowed / prev_peak[1], prev
-        basis = f"the busiest hour of the week before ({prev_peak[0].astimezone(naive_time_tz()).strftime('%Y-%m-%d %H:%M')})"
+    week_allowed, near_allowed, peak_x = ratio("allowed", prev), ratio("allowed", near), ratio("allowed", peak_prev)
+    peak_label = (f"the busiest hour of the week before ({prev_peak[0].astimezone(naive_time_tz()).strftime('%Y-%m-%d %H:%M')})"
+                  if prev_peak else "")
+    if peak_x is not None:
+        allowed_x, base, basis = peak_x, peak_prev, peak_label
     elif week_allowed is not None:
         allowed_x, base, basis = week_allowed, prev, "the same window a week earlier"
     else:
@@ -540,11 +544,15 @@ def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None =
         f"**WebACL**: {webacl_name}",
         "",
         "### Traffic Comparison",
-        f"| Metric | This window | Same window a week earlier | {SURROUNDING_HOURS} hours either side, scaled to this window |",
-        "| ------ | ----------- | -------------------------- | ------------------------------------- |",
-        f"| ALLOW | {this['allowed']:,.0f} | {week_cell('allowed')} | {near['allowed']:,.0f} |",
-        f"| Mitigated (Block+Challenge+Captcha) | {this['mitigated']:,.0f} | {week_cell('mitigated')} | {near['mitigated']:,.0f} |",
-        f"| ALLOW ratio | | {show(week_allowed)} | {show(near_allowed)} |",
+        f"| Metric | This window | Same window a week earlier | {SURROUNDING_HOURS} hours either side, scaled to this window |"
+        + (f" {peak_label[0].upper()}{peak_label[1:]} |" if peak_prev else ""),
+        "| ------ | ----------- | -------------------------- | ------------------------------------- |"
+        + (" --- |" if peak_prev else ""),
+        f"| ALLOW | {this['allowed']:,.0f} | {week_cell('allowed')} | {near['allowed']:,.0f} |"
+        + (f" {peak_prev['allowed']:,.0f} |" if peak_prev else ""),
+        f"| Mitigated (Block+Challenge+Captcha) | {this['mitigated']:,.0f} | {week_cell('mitigated')} | {near['mitigated']:,.0f} |"
+        + (f" {peak_prev['mitigated']:,.0f} |" if peak_prev else ""),
+        f"| ALLOW ratio | | {show(week_allowed)} | {show(near_allowed)} |" + (f" {show(peak_x)} |" if peak_prev else ""),
         "",
     ]
     if this["event"]:
