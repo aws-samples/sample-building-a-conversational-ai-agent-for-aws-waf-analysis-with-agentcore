@@ -75,6 +75,14 @@ CASES = [
     ("every rule said to be unplaced",
      [(C, "    unplaced = _rule_of(rules, rule_name) is None\n", "    unplaced = True\n")],
      [f"{T}::test_a_placed_rule_does_not_say_its_position_is_unknown"], True),
+    ("a custom rule held back by a reader of managed labels",
+     [(C, "                       for r in all_count_rules if r not in designed and not _is_custom(webacl_rules, r)}",
+       "                       for r in all_count_rules if r not in designed}")],
+     [f"{T}::test_a_custom_rule_is_not_held_back_by_a_reader_of_managed_labels"], False),
+
+    ("a whole group in Count taken for a custom rule",
+     [(C, ' and "ManagedRuleGroupStatement" not in (own.get("Statement") or {})', "")],
+     [f"{T}::test_a_whole_group_in_count_is_still_held_back_by_a_reader_of_its_labels"], True),
 ]
 
 sys.exit(sweep(CASES))

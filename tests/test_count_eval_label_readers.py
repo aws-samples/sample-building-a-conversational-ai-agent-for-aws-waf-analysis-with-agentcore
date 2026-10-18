@@ -156,6 +156,26 @@ def test_a_zero_hit_sub_rule_a_later_rule_may_read_is_not_called_safe(inventory)
     assert "CrossSiteScripting_QUERYARGUMENTS (0 hits): xss-blocker" in section and "Not safe" in section, out
 
 
+def test_a_custom_rule_is_not_held_back_by_a_reader_of_managed_labels(inventory):
+    """The common "allow bot:verified" rule reads a managed label, which a custom rule's own labels,
+    in the WebACL's namespace, never are. It was moved out of "safe to switch" and told that "a managed
+    sub-rule's label is not in the configuration"."""
+    verified = rule("allow-verified", 30, match("awswaf:managed:aws:bot-control:bot:verified"), "Allow")
+    out = inventory([rule("flagger", 10, {"ByteMatchStatement": {}}, labels=["test:flag"]), verified], {"flagger": 0})
+    assert "flagger — 0 hits in 14 days, safe to switch" in out, out
+    assert "Later rules that read managed labels" not in out, out
+
+
+def test_a_whole_group_in_count_is_still_held_back_by_a_reader_of_its_labels(inventory):
+    """Its name is the WebACL rule's, as a custom rule's is, but its labels are managed."""
+    group = {**CRS, "OverrideAction": {"Count": {}}}
+    group["Statement"] = {"ManagedRuleGroupStatement": {"VendorName": "AWS", "Name": "AWSManagedRulesCommonRuleSet"}}
+    xss = rule("xss-blocker", 30, match("awswaf:managed:aws:core-rule-set:CrossSiteScripting_QueryArguments"), "Block")
+    out = inventory([group, xss], {"AWS-AWSManagedRulesCommonRuleSet": 0})
+    assert "AWS-AWSManagedRulesCommonRuleSet — 0 hits in 14 days, safe to switch" not in out, out
+    assert "Later rules that read managed labels" in out, out
+
+
 def test_the_control_with_no_reader_a_zero_hit_rule_is_still_safe(inventory):
     out = inventory([CRS], {"CrossSiteScripting_QUERYARGUMENTS": 0})
     assert "CrossSiteScripting_QUERYARGUMENTS — 0 hits in 14 days, safe to switch" in out, out

@@ -184,8 +184,10 @@ def _step_init(rule_name: str = "") -> str:
     # Classify rules. A Count rule a later rule reads the label of is kept whatever its hits say.
     designed = {r: by_design(webacl_rules, r, prefix) for r in all_count_rules}
     designed = {r: readers for r, readers in designed.items() if readers}
+    # A custom rule's labels sit in the WebACL's own namespace, where no `awswaf:managed:` key reaches, and
+    # `by_design` already decides them, so only managed sub-rules and groups are read here.
     managed_readers = {r: [(n, p, k) for n, p, sc, k in label_readers(webacl_rules, r) if k.startswith("awswaf:managed:")]
-                       for r in all_count_rules if r not in designed}
+                       for r in all_count_rules if r not in designed and not _is_custom(webacl_rules, r)}
     managed_readers = {r: v for r, v in managed_readers.items() if v}
     permanent_count = []
     zero_hit = []
@@ -919,6 +921,12 @@ def label_readers(rules: list, count_rule: str) -> list:
             if own is None or r.get("Priority", 0) > own.get("Priority", 0)
             for scope, key in _label_matches(r.get("Statement", {}))
             if re.fullmatch(_LABEL_CHARS, key)]
+
+
+def _is_custom(rules: list, count_rule: str) -> bool:
+    """Whether `count_rule` is a WebACL rule of its own rather than a managed sub-rule or group."""
+    own = _rule_of(rules, count_rule)
+    return own is not None and own.get("Name") == count_rule and "ManagedRuleGroupStatement" not in (own.get("Statement") or {})
 
 
 def by_design(rules: list, count_rule: str, prefix: str) -> list:
