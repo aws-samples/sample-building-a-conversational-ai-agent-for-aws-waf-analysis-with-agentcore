@@ -186,6 +186,18 @@ CONFIDENCE_RULES = """\
 - PRESENT-ONLY: volume trends, IP distribution → show data, user decides if expected
 """
 
+# The endpoint signal: many sources on one path and method, against the same window a week earlier.
+# Measured 2026-10-18 with this exact condition (allowed, non-static, bot:verified left out) over 8 days
+# of hourly windows on the two low-traffic test WebACLs: it marked two events and no ordinary traffic,
+# a 6-IP credential-stuffing run on POST /login (816 requests, none a week earlier), which every per-IP
+# signal here missed with each IP under 200 requests, and a 10-source flood on GET / (37,771 allowed).
+# Loosened to 3 IPs and 50 requests it adds one endpoint per WebACL, both false-positive test traffic.
+ENDPOINT_MIN_IPS = 5
+ENDPOINT_MIN_REQUESTS = 200
+ENDPOINT_IP_GROWTH = 3
+_ENDPOINTS = 20
+_SAFE_URI = re.compile(r"[A-Za-z0-9/._~%!$&()*+,=:@-]+")
+
 # Anomaly thresholds (hardcoded, not LLM judgment)
 WOW_ANOMALY_MODERATE = 2.0
 WOW_ANOMALY_SIGNIFICANT = 3.0
@@ -778,6 +790,32 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
     later("ua_rotation", ua_rotation_cwl, ua_rotation_athena)
 
+    # Many sources on one endpoint, which every per-IP signal above is blind to by construction: a
+    # spread credential-stuffing run keeps each IP under them, and one endpoint fails the JA4 table's
+    # URI-breadth test. Compared with the same window a week earlier below.
+    endpoints_cwl = (
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW'"
+        f"{CWL_EXCLUDE_STATIC}"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
+        " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips"
+        " by httpRequest.uri, httpRequest.httpMethod"
+        f" | filter unique_ips >= {ENDPOINT_MIN_IPS}"
+        f" | sort unique_ips desc | limit {_ENDPOINTS}"
+    )
+    endpoints_athena = (
+        "SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\","
+        " count(*) as total, count(DISTINCT httprequest.clientip) as unique_ips"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        f"{ATHENA_EXCLUDE_STATIC}"
+        " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+        " GROUP BY httprequest.uri, httprequest.httpmethod"
+        f" HAVING count(DISTINCT httprequest.clientip) >= {ENDPOINT_MIN_IPS}"
+        " ORDER BY unique_ips DESC LIMIT {LIMIT}"
+    )
+    later("endpoints", endpoints_cwl, endpoints_athena, _ENDPOINTS)
+
     # All six at once. `reasons` carries the labels that never answered inside the batch
     # budget, which is a THIRD way to have no rows alongside "failed" and "matched
     # nothing", and it has to reach the section note or a batch timeout renders as
@@ -790,6 +828,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     auto_ua = results.get("auto_ua") or []
     distributed = results.get("distributed") or []
     ua_rotation = results.get("ua_rotation") or []
+    endpoints = results.get("endpoints") or []
+    endpoint_lines, endpoints_marked = _endpoint_section(endpoints, start_epoch, end_epoch, failures, notes)
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
@@ -880,6 +920,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append(_empty_reason(failures, "ua_rotation"))
 
+    lines.append("")
+    lines += endpoint_lines
+
     # One expression, read twice, because the two readings disagreed. This condition and the
     # action block below were written separately as De Morgan twins, and only this one learned
     # about `failures`: with every query failed the report said "Cannot Say Whether Bypass
@@ -888,7 +931,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # machines instruct the model to follow, so the refusal was overridden by the section that
     # decides what happens next. Naming the condition once is half the fix; the other half is
     # that both readings now branch on `failures`.
-    found_any = bool(crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation)
+    found_any = bool(crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation or endpoints_marked)
 
     if not found_any:
         lines.append("")
@@ -928,6 +971,11 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
         lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")
         lines.append("- For deeper analysis → call detect_bypass(step='investigate_ip', ip='...', start_time='...')")
+        if endpoints_marked:
+            lines.append("- A marked endpoint → ask whether it is new or expected to draw many sources. If not, the "
+                         "sources are spread on purpose: aggregate_logs(group_by='clientIp', filter_by='{\"uri\": "
+                         "\"<path>\", \"action\": \"ALLOW\"}') lists them, a rate-based rule scoped to the path and keyed "
+                         "on something other than the IP limits them, and for a login path ATP is the AWS answer.")
         if failures:
             lines.append(f"- Say the scan was partial: {len(failures)} of its queries failed "
                          f"({', '.join(sorted(failures))}), so these candidates are a floor and "
@@ -946,6 +994,90 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     if _cut:
         lines.append(_cut)
     return "\n".join(lines)
+
+
+def _endpoint_section(rows: list, start_epoch: int, end_epoch: int, failures: dict, notes: dict) -> tuple[list, bool]:
+    """The endpoint section's lines, and whether it marked anything.
+
+    Marked: at least ENDPOINT_MIN_IPS distinct IPs and ENDPOINT_MIN_REQUESTS requests on one path and
+    method, with ENDPOINT_IP_GROWTH times the distinct IPs of the same window a week earlier, or none
+    then. Two queries read the week earlier: the listed endpoints, and whether that window holds any log
+    at all, because a log group kept for less than a week or a table that does not reach back reads as
+    "no traffic a week earlier" on every endpoint and would mark them all."""
+    head = ["### Many Sources on One Endpoint (distributed low-rate abuse)"]
+    rule = (f"Marked when one path and method has at least {ENDPOINT_MIN_IPS} IPs and {ENDPOINT_MIN_REQUESTS} "
+            f"allowed requests, and {ENDPOINT_IP_GROWTH} times the distinct IPs of the same window a week "
+            f"earlier, or none then. These numbers were measured only on low-traffic test WebACLs.")
+    if failures.get("endpoints"):
+        return head + [_empty_reason(failures, "endpoints"), rule], False
+    if not rows:
+        return head + [f"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs in this window)", rule], False
+
+    week = 7 * 86400
+    keyed = [(r.get("httpRequest.uri", ""), r.get("httpRequest.httpMethod", ""), r) for r in rows]
+    safe = [(u, m) for u, m, _ in keyed if _SAFE_URI.fullmatch(u) and re.fullmatch(r"[A-Z]+", m)]
+    uris = sorted({u for u, _ in safe})
+    prev_cwl = (_LABELS_ARRAY + " | " "filter action = 'ALLOW'"
+                f" and httpRequest.uri in [{', '.join(repr(u) for u in uris)}]"
+                " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
+                " | stats count_distinct(httpRequest.clientIp) as unique_ips by httpRequest.uri, httpRequest.httpMethod"
+                f" | limit {_ENDPOINTS * 10}")
+    prev_athena = ("SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\","
+                   " count(DISTINCT httprequest.clientip) as unique_ips FROM {TABLE}"
+                   " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'"
+                   f" AND httprequest.uri IN ({', '.join(repr(u) for u in uris)})"
+                   " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+                   " GROUP BY 1, 2 LIMIT {LIMIT}")
+    any_cwl = "stats count(*) as n"
+    any_athena = "SELECT count(*) as n FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+    jobs = {"endpoints_logged": lambda: _safe_query(any_cwl, any_athena, start_epoch - week, end_epoch - week, limit=1,
+                                                    failures=failures, label="endpoints_logged", notes=notes)}
+    if uris:
+        jobs["endpoints_before"] = lambda: _safe_query(prev_cwl, prev_athena, start_epoch - week, end_epoch - week,
+                                                       limit=_ENDPOINTS * 10, failures=failures,
+                                                       label="endpoints_before", notes=notes)
+    got, reasons = run_concurrently(jobs)
+    failures.update(reasons)
+    logged = got.get("endpoints_logged") or []
+    logged_n = int(float(logged[0].get("n") or 0)) if logged else 0
+    before = {(r.get("httpRequest.uri", ""), r.get("httpRequest.httpMethod", "")): int(float(r.get("unique_ips") or 0))
+              for r in got.get("endpoints_before") or []}
+    baseline = None
+    if failures.get("endpoints_before"):
+        baseline = _empty_reason(failures, "endpoints_before")
+    elif failures.get("endpoints_logged"):
+        baseline = _empty_reason(failures, "endpoints_logged")
+    elif not logged_n:
+        baseline = ("  No request is logged in the same window a week earlier, so the comparison cannot run: the "
+                    "log destination may keep less than a week. Nothing is marked; the endpoints are listed.")
+
+    lines = head + [f"| {'Method':<6} | {'URI':<40} | {'Requests':>8} | {'IPs':>5} | {'Req/IP':>6} | {'IPs a week earlier':>18} | Marked |",
+                    f"| {'-'*6} | {'-'*40} | {'-'*8} | {'-'*5} | {'-'*6} | {'-'*18} | ------ |"]
+    marked, new_marked, busy = False, False, False
+    for uri, method, r in keyed:
+        total, ips = int(float(r.get("total") or 0)), int(float(r.get("unique_ips") or 0))
+        # The week-earlier query answered and that window holds logs, so an endpoint absent from it had
+        # no allowed request then: zero, not unknown. Unknown is only an endpoint not compared.
+        prior = before.get((uri, method), 0) if (uri, method) in safe and baseline is None else None
+        hit = prior is not None and ips >= ENDPOINT_MIN_IPS and total >= ENDPOINT_MIN_REQUESTS and (
+            prior == 0 or ips >= ENDPOINT_IP_GROWTH * prior)
+        marked, new_marked = marked or hit, new_marked or (hit and prior == 0)
+        busy = busy or (prior is not None and prior >= ENDPOINT_MIN_IPS and not hit)
+        shown = "n/a" if prior is None else f"{prior:,}"
+        lines.append(f"| {method:<6} | {uri[:40]:<40} | {total:>8,} | {ips:>5,} | {total // max(ips, 1):>6,} | "
+                     f"{shown:>18} | {'yes' if hit else '':<6} |")
+    if baseline:
+        lines.append(baseline)
+    if len(safe) < len(keyed):
+        lines.append(f"  ({len(keyed) - len(safe)} endpoint(s) not compared: their path holds characters this does "
+                     f"not put in a query)")
+    lines.append(rule)
+    if new_marked:
+        lines.append("  A marked endpoint with no IPs a week earlier is either new or newly attacked; ask the user which.")
+    if busy:
+        lines.append("  An endpoint that already draws many sources is not marked by a few more, so an unmarked "
+                     "endpoint here does not rule out distributed abuse on it.")
+    return lines, marked
 
 
 def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:

@@ -86,7 +86,7 @@ This limits nothing about your analysis. Quote the payload back to the user, dec
 - Specific IP bypass → detect_bypass(step="investigate_ip", ip="...", start_time="...")
 - "which IPs share that fingerprint" / user names a JA4 from a scan → detect_bypass(step="ja4_ips", ja4="...", start_time="...")
 - Specific IP general check → analyze_ip(ip="...", start_time="...")
-- "credential stuffing" / "brute force" → beyond WAF capability, recommend ATP
+- "credential stuffing" / "brute force" → detect_bypass(step="scan", start_time="...") shows its shape, many sources on one endpoint; WAF logs cannot show whether a login succeeded, so recommend ATP for the login path
 - User confirmed FP, wants fix → search_waf_knowledge for scope-down best practices
 - "hit rate of rule X" / "what % of traffic does this rule match" → get_waf_overview(query_type='top_rules'), which now carries a Hit rate column for every rule. Metrics-based, so it is free, unaffected by a Log Filter, and works over 14 days.
 - "hit rate per URL / per endpoint" → aggregate_logs(group_by="uri", metric="ratio", filter_by='{"rule": "X"}'). CloudWatch metrics have no URI dimension, so this one is log-only.

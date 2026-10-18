@@ -69,6 +69,18 @@ neither stops the investigation.
 path. For counts, `group_by` takes up to three comma-separated dimensions, such as `clientIp,uri`. A new
 `args` dimension groups by query string, leaves out requests without one, and masks sensitive values.
 
+### Added: the bypass scan marks many sources on one endpoint
+
+Every scan signal was per IP, and the one aggregate signal, a JA4 across many IPs, needs 50 URIs, so a
+credential-stuffing run spread over a few hosts passed unseen: on 2026-10-16 on a test WebACL, 6 IPs sent
+816 allowed requests to POST /login, 136 each. A new section counts sources per path and method and marks
+an endpoint with at least 5 IPs and 200 allowed requests that has 3 times the distinct IPs of the same
+window a week earlier, or none then. Over 8 days of hourly windows on the two test WebACLs it marked that
+run and a 10-source flood, and no ordinary traffic. The output states the condition and that its numbers
+were measured on low-traffic WebACLs; says, when it applies, that an endpoint already drawing many
+sources is not marked by a few more; and says so when the same window a week earlier holds no log, rather
+than marking every endpoint.
+
 ### Fixed: the scan's spike note never printed
 
 The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's

@@ -12,7 +12,7 @@ Agent 扫描 BLOCK 日志中同时有大量 ALLOW 流量的 IP — 可能是误�
 
 > "昨天下午 2 点到 3 点，有没有爬虫绕过了我的 WAF？"
 
-Agent 扫描 ALLOW 流量中的异常：高频 IP、异常 URI 多样性、自动化 User-Agent、数据中心 IP 无 bot 标签，以及 UA 轮换（同一个 JA4 TLS 指纹背后出现多个不同 User-Agent，表明在伪装 UA）。深入调查某个 IP 时，还会展示它在 ALLOW 流量中发送的 query string——被放行的攻击式 payload 是直接的绕过信号。
+Agent 扫描 ALLOW 流量中的异常：高频 IP、异常 URI 多样性、自动化 User-Agent、数据中心 IP 无 bot 标签，UA 轮换（同一个 JA4 TLS 指纹背后出现多个不同 User-Agent，表明在伪装 UA），以及同一个端点来源突然变多（和上周同一时段比）。分散在几台机器上的撞库就是这个样子，每个 IP 都低于按 IP 设的阈值。深入调查某个 IP 时，还会展示它在 ALLOW 流量中发送的 query string——被放行的攻击式 payload 是直接的绕过信号。
 
 > "帮我评估 COUNT 规则，能不能转 Block？"
 

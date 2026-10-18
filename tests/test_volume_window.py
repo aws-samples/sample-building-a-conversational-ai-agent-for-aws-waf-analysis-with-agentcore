@@ -155,7 +155,7 @@ def test_the_scan_compares_its_own_window_a_week_earlier(monkeypatch):
     out = B._step_scan(start, start + 3600)
     assert "33.3x the same window a week earlier" in out, out
     quiet = int((BURST + timedelta(hours=5)).timestamp())
-    assert "week earlier" not in B._step_scan(quiet, quiet + 3600)
+    assert "significant spike" not in B._step_scan(quiet, quiet + 3600)
 
 
 def test_mitigated_traffic_rising_from_none_is_a_rise(volume):

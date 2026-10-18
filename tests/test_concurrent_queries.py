@@ -34,7 +34,7 @@ from tools.query_limits import MAX_FANOUT_WAIT
 
 ROW = {"httpRequest.clientIp": "203.0.113.9", "total": "9", "unique_uris": "9",
        "cnt": "9", "ja4Fingerprint": "t13d1516h2", "ua": "curl/8.0",
-       "unique_uas": "9", "unique_ips": "9"}
+       "unique_uas": "9", "unique_ips": "9", "httpRequest.uri": "/login", "httpRequest.httpMethod": "POST"}
 
 
 # --- the primitive ----------------------------------------------------------
@@ -204,14 +204,14 @@ def test_the_scan_registers_a_job_for_every_section_that_reports_one(monkeypatch
     monkeypatch.setattr(B, "query_logs", lambda *a, **k: [dict(ROW)])
     real = Q.run_concurrently
     monkeypatch.setattr(B, "run_concurrently",
-                        lambda jobs, **k: (seen.update({"keys": set(jobs)}), real(jobs, **k))[1])
+                        lambda jobs, **k: (seen.setdefault("keys", set()).update(jobs), real(jobs, **k))[1])
     B._step_scan(0, 3600)
     assert seen["keys"], "no jobs registered, so this proves nothing"
 
-    # `_step_scan`'s own source, so this reads what the renderer asks for rather than what a
-    # fixture happened to exercise. Sliced to the function to keep the other steps' labels out.
+    # The scan's own source and its endpoint section's, which runs the baseline wave, so this reads
+    # what the renderer asks for rather than what a fixture happened to exercise.
     import inspect
-    body = inspect.getsource(B._step_scan)
+    body = inspect.getsource(B._step_scan) + inspect.getsource(B._endpoint_section)
     rendered = set(re.findall(r'_empty_reason\(failures,\s*"([a-z0-9_]+)"', body))
     assert rendered, "no rendered labels parsed, so this proves nothing"
     assert seen["keys"] == rendered, {"registered only": seen["keys"] - rendered,

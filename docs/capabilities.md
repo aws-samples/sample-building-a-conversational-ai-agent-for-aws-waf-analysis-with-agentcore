@@ -12,7 +12,7 @@ The agent scans BLOCK logs for IPs that also have high ALLOW traffic — potenti
 
 > "Are there any crawlers bypassing my WAF? Check yesterday 2pm-3pm."
 
-The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI diversity, automation user-agents, data-center IPs without bot labels, and UA rotation (a single JA4 TLS fingerprint used behind many different User-Agents, indicating UA spoofing). When investigating an IP it also shows the query strings it sent on ALLOW traffic — attack-like payloads that were let through are a direct bypass signal.
+The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI diversity, automation user-agents, data-center IPs without bot labels, UA rotation (a single JA4 TLS fingerprint used behind many different User-Agents, indicating UA spoofing), and many sources on one endpoint against the same window a week earlier, which is how credential stuffing spread over a few hosts looks when each stays under every per-IP threshold. When investigating an IP it also shows the query strings it sent on ALLOW traffic — attack-like payloads that were let through are a direct bypass signal.
 
 > "Evaluate my COUNT rules — can I switch them to Block?"
 
