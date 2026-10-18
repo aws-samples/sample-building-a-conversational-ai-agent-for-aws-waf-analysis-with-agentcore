@@ -405,8 +405,9 @@ def _clients(counts: list, paces: list, rules: list) -> dict:
       `_is_nat_traffic` reads as one client rotating its UA. The IP's own numbers are the client's.
     - `basis="client"`: several clients and only one of them blocked. `allow`, `block`, `peak`,
       `rules`, `ua` and `ja4` are that client's own.
-    - `basis="several"`: blocks from more than one client, or more clients than one query lists, so
-      no one client's history is the blocked user's. `blocked` counts the blocked clients."""
+    - `basis="several"`: blocks from more than one client, more clients than one query lists, or the
+      blocked client's User-Agent under another JA4 too, so no one client's history is the blocked
+      user's. `blocked` counts the blocked clients."""
     from tools.waf_logs import _is_nat_traffic
     key = lambda r: (r.get("ua") or "", r.get("ja4Fingerprint") or "")
     table = {key(r): {"allow": int(float(r.get("allow") or 0)), "block": int(float(r.get("block") or 0)),
@@ -429,6 +430,14 @@ def _clients(counts: list, paces: list, rules: list) -> dict:
                 "why": f"{len(blocked)} of them were blocked" if blocked else
                        "none of them carries the blocks the IP took, so the two reads disagree"}
     (ua, ja4), = blocked
+    # One browser can present more than one TLS fingerprint, so the same User-Agent under another JA4 may
+    # be the blocked user's own allowed requests. Judged without them, the ratio leans toward "not a false
+    # positive", against the user. Not measured: the test WebACLs hold 4 JA4s in 17 days.
+    others = sum(1 for u, j in table if u == ua and j != ja4)
+    if others:
+        return {"n": len(table), "basis": "several", "blocked": 1,
+                "why": f"the blocked client's User-Agent also came with {others} other TLS fingerprint"
+                       f"{'s' if others != 1 else ''}, which may be the same browser"}
     return {"n": len(table), "basis": "client", "ua": ua, "ja4": ja4, **table[(ua, ja4)]}
 
 

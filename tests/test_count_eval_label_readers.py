@@ -101,8 +101,11 @@ def test_a_managed_sub_rule_is_positioned_at_its_group():
     assert [r[0] for r in readers] == ["xss-blocker"], readers
 
 
-def test_a_count_rule_not_in_the_webacl_has_no_readers():
-    assert C.label_readers([CRS], "TGT_TokenAbsent") == []
+def test_a_rule_the_configuration_does_not_name_is_read_by_every_label_match():
+    """`TGT_TokenAbsent` counts by default, so no override names it and its position is unknown."""
+    rules = [rule("early", 5, match("awswaf:managed:token:absent")), CRS,
+             rule("token-blocker", 30, match("awswaf:managed:token:absent"), "Block")]
+    assert [r[0] for r in C.label_readers(rules, "TGT_TokenAbsent")] == ["early", "token-blocker"]
 
 
 def test_a_key_outside_waf_charset_is_not_queried():
@@ -162,7 +165,7 @@ def test_the_control_with_no_reader_a_zero_hit_rule_is_still_safe(inventory):
 
 @pytest.fixture
 def clients(monkeypatch):
-    def run(rules, replies, fail_rules=False):
+    def run(rules, replies, fail_rules=False, count_rule="CrossSiteScripting_QUERYARGUMENTS"):
         monkeypatch.setattr(C, "_has_logging", lambda: True)
         monkeypatch.setattr("tools.waf_query.check_coarse_partition_block", lambda: None)
         monkeypatch.setattr(C, "get_scope", lambda: "CLOUDFRONT")
@@ -187,7 +190,7 @@ def clients(monkeypatch):
         monkeypatch.setattr(C, "query_logs", q)
         monkeypatch.setattr("tools.waf_query.sample_inspection_content", lambda *a, **k: (None, None, False))
         monkeypatch.setattr(C, "_count_match_details", lambda *a: ([], None))
-        return C._step_check_clients("CrossSiteScripting_QUERYARGUMENTS", "2026-09-08T03:00", 60), sent
+        return C._step_check_clients(count_rule, "2026-09-08T03:00", 60), sent
     return run
 
 
@@ -203,6 +206,21 @@ def test_the_requests_a_later_rule_reads_are_counted(clients):
     cwl, athena = next(t for t in sent if "as total" in t[0])
     assert 'lbls like /"name":"awswaf:managed:aws:core-rule-set:CrossSiteScripting_QueryArguments"/' in cwl, cwl
     assert "regexp_like(l.name, '^awswaf:managed:aws:core-rule-set:CrossSiteScripting_QueryArguments$')" in athena, athena
+
+
+def test_an_unplaced_rule_is_checked_against_every_reader_and_says_why(clients):
+    blocker = rule("token-blocker", 30, match("awswaf:managed:token:absent"), "Block")
+    out, sent = clients([CRS, blocker], {"as total": [{"total": "50", "l0": "50"}],
+                                         "by action": [{"action": "ALLOW", "n": "50"}]}, count_rule="TGT_TokenAbsent")
+    section = out.split("### Later rules that read labels these requests carry", 1)[1].split("###", 1)[0]
+    assert "no rule after this one matches" not in section, section
+    assert "TGT_TokenAbsent is not named in the WebACL's configuration" in section, section
+    assert "token-blocker (priority 30, LABEL awswaf:managed:token:absent): 50 of the 50 requests" in section, section
+
+
+def test_a_placed_rule_does_not_say_its_position_is_unknown(clients):
+    out, _ = clients([CRS, READER], {"as total": [{"total": "1", "l0": "1"}], "by action": [{"action": "ALLOW", "n": "1"}]})
+    assert "is not named in the WebACL's configuration" not in out, out
 
 
 def test_with_no_reader_the_section_says_so_and_queries_nothing(clients):

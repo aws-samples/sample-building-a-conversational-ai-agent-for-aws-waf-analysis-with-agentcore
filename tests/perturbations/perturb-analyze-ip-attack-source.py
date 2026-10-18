@@ -12,6 +12,7 @@ from _harness import sweep
 L = "tools/waf_logs.py"
 I = "tools/waf_injection.py"
 T = "tests/test_analyze_ip_attack_source.py"
+RET = '        return n >= ATTACK_CATEGORIES_ALONE or (n >= ATTACK_CATEGORIES_WITH_MAJORITY and content + unknown_blocks > allowed\n                                                and spread >= ATTACK_PATHS_WITH_MAJORITY)\n'
 
 CASES = [
     ("no attack-source rung",
@@ -21,15 +22,23 @@ CASES = [
 
     ("counted per WebACL rule, so reputation lists and Bot Control count",
      [(L, "        if why:\n            blocks, reasons = unknown.get(rule, (0, why))\n            unknown[rule] = (blocks + n, reasons)\n"
-           "            excluded.add((rule, \"\"))\n        elif cat:\n            cats[cat] = cats.get(cat, 0) + n\n",
+           "            excluded.add((rule, \"\"))\n            paths[rule] = max(paths.get(rule, 0), uris)\n        elif cat:\n            cats[cat] = cats.get(cat, 0) + n\n",
        "        if why:\n            blocks, reasons = unknown.get(rule, (0, why))\n            unknown[rule] = (blocks + n, reasons)\n"
-           "            excluded.add((rule, \"\"))\n        else:\n            cats[cat or rule] = cats.get(cat or rule, 0) + n\n")],
+           "            excluded.add((rule, \"\"))\n            paths[rule] = max(paths.get(rule, 0), uris)\n        else:\n"
+           "            cat = cat or rule\n            cats[cat] = cats.get(cat, 0) + n\n")],
      [f"{T}::test_rate_limits_reputation_lists_and_bot_control_are_not_categories"], True),
 
     ("two categories without a majority of blocks",
-     [(L, "(n >= ATTACK_CATEGORIES_WITH_MAJORITY and content + unknown_blocks > allowed)",
-       "(n >= ATTACK_CATEGORIES_WITH_MAJORITY)")],
+     [(L, RET, RET.replace(" and content + unknown_blocks > allowed\n", "\n"))],
      [f"{T}::test_two_categories_need_more_blocks_than_allowed_requests"], True),
+
+    ("two categories on one path",
+     [(L, RET, RET.replace("\n                                                and spread >= ATTACK_PATHS_WITH_MAJORITY)", ")"))],
+     [f"{T}::test_two_categories_on_one_path_are_not_an_attack_source"], True),
+
+    ("the categories' paths summed, not the widest",
+     [(L, "        spread = max([attack", "        spread = sum([attack")],
+     [f"{T}::test_two_categories_on_one_path_are_not_an_attack_source"], True),
 
     ("a whole-group Count entry read as the block",
      [(L, "        if kind == \"MANAGED_RULE_GROUP\":\n            if not sub:", "        if sub or kind == \"MANAGED_RULE_GROUP\":\n            if not sub:")],
@@ -70,9 +79,9 @@ CASES = [
      [f"{T}::test_attack_category"], False),
 
     ("not blocked and blocked by other rules worded alike",
-     [(L, "        lines.append(\"  \" + (\", \".join(f\"{c} {b:,}\" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))\n"
+     [(L, "        lines.append(\"  \" + (\", \".join(f\"{c} {b:,}{paths(c)}\" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))\n"
            "                             or (\"none: it was not blocked\" if not attack[\"blocked\"] else",
-       "        lines.append(\"  \" + (\", \".join(f\"{c} {b:,}\" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))\n"
+       "        lines.append(\"  \" + (\", \".join(f\"{c} {b:,}{paths(c)}\" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))\n"
            "                             or (\"none: its blocks came from rules that do not inspect what a request asks for or carries\" if not attack[\"blocked\"] else")],
      [f"{T}::test_not_blocked_and_blocked_by_other_rules_read_differently"], True),
 ]

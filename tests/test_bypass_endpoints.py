@@ -6,6 +6,9 @@ credential-stuffing run spread over a few hosts was invisible and the scan said 
 per-IP threshold. The endpoint section counts sources per path and method and sets them against the
 same window a week earlier.
 
+The list is the top 20 by requests per IP, with both floors in the query: by distinct IPs, a real
+site's popular pages fill it, so the 6-IP run never reaches the comparison.
+
 What it says matters as much as what it marks, because the model reads the output, not ROADMAP: the
 condition with its numbers and where they were measured, every time; "no IPs a week earlier" only when a
 marked endpoint had none; and "a few more sources do not mark a busy endpoint" only when an endpoint that
@@ -25,7 +28,7 @@ def ep(uri, method, total, ips):
     return {"httpRequest.uri": uri, "httpRequest.httpMethod": method, "total": str(total), "unique_ips": str(ips)}
 
 
-def _section(monkeypatch, rows, before=(), logged=1000, fail=()):
+def _section(monkeypatch, rows, before=(), logged=1000, fail=(), notes=None):
     sent = []
 
     def q(cwl, athena, s, e, limit=25, notes=None, label="", **kw):
@@ -39,7 +42,7 @@ def _section(monkeypatch, rows, before=(), logged=1000, fail=()):
         return []
     monkeypatch.setattr(B, "query_logs", q)
     failures = {"endpoints": "timed out"} if "endpoints" in fail else {}
-    lines, marked = B._endpoint_section(rows, START, END, failures, {})
+    lines, marked = B._endpoint_section(rows, START, END, failures, notes or {})
     return "\n".join(lines), marked, sent
 
 
@@ -116,6 +119,36 @@ def test_verified_bots_are_left_out_now_and_a_week_earlier(monkeypatch):
     _, _, sent = _section(monkeypatch, [LOGIN])
     cwl, athena = next((c, a) for label, c, a, *_ in sent if label == "endpoints_before")
     assert "bot:verified" in cwl and "bot:verified" in athena   # the current window's: the test below
+
+
+def test_a_cut_off_list_says_a_quieter_endpoint_may_be_outside_it(monkeypatch):
+    out, *_ = _section(monkeypatch, [LOGIN], notes={"endpoints": B._ENDPOINTS})
+    assert "may be outside it" in out, out
+    out, *_ = _section(monkeypatch, [LOGIN])
+    assert "may be outside it" not in out, out
+
+
+def _scan_queries(monkeypatch):
+    monkeypatch.setattr(B, "is_log_filter_active", lambda: False)
+    monkeypatch.setattr(B, "_check_coverage_gaps", lambda: [])
+    sent = {}
+
+    def q(cwl, athena, s, e, limit=25, notes=None, label="", **kw):
+        sent[label] = (cwl, athena)
+        return []
+    monkeypatch.setattr(B, "query_logs", q)
+    B._step_scan(START, END)
+    return sent["endpoints"]
+
+
+def test_both_floors_are_in_the_query_and_the_list_is_by_requests_per_ip(monkeypatch):
+    """Ordered by IPs, a real site's popular pages fill the 20 rows and a quiet login endpoint taken by
+    six IPs never reaches the comparison."""
+    cwl, athena = _scan_queries(monkeypatch)
+    assert f"unique_ips >= {B.ENDPOINT_MIN_IPS} and total >= {B.ENDPOINT_MIN_REQUESTS}" in cwl, cwl
+    assert "fields total / unique_ips as per_ip | sort per_ip desc" in cwl, cwl
+    assert f"AND count(*) >= {B.ENDPOINT_MIN_REQUESTS}" in athena, athena
+    assert "ORDER BY count(*) * 1.0 / count(DISTINCT httprequest.clientip) DESC" in athena, athena
 
 
 def test_the_scan_counts_a_marked_endpoint_as_a_candidate(monkeypatch):

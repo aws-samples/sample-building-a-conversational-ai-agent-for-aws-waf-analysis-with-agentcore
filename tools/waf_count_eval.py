@@ -753,8 +753,14 @@ def _reader_lines(rule_name: str, rules, acl_error: str, start_epoch: int, end_e
         return head + [f"  UNKNOWN: the WebACL's rules could not be read ({acl_error}), so whether a later "
                        f"rule depends on this one is unknown. Do not recommend Block until it is."]
     readers = label_readers(rules, rule_name)
+    unplaced = _rule_of(rules, rule_name) is None
     if not readers:
-        return head + ["  (none: no rule after this one matches on a label)"]
+        return head + ["  (none: no rule in the WebACL matches on a label)" if unplaced else
+                       "  (none: no rule after this one matches on a label)"]
+    if unplaced:
+        head.append(f"  {rule_name} is not named in the WebACL's configuration (a managed sub-rule that counts by "
+                    f"default has no override), so where it runs is unknown and every rule that matches on a label "
+                    f"is listed. One evaluated before its rule group never sees the label.")
     prefix = label_prefix()
     pattern = lambda sc, k: _label_pattern(sc, k, prefix)
     cwl = (f"filter @message like '\"ruleId\":\"{rule_name}\",\"action\":\"COUNT\"' | {_LABELS_ARRAY}"
@@ -904,13 +910,13 @@ def _rule_of(rules: list, count_rule: str):
 
 def label_readers(rules: list, count_rule: str) -> list:
     """`[(rule name, priority, scope, key)]` for each label match in a rule evaluated after `count_rule`.
-    Empty when `count_rule` is not in the WebACL, since then nothing is known about its position."""
+    When the configuration does not name `count_rule`, every label match: a managed sub-rule that counts
+    by default, `TGT_TokenAbsent` say, has no override, so its position is unknown, and a later rule
+    reading its label is common. The log check counts which of them its requests carry."""
     own = _rule_of(rules, count_rule)
-    if own is None:
-        return []
     return [(r.get("Name", ""), r.get("Priority"), scope, key)
             for r in sorted(rules, key=lambda r: r.get("Priority", 0))
-            if r.get("Priority", 0) > own.get("Priority", 0)
+            if own is None or r.get("Priority", 0) > own.get("Priority", 0)
             for scope, key in _label_matches(r.get("Statement", {}))
             if re.fullmatch(_LABEL_CHARS, key)]
 

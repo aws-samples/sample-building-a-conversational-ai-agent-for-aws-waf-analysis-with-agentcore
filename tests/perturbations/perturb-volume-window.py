@@ -10,6 +10,8 @@ from _harness import sweep
 
 B = "tools/waf_bypass.py"
 T = "tests/test_volume_window.py"
+# The whole if/elif chain, so the reachability probe goes ahead of its `if`, not an `elif` header.
+CHAIN = '    if prev_peak is not None:\n        allowed_x, base = peak_allowed / prev_peak[1], prev\n        basis = f"the busiest hour of the week before ({prev_peak[0].astimezone(naive_time_tz()).strftime(\'%Y-%m-%d %H:%M\')})"\n    elif week_allowed is not None:\n'
 
 CASES = [
     ("the volume step compares seven-day totals again",
@@ -22,7 +24,7 @@ CASES = [
      [f"{T}::test_the_week_earlier_window_is_the_same_window_seven_days_back"], True),
 
     ("an empty week earlier decides anyway",
-     [(B, "    if week_allowed is not None:\n", "    if True:\n")],
+     [(B, CHAIN, CHAIN.replace("    elif week_allowed is not None:\n", "    elif True:\n"))],
      [f"{T}::test_no_traffic_a_week_earlier_falls_back_to_the_hours_around_it"], True),
 
     ("the event read over another window",
@@ -35,8 +37,10 @@ CASES = [
      [f"{T}::test_mitigated_traffic_rising_from_none_is_a_rise"], True),
 
     ("the scan's note back on seven-day totals",
-     [(B, "start_dt = datetime.fromtimestamp(start_epoch, timezone.utc)\n        end_dt = datetime.fromtimestamp(end_epoch, timezone.utc)",
-       "start_dt = datetime.now(timezone.utc) - timedelta(days=7)\n        end_dt = datetime.now(timezone.utc)")],
+     [(B, "        window = _comparison_window(datetime.fromtimestamp(start_epoch, timezone.utc),\n"
+          "                                    datetime.fromtimestamp(end_epoch, timezone.utc), datetime.now(timezone.utc))\n",
+       "        window = _comparison_window(datetime.now(timezone.utc) - timedelta(days=7),\n"
+          "                                    datetime.now(timezone.utc), datetime.now(timezone.utc))\n")],
      [f"{T}::test_the_scan_compares_its_own_window_a_week_earlier"], True),
 
     # probe=False: the shadowing test reads source rather than running it, so any inserted line turns
@@ -47,6 +51,25 @@ CASES = [
        "            from tools.session_state import get_webacl_name\n            _warning")],
      [f"{T}::test_the_scan_compares_its_own_window_a_week_earlier",
       "tests/test_local_import_shadowing.py::test_no_function_in_tools_shadows_a_name_it_already_used"], False),
+    ("a picked hour set against its own hour a week earlier",
+     [(B, "    if prev_peak is not None:\n        allowed_x, base = peak_allowed / prev_peak[1], prev\n",
+       "    if False:\n        allowed_x, base = peak_allowed / prev_peak[1], prev\n")],
+     [f"{T}::test_a_picked_hour_is_set_against_the_busiest_hour_of_the_week_before"], True),
+
+    ("the week before's peak read from this week",
+     [(B, "            prev_peak = _peak_hour(cw, webacl_name, scope, region, now - week)\n",
+       "            prev_peak = _peak_hour(cw, webacl_name, scope, region, now)\n")],
+     [f"{T}::test_a_picked_hour_is_set_against_the_busiest_hour_of_the_week_before"], True),
+
+    ("a named window set against a peak",
+     [(B, "        prev_peak = None\n        if start_epoch is None:\n",
+       "        prev_peak = _peak_hour(cw, webacl_name, scope, region, now - week)\n        if start_epoch is None:\n")],
+     [f"{T}::test_a_window_the_user_names_is_not_set_against_a_peak"], True),
+
+    ("a window read past its last whole point",
+     [(B, "    return start, max(min(end, last), start + timedelta(seconds=period)), period, has_week\n",
+       "    return start, end, period, has_week\n")],
+     [f"{T}::test_the_scan_reads_whole_points_and_stops_at_the_last_one"], True),
 ]
 
 sys.exit(sweep(CASES))

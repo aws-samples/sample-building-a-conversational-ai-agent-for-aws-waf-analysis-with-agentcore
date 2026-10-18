@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT-0
 """Can `tests/test_block_fp_shared_egress.py` fail? The verdict back on the IP's own numbers behind a
 shared address, blocks from several clients judged anyway, a rotating client split up, and the scan
-held to the targeted check's ratio."""
+held to the targeted check's ratio, and the blocked User-Agent
+under another JA4 judged anyway."""
 
 import sys
 
@@ -47,6 +48,15 @@ CASES = [
     ("the scan held to the targeted check's ratio",
      [(F, "        if ratio > SCAN_ALLOW_RATIO:", "        if ratio > FP_ALLOW_RATIO:")],
      [f"{T}::test_the_scan_picks_candidates_at_the_looser_ratio"], True),
+    ("the blocked User-Agent under another JA4 judged anyway",
+     [(F, "    if others:\n        return {\"n\": len(table), \"basis\": \"several\", \"blocked\": 1,",
+       "    if False:\n        return {\"n\": len(table), \"basis\": \"several\", \"blocked\": 1,")],
+     [f"{T}::test_the_blocked_user_agent_under_another_ja4_judges_none"], True),
+
+    ("any other client under the same JA4 counted as the same browser",
+     [(F, "    others = sum(1 for u, j in table if u == ua and j != ja4)\n",
+       "    others = sum(1 for u, j in table if (u == ua) != (j == ja4))\n")],
+     [f"{T}::test_another_user_agent_under_the_same_ja4_is_still_another_client"], True),
 ]
 
 sys.exit(sweep(CASES))

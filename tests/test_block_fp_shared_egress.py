@@ -6,7 +6,8 @@ attacker in a busy office could read as a likely false positive, and a real user
 read at all. The address is now split into clients by User-Agent and JA4, and the signals are the
 blocked client's own. Measured 2026-10-16 on the CloudWatch test WebACL: an Amazon office egress
 carried 3 clients and 17 allowed requests against 1 block, and the blocked client, a headless Chrome,
-had none allowed. The IP's 17:1 read as "suggests legitimate user"; the client's own is 0:1.
+had none allowed. The IP's 17:1 read as "suggests legitimate user"; the client's own is 0:1. When
+the blocked User-Agent also came under another JA4, nothing is judged: that may be the same browser.
 """
 
 import pytest
@@ -43,6 +44,18 @@ def test_several_clients_and_one_blocked_judges_that_client():
                    rules((CURL, "j3", "SQLi"), (CURL, "j3", "XSS")))
     assert c["basis"] == "client" and c["n"] == 3, c
     assert (c["ua"], c["ja4"], c["allow"], c["block"], c["peak"], c["rules"]) == (CURL, "j3", 0, 4, "2", 2), c
+
+
+def test_the_blocked_user_agent_under_another_ja4_judges_none():
+    """One browser can present more than one TLS fingerprint. Split by the pair, the blocked client's
+    ratio would read without its own allowed requests, which leans toward "not a false positive"."""
+    c = F._clients(counts((CHROME, "j1", 0, 4), (CHROME, "j1q", 60, 0), (SAFARI, "j2", 100, 0)), [], [])
+    assert c["basis"] == "several" and "1 other TLS fingerprint," in c["why"], c
+
+
+def test_another_user_agent_under_the_same_ja4_is_still_another_client():
+    c = F._clients(counts((CURL, "j1", 0, 4), (CHROME, "j1", 60, 0)), [], [])
+    assert c["basis"] == "client" and c["ua"] == CURL, c
 
 
 def test_blocks_from_several_clients_judge_none_of_them():

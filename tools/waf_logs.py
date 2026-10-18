@@ -992,8 +992,14 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
 # on the S3 test WebACL: each of 10 scanners took 12 SQL-injection blocks and 1 path-probing block
 # against 3 allowed requests, while the false-positive user there took 2 SQL-injection blocks against
 # 35 allowed. One script ran all 10, so that is one sample, and one request carries its second category.
+# The smaller number also needs one category's blocks on several paths: a real client whose every save
+# trips SQL injection and XSS, a CMS post with code in it, takes two categories on one path and may have
+# almost nothing allowed. Measured the same day: each scanner's SQL-injection blocks fell on 2 paths, the
+# false-positive user's on 1. The widest category, not the sum, because two categories on one path would
+# sum to two.
 ATTACK_CATEGORIES_ALONE = 3
 ATTACK_CATEGORIES_WITH_MAJORITY = 2
+ATTACK_PATHS_WITH_MAJORITY = 2
 # The group of the rule that ended evaluation is the last entry with a `terminatingRule`, but only when
 # the terminating rule IS a managed group: a group in whole-group Count logs one too, with its native
 # BLOCK, while a later rule blocks. See `tools/counted.py`.
@@ -1005,17 +1011,19 @@ def _block_classes(rows: list, custom, custom_error: str = "") -> dict:
     """What blocked an IP, per attack category, from `(type, rule, group id, sub-rule, blocks)` rows.
 
     `custom` is `waf_injection.custom_rule_categories` for the WebACL's rules, or None when it could not
-    be read, with `custom_error` saying why. Returns `categories` `{category: blocks}`, `unknown`
+    be read, with `custom_error` saying why. Returns `categories` `{category: blocks}`, `paths`, the
+    most distinct paths one category's or one unknown rule's blocks fell on, `unknown`
     `{rule: (blocks, why)}` for blocks whose category cannot be read, and `excluded`, the
     `(rule, sub-rule or "")` pairs whose blocks the bot rungs leave out: every content block, and every
     block whose category is unknown, since either could be an attack's request."""
     from tools.waf_injection import attack_category
-    cats, unknown, excluded = {}, {}, set()
+    cats, unknown, excluded, paths = {}, {}, set(), {}
     blocked = sum(int(float(r.get("n") or 0)) for r in rows)
     for r in rows:
         kind, rule = r.get("terminatingRuleType", ""), r.get("terminatingRuleId", "")
         group, sub = r.get("rgid") or "", r.get("sub_rule") or ""
         n = int(float(r.get("n") or 0))
+        uris = int(float(r.get("uris") or 0))
         if kind == "RATE_BASED" or rule == "Default_Action":
             continue
         why, cat = "", None
@@ -1041,10 +1049,12 @@ def _block_classes(rows: list, custom, custom_error: str = "") -> dict:
             blocks, reasons = unknown.get(rule, (0, why))
             unknown[rule] = (blocks + n, reasons)
             excluded.add((rule, ""))
+            paths[rule] = max(paths.get(rule, 0), uris)
         elif cat:
             cats[cat] = cats.get(cat, 0) + n
             excluded.add((rule, sub if kind == "MANAGED_RULE_GROUP" else ""))
-    return {"categories": cats, "unknown": unknown, "excluded": excluded, "blocked": blocked}
+            paths[cat] = max(paths.get(cat, 0), uris)
+    return {"categories": cats, "unknown": unknown, "excluded": excluded, "blocked": blocked, "paths": paths}
 
 
 def _without_attack_blocks(excluded: set) -> tuple[str, str, str]:
@@ -1223,10 +1233,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # Phase 1b: what blocked this IP, by attack category, and how much it was allowed. The bot rungs
     # below leave out the blocks set aside here, so this runs first.
     blocks_cwl = (f'filter httpRequest.clientIp = "{safe_ip}" and action = "BLOCK" | {_LAST_GROUP_CWL}'
-                  ' | stats count(*) as n by terminatingRuleType, terminatingRuleId, rgid, sub_rule | limit 100')
+                  ' | stats count(*) as n, count_distinct(httpRequest.uri) as uris by terminatingRuleType, terminatingRuleId,'
+                  ' rgid, sub_rule | limit 100')
     blocks_athena = (f"SELECT terminatingruletype as \"terminatingRuleType\", terminatingruleid as \"terminatingRuleId\","
                      f" {_LAST_GROUP_ATHENA}.rulegroupid as rgid, {_LAST_GROUP_ATHENA}.terminatingrule.ruleid as sub_rule,"
-                     f" count(*) as n FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                     f" count(*) as n, count(DISTINCT httprequest.uri) as uris FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
                      f" AND httprequest.clientip = '{safe_ip}' AND action = 'BLOCK' GROUP BY 1, 2, 3, 4 LIMIT {{LIMIT}}")
     allowed_cwl = f'filter httpRequest.clientIp = "{safe_ip}" and action = "ALLOW" | stats count(*) as n'
     allowed_athena = (f"SELECT count(*) as n FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
@@ -1451,11 +1462,12 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         lines.append(_empty_reason(failures, "attack_categories"))
     else:
         cats = attack["categories"]
-        lines.append("  " + (", ".join(f"{c} {b:,}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
+        paths = lambda k: f" on {attack['paths'][k]} path{'s' if attack['paths'][k] != 1 else ''}" if k in attack["paths"] else ""
+        lines.append("  " + (", ".join(f"{c} {b:,}{paths(c)}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
                              or ("none: it was not blocked" if not attack["blocked"] else
                                  "none: its blocks came from rules that do not inspect what a request asks for or carries")))
         for rule, (b, why) in attack["unknown"].items():
-            lines.append(f"  category unknown: {rule}, {b:,} blocks: {why}")
+            lines.append(f"  category unknown: {rule}, {b:,} blocks{paths(rule)}: {why}")
     lines.append("**Allowed requests**:" + (f" {allowed:,}" if allowed is not None else ""))
     if allowed is None:
         lines.append(_empty_reason(failures, "allowed"))
@@ -1574,7 +1586,9 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     def _is_attack_source(cats, content, unknown_rules=0, unknown_blocks=0):
         n = len(cats) + unknown_rules
-        return n >= ATTACK_CATEGORIES_ALONE or (n >= ATTACK_CATEGORIES_WITH_MAJORITY and content + unknown_blocks > allowed)
+        spread = max([attack["paths"].get(k, 0) for k in [*cats, *(attack["unknown"] if unknown_rules else ())]] or [0])
+        return n >= ATTACK_CATEGORIES_ALONE or (n >= ATTACK_CATEGORIES_WITH_MAJORITY and content + unknown_blocks > allowed
+                                                and spread >= ATTACK_PATHS_WITH_MAJORITY)
 
     def _attack_source():
         cats, content = _attack_counts()

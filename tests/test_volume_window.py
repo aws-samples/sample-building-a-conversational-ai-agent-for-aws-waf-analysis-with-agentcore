@@ -99,6 +99,25 @@ def test_the_week_earlier_window_is_the_same_window_seven_days_back(volume):
     assert (BURST - timedelta(days=7), BURST - timedelta(days=6, hours=23)) in allowed, allowed
 
 
+def test_a_picked_hour_is_set_against_the_busiest_hour_of_the_week_before(volume):
+    """Picked out of 168, the busiest hour sits above its own hour a week earlier by selection alone:
+    here 2.3x, Moderate, while the busiest hour of the week before was nearly as busy."""
+    h1 = (NOW - timedelta(days=2)).replace(minute=0)
+    h0 = (NOW - timedelta(days=9, hours=5)).replace(minute=0)
+    cw = TimelineCW(lambda t: 70 if _in(t, h1) else 65 if _in(t, h0) else 30)
+    out = volume(cw)
+    assert "| ALLOW ratio | | 2.3x |" in out, out
+    assert "No Significant Volume Anomaly" in out and "1.1x the busiest hour of the week before" in out, out
+    week_before = datetime.now(timezone.utc) - timedelta(days=7)
+    peaks = [(s, e) for name, s, e, p in cw.reads if name == "AllowedRequests" and p == 3600]
+    assert any(NOW - timedelta(days=7) <= e <= week_before for _, e in peaks), peaks
+
+
+def test_a_window_the_user_names_is_not_set_against_a_peak(volume):
+    out = volume(TimelineCW(steady_with_burst), start=BURST, minutes=60)
+    assert "**33.3x** the same window a week earlier" in out and "busiest hour of the week before" not in out, out
+
+
 def test_a_window_the_user_names_is_the_one_read(volume):
     start = BURST + timedelta(hours=5)
     out = volume(TimelineCW(steady_with_burst), start=start, minutes=30)
@@ -156,6 +175,26 @@ def test_the_scan_compares_its_own_window_a_week_earlier(monkeypatch):
     assert "33.3x the same window a week earlier" in out, out
     quiet = int((BURST + timedelta(hours=5)).timestamp())
     assert "significant spike" not in B._step_scan(quiet, quiet + 3600)
+
+
+def test_the_scan_reads_whole_points_and_stops_at_the_last_one(monkeypatch):
+    """A scan window running past now read a part-filled hour against a full one a week earlier."""
+    cw = TimelineCW(lambda t: 30)
+    monkeypatch.setattr(B, "get_client", lambda svc, **k: cw)
+    monkeypatch.setattr(B, "get_webacl_name", lambda: "acl")
+    monkeypatch.setattr(B, "get_scope", lambda: "CLOUDFRONT")
+    monkeypatch.setattr(B, "resolve_region", lambda scope: "us-east-1")
+    monkeypatch.setattr(B, "is_log_filter_active", lambda: False)
+    monkeypatch.setattr(B, "_check_coverage_gaps", lambda: [])
+    monkeypatch.setattr(B, "query_logs", lambda *a, **k: [])
+    monkeypatch.setattr("tools.waf_metrics.log_path_warning", lambda *a, **k: "")
+    start = int((NOW - timedelta(minutes=30)).timestamp())
+    B._step_scan(start, start + 3600)
+    reads = [(s, e) for name, s, e, p in cw.reads if name == "AllowedRequests"]
+    now = datetime.now(timezone.utc)
+    assert len(reads) == 2 and all(e <= now for _, e in reads), reads
+    (s1, e1), (s0, e0) = reads
+    assert e1 - s1 == e0 - s0 and s1 - s0 == timedelta(days=7), reads
 
 
 def test_mitigated_traffic_rising_from_none_is_a_rise(volume):

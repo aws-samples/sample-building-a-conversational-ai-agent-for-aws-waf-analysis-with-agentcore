@@ -6,9 +6,9 @@ rung added first counts the categories of what blocked the IP (SQL injection, pa
 WebACL rule names: a rate limit, a reputation list or Bot Control says nothing about what a request
 carried, and one managed group holds several categories. The bot rungs after it leave those blocks out.
 
-Measured 2026-09-08 on the S3 test WebACL: each of 10 scanners took 12 SQL-injection blocks and one
-path-probing block against 3 allowed; the false-positive user there took 2 SQL-injection blocks against
-35 allowed. Both shapes are fixtures here.
+Measured 2026-09-08 on the S3 test WebACL: each of 10 scanners took 12 SQL-injection blocks on 2 paths
+and one path-probing block against 3 allowed; the false-positive user there took 2 SQL-injection blocks
+on 1 path against 35 allowed. Both shapes are fixtures here.
 """
 
 import pytest
@@ -22,16 +22,17 @@ ROW = {"action": "ALLOW", "terminatingRuleId": "r", "cnt": "9", "avg_rpm": "1", 
        "total_non_static": "1", "args": "?a=1", "hits": "1"}
 
 
-def managed(group, sub, n, rule=None):
+def managed(group, sub, n, rule=None, uris=1):
     return {"terminatingRuleType": "MANAGED_RULE_GROUP", "terminatingRuleId": rule or f"AWS-{group}",
-            "rgid": f"AWS#{group}", "sub_rule": sub, "n": str(n)}
+            "rgid": f"AWS#{group}", "sub_rule": sub, "n": str(n), "uris": str(uris)}
 
 
-def custom(rule, n, rgid="", sub=""):
-    return {"terminatingRuleType": "REGULAR", "terminatingRuleId": rule, "rgid": rgid, "sub_rule": sub, "n": str(n)}
+def custom(rule, n, rgid="", sub="", uris=1):
+    return {"terminatingRuleType": "REGULAR", "terminatingRuleId": rule, "rgid": rgid, "sub_rule": sub, "n": str(n),
+            "uris": str(uris)}
 
 
-SQLI = managed("AWSManagedRulesSQLiRuleSet", "SQLi_QUERYARGUMENTS", 12)
+SQLI = managed("AWSManagedRulesSQLiRuleSet", "SQLi_QUERYARGUMENTS", 12, uris=2)
 PROBE = managed("AWSManagedRulesKnownBadInputsRuleSet", "ExploitablePaths_URIPATH", 1)
 RATE = {"terminatingRuleType": "RATE_BASED", "terminatingRuleId": "rate-limit", "n": "5000"}
 REPUTATION = managed("AWSManagedRulesAmazonIpReputationList", "AWSManagedIPReputationList", 40)
@@ -100,6 +101,22 @@ def test_the_false_positive_user_is_not_an_attack_source(monkeypatch):
     assert "Attack source" not in verdict, verdict
 
 
+def test_two_categories_on_one_path_are_not_an_attack_source(monkeypatch):
+    """A CMS whose every save trips SQL injection and XSS, with almost nothing allowed: two categories,
+    a majority of blocks, one path. Summed, the two categories' paths would make two."""
+    sqli = managed("AWSManagedRulesSQLiRuleSet", "SQLi_BODY", 40)
+    xss = managed("AWSManagedRulesCommonRuleSet", "CrossSiteScripting_BODY", 40)
+    verdict, out, *_ = _run(monkeypatch, [sqli, xss], allowed=0)
+    assert "Attack source" not in verdict, verdict
+    assert "SQL injection 40 on 1 path, cross-site scripting 40 on 1 path" in out, out
+
+
+def test_the_paths_are_read_on_both_engines(monkeypatch):
+    *_, seen, _ = _run(monkeypatch, [SQLI, PROBE], allowed=3)
+    cwl, athena = seen["attack_categories"]
+    assert "count_distinct(httpRequest.uri) as uris" in cwl and "count(DISTINCT httprequest.uri) as uris" in athena
+
+
 def test_two_categories_need_more_blocks_than_allowed_requests(monkeypatch):
     verdict, *_ = _run(monkeypatch, [SQLI, PROBE], allowed=13)
     assert "Attack source" not in verdict, verdict
@@ -113,8 +130,9 @@ def test_three_categories_need_no_majority(monkeypatch):
 
 def test_rate_limits_reputation_lists_and_bot_control_are_not_categories(monkeypatch):
     """Three WebACL rules, counted by rule two of them would pass the rung with a majority of blocks: a
-    flood source on a reputation list that Bot Control also caught is still hammering, not a scanner."""
-    bot = managed("AWSManagedRulesBotControlRuleSet", "SignalAutomatedBrowser", 30)
+    flood source on a reputation list that Bot Control also caught is still hammering, not a scanner. Bot
+    Control's blocks fall on several paths, so the path test does not stand in for the category test."""
+    bot = managed("AWSManagedRulesBotControlRuleSet", "SignalAutomatedBrowser", 30, uris=3)
     verdict, *_ = _run(monkeypatch, [RATE, REPUTATION, bot], allowed=0, extra=HAMMER)
     assert "Endpoint hammering" in verdict and "Attack source" not in verdict, verdict
 
@@ -137,7 +155,7 @@ def test_custom_rules_are_classified_by_their_statements(monkeypatch):
     waf = FakeWaf([{"Name": "my-sqli", "Statement": {"SqliMatchStatement": {}}},
                    {"Name": "my-xss", "Statement": {"AndStatement": {"Statements": [{"XssMatchStatement": {}}]}}},
                    {"Name": "block-admin", "Statement": {"ByteMatchStatement": {}}}])
-    verdict, *_ = _run(monkeypatch, [custom("my-sqli", 5), custom("my-xss", 5), custom("block-admin", 50)],
+    verdict, *_ = _run(monkeypatch, [custom("my-sqli", 5, uris=2), custom("my-xss", 5), custom("block-admin", 50)],
                        allowed=3, waf=waf)
     assert "Attack source" in verdict and "SQL injection 5, cross-site scripting 5" in verdict, verdict
 

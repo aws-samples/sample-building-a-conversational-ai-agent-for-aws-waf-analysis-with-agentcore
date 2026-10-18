@@ -36,7 +36,7 @@ CASES = [
      [f"{T}::test_a_label_match_is_found_wherever_it_sits"], True),
 
     ("a rule before the Count rule counted as reading it",
-     [(C, '            if r.get("Priority", 0) > own.get("Priority", 0)\n', '            if True\n')],
+     [(C, '            if own is None or r.get("Priority", 0) > own.get("Priority", 0)\n', '            if True\n')],
      [f"{T}::test_a_rule_before_it_cannot_read_its_label", f"{T}::test_a_managed_sub_rule_is_positioned_at_its_group"], False),
 
     ("a custom rule a later rule reads called safe again",
@@ -62,6 +62,19 @@ CASES = [
      [(C, '    if bottom:\n        for r in bottom:\n            lines.append(f"  {r.get(\'httpRequest.clientIp\', \'?\'):>15}  {r.get(\'hits\', \'?\'):>6} hits")\n    elif outcomes and not allowed:\n        lines.append("  (none: every request it counted was already stopped by another rule)")\n    else:\n        lines.append("  (no results — check if Log Filter drops COUNT logs)")',
        '    if bottom:\n        for r in bottom:\n            lines.append(f"  {r.get(\'httpRequest.clientIp\', \'?\'):>15}  {r.get(\'hits\', \'?\'):>6} hits")\n    else:\n        lines.append("  (no results — check if Log Filter drops COUNT logs)")')],
      [f"{T}::test_every_match_stopped_elsewhere_is_named_not_read_as_missing_logs"], True),
+    ("an unplaced rule read as having no readers",
+     [(C, "            if own is None or r.get(\"Priority\", 0) > own.get(\"Priority\", 0)",
+       "            if own is not None and r.get(\"Priority\", 0) > own.get(\"Priority\", 0)")],
+     [f"{T}::test_a_rule_the_configuration_does_not_name_is_read_by_every_label_match",
+      f"{T}::test_an_unplaced_rule_is_checked_against_every_reader_and_says_why"], False),
+
+    ("an unplaced rule's unknown position not said",
+     [(C, "    if unplaced:\n        head.append(", "    if False:\n        head.append(")],
+     [f"{T}::test_an_unplaced_rule_is_checked_against_every_reader_and_says_why"], True),
+
+    ("every rule said to be unplaced",
+     [(C, "    unplaced = _rule_of(rules, rule_name) is None\n", "    unplaced = True\n")],
+     [f"{T}::test_a_placed_rule_does_not_say_its_position_is_unknown"], True),
 ]
 
 sys.exit(sweep(CASES))

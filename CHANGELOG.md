@@ -8,22 +8,27 @@
 An anomaly that lasts an hour barely moves a week: on a test WebACL, a rate-limited flood on 2026-10-16
 read as 1.1x, "within normal range". The step now compares one window, the `start_time` given or else
 the busiest hour of ALLOW traffic in the last seven days, with the same window a week earlier and with
-the six hours either side. The same flood reads 20.9x. A rise in mitigated traffic from none counts as
-a rise; the first run of the new code called 562,445 mitigated requests against none "did NOT rise".
+the six hours either side. The same flood reads 20.9x. A busiest hour picked out of seven days sits
+above its own hour a week earlier by selection alone, so when the hour was picked, the busiest hour of the
+week before decides. A rise in mitigated traffic from none counts as a rise; the first run of the new
+code called 562,445 mitigated requests against none "did NOT rise". The bypass scan's own week-on-week
+note now reads whole metric points and stops at the last one, as this step does.
 
 ### Fixed: analyze_ip called scanners scrapers
 
 `analyze_ip`'s verdicts described bots only, and its URI count included blocked requests, so a scanner
 that probed more than 50 paths was "Probable crawler/scraper", or "Automated scraper" at speed. A first
 verdict now names an attack source: an IP blocked for three attack categories, or for two with more
-blocks than allowed requests. Categories come from the sub-rule that ended evaluation (SQL injection,
+blocks than allowed requests and one category's blocks on at least two paths. A client whose every save
+trips two categories on one path, a CMS post with code in it, is left to the false-positive check.
+Categories come from the sub-rule that ended evaluation (SQL injection,
 cross-site scripting, path probing and so on), for AWS managed groups only, and from the statement of a
 custom rule. Rate limits, reputation lists, Bot Control and size checks are not categories, so a flood
 source still reads as hammering. Blocks whose category cannot be read (a third-party or customer rule
 group, a rule no longer in the WebACL) stop the verdict when they could change it. The bot verdicts no
 longer count blocks set aside as attacks. On the 2026-09-08 test traffic, each of 10 scanners (SQL
-injection 12, path probing 1, against 3 allowed) is now an attack source and the false-positive user
-(SQL injection 2, against 35 allowed) is not.
+injection 12 on 2 paths, path probing 1, against 3 allowed) is now an attack source and the
+false-positive user (SQL injection 2 on 1 path, against 35 allowed) is not.
 
 ### Fixed: a false-positive check behind a shared address read every user's traffic as one
 
@@ -31,7 +36,8 @@ injection 12, path probing 1, against 3 allowed) is now an attack source and the
 every user behind it: the pace rises past the human threshold, and other users' allowed requests set
 the ratio, so an attacker there could read as a likely false positive. The address is now split into
 clients by User-Agent and JA4. When several share it and one was blocked, the ratio, pace and rules are
-that client's own; when blocks come from more than one, the check refuses a direction. User-Agents
+that client's own; when blocks come from more than one, or the blocked client's User-Agent also came
+under another JA4, which may be the same browser, the check refuses a direction. User-Agents
 that differ only in version numbers still count as one client. On a test WebACL on 2026-10-16, an
 office egress with 3 clients read 17:1, "suggests legitimate user", while the blocked client, a
 headless Chrome, had 0 allowed. The proactive scan's looser 5:1, against the check's 10:1, is now
@@ -46,7 +52,9 @@ rule after it, sees them. The inventory now keeps a custom rule in Count when a 
 `LabelMatchStatement` reads its `RuleLabels`, and no longer calls a managed sub-rule safe on its hits
 alone when a later rule reads managed labels. `check_low_volume_clients` counts, from the logs, how
 many of the requests the rule counted carry each label a later rule reads; keys are matched as AWS
-documents them, a short key only in the WebACL's own context. On the S3 test WebACL with temporary
+documents them, a short key only in the WebACL's own context. A sub-rule the configuration does not
+name, such as `TGT_TokenAbsent`, which counts by default, is checked against every rule that matches on
+a label, and the output says its position is unknown. On the S3 test WebACL with temporary
 rules, 160 of 160 counted XSS requests carried the label a reader matched, and a short key read a
 custom rule's label on 3 of 3. The client lists now hold the matches that ended allowed, the only ones a
 switch changes; the rest are reported by the action that stopped them.
@@ -75,7 +83,9 @@ Every scan signal was per IP, and the one aggregate signal, a JA4 across many IP
 credential-stuffing run spread over a few hosts passed unseen: on 2026-10-16 on a test WebACL, 6 IPs sent
 816 allowed requests to POST /login, 136 each. A new section counts sources per path and method and marks
 an endpoint with at least 5 IPs and 200 allowed requests that has 3 times the distinct IPs of the same
-window a week earlier, or none then. Over 8 days of hourly windows on the two test WebACLs it marked that
+window a week earlier, or none then. It compares the 20 endpoints with the most requests per IP, so a
+real site's popular pages do not push a quiet login endpoint out of the list, and says so when the list
+is cut off. Over 8 days of hourly windows on the two test WebACLs it marked that
 run and a 10-source flood, and no ordinary traffic. The output states the condition and that its numbers
 were measured on low-traffic WebACLs; says, when it applies, that an endpoint already drawing many
 sources is not marked by a few more; and says so when the same window a week earlier holds no log, rather

@@ -420,18 +420,39 @@ def _volume_reads(cw, webacl_name: str, start, end, period: int, scope: str, reg
             "event": sums.get("event", 0)}
 
 
-def _peak_hour(cw, webacl_name: str, scope: str, region: str, now):
-    """The start of the busiest hour of ALLOW traffic in the last seven days, or None if there was none."""
+def _peak_hour(cw, webacl_name: str, scope: str, region: str, end):
+    """`(start, ALLOW count)` of the busiest hour of ALLOW traffic in the seven days before `end`, or None
+    if there was none."""
     dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
     if scope == "REGIONAL" and region:
         dims.append({"Name": "Region", "Value": region})
-    start = (now - timedelta(days=7)).replace(minute=0, second=0, microsecond=0)
+    start = (end - timedelta(days=7)).replace(minute=0, second=0, microsecond=0)
     resp = cw.get_metric_data(MetricDataQueries=[{"Id": "a", "MetricStat": {"Metric": {
         "Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": dims},
-        "Period": 3600, "Stat": "Sum"}}], StartTime=start, EndTime=now)
+        "Period": 3600, "Stat": "Sum"}}], StartTime=start, EndTime=end)
     points = [(v, t) for r in resp.get("MetricDataResults", [])
               for v, t in zip(r.get("Values", []), r.get("Timestamps", [])) if v]
-    return max(points, key=lambda p: p[0])[1].astimezone(timezone.utc) if points else None
+    if not points:
+        return None
+    v, t = max(points, key=lambda p: p[0])
+    return t.astimezone(timezone.utc), v
+
+
+def _comparison_window(start, end, now):
+    """`(start, end, period, has_week)` for reading a window against the same window a week earlier, or
+    None when CloudWatch no longer holds it: whole points from the resolution the older read is kept at,
+    ending at the last whole point, so a point still filling does not read low against a full one."""
+    from tools.waf_metrics import _period_for_window
+    from tools.waf_overview import _whole_points
+    week = timedelta(days=7)
+    has_week = _period_for_window(int((start - week).timestamp())) is not None
+    oldest = start - week if has_week else start
+    period = _period_for_window(int(oldest.timestamp()))
+    if period is None:
+        return None
+    start, end = _whole_points(start, end, period, oldest)
+    last = now - timedelta(seconds=int(now.timestamp()) % period, microseconds=now.microsecond)
+    return start, max(min(end, last), start + timedelta(seconds=period)), period, has_week
 
 
 def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None = None) -> str:
@@ -442,43 +463,42 @@ def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None =
     range". Now the window is the one asked for, or else the busiest hour of ALLOW traffic in the last
     seven days, and it is set against the same window a week earlier and against the hours around it.
     The week-earlier ratio decides, because it carries the weekly cycle; the surrounding hours decide
-    only when the week earlier had no ALLOW traffic at all."""
+    only when the week earlier had no ALLOW traffic at all. A busiest hour picked out of 168 sits above
+    its own hour a week earlier by selection alone, so a picked hour is set against the busiest hour of
+    the week before instead."""
     webacl_name = get_webacl_name()
     if not webacl_name:
         return "Error: No WebACL configured. Call get_waf_config first."
 
-    from tools.waf_metrics import _period_for_window
-    from tools.waf_overview import _whole_points, _window_note
+    from tools.waf_overview import _window_note
     from tools.waf_logs import naive_time_tz
     scope = get_scope()
     region = resolve_region(scope)
     cw = get_client("cloudwatch", region_name=region)
     now = datetime.now(timezone.utc)
 
+    week = timedelta(days=7)
     try:
+        prev_peak = None
         if start_epoch is None:
-            start = _peak_hour(cw, webacl_name, scope, region, now)
-            if start is None:
+            peak = _peak_hour(cw, webacl_name, scope, region, now)
+            if peak is None:
                 return (f"## Volume Anomaly Analysis\n\nNo ALLOW traffic was recorded for {webacl_name} in the "
                         f"last 7 days, so there is no busiest hour to compare. Give a start_time to check a "
                         f"specific window.")
+            start, peak_allowed = peak
+            prev_peak = _peak_hour(cw, webacl_name, scope, region, now - week)
             end, chosen = min(start + timedelta(hours=1), now), "the busiest hour of ALLOW traffic in the last 7 days"
         else:
             start = datetime.fromtimestamp(start_epoch, timezone.utc)
             end, chosen = min(datetime.fromtimestamp(end_epoch, timezone.utc), now), "the window asked for"
         asked_start, asked_end = start, end
-        week = timedelta(days=7)
-        has_week = _period_for_window(int((start - week).timestamp())) is not None
-        oldest = start - week if has_week else start
-        period = _period_for_window(int(oldest.timestamp()))
-        if period is None:
+        window = _comparison_window(start, end, now)
+        if window is None:
             return (f"No metrics for {webacl_name} in this window: CloudWatch keeps WAF metrics for 455 days, "
                     f"and this window starts before that.")
-        start, end = _whole_points(start, end, period, oldest)
-        # A point after now is empty, so the read stops at the last whole point and every window has
-        # the same length as this one.
+        start, end, period, has_week = window
         last = now - timedelta(seconds=int(now.timestamp()) % period, microseconds=now.microsecond)
-        end = max(min(end, last), start + timedelta(seconds=period))
         span = end - start
         this = _volume_reads(cw, webacl_name, start, end, period, scope, region)
         prev = _volume_reads(cw, webacl_name, start - week, end - week, period, scope, region) if has_week else None
@@ -496,7 +516,10 @@ def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None =
     near = {k: (before[k] + after[k]) * scale for k in ("allowed", "mitigated")}
     ratio = lambda k, base: this[k] / base[k] if base and base[k] else None
     week_allowed, near_allowed = ratio("allowed", prev), ratio("allowed", near)
-    if week_allowed is not None:
+    if prev_peak is not None:
+        allowed_x, base = peak_allowed / prev_peak[1], prev
+        basis = f"the busiest hour of the week before ({prev_peak[0].astimezone(naive_time_tz()).strftime('%Y-%m-%d %H:%M')})"
+    elif week_allowed is not None:
         allowed_x, base, basis = week_allowed, prev, "the same window a week earlier"
     else:
         allowed_x, base, basis = near_allowed, near, f"the {SURROUNDING_HOURS} hours either side"
@@ -606,15 +629,14 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # anomaly inside this window barely moves. Advisory only, so a failed read is a stderr line.
     wow_note = ""
     try:
-        from tools.waf_metrics import _period_for_window
         scope = get_scope()
         region = resolve_region(scope)
         cw = get_client("cloudwatch", region_name=region)
-        start_dt = datetime.fromtimestamp(start_epoch, timezone.utc)
-        end_dt = datetime.fromtimestamp(end_epoch, timezone.utc)
+        window = _comparison_window(datetime.fromtimestamp(start_epoch, timezone.utc),
+                                    datetime.fromtimestamp(end_epoch, timezone.utc), datetime.now(timezone.utc))
         week = timedelta(days=7)
-        period = _period_for_window(int((start_dt - week).timestamp()))
-        if period:
+        if window and window[3]:
+            start_dt, end_dt, period, _ = window
             tw_a = _volume_reads(cw, get_webacl_name(), start_dt, end_dt, period, scope, region)["allowed"]
             lw_a = _volume_reads(cw, get_webacl_name(), start_dt - week, end_dt - week, period, scope, region)["allowed"]
             if lw_a and tw_a / lw_a >= WOW_ANOMALY_SIGNIFICANT:
@@ -792,15 +814,18 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
 
     # Many sources on one endpoint, which every per-IP signal above is blind to by construction: a
     # spread credential-stuffing run keeps each IP under them, and one endpoint fails the JA4 table's
-    # URI-breadth test. Compared with the same window a week earlier below.
+    # URI-breadth test. Compared with the same window a week earlier below. Both floors are in the query
+    # and the list is ordered by requests per IP: ordered by IPs, a real site's popular pages fill it
+    # and a quiet login endpoint taken by six IPs never reaches the comparison.
     endpoints_cwl = (
         _LABELS_ARRAY + " | " "filter action = 'ALLOW'"
         f"{CWL_EXCLUDE_STATIC}"
         " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
         " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips"
         " by httpRequest.uri, httpRequest.httpMethod"
-        f" | filter unique_ips >= {ENDPOINT_MIN_IPS}"
-        f" | sort unique_ips desc | limit {_ENDPOINTS}"
+        f" | filter unique_ips >= {ENDPOINT_MIN_IPS} and total >= {ENDPOINT_MIN_REQUESTS}"
+        " | fields total / unique_ips as per_ip"
+        f" | sort per_ip desc | limit {_ENDPOINTS}"
     )
     endpoints_athena = (
         "SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\","
@@ -811,8 +836,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         f"{ATHENA_EXCLUDE_STATIC}"
         " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
         " GROUP BY httprequest.uri, httprequest.httpmethod"
-        f" HAVING count(DISTINCT httprequest.clientip) >= {ENDPOINT_MIN_IPS}"
-        " ORDER BY unique_ips DESC LIMIT {LIMIT}"
+        f" HAVING count(DISTINCT httprequest.clientip) >= {ENDPOINT_MIN_IPS} AND count(*) >= {ENDPOINT_MIN_REQUESTS}"
+        " ORDER BY count(*) * 1.0 / count(DISTINCT httprequest.clientip) DESC LIMIT {LIMIT}"
     )
     later("endpoints", endpoints_cwl, endpoints_athena, _ENDPOINTS)
 
@@ -1011,7 +1036,8 @@ def _endpoint_section(rows: list, start_epoch: int, end_epoch: int, failures: di
     if failures.get("endpoints"):
         return head + [_empty_reason(failures, "endpoints"), rule], False
     if not rows:
-        return head + [f"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs in this window)", rule], False
+        return head + [f"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs and {ENDPOINT_MIN_REQUESTS} or more "
+                       f"allowed requests in this window)", rule], False
 
     week = 7 * 86400
     keyed = [(r.get("httpRequest.uri", ""), r.get("httpRequest.httpMethod", ""), r) for r in rows]
@@ -1071,6 +1097,9 @@ def _endpoint_section(rows: list, start_epoch: int, end_epoch: int, failures: di
     if len(safe) < len(keyed):
         lines.append(f"  ({len(keyed) - len(safe)} endpoint(s) not compared: their path holds characters this does "
                      f"not put in a query)")
+    if notes.get("endpoints"):
+        lines.append(f"  The list stopped at {len(rows)} endpoints, taken by requests per IP, so an endpoint with "
+                     f"fewer requests per IP that would be marked may be outside it.")
     lines.append(rule)
     if new_marked:
         lines.append("  A marked endpoint with no IPs a week earlier is either new or newly attacked; ask the user which.")

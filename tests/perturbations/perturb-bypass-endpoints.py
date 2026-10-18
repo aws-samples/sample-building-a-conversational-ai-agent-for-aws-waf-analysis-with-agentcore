@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: MIT-0
 """Can `tests/test_bypass_endpoints.py` fail? Each threshold dropped, an empty week-earlier window read
 as zero everywhere, an absent endpoint read as unknown, the disclosures printed unconditionally or not
-at all, an unchecked path queried, and a marked endpoint not counted as a candidate."""
+at all, an unchecked path queried, a marked endpoint not counted as a candidate, the list ordered by IPs
+so popular pages fill it, and a cut-off list not disclosed."""
 
 import sys
 
@@ -48,8 +49,10 @@ CASES = [
      [f"{T}::test_a_path_a_quote_could_break_out_of_is_not_compared"], True),
 
     ("the condition stated only when something is marked",
-     [(B, "        return head + [f\"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs in this window)\", rule], False\n",
-       "        return head + [f\"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs in this window)\"], False\n")],
+     [(B, "        return head + [f\"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs and {ENDPOINT_MIN_REQUESTS} or more \"\n"
+          "                       f\"allowed requests in this window)\", rule], False\n",
+       "        return head + [f\"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs and {ENDPOINT_MIN_REQUESTS} or more \"\n"
+          "                       f\"allowed requests in this window)\"], False\n")],
      [f"{T}::test_the_condition_is_stated_with_its_numbers_every_time"], True),
 
     ("a marked endpoint not counted as a candidate",
@@ -61,6 +64,26 @@ CASES = [
           "        \" | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips\"",
        "        \" | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips\"")],
      [f"{T}::test_the_scan_counts_a_marked_endpoint_as_a_candidate"], False),
+
+    ("the CloudWatch list ordered by IPs again",
+     [(B, '        " | fields total / unique_ips as per_ip"\n        f" | sort per_ip desc | limit {_ENDPOINTS}"\n',
+       '        f" | sort unique_ips desc | limit {_ENDPOINTS}"\n')],
+     [f"{T}::test_both_floors_are_in_the_query_and_the_list_is_by_requests_per_ip"], False),
+
+    ("the Athena list ordered by IPs again",
+     [(B, '" ORDER BY count(*) * 1.0 / count(DISTINCT httprequest.clientip) DESC LIMIT {LIMIT}"',
+       '" ORDER BY unique_ips DESC LIMIT {LIMIT}"')],
+     [f"{T}::test_both_floors_are_in_the_query_and_the_list_is_by_requests_per_ip"], False),
+
+    ("the request floor left out of the query",
+     [(B, 'f" | filter unique_ips >= {ENDPOINT_MIN_IPS} and total >= {ENDPOINT_MIN_REQUESTS}"',
+       'f" | filter unique_ips >= {ENDPOINT_MIN_IPS}"')],
+     [f"{T}::test_both_floors_are_in_the_query_and_the_list_is_by_requests_per_ip"], False),
+
+    ("a cut-off list not disclosed",
+     [(B, '    if notes.get("endpoints"):\n        lines.append(f"  The list stopped at',
+       '    if False:\n        lines.append(f"  The list stopped at')],
+     [f"{T}::test_a_cut_off_list_says_a_quieter_endpoint_may_be_outside_it"], True),
 ]
 
 sys.exit(sweep(CASES))
