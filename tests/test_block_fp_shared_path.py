@@ -16,7 +16,7 @@ from tools import waf_block_fp as F
 FP = "198.51.100.30"
 SQLI = "AWS-AWSManagedRulesSQLiRuleSet"
 BASE = dict(rule_id=SQLI, rule_type="MANAGED_RULE_GROUP", sub_rule="SQLi_QUERYARGUMENTS", allow_count=500,
-            block_count=2, total=502, peak_rpm="1", avg_rpm="1", rules_triggered=1,
+            block_count=2, total=502, peak_rpm="1", avg_rpm="1", rules_triggered=1, clients={"n": 1, "basis": "ip"},
             uri_results=[{"httpRequest.uri": "/search", "httpRequest.httpMethod": "GET", "hits": "2"},
                          {"httpRequest.uri": "/help", "httpRequest.httpMethod": "GET", "hits": "1"}],
             match_detail=[], match_detail_note="", text_transforms=[], insp_label=None, insp_samples=None,

@@ -80,11 +80,13 @@ class _Dim:
     them and `lbls` was defined twice in one query, the second time after it had already been
     read."""
 
-    def __init__(self, athena: str, cwl: str, cwl_pre: tuple = (), unnest: str = ""):
+    def __init__(self, athena: str, cwl: str, cwl_pre: tuple = (), unnest: str = "", where: tuple = ()):
         self.athena = athena
         self.cwl = cwl
         self.cwl_pre = tuple(cwl_pre)
         self.unnest = unnest
+        # `(athena, cwl)` predicates the dimension only makes sense under, ANDed into the scope.
+        self.where = tuple(where)
 
 
 def _header(name: str) -> str:
@@ -126,9 +128,19 @@ _GROUP_BY = {
                   (_LABELS_ARRAY, "filter ispresent(lbls)",
                    r'parse lbls /"name":"(?<label>[^"]*)"/'),
                   unnest="CROSS JOIN UNNEST(labels) AS t(l)"),
+    # The query string, masked when rendered. Requests without one are left out: an empty string is
+    # the largest group on almost any site and would push every query string off the table.
+    "args": _Dim("httprequest.args", "httpRequest.args",
+                 where=("httprequest.args <> ''", "ispresent(httpRequest.args) and httpRequest.args != ''")),
     # Rendered from `bucket_minutes`, so it is built in `_group_expr` rather than sitting here.
     "time_bucket": None,
 }
+# group_by may name several dimensions, comma-separated, for counts: `clientIp,uri` is one row per IP
+# and path. Not label, which multiplies rows, nor time_bucket, which is rendered.
+_MULTI_GROUP_MAX = 3
+_NOT_IN_MULTI = ("label", "time_bucket")
+# A filter value may be a list, ORed; bounded so a query stays under CloudWatch's 10,000 characters.
+_FILTER_VALUES_MAX = 20
 
 _METRICS = ("count", "ratio", "percentile")
 
@@ -378,6 +390,10 @@ _FILTERS = {
     "label": _Filter(_checked(r"[0-9a-zA-Z_:.\-]+", "a WAF label"),
                      "any_match(labels, l -> strpos(l.name, '{v}') > 0)",
                      "lbls like '{v}'", (_LABELS_ARRAY,)),
+    # An exact path. No quote or backslash, so a value cannot leave the literal it is put in.
+    "uri": _Filter(_checked(r"[A-Za-z0-9/._~%!$&()*+,=:@-]+", "a URI path (no quotes, semicolons, spaces or backslashes)"),
+                   "httprequest.uri = '{v}'", "httpRequest.uri = '{v}'",
+                   redactable_filter=("UriPath",)),
     # Matched through the parse rather than a raw-message substring, so `example.com` cannot be
     # satisfied by the string turning up in a URI or a referer.
     "host": _Filter(_checked(r"[0-9a-zA-Z.\-]+(:[0-9]+)?", "a hostname"),
@@ -430,10 +446,18 @@ def _parse_filters(filter_by: str) -> tuple[dict, str | None]:
         if key not in _FILTERS:
             return {}, (f"Error: '{key}' is not a filter dimension. Available: "
                         f"{', '.join(sorted(_FILTERS))}.")
-        clean, bad = _FILTERS[key].check(value)
-        if bad:
-            return {}, f"{bad} (filter_by['{key}'])"
-        checked[key] = clean
+        values = value if isinstance(value, list) else [value]
+        if not values or len(values) > _FILTER_VALUES_MAX:
+            return {}, (f"Error: filter_by['{key}'] holds {len(values)} values; give 1 to "
+                        f"{_FILTER_VALUES_MAX}.")
+        cleaned = []
+        for one in values:
+            clean, bad = _FILTERS[key].check(one)
+            if bad:
+                return {}, f"{bad} (filter_by['{key}'])"
+            cleaned.append(clean)
+        cleaned = list(dict.fromkeys(cleaned))
+        checked[key] = cleaned[0] if not isinstance(value, list) else tuple(cleaned)
     return checked, None
 
 
@@ -443,10 +467,19 @@ def _build(group_by: str, metric: str, filters: dict, bucket_minutes: int,
 
     Both dialects are assembled from the same three decisions, which is the point: a dimension
     added to `_GROUP_BY` reaches both engines or neither."""
-    a_select, a_group, cwl_by, cwl_pre, unnest, alias = _group_expr(group_by, bucket_minutes)
+    dims = [_GROUP_BY[g] for g in group_by.split(",")]
+    if len(dims) > 1:
+        a_select = ", ".join(f'{d.athena} AS "{d.cwl}"' for d in dims)
+        a_group = ", ".join(d.athena for d in dims)
+        cwl_by = ", ".join(d.cwl for d in dims)
+        cwl_pre = tuple(dict.fromkeys(st for d in dims for st in d.cwl_pre))
+        unnest, alias = "", None
+    else:
+        a_select, a_group, cwl_by, cwl_pre, unnest, alias = _group_expr(group_by, bucket_minutes)
 
     stages = list(cwl_pre)
-    a_preds, cwl_preds = [], []
+    a_preds = [d.where[0] for d in dims if d and d.where]
+    cwl_preds = [d.where[1] for d in dims if d and d.where]
     for key, value in sorted(filters.items()):
         spec = _FILTERS[key]
         from tools.waf_query import note_redacted_filter  # lazy: circular at module level
@@ -454,9 +487,12 @@ def _build(group_by: str, metric: str, filters: dict, bucket_minutes: int,
         # than at the render sites: the zero-row branch returns before either of them, and a filter
         # on a redacted field is a fourth cause of zero rows that the message there does not offer.
         note_redacted_filter(spec.redactable_filter)
-        athena, cwl = spec.by_value.get(value, (spec.athena, spec.cwl))
-        a_preds.append(athena.replace("{v}", value))
-        cwl_preds.append(cwl.replace("{v}", value))
+        values = value if isinstance(value, tuple) else (value,)
+        pairs = [spec.by_value.get(v, (spec.athena, spec.cwl)) for v in values]
+        a_one = [a.replace("{v}", v) for (a, _), v in zip(pairs, values)]
+        cwl_one = [c.replace("{v}", v) for (_, c), v in zip(pairs, values)]
+        a_preds.append(a_one[0] if len(a_one) == 1 else "(" + " OR ".join(a_one) + ")")
+        cwl_preds.append(cwl_one[0] if len(cwl_one) == 1 else "(" + " or ".join(cwl_one) + ")")
         # Deduplicated per STAGE, which is what makes `_LABELS_ARRAY` shareable between the label
         # dimension and the label filter without defining `lbls` twice.
         stages.extend(stage for stage in spec.cwl_pre if stage not in stages)
@@ -505,7 +541,8 @@ def _build(group_by: str, metric: str, filters: dict, bucket_minutes: int,
 
     a_scope = f" AND {' AND '.join(a_preds)}" if a_preds else ""
     a_order = f"{a_group} ASC" if group_by == "time_bucket" else "hits DESC"
-    athena = (f"SELECT {a_select} AS \"{alias}\", count(*) AS hits {a_from}"
+    a_cols = a_select if alias is None else f'{a_select} AS "{alias}"'
+    athena = (f"SELECT {a_cols}, count(*) AS hits {a_from}"
               f" WHERE {a_where}{a_scope} GROUP BY {a_group}"
               f" ORDER BY {a_order} LIMIT {{LIMIT}}")
     cwl_filter = f"filter {' and '.join(cwl_preds)} | " if cwl_preds else ""
@@ -536,6 +573,9 @@ def _reject(group_by: str, metric: str, filters: dict) -> str | None:
         return ("Error: metric='ratio' needs filter_by to say what the numerator is, for "
                 "example filter_by='{\"rule\": \"MyRule\"}' with group_by='uri' for that "
                 "rule's hit rate per URI. Without it every group would read 100%.")
+    if metric != "count" and "args" in group_by.split(","):
+        return ("Error: group_by='args' works with metric='count' only: a query string is a value to "
+                "read, not an entity to rate or size a limit for.")
     if metric == "percentile" and group_by == "time_bucket":
         return ("Error: metric='percentile' already groups by time bucket internally, so "
                 "group_by='time_bucket' would bucket twice. Name the entity you want the "
@@ -562,12 +602,15 @@ def aggregate_logs(
         start_time: Start of the window, e.g. "2026-05-09T14:00". REQUIRED — ask the user.
         duration_minutes: Window length from start_time (default 180, max 360, both engines).
         group_by: What to group by. One of: clientIp, uri, country, method, action, rule,
-            ruletype, ja4, host, ua, referer, label, time_bucket.
+            ruletype, ja4, host, ua, referer, label, args, time_bucket. For metric="count", up to
+            three comma-separated, e.g. "clientIp,uri" (not label or time_bucket). args is the query
+            string, masked, and leaves out requests without one.
         metric: "count" for request counts, "ratio" for hit rate (matched/total per group),
             "percentile" for the min/avg/p95/p99/max of per-bucket request counts — use that
             one to size a rate-based rule threshold.
         filter_by: JSON string of filters, e.g. '{"action": "BLOCK", "country": "CN"}'. Keys:
-            action, rule, ip, country, method, ruletype, ja4, label, host. A label value is
+            action, rule, ip, country, method, ruletype, ja4, label, host, uri (an exact path). A
+            value may be a list of up to 20, matched as any of them: '{"ip": ["a", "b"]}'. A label value is
             matched as a substring of the full namespaced name, so
             filter_by='{"label": "bot-control:bot:verified"}' works and so does the whole
             "awswaf:managed:aws:bot-control:bot:verified"; a bare word like "bot" matches every
@@ -587,9 +630,18 @@ def aggregate_logs(
     from tools.waf_query import check_coarse_partition_block, log_query_error, query_logs
     from tools.waf_logs import _parse_start_time, _table_block
 
-    if group_by not in _GROUP_BY:
-        return (f"Error: '{group_by}' is not a group_by dimension. Available: "
+    group_by = ",".join(g.strip() for g in (group_by or "").split(","))
+    named = group_by.split(",")
+    unknown = [g for g in named if g not in _GROUP_BY]
+    if unknown:
+        return (f"Error: '{unknown[0]}' is not a group_by dimension. Available: "
                 f"{', '.join(sorted(_GROUP_BY))}.")
+    if len(named) > 1:
+        if len(named) > _MULTI_GROUP_MAX or len(set(named)) != len(named):
+            return f"Error: group_by names up to {_MULTI_GROUP_MAX} different dimensions, comma-separated."
+        if metric != "count" or any(g in _NOT_IN_MULTI for g in named):
+            return (f"Error: several group_by dimensions work with metric='count' only, and not with "
+                    f"{' or '.join(_NOT_IN_MULTI)}.")
     if metric not in _METRICS:
         return f"Error: '{metric}' is not a metric. Available: {', '.join(_METRICS)}."
     if not start_time:
@@ -663,8 +715,19 @@ def aggregate_logs(
     lines = [f"{described} — {len(rows)} rows\n",
              "| " + " | ".join(columns) + " |",
              "| " + " | ".join(["---"] * len(columns)) + " |"]
+    from tools.waf_query import _redact, PRIVACY_MASK_HINT
+    masked = False
     for row in rows[:MAX_RESULTS]:
-        lines.append("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |")
+        cells = []
+        for c in columns:
+            cell = str(row.get(c, ""))
+            if c == "httpRequest.args":
+                cell, m = _redact("args", cell)
+                masked = masked or m
+            cells.append(cell)
+        lines.append("| " + " | ".join(cells) + " |")
+    if masked:
+        lines.append(f"\nHINT: {PRIVACY_MASK_HINT}")
     if metric == "percentile":
         lines.append(
             f"\nHINT: these are per-{bucket_minutes}-minute request counts per {group_by}. A "
@@ -683,7 +746,8 @@ def _describe(group_by: str, metric: str, filters: dict, bucket_minutes: int,
     Not decoration: the model chose four parameters and the window was silently clamped to
     `MAX_MINUTES`, so a header naming the request is how a caller notices it got the aggregation
     it asked for over the window it did not."""
-    scope = ", ".join(f"{k}={v}" for k, v in sorted(filters.items())) or "all requests"
+    scope = ", ".join(f"{k}={'|'.join(v) if isinstance(v, tuple) else v}"
+                      for k, v in sorted(filters.items())) or "all requests"
     if metric == "ratio":
         return f"Hit rate of [{scope}] by {group_by}, {duration} min"
     if metric == "percentile":

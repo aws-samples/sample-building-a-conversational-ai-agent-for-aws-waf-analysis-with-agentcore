@@ -26,7 +26,7 @@ from tools import waf_count_eval as C
 ROW = {"httpRequest.clientIp": "203.0.113.9", "total": "999", "unique_uris": "888",
        "hits": "999", "cnt": "999", "action": "ALLOW", "Labels": "",
        "ja4Fingerprint": "t13d1516h2", "ua": "curl/8.0", "rule": "SomeRule",
-       "unique_uas": "9", "unique_ips": "9"}
+       "unique_uas": "9", "unique_ips": "9", "httpRequest.uri": "/login", "httpRequest.httpMethod": "POST"}
 
 ATHENA_RAISE = "STOPPED: Athena reported the query as FAILED, so no rows were returned."
 CWL_ERROR = "CloudWatch Logs Insights did not finish within 120 seconds."
@@ -377,7 +377,9 @@ def test_the_scan_issues_no_per_candidate_drill_down(monkeypatch, offline):
         return [dict(ROW)]
     monkeypatch.setattr(B, "query_logs", counting)
     B._step_scan(0, 3600)
-    assert len(seen) == 6, [s[:60] for s in seen]
+    # Seven signals in one wave, and the endpoint section's two baseline reads, however many
+    # endpoints or candidates there are.
+    assert len(seen) == 9, [s[:60] for s in seen]
     # And specifically: nothing queried a single fingerprint, which is what the loop did.
     assert not [s for s in seen if "ja4fingerprint = '" in s]
 

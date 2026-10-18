@@ -26,8 +26,8 @@ CASES = [
         "tools/waf_injection.py",
         '    for key in ("AndStatement", "OrStatement"):\n'
         "        if key in stmt:\n"
-        "            if any(_has_injection_statement(sub) for sub in stmt[key].get(\"Statements\", [])):\n"
-        "                return True",
+        "            for sub in stmt[key].get(\"Statements\", []):\n"
+        "                found |= _injection_statements(sub)",
         "    pass",
         [f"{T}::test_a_nested_injection_statement_is_found"],
     ),
@@ -36,7 +36,7 @@ CASES = [
         "tools/waf_injection.py",
         '    if "RateBasedStatement" in stmt:',
         '    if "NotStatement" in stmt:\n'
-        '        return _has_injection_statement(stmt["NotStatement"].get("Statement", {}))\n'
+        '        found |= _injection_statements(stmt["NotStatement"].get("Statement", {}))\n'
         '    if "RateBasedStatement" in stmt:',
         [f"{T}::test_an_inverted_injection_statement_is_not_a_detector"],
     ),
@@ -65,7 +65,7 @@ CASES = [
         "the rate-based scope-down branch dropped",
         "tools/waf_injection.py",
         '    if "RateBasedStatement" in stmt:\n'
-        '        return _has_injection_statement(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))',
+        '        found |= _injection_statements(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))',
         "    pass",
         [f"{T}::test_a_nested_injection_statement_is_found"],
     ),

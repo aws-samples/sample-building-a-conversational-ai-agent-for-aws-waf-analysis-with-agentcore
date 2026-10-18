@@ -186,6 +186,18 @@ CONFIDENCE_RULES = """\
 - PRESENT-ONLY: volume trends, IP distribution → show data, user decides if expected
 """
 
+# The endpoint signal: many sources on one path and method, against the same window a week earlier.
+# Measured 2026-10-18 with this exact condition (allowed, non-static, bot:verified left out) over 8 days
+# of hourly windows on the two low-traffic test WebACLs: it marked two events and no ordinary traffic,
+# a 6-IP credential-stuffing run on POST /login (816 requests, none a week earlier), which every per-IP
+# signal here missed with each IP under 200 requests, and a 10-source flood on GET / (37,771 allowed).
+# Loosened to 3 IPs and 50 requests it adds one endpoint per WebACL, both false-positive test traffic.
+ENDPOINT_MIN_IPS = 5
+ENDPOINT_MIN_REQUESTS = 200
+ENDPOINT_IP_GROWTH = 3
+_ENDPOINTS = 20
+_SAFE_URI = re.compile(r"[A-Za-z0-9/._~%!$&()*+,=:@-]+")
+
 # Anomaly thresholds (hardcoded, not LLM judgment)
 WOW_ANOMALY_MODERATE = 2.0
 WOW_ANOMALY_SIGNIFICANT = 3.0
@@ -208,19 +220,26 @@ def detect_bypass(step: str = "scan", ip: str = "", start_time: str = "",
     - "scan": Proactive check — run anomaly filters on ALLOW traffic to find suspicious IPs.
     - "ja4_ips": The IPs behind one JA4 fingerprint from the scan's JA4 tables. Requires ja4.
     - "investigate_ip": Deep-dive a specific IP's behavior in ALLOW logs.
-    - "volume_anomaly": Check for traffic volume anomalies (DDoS/scraping indicators).
+    - "volume_anomaly": Check a window for traffic volume anomalies (DDoS/scraping indicators): the
+      window given, or else the busiest hour of the last 7 days, against the same window a week earlier.
 
     Args:
         step: "scan", "ja4_ips", "investigate_ip", or "volume_anomaly".
         ip: Client IP (required for investigate_ip).
         ja4: JA4 fingerprint (required for ja4_ips), copied from the scan's JA4 table.
-        start_time: Start time for log queries (required for scan and investigate_ip).
+        start_time: Start time for log queries (required for scan and investigate_ip). Optional for
+            volume_anomaly, which otherwise picks the busiest hour of ALLOW traffic in the last 7 days.
         duration_minutes: Duration in minutes (default 180, max 360, both engines).
     """
     from tools.waf_logs import _parse_start_time
 
     if step == "volume_anomaly":
-        return _step_volume_anomaly()
+        if not start_time:
+            return _step_volume_anomaly()
+        start_epoch = _parse_start_time(start_time)
+        if start_epoch is None:
+            return f"Error: cannot parse start_time '{start_time}'."
+        return _step_volume_anomaly(start_epoch, start_epoch + duration_minutes * 60)
 
     # Ensure session state is populated
     if not get_webacl_name():
@@ -372,120 +391,213 @@ def _step_ja4_ips(ja4: str, start_epoch: int, end_epoch: int) -> str:
     return "\n".join(lines)
 
 
-def _step_volume_anomaly() -> str:
-    """Metrics-based volume anomaly detection. No logs needed."""
+# The local baseline: this many hours either side of the window, scaled to the window's length.
+SURROUNDING_HOURS = 6
+
+
+def _volume_reads(cw, webacl_name: str, start, end, period: int, scope: str, region: str) -> dict:
+    """`{"allowed", "mitigated", "event"}` summed over [start, end) at `period`. Raises on a failed read.
+
+    `Rule=ALL` by MetricStat, so no SEARCH discovery is involved, and `event` is the Anti-DDoS
+    `event-detected` label's ChallengeRequests over the same window."""
+    dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+    label_dims = [{"Name": "WebACL", "Value": webacl_name},
+                  {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
+                  {"Name": "LabelName", "Value": "event-detected"}]
+    if scope == "REGIONAL" and region:
+        dims.append({"Name": "Region", "Value": region})
+        label_dims.append({"Name": "Region", "Value": region})
+    metrics = {"allowed": ("AllowedRequests", dims), "blocked": ("BlockedRequests", dims),
+               "challenge": ("ChallengeRequests", dims), "captcha": ("CaptchaRequests", dims),
+               "event": ("ChallengeRequests", label_dims)}
+    resp = cw.get_metric_data(MetricDataQueries=[
+        {"Id": key, "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": name, "Dimensions": d},
+                                   "Period": period, "Stat": "Sum"}}
+        for key, (name, d) in metrics.items()], StartTime=start, EndTime=end)
+    sums = {r["Id"]: sum(r.get("Values", [])) for r in resp.get("MetricDataResults", [])}
+    return {"allowed": sums.get("allowed", 0),
+            "mitigated": sums.get("blocked", 0) + sums.get("challenge", 0) + sums.get("captcha", 0),
+            "event": sums.get("event", 0)}
+
+
+def _peak_hour(cw, webacl_name: str, scope: str, region: str, end):
+    """`(start, ALLOW count)` of the busiest hour of ALLOW traffic in the seven days before `end`, or None
+    if there was none."""
+    dims = [{"Name": "WebACL", "Value": webacl_name}, {"Name": "Rule", "Value": "ALL"}]
+    if scope == "REGIONAL" and region:
+        dims.append({"Name": "Region", "Value": region})
+    start = (end - timedelta(days=7)).replace(minute=0, second=0, microsecond=0)
+    resp = cw.get_metric_data(MetricDataQueries=[{"Id": "a", "MetricStat": {"Metric": {
+        "Namespace": "AWS/WAFV2", "MetricName": "AllowedRequests", "Dimensions": dims},
+        "Period": 3600, "Stat": "Sum"}}], StartTime=start, EndTime=end)
+    points = [(v, t) for r in resp.get("MetricDataResults", [])
+              for v, t in zip(r.get("Values", []), r.get("Timestamps", [])) if v]
+    if not points:
+        return None
+    v, t = max(points, key=lambda p: p[0])
+    return t.astimezone(timezone.utc), v
+
+
+def _comparison_window(start, end, now):
+    """`(start, end, period, has_week)` for reading a window against the same window a week earlier, or
+    None when CloudWatch no longer holds it: whole points from the resolution the older read is kept at,
+    ending at the last whole point, so a point still filling does not read low against a full one."""
+    from tools.waf_metrics import _period_for_window
+    from tools.waf_overview import _whole_points
+    week = timedelta(days=7)
+    has_week = _period_for_window(int((start - week).timestamp())) is not None
+    oldest = start - week if has_week else start
+    period = _period_for_window(int(oldest.timestamp()))
+    if period is None:
+        return None
+    start, end = _whole_points(start, end, period, oldest)
+    last = now - timedelta(seconds=int(now.timestamp()) % period, microseconds=now.microsecond)
+    return start, max(min(end, last), start + timedelta(seconds=period)), period, has_week
+
+
+def _step_volume_anomaly(start_epoch: int | None = None, end_epoch: int | None = None) -> str:
+    """Metrics-based volume anomaly detection for one window. No logs needed.
+
+    **The window, not the week.** This compared seven-day totals, and an hour-long scraper or flood
+    barely moves a week's ALLOW count, so the likely reading of a real anomaly was "within normal
+    range". Now the window is the one asked for, or else the busiest hour of ALLOW traffic in the last
+    seven days, and it is set against the same window a week earlier and against the hours around it.
+    The week-earlier ratio decides, because it carries the weekly cycle; the surrounding hours decide
+    only when the week earlier had no ALLOW traffic at all. A busiest hour picked out of 168 sits above
+    its own hour a week earlier by selection alone, so a picked hour is set against the busiest hour of
+    the week before instead."""
     webacl_name = get_webacl_name()
     if not webacl_name:
         return "Error: No WebACL configured. Call get_waf_config first."
 
+    from tools.waf_overview import _window_note
+    from tools.waf_logs import naive_time_tz
     scope = get_scope()
     region = resolve_region(scope)
     cw = get_client("cloudwatch", region_name=region)
+    now = datetime.now(timezone.utc)
 
-    from tools.waf_patrol import _get_all_rules_metrics_search
-
-    # This week vs last week (7 days each)
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(days=7)
-    prev_start = start - timedelta(days=7)
-
-    # Only the `ALL` series is used, and `rules=[]` reads it directly rather than through SEARCH.
-    this_week = _get_all_rules_metrics_search(cw, webacl_name, start, end, period=7 * 86400, scope=scope, region=region, rules=[])
-    last_week = _get_all_rules_metrics_search(cw, webacl_name, prev_start, start, period=7 * 86400, scope=scope, region=region, rules=[])
-
-    # Extract totals
-    tw_all = this_week.get("ALL", {})
-    lw_all = last_week.get("ALL", {})
-    tw_allowed = sum(tw_all.get("allowed", []))
-    lw_allowed = sum(lw_all.get("allowed", []))
-    tw_blocked = sum(tw_all.get("blocked", [])) + sum(tw_all.get("challenge", [])) + sum(tw_all.get("captcha", []))
-    lw_blocked = sum(lw_all.get("blocked", [])) + sum(lw_all.get("challenge", [])) + sum(lw_all.get("captcha", []))
-
-    wow_allowed = tw_allowed / max(lw_allowed, 1)
-    wow_blocked = tw_blocked / max(lw_blocked, 1)
-
-    # Check Anti-DDoS event
-    antiddos_detected = False
+    week = timedelta(days=7)
     try:
-        evt_resp = cw.get_metric_data(
-            MetricDataQueries=[
-                {"Id": "raw_evt", "MetricStat": {"Metric": {"Namespace": "AWS/WAFV2", "MetricName": "ChallengeRequests",
-                    "Dimensions": [{"Name": "WebACL", "Value": webacl_name},
-                                   {"Name": "LabelNamespace", "Value": "awswaf:managed:aws:anti-ddos"},
-                                   {"Name": "LabelName", "Value": "event-detected"}]}, "Period": 86400, "Stat": "Sum"}, "ReturnData": False},
-                {"Id": "evt", "Expression": "FILL(raw_evt,0)"},
-            ],
-            StartTime=start, EndTime=end,
-        )
-        for r in evt_resp.get("MetricDataResults", []):
-            if sum(r.get("Values", [])) > 0:
-                antiddos_detected = True
-    except Exception:
-        pass
+        prev_peak = None
+        if start_epoch is None:
+            peak = _peak_hour(cw, webacl_name, scope, region, now)
+            if peak is None:
+                return (f"## Volume Anomaly Analysis\n\nNo ALLOW traffic was recorded for {webacl_name} in the "
+                        f"last 7 days, so there is no busiest hour to compare. Give a start_time to check a "
+                        f"specific window.")
+            start = peak[0]
+            prev_peak = _peak_hour(cw, webacl_name, scope, region, now - week)
+            end, chosen = min(start + timedelta(hours=1), now), "the busiest hour of ALLOW traffic in the last 7 days"
+        else:
+            start = datetime.fromtimestamp(start_epoch, timezone.utc)
+            end, chosen = min(datetime.fromtimestamp(end_epoch, timezone.utc), now), "the window asked for"
+        asked_start, asked_end = start, end
+        window = _comparison_window(start, end, now)
+        if window is None:
+            return (f"No metrics for {webacl_name} in this window: CloudWatch keeps WAF metrics for 455 days, "
+                    f"and this window starts before that.")
+        start, end, period, has_week = window
+        last = now - timedelta(seconds=int(now.timestamp()) % period, microseconds=now.microsecond)
+        span = end - start
+        this = _volume_reads(cw, webacl_name, start, end, period, scope, region)
+        prev = _volume_reads(cw, webacl_name, start - week, end - week, period, scope, region) if has_week else None
+        around = timedelta(hours=SURROUNDING_HOURS)
+        after_end = min(end + around, last)
+        before = _volume_reads(cw, webacl_name, start - around, start, period, scope, region)
+        after = (_volume_reads(cw, webacl_name, end, after_end, period, scope, region)
+                 if after_end > end else {"allowed": 0, "mitigated": 0, "event": 0})
+        # Read like the window itself, so the table, the ratio and the mitigated comparison share it.
+        peak_prev = (_volume_reads(cw, webacl_name, prev_peak[0], prev_peak[0] + span, period, scope, region)
+                     if prev_peak else None)
+    except Exception as e:                                # noqa: BLE001
+        return (f"## Volume Anomaly Analysis\n\nThe CloudWatch metric read failed ({type(e).__name__}: {e}), so "
+                f"nothing here says whether traffic was normal. Retry, or query the logs for the window.")
 
-    # Build output
+    around_span = around + max(after_end - end, timedelta(0))
+    scale = span / around_span
+    near = {k: (before[k] + after[k]) * scale for k in ("allowed", "mitigated")}
+    ratio = lambda k, base: this[k] / base[k] if base and base[k] else None
+    week_allowed, near_allowed, peak_x = ratio("allowed", prev), ratio("allowed", near), ratio("allowed", peak_prev)
+    peak_label = (f"the busiest hour of the week before ({prev_peak[0].astimezone(naive_time_tz()).strftime('%Y-%m-%d %H:%M')})"
+                  if prev_peak else "")
+    if peak_x is not None:
+        allowed_x, base, basis = peak_x, peak_prev, peak_label
+    elif week_allowed is not None:
+        allowed_x, base, basis = week_allowed, prev, "the same window a week earlier"
+    else:
+        allowed_x, base, basis = near_allowed, near, f"the {SURROUNDING_HOURS} hours either side"
+    # A rise from nothing has no ratio, and it is still a rise: the first live run read 562,445
+    # mitigated against 0 a week earlier as "did NOT rise".
+    mitigated_x = ratio("mitigated", base)
+    mitigated_rose = this["mitigated"] > 0 and (mitigated_x is None or mitigated_x > WOW_ANOMALY_SIGNIFICANT)
+    mitigated_desc = (f"{mitigated_x:.1f}x" if mitigated_x is not None
+                      else f"{this['mitigated']:,.0f} against none" if this["mitigated"] else "none in either")
+
+    tz = naive_time_tz()
+    fmt = lambda t: t.astimezone(tz).strftime("%Y-%m-%d %H:%M")
+    show = lambda x: "n/a" if x is None else f"{x:.1f}x"
+    week_cell = lambda k: "no data (older than 455 days)" if prev is None else f"{prev[k]:,.0f}"
     lines = [
         "## Volume Anomaly Analysis",
-        f"**Period**: last 7 days vs previous 7 days",
+        f"**Window**: {fmt(start)} to {fmt(end)}, {chosen}",
         f"**WebACL**: {webacl_name}",
         "",
         "### Traffic Comparison",
-        f"| Metric | This Week | Last Week | WoW Ratio |",
-        f"| ------ | --------- | --------- | --------- |",
-        f"| ALLOW | {tw_allowed:,.0f} | {lw_allowed:,.0f} | {wow_allowed:.1f}x |",
-        f"| Mitigated (Block+Challenge+Captcha) | {tw_blocked:,.0f} | {lw_blocked:,.0f} | {wow_blocked:.1f}x |",
+        f"| Metric | This window | Same window a week earlier | {SURROUNDING_HOURS} hours either side, scaled to this window |"
+        + (f" {peak_label[0].upper()}{peak_label[1:]} |" if peak_prev else ""),
+        "| ------ | ----------- | -------------------------- | ------------------------------------- |"
+        + (" --- |" if peak_prev else ""),
+        f"| ALLOW | {this['allowed']:,.0f} | {week_cell('allowed')} | {near['allowed']:,.0f} |"
+        + (f" {peak_prev['allowed']:,.0f} |" if peak_prev else ""),
+        f"| Mitigated (Block+Challenge+Captcha) | {this['mitigated']:,.0f} | {week_cell('mitigated')} | {near['mitigated']:,.0f} |"
+        + (f" {peak_prev['mitigated']:,.0f} |" if peak_prev else ""),
+        f"| ALLOW ratio | | {show(week_allowed)} | {show(near_allowed)} |" + (f" {show(peak_x)} |" if peak_prev else ""),
         "",
     ]
+    if this["event"]:
+        lines += ["⚠️  **The Anti-DDoS event-detected label appeared in this window**: AMR declared a DDoS event.", ""]
 
-    if antiddos_detected:
-        lines.append("⚠️  **Anti-DDoS event-detected label appeared this week** — DDoS event was active.")
-        lines.append("")
-
-    # Classify
-    if wow_allowed < WOW_ANOMALY_MODERATE:
-        lines.append("### Assessment: No Significant Volume Anomaly")
-        lines.append(f"ALLOW traffic is {wow_allowed:.1f}x last week — within normal range.")
-        lines.append("")
-        lines.append("## Your Next Action")
-        lines.append("If user still suspects bypass, run detect_bypass(step='scan', start_time='...') for per-IP analysis.")
-    elif wow_allowed < WOW_ANOMALY_SIGNIFICANT:
-        lines.append("### Assessment: Moderate Increase")
-        lines.append(f"ALLOW traffic is {wow_allowed:.1f}x last week. Could be legitimate growth or early-stage attack.")
-        lines.append("")
-        lines.append("## Your Next Action")
-        lines.append("Ask user: \"Is this expected growth (marketing campaign, product launch, seasonal event)?\"")
-        lines.append("If unexpected → run detect_bypass(step='scan', start_time='...') to identify suspicious IPs.")
+    scan_minutes = max(60, min(int(span.total_seconds() // 60), 120))
+    scan_call = (f"detect_bypass(step='scan', start_time='{start.astimezone(tz).strftime('%Y-%m-%dT%H:%M')}', "
+                 f"duration_minutes={scan_minutes})")
+    if allowed_x is None:
+        lines += ["### Assessment: No Baseline",
+                  f"Neither the same window a week earlier nor the {SURROUNDING_HOURS} hours either side had ALLOW "
+                  f"traffic, so a ratio would mean nothing. Show the numbers and ask the user whether this "
+                  f"volume is expected."]
+    elif allowed_x < WOW_ANOMALY_MODERATE:
+        lines += ["### Assessment: No Significant Volume Anomaly",
+                  f"ALLOW traffic is {allowed_x:.1f}x {basis}. A scan can still find abuse that does not move "
+                  f"the volume."]
+    elif allowed_x < WOW_ANOMALY_SIGNIFICANT:
+        lines += ["### Assessment: Moderate Increase",
+                  f"ALLOW traffic is {allowed_x:.1f}x {basis}. Could be legitimate growth or an early-stage "
+                  f"attack; until someone says what explains it, treat it as unexplained."]
     else:
-        lines.append("### Assessment: Significant Anomaly")
-        lines.append(f"⚠️  ALLOW traffic is **{wow_allowed:.1f}x** last week — significant deviation from baseline.")
-        lines.append("")
-        lines.append("**Preliminary classification (from metrics only):**")
-        if antiddos_detected:
+        lines += ["### Assessment: Significant Anomaly",
+                  f"⚠️  ALLOW traffic is **{allowed_x:.1f}x** {basis}.", "",
+                  "**Preliminary classification (from metrics only):**"]
+        if this["event"]:
             lines.append("- Anti-DDoS event detected → DDoS attack confirmed by AMR")
-        if wow_blocked > WOW_ANOMALY_SIGNIFICANT:
-            lines.append(f"- Mitigated traffic also spiked ({wow_blocked:.1f}x) → WAF IS catching some of it")
+        if mitigated_rose:
+            lines.append(f"- Mitigated traffic also rose ({mitigated_desc}) → WAF IS catching some of it")
         else:
-            lines.append(f"- Mitigated traffic did NOT spike ({wow_blocked:.1f}x) → traffic is bypassing WAF rules")
-        lines.append("")
-        lines.append("**To classify attack type, ask user for a time window then call detect_bypass(step='scan').**")
-        lines.append("The scan will determine IP distribution and URI patterns to distinguish:")
-        lines.append("- IP distribution FLAT + URI concentrated → Classic distributed DDoS")
-        lines.append("  → Recommend: Anti-DDoS AMR, rate-based rules")
-        lines.append("- IP distribution FLAT + URI diversity HIGH (random paths) → Cache-bypass DDoS")
-        lines.append("  → Recommend: Cache 403/404 in CloudFront, rate-based rule, Anti-DDoS AMR")
-        lines.append("- IP distribution CONCENTRATED + URI diversity HIGH → Scraper/crawler")
-        lines.append("  → Recommend: Bot Control (Targeted), custom rate-based rule")
+            lines.append(f"- Mitigated traffic did NOT rise as much ({mitigated_desc}) → the extra traffic is "
+                         f"being allowed")
+        lines += ["", "The scan determines IP distribution and URI patterns, which distinguish:",
+                  "- IP distribution FLAT + URI concentrated → Classic distributed DDoS",
+                  "  → Recommend: Anti-DDoS AMR, rate-based rules",
+                  "- IP distribution FLAT + URI diversity HIGH (random paths) → Cache-bypass DDoS",
+                  "  → Recommend: Cache 403/404 in CloudFront, rate-based rule, Anti-DDoS AMR",
+                  "- IP distribution CONCENTRATED + URI diversity HIGH → Scraper/crawler",
+                  "  → Recommend: Bot Control (Targeted), custom rate-based rule"]
 
-    lines.append("")
-    lines.append("## Your Next Action")
-    lines.append("")
-    lines.append("Always ask: \"Is this expected traffic growth (marketing campaign, product launch, seasonal event)?\"")
-    lines.append("If user confirms unexpected → ask which day/hour was worst, then call detect_bypass(step='scan', start_time='...', duration_minutes=60).")
-    lines.append("Use a 1-2 hour window around the peak for best signal-to-noise ratio.")
-
-    lines.append("")
-    lines.append(CONFIDENCE_RULES)
-    return "\n".join(lines)
+    lines += ["", "## Your Next Action", "",
+              "Always ask: \"Is this expected traffic (marketing campaign, product launch, seasonal event)?\"",
+              f"If unexpected → call {scan_call} to find the clients behind it."]
+    lines += ["", CONFIDENCE_RULES]
+    return "\n".join(lines) + (_window_note(asked_start, asked_end, start, end, period) if chosen == "the window asked for" else "")
 
 
 def _step_scan(start_epoch: int, end_epoch: int) -> str:
@@ -521,27 +633,27 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # 0. Quick coverage check (config-based) + WoW volume check
     coverage_gaps = _check_coverage_gaps()
 
-    # Check WoW — if 3x+ spike, suggest volume_anomaly first
+    # This window against the same window a week earlier. It compared seven-day totals, which an
+    # anomaly inside this window barely moves. Advisory only, so a failed read is a stderr line.
     wow_note = ""
     try:
-        webacl_name = get_webacl_name()
         scope = get_scope()
         region = resolve_region(scope)
         cw = get_client("cloudwatch", region_name=region)
-        from tools.waf_patrol import _get_all_rules_metrics_search
-        end_dt = datetime.now(timezone.utc)
-        start_dt = end_dt - timedelta(days=7)
-        prev_dt = start_dt - timedelta(days=7)
-        tw = _get_all_rules_metrics_search(cw, webacl_name, start_dt, end_dt, period=7*86400, scope=scope, region=region, rules=[])
-        lw = _get_all_rules_metrics_search(cw, webacl_name, prev_dt, start_dt, period=7*86400, scope=scope, region=region, rules=[])
-        tw_a = sum(tw.get("ALL", {}).get("allowed", []))
-        lw_a = sum(lw.get("ALL", {}).get("allowed", []))
-        wow = tw_a / max(lw_a, 1)
-        if wow >= WOW_ANOMALY_SIGNIFICANT:
-            wow_note = (f"⚠️  ALLOW traffic is {wow:.1f}x last week (significant spike). "
-                        f"Consider calling detect_bypass(step='volume_anomaly') for aggregate analysis first.")
-    except Exception:
-        pass
+        window = _comparison_window(datetime.fromtimestamp(start_epoch, timezone.utc),
+                                    datetime.fromtimestamp(end_epoch, timezone.utc), datetime.now(timezone.utc))
+        week = timedelta(days=7)
+        if window and window[3]:
+            start_dt, end_dt, period, _ = window
+            tw_a = _volume_reads(cw, get_webacl_name(), start_dt, end_dt, period, scope, region)["allowed"]
+            lw_a = _volume_reads(cw, get_webacl_name(), start_dt - week, end_dt - week, period, scope, region)["allowed"]
+            if lw_a and tw_a / lw_a >= WOW_ANOMALY_SIGNIFICANT:
+                wow_note = (f"⚠️  ALLOW traffic in this window is {tw_a / lw_a:.1f}x the same window a week "
+                            f"earlier (significant spike). Consider calling detect_bypass(step='volume_anomaly', "
+                            f"start_time='...') for aggregate analysis first.")
+    except Exception as e:                                # noqa: BLE001
+        print(f"[waf_bypass] no volume comparison for the scan: {type(e).__name__}: {e}",
+              file=sys.stderr, flush=True)
 
     # 1. Run anomaly filters (exclusions built into queries)
     crawlers_cwl = (
@@ -708,6 +820,35 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
     later("ua_rotation", ua_rotation_cwl, ua_rotation_athena)
 
+    # Many sources on one endpoint, which every per-IP signal above is blind to by construction: a
+    # spread credential-stuffing run keeps each IP under them, and one endpoint fails the JA4 table's
+    # URI-breadth test. Compared with the same window a week earlier below. Both floors are in the query
+    # and the list is ordered by requests per IP: ordered by IPs, a real site's popular pages fill it
+    # and a quiet login endpoint taken by six IPs never reaches the comparison.
+    endpoints_cwl = (
+        _LABELS_ARRAY + " | " "filter action = 'ALLOW'"
+        f"{CWL_EXCLUDE_STATIC}"
+        " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
+        " | stats count(*) as total, count_distinct(httpRequest.clientIp) as unique_ips"
+        " by httpRequest.uri, httpRequest.httpMethod"
+        f" | filter unique_ips >= {ENDPOINT_MIN_IPS} and total >= {ENDPOINT_MIN_REQUESTS}"
+        " | fields total / unique_ips as per_ip"
+        f" | sort per_ip desc | limit {_ENDPOINTS}"
+    )
+    endpoints_athena = (
+        "SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\","
+        " count(*) as total, count(DISTINCT httprequest.clientip) as unique_ips"
+        " FROM {TABLE}"
+        " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+        " AND action = 'ALLOW'"
+        f"{ATHENA_EXCLUDE_STATIC}"
+        " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+        " GROUP BY httprequest.uri, httprequest.httpmethod"
+        f" HAVING count(DISTINCT httprequest.clientip) >= {ENDPOINT_MIN_IPS} AND count(*) >= {ENDPOINT_MIN_REQUESTS}"
+        " ORDER BY count(*) * 1.0 / count(DISTINCT httprequest.clientip) DESC LIMIT {LIMIT}"
+    )
+    later("endpoints", endpoints_cwl, endpoints_athena, _ENDPOINTS)
+
     # All six at once. `reasons` carries the labels that never answered inside the batch
     # budget, which is a THIRD way to have no rows alongside "failed" and "matched
     # nothing", and it has to reach the section note or a batch timeout renders as
@@ -720,6 +861,8 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     auto_ua = results.get("auto_ua") or []
     distributed = results.get("distributed") or []
     ua_rotation = results.get("ua_rotation") or []
+    endpoints = results.get("endpoints") or []
+    endpoint_lines, endpoints_marked = _endpoint_section(endpoints, start_epoch, end_epoch, failures, notes)
 
     # Build output
     lines = ["## Bypass Scan Results", ""]
@@ -810,6 +953,9 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     else:
         lines.append(_empty_reason(failures, "ua_rotation"))
 
+    lines.append("")
+    lines += endpoint_lines
+
     # One expression, read twice, because the two readings disagreed. This condition and the
     # action block below were written separately as De Morgan twins, and only this one learned
     # about `failures`: with every query failed the report said "Cannot Say Whether Bypass
@@ -818,7 +964,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     # machines instruct the model to follow, so the refusal was overridden by the section that
     # decides what happens next. Naming the condition once is half the fix; the other half is
     # that both readings now branch on `failures`.
-    found_any = bool(crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation)
+    found_any = bool(crawlers or repeaters or datacenter or auto_ua or distributed or ua_rotation or endpoints_marked)
 
     if not found_any:
         lines.append("")
@@ -843,7 +989,6 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
             # anyone" is the reading nothing here can rule out. The subject is ALLOW, which is the traffic
             # every one of the six sections looks at.
             from tools.waf_metrics import log_path_warning
-            from tools.session_state import get_webacl_name
             _warning = log_path_warning(get_webacl_name(), "ALLOW", start_epoch, end_epoch, narrow_rows=0)
             if _warning:
                 lines.append(_warning.strip())
@@ -859,6 +1004,11 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
         lines.append("- HIGH CONFIDENCE candidates (automation UA, data-center IP) → call record_finding")
         lines.append("- LIKELY/CANNOT DETERMINE → ask user: \"Do you recognize this IP? Is this expected traffic?\"")
         lines.append("- For deeper analysis → call detect_bypass(step='investigate_ip', ip='...', start_time='...')")
+        if endpoints_marked:
+            lines.append("- A marked endpoint → ask whether it is new or expected to draw many sources. If not, the "
+                         "sources are spread on purpose: aggregate_logs(group_by='clientIp', filter_by='{\"uri\": "
+                         "\"<path>\", \"action\": \"ALLOW\"}') lists them, a rate-based rule scoped to the path and keyed "
+                         "on something other than the IP limits them, and for a login path ATP is the AWS answer.")
         if failures:
             lines.append(f"- Say the scan was partial: {len(failures)} of its queries failed "
                          f"({', '.join(sorted(failures))}), so these candidates are a floor and "
@@ -877,6 +1027,94 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     if _cut:
         lines.append(_cut)
     return "\n".join(lines)
+
+
+def _endpoint_section(rows: list, start_epoch: int, end_epoch: int, failures: dict, notes: dict) -> tuple[list, bool]:
+    """The endpoint section's lines, and whether it marked anything.
+
+    Marked: at least ENDPOINT_MIN_IPS distinct IPs and ENDPOINT_MIN_REQUESTS requests on one path and
+    method, with ENDPOINT_IP_GROWTH times the distinct IPs of the same window a week earlier, or none
+    then. Two queries read the week earlier: the listed endpoints, and whether that window holds any log
+    at all, because a log group kept for less than a week or a table that does not reach back reads as
+    "no traffic a week earlier" on every endpoint and would mark them all."""
+    head = ["### Many Sources on One Endpoint (distributed low-rate abuse)"]
+    rule = (f"Marked when one path and method has at least {ENDPOINT_MIN_IPS} IPs and {ENDPOINT_MIN_REQUESTS} "
+            f"allowed requests, and {ENDPOINT_IP_GROWTH} times the distinct IPs of the same window a week "
+            f"earlier, or none then. These numbers were measured only on low-traffic test WebACLs.")
+    if failures.get("endpoints"):
+        return head + [_empty_reason(failures, "endpoints"), rule], False
+    if not rows:
+        return head + [f"  (no endpoint drew {ENDPOINT_MIN_IPS} or more IPs and {ENDPOINT_MIN_REQUESTS} or more "
+                       f"allowed requests in this window)", rule], False
+
+    week = 7 * 86400
+    keyed = [(r.get("httpRequest.uri", ""), r.get("httpRequest.httpMethod", ""), r) for r in rows]
+    safe = [(u, m) for u, m, _ in keyed if _SAFE_URI.fullmatch(u) and re.fullmatch(r"[A-Z]+", m)]
+    uris = sorted({u for u, _ in safe})
+    prev_cwl = (_LABELS_ARRAY + " | " "filter action = 'ALLOW'"
+                f" and httpRequest.uri in [{', '.join(repr(u) for u in uris)}]"
+                " and (not ispresent(lbls) or not (lbls like 'bot:verified'))"
+                " | stats count_distinct(httpRequest.clientIp) as unique_ips by httpRequest.uri, httpRequest.httpMethod"
+                f" | limit {_ENDPOINTS * 10}")
+    prev_athena = ("SELECT httprequest.uri as \"httpRequest.uri\", httprequest.httpmethod as \"httpRequest.httpMethod\","
+                   " count(DISTINCT httprequest.clientip) as unique_ips FROM {TABLE}"
+                   " WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER} AND action = 'ALLOW'"
+                   f" AND httprequest.uri IN ({', '.join(repr(u) for u in uris)})"
+                   " AND ( labels IS NULL OR none_match(labels, l -> l.name LIKE '%bot:verified%') )"
+                   " GROUP BY 1, 2 LIMIT {LIMIT}")
+    any_cwl = "stats count(*) as n"
+    any_athena = "SELECT count(*) as n FROM {TABLE} WHERE \"timestamp\" BETWEEN {START_MS} AND {END_MS} {PARTITION_FILTER}"
+    jobs = {"endpoints_logged": lambda: _safe_query(any_cwl, any_athena, start_epoch - week, end_epoch - week, limit=1,
+                                                    failures=failures, label="endpoints_logged", notes=notes)}
+    if uris:
+        jobs["endpoints_before"] = lambda: _safe_query(prev_cwl, prev_athena, start_epoch - week, end_epoch - week,
+                                                       limit=_ENDPOINTS * 10, failures=failures,
+                                                       label="endpoints_before", notes=notes)
+    got, reasons = run_concurrently(jobs)
+    failures.update(reasons)
+    logged = got.get("endpoints_logged") or []
+    logged_n = int(float(logged[0].get("n") or 0)) if logged else 0
+    before = {(r.get("httpRequest.uri", ""), r.get("httpRequest.httpMethod", "")): int(float(r.get("unique_ips") or 0))
+              for r in got.get("endpoints_before") or []}
+    baseline = None
+    if failures.get("endpoints_before"):
+        baseline = _empty_reason(failures, "endpoints_before")
+    elif failures.get("endpoints_logged"):
+        baseline = _empty_reason(failures, "endpoints_logged")
+    elif not logged_n:
+        baseline = ("  No request is logged in the same window a week earlier, so the comparison cannot run: the "
+                    "log destination may keep less than a week. Nothing is marked; the endpoints are listed.")
+
+    lines = head + [f"| {'Method':<6} | {'URI':<40} | {'Requests':>8} | {'IPs':>5} | {'Req/IP':>6} | {'IPs a week earlier':>18} | Marked |",
+                    f"| {'-'*6} | {'-'*40} | {'-'*8} | {'-'*5} | {'-'*6} | {'-'*18} | ------ |"]
+    marked, new_marked, busy = False, False, False
+    for uri, method, r in keyed:
+        total, ips = int(float(r.get("total") or 0)), int(float(r.get("unique_ips") or 0))
+        # The week-earlier query answered and that window holds logs, so an endpoint absent from it had
+        # no allowed request then: zero, not unknown. Unknown is only an endpoint not compared.
+        prior = before.get((uri, method), 0) if (uri, method) in safe and baseline is None else None
+        hit = prior is not None and ips >= ENDPOINT_MIN_IPS and total >= ENDPOINT_MIN_REQUESTS and (
+            prior == 0 or ips >= ENDPOINT_IP_GROWTH * prior)
+        marked, new_marked = marked or hit, new_marked or (hit and prior == 0)
+        busy = busy or (prior is not None and prior >= ENDPOINT_MIN_IPS and not hit)
+        shown = "n/a" if prior is None else f"{prior:,}"
+        lines.append(f"| {method:<6} | {uri[:40]:<40} | {total:>8,} | {ips:>5,} | {total // max(ips, 1):>6,} | "
+                     f"{shown:>18} | {'yes' if hit else '':<6} |")
+    if baseline:
+        lines.append(baseline)
+    if len(safe) < len(keyed):
+        lines.append(f"  ({len(keyed) - len(safe)} endpoint(s) not compared: their path holds characters this does "
+                     f"not put in a query)")
+    if notes.get("endpoints"):
+        lines.append(f"  The list stopped at {len(rows)} endpoints, taken by requests per IP, so an endpoint with "
+                     f"fewer requests per IP that would be marked may be outside it.")
+    lines.append(rule)
+    if new_marked:
+        lines.append("  A marked endpoint with no IPs a week earlier is either new or newly attacked; ask the user which.")
+    if busy:
+        lines.append("  An endpoint that already draws many sources is not marked by a few more, so an unmarked "
+                     "endpoint here does not rule out distributed abuse on it.")
+    return lines, marked
 
 
 def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:

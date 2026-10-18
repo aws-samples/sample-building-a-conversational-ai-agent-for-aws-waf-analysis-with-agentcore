@@ -1,5 +1,108 @@
 # Changelog
 
+## 0.36.0 (2026-10-18)
+
+### Fixed: the volume check compared week totals, so an hour-long flood read as normal
+
+`detect_bypass(step="volume_anomaly")` set seven days of `AllowedRequests` against the seven before.
+An anomaly that lasts an hour barely moves a week: on a test WebACL, a rate-limited flood on 2026-10-16
+read as 1.1x, "within normal range". The step now compares one window, the `start_time` given or else
+the busiest hour of ALLOW traffic in the last seven days, with the same window a week earlier and with
+the six hours either side. A busiest hour picked out of seven days sits above its own hour a week
+earlier by selection alone, so when the hour was picked, the busiest hour of the week before decides;
+the table shows it and sets mitigated traffic against it too. The same flood reads 20.9x the same hour
+a week earlier and 17.2x the busiest hour of the week before. A rise in mitigated traffic from none
+counts as a rise; the first run of the new code called 562,445 mitigated requests against none "did
+NOT rise". The bypass scan's own week-on-week note now reads whole metric points and stops at the last
+one, as this step does.
+
+### Fixed: analyze_ip called scanners scrapers
+
+`analyze_ip`'s verdicts described bots only, and its URI count included blocked requests, so a scanner
+that probed more than 50 paths was "Probable crawler/scraper", or "Automated scraper" at speed. A first
+verdict now names an attack source: an IP blocked for three attack categories, or for two with more
+blocks than allowed requests and one rule's or sub-rule's blocks on at least two paths. A client whose
+every save trips two categories on one path, a CMS post with code in it, is left to the false-positive
+check. The two-category verdict is LIKELY, not HIGH CONFIDENCE, because the test scanners sat exactly on
+its floor; it asks whether the blocked requests are the user's own application's. Categories come from
+the sub-rule that ended evaluation (SQL injection, cross-site scripting,
+path probing and so on), for AWS managed groups only, and from the statement of a custom rule. Rate
+limits, reputation lists, Bot Control and size checks are not categories, so a flood source still
+reads as hammering. Blocks whose category cannot be read (a third-party or customer rule
+group, a rule no longer in the WebACL) stop the verdict when they could change it. The bot verdicts no
+longer count blocks set aside as attacks. On the 2026-09-08 test traffic, each of 10 scanners (SQL
+injection 12 on 2 paths, path probing 1, against 3 allowed) is now a likely attack source and the
+false-positive user (SQL injection 2 on 1 path, against 35 allowed) is not.
+
+### Fixed: a false-positive check behind a shared address read every user's traffic as one
+
+`investigate_block_fp` judged the IP's allowed-to-blocked ratio and pace. Behind an office NAT both mix
+every user behind it: the pace rises past the human threshold, and other users' allowed requests set
+the ratio, so an attacker there could read as a likely false positive. The address is now split into
+clients by User-Agent and JA4. When several share it and one was blocked, the ratio, pace and rules are
+that client's own; when blocks come from more than one, or the blocked client's User-Agent also came
+under another JA4, which may be the same browser, the check refuses a direction. User-Agents
+that differ only in version numbers still count as one client. On a test WebACL on 2026-10-16, an
+office egress with 3 clients read 17:1, "suggests legitimate user", while the blocked client, a
+headless Chrome, had 0 allowed. The proactive scan's looser 5:1, against the check's 10:1, is now
+stated: it only picks IPs for the check.
+
+### Fixed: Count-to-Block recommended breaking a scope-down, and judged clients on matches a switch does not change
+
+`evaluate_count_rules` did not look at what reads a Count rule's labels. A Count rule whose label a
+later rule matches is part of a design, often the scope-down this tool's own false-positive advice
+recommends, and switching it to Block stops those requests before the later rule, and every rate-based
+rule after it, sees them. The inventory now keeps a custom rule in Count when a later rule's
+`LabelMatchStatement` reads its `RuleLabels`, and no longer calls a managed sub-rule safe on its hits
+alone when a later rule reads managed labels. `check_low_volume_clients` counts, from the logs, how
+many of the requests the rule counted carry each label a later rule reads; keys are matched as AWS
+documents them, a short key only in the WebACL's own context. A sub-rule the configuration does not
+name, such as `TGT_TokenAbsent`, which counts by default, is checked against every rule that matches on
+a label, and the output says its position is unknown. On the S3 test WebACL with temporary
+rules, 160 of 160 counted XSS requests carried the label a reader matched, and a short key read a
+custom rule's label on 3 of 3. The client lists now hold the matches that ended allowed, the only ones a
+switch changes; the rest are reported by the action that stopped them.
+
+### Fixed: the injection investigation looked only at what was blocked
+
+`investigate_injection` found sources only through detector matches, so a sender whose payloads passed
+every rule was never a source, and it profiled the top source over the attack's window only, while
+reconnaissance comes first. Two sections now follow the profile: everything the top five source IPs
+were allowed, from as far before the window as the 360-minute query cap leaves, and allowed requests
+with a query string on the attack's target paths, from any IP, as possible bypass leads, with sensitive
+values masked. On a test WebACL on 2026-10-13, a sensitive-path probe's allowed requests included
+`/.git/config`, `/.ssh/id_rsa` and `/wp-config.php`, which no blocked-traffic view shows. Both go through
+`aggregate_logs`, so an empty answer carries the Log Filter warning and the log-path cross-check, and
+neither stops the investigation.
+
+### Added: aggregate_logs takes lists, an exact path, several group dimensions and the query string
+
+`filter_by` values may be lists of up to 20, matched as any of them, and a `uri` filter matches an exact
+path. For counts, `group_by` takes up to three comma-separated dimensions, such as `clientIp,uri`. A new
+`args` dimension groups by query string, leaves out requests without one, and masks sensitive values.
+
+### Added: the bypass scan marks many sources on one endpoint
+
+Every scan signal was per IP, and the one aggregate signal, a JA4 across many IPs, needs 50 URIs, so a
+credential-stuffing run spread over a few hosts passed unseen: on 2026-10-16 on a test WebACL, 6 IPs sent
+816 allowed requests to POST /login, 136 each. A new section counts sources per path and method and marks
+an endpoint with at least 5 IPs and 200 allowed requests that has 3 times the distinct IPs of the same
+window a week earlier, or none then. It compares the 20 endpoints with the most requests per IP, so a
+real site's popular pages do not push a quiet login endpoint out of the list, and says so when the list
+is cut off. Over 8 days of hourly windows on the two test WebACLs it marked that
+run and a 10-source flood, and no ordinary traffic. The output states the condition and that its numbers
+were measured on low-traffic WebACLs; says, when it applies, that an endpoint already drawing many
+sources is not marked by a few more; and says so when the same window a week earlier holds no log, rather
+than marking every endpoint.
+
+### Fixed: the scan's spike note never printed
+
+The note at the top of `detect_bypass(step="scan")` that says ALLOW traffic is three times last week's
+raised `UnboundLocalError` on every scan from 0.27.0: an import further down the same function made the
+name local, and `except Exception: pass` hid it. The note now compares the scan's own window with the
+same window a week earlier. A new test fails on any function in `tools/` that uses a name before a local
+import of it.
+
 ## 0.35.0 (2026-10-17)
 
 ### Removed: the deep rule review; a full rules audit goes to AWS WAF Rules Reviewer

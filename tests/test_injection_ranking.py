@@ -81,6 +81,8 @@ def _run(monkeypatch, matches, fail=(), acl_error=None, source_fails=False):
             # pre-fix code fails on what it concludes rather than on this fake.
             rows = [(r, h) for r, acts in matches.items() for a, h in acts if a == "BLOCK"]
             return _table("terminatingRuleId", rows) if rows else ZERO
+        if "," in group_by:
+            return ZERO  # the allowed-traffic sections, covered in test_injection_allowed.py
         if group_by == "clientIp" and source_fails:
             return "Error: the aggregation query did not run. RuntimeError: throttled"
         col = {"uri": "httpRequest.uri", "clientIp": "httpRequest.clientIp", "ua": "ua", "ja4": "ja4Fingerprint"}[group_by]
@@ -110,7 +112,8 @@ def test_a_count_mode_detector_with_the_most_matches_is_the_focus(monkeypatch):
     out, calls = _run(monkeypatch, {XSS_SUB: [("ALLOW", 160)], "my-sqli": [("BLOCK", 5)]})
     assert f"Focusing **{XSS_SUB}**" in out or f"Focus rule: **{XSS_SUB}**" in out, out
     assert "Count mode" in out, "the focus rule's Count mode is not stated"
-    downstream = [f for g, f in calls if g != "action"]
+    # The allowed-traffic sections filter on the sources and paths, not on the rule.
+    downstream = [f for g, f in calls if g != "action" and "," not in g]
     assert downstream and all(f == {"rule": XSS_SUB} for f in downstream), downstream
 
 

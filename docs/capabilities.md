@@ -12,11 +12,11 @@ The agent scans BLOCK logs for IPs that also have high ALLOW traffic — potenti
 
 > "Are there any crawlers bypassing my WAF? Check yesterday 2pm-3pm."
 
-The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI diversity, automation user-agents, data-center IPs without bot labels, and UA rotation (a single JA4 TLS fingerprint used behind many different User-Agents, indicating UA spoofing). When investigating an IP it also shows the query strings it sent on ALLOW traffic — attack-like payloads that were let through are a direct bypass signal.
+The agent scans ALLOW traffic for anomalies: high-frequency IPs, unusual URI diversity, automation user-agents, data-center IPs without bot labels, UA rotation (a single JA4 TLS fingerprint used behind many different User-Agents, indicating UA spoofing), and many sources on one endpoint against the same window a week earlier, which is how credential stuffing spread over a few hosts looks when each stays under every per-IP threshold. When investigating an IP it also shows the query strings it sent on ALLOW traffic — attack-like payloads that were let through are a direct bypass signal.
 
 > "Evaluate my COUNT rules — can I switch them to Block?"
 
-The agent inventories all COUNT rules, classifies them by risk level, finds the peak traffic hour, and analyzes client behavior to determine if switching is safe. For each rule it surfaces the triggering request content (redacted) so you can tell a real attack from a false positive by the actual payload.
+The agent inventories all COUNT rules, classifies them by risk level, finds the peak traffic hour, and analyzes client behavior to determine if switching is safe. It keeps a rule in Count when a later rule reads its label, since that is usually a scope-down, and judges clients on the matches that ended allowed, the only ones a switch changes. For each rule it surfaces the triggering request content (redacted) so you can tell a real attack from a false positive by the actual payload.
 
 > "Run a security patrol for today"
 
@@ -30,15 +30,15 @@ Reads the rule from the WebACL and answers from its statement, action and positi
 
 > "My customer says they're being blocked, around 10am today"
 
-The agent locates the blocking rule, computes the IP's Allow Ratio, and provides a confidence-level assessment of whether it's a true false positive. It shows the actual content that matched — the rule's match detail (SQLi/XSS) **and** the inspected request component (query string, URI, cookie, or headers) — so you can see *why* the request was flagged. Secret values (cookies, auth/session tokens) are masked.
+The agent locates the blocking rule, computes the Allow Ratio of the blocked client (when several clients share the IP, such as an office NAT, it splits them by User-Agent and JA4 and judges the blocked one), and provides a confidence-level assessment of whether it's a true false positive. It shows the actual content that matched — the rule's match detail (SQLi/XSS) **and** the inspected request component (query string, URI, cookie, or headers) — so you can see *why* the request was flagged. Secret values (cookies, auth/session tokens) are masked.
 
 > "Traffic spiked 5x yesterday afternoon, is it DDoS?"
 
-Compares this week vs last week metrics, checks if Anti-DDoS AMR triggered, and classifies the anomaly (distributed DDoS vs scraper vs cache-bypass attack).
+Compares that window's metrics with the same window a week earlier and the hours around it, checks if Anti-DDoS AMR triggered, and classifies the anomaly (distributed DDoS vs scraper vs cache-bypass attack).
 
 > "Check IP 203.0.113.42, last 2 hours"
 
-Profiles the IP across all dimensions: frequency, URI diversity, JA4 fingerprint, bot labels, action breakdown, NAT detection, and the top query strings it sent (secrets redacted).
+Profiles the IP across all dimensions: frequency, URI diversity, JA4 fingerprint, bot labels, action breakdown, NAT detection, the attack categories of what blocked it, and the top query strings it sent (secrets redacted). An IP blocked for several attack categories is named an attack source before any bot verdict.
 
 > "Our API is returning 202 after enabling Challenge, check the past hour"
 
@@ -46,7 +46,7 @@ Lists all URIs/methods being challenged, flags incompatible requests (non-GET, A
 
 > "What injection attacks were blocked in the last hour?"
 
-The agent investigates SQLi / XSS / LFI activity in one call: it runs the whole sequence in code, so the source-IP profiling step is never skipped, and returns a classification and a recommendation rather than raw tables to interpret. Point it at a rule with a name, or let it survey all injection rules.
+The agent investigates SQLi / XSS / LFI activity in one call: it runs the whole sequence in code, so the source-IP profiling step is never skipped, and returns a classification and a recommendation rather than raw tables to interpret. It also lists what the source IPs were allowed, from hours before the attack (probes no rule matched reached the origin), and allowed requests with a query string on the paths the attack targeted, as possible bypass leads. Point it at a rule with a name, or let it survey all injection rules.
 
 > "What client is JA4 t13d1516h2_8daaf6152771_b186095e22b6?"
 

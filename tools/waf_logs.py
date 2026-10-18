@@ -352,6 +352,17 @@ def _sanitize_param(value: str) -> str:
     return re.sub(r"['\"|;`\\]", "", value)
 
 
+def naive_time_tz():
+    """The zone a time written without an offset is read in: the session's, else
+    `WAF_AGENT_TIMEZONE_OFFSET`, else UTC. A tool that prints a start_time for the model to pass back
+    formats it in this zone, so the time it prints is the time that gets parsed."""
+    from datetime import timezone, timedelta
+    from tools.session_state import get_user_timezone
+    session_tz = get_user_timezone()
+    tz_offset = session_tz if session_tz is not None else float(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
+    return timezone(timedelta(hours=tz_offset))
+
+
 def _parse_start_time(value: str) -> int | None:
     """Parse a date/datetime string to epoch seconds. Supports explicit offset or falls back to session/env. Returns None on failure."""
     from datetime import datetime, timezone, timedelta
@@ -378,10 +389,7 @@ def _parse_start_time(value: str) -> int | None:
             return int(dt.timestamp())
     except (ValueError, IndexError):
         pass
-    # No explicit offset — use session state > env var > UTC+0
-    session_tz = get_user_timezone()
-    tz_offset = session_tz if session_tz is not None else float(os.environ.get("WAF_AGENT_TIMEZONE_OFFSET", "0"))
-    user_tz = timezone(timedelta(hours=tz_offset))
+    user_tz = naive_time_tz()
     for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
         try:
             dt = datetime.strptime(value, fmt).replace(tzinfo=user_tz)
@@ -979,6 +987,99 @@ def _execute_query_internal(client, log_group: str, start_time: int, end_time: i
         return [{f["field"]: f["value"] for f in row} for row in result.get("results", [])]
 
 
+# The attack-source rung: an IP blocked for this many attack categories is one, whatever else it sent;
+# for the smaller number, only when its blocks outnumber its allowed requests too. Measured 2026-09-08
+# on the S3 test WebACL: each of 10 scanners took 12 SQL-injection blocks and 1 path-probing block
+# against 3 allowed requests, while the false-positive user there took 2 SQL-injection blocks against
+# 35 allowed. One script ran all 10, so that is one sample, and one request carries its second category.
+# The smaller number also needs one category's blocks on several paths: a real client whose every save
+# trips SQL injection and XSS, a CMS post with code in it, takes two categories on one path and may have
+# almost nothing allowed. Measured the same day: each scanner's SQL-injection blocks fell on 2 paths, the
+# false-positive user's on 1, with no margin, since 2 is the floor. Counted per rule and sub-rule, the
+# widest one, because the block query groups by them: two categories on one path would sum to two, and a
+# category whose two sub-rules hit one path each counts 1, which only makes the rung harder to reach.
+ATTACK_CATEGORIES_ALONE = 3
+ATTACK_CATEGORIES_WITH_MAJORITY = 2
+ATTACK_PATHS_WITH_MAJORITY = 2
+# The group of the rule that ended evaluation is the last entry with a `terminatingRule`, but only when
+# the terminating rule IS a managed group: a group in whole-group Count logs one too, with its native
+# BLOCK, while a later rule blocks. See `tools/counted.py`.
+_LAST_GROUP_CWL = ('parse @message /.*\\{"ruleGroupId":"(?<rgid>[^"]+)","terminatingRule":\\{"ruleId":"(?<sub_rule>[^"]+)"/')
+_LAST_GROUP_ATHENA = "element_at(filter(rulegrouplist, rg -> rg.terminatingrule IS NOT NULL), -1)"
+
+
+def _block_classes(rows: list, custom, custom_error: str = "") -> dict:
+    """What blocked an IP, per attack category, from `(type, rule, group id, sub-rule, blocks)` rows.
+
+    `custom` is `waf_injection.custom_rule_categories` for the WebACL's rules, or None when it could not
+    be read, with `custom_error` saying why. Returns `categories` `{category: blocks}`, `paths`
+    `{category or unknown rule: (paths, rows)}`, the most distinct paths one of its rules' or sub-rules'
+    blocks fell on and how many rules and sub-rules it holds, `unknown`
+    `{rule: (blocks, why)}` for blocks whose category cannot be read, and `excluded`, the
+    `(rule, sub-rule or "")` pairs whose blocks the bot rungs leave out: every content block, and every
+    block whose category is unknown, since either could be an attack's request."""
+    from tools.waf_injection import attack_category
+    cats, unknown, excluded, paths = {}, {}, set(), {}
+    blocked = sum(int(float(r.get("n") or 0)) for r in rows)
+    for r in rows:
+        kind, rule = r.get("terminatingRuleType", ""), r.get("terminatingRuleId", "")
+        group, sub = r.get("rgid") or "", r.get("sub_rule") or ""
+        n = int(float(r.get("n") or 0))
+        uris = int(float(r.get("uris") or 0))
+        if kind == "RATE_BASED" or rule == "Default_Action":
+            continue
+        why, cat = "", None
+        if kind == "MANAGED_RULE_GROUP":
+            if not sub:
+                why = "its sub-rule is not in the record"
+            elif not group.startswith("AWS#"):
+                why = f"a {group.split('#')[0] or 'third-party'} managed rule group, whose rule names say nothing reliable"
+            else:
+                cat = attack_category(sub)
+        elif kind == "REGULAR":
+            if custom is None:
+                why = f"the WebACL's rules could not be read ({custom_error})"
+            elif rule not in custom:
+                why = "it is not in the WebACL's current rules"
+            else:
+                cat = custom[rule]
+        elif kind == "GROUP":
+            why = "a rule group of your own, whose contents are not read here"
+        else:
+            why = f"the record's rule type {kind!r} is not one this reads"
+        if why:
+            blocks, reasons = unknown.get(rule, (0, why))
+            unknown[rule] = (blocks + n, reasons)
+            excluded.add((rule, ""))
+            paths[rule] = (max(paths.get(rule, (0, 0))[0], uris), paths.get(rule, (0, 0))[1] + 1)
+        elif cat:
+            cats[cat] = cats.get(cat, 0) + n
+            excluded.add((rule, sub if kind == "MANAGED_RULE_GROUP" else ""))
+            paths[cat] = (max(paths.get(cat, (0, 0))[0], uris), paths.get(cat, (0, 0))[1] + 1)
+    return {"categories": cats, "unknown": unknown, "excluded": excluded, "blocked": blocked, "paths": paths}
+
+
+def _without_attack_blocks(excluded: set) -> tuple[str, str, str]:
+    """`(cwl_parse, cwl_filter, athena_and)` that drop the blocks `_block_classes` set aside. Empty when
+    nothing is set aside. Rule names come from the logs and WAF allows only `[A-Za-z0-9_-]` in them,
+    so anything else is refused rather than quoted."""
+    if not excluded:
+        return "", "", ""
+    if any(not re.fullmatch(r"[\w-]+", x) for pair in excluded for x in pair if x):
+        raise ValueError(f"a rule name outside WAF's charset: {sorted(excluded)}")
+    whole = sorted({rule for rule, sub in excluded if not sub})
+    subs = sorted({sub for rule, sub in excluded if sub})
+    cwl_terms = ([f"terminatingRuleId in [{', '.join(repr(r) for r in whole)}]"] if whole else []) + \
+                ([f"(terminatingRuleType = 'MANAGED_RULE_GROUP' and sub_rule in [{', '.join(repr(x) for x in subs)}])"]
+                 if subs else [])
+    ath_terms = ([f"terminatingruleid IN ({', '.join(repr(r) for r in whole)})"] if whole else []) + \
+                ([f"(terminatingruletype = 'MANAGED_RULE_GROUP' AND {_LAST_GROUP_ATHENA}.terminatingrule.ruleid IN "
+                  f"({', '.join(repr(x) for x in subs)}))"] if subs else [])
+    return (f" | {_LAST_GROUP_CWL}",
+            f" | filter not (action = 'BLOCK' and ({' or '.join(cwl_terms)}))",
+            f" AND NOT (action = 'BLOCK' AND ({' OR '.join(ath_terms)}))")
+
+
 @tool
 def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     """Analyze a single IP address — full behavioral profile across all actions.
@@ -1131,6 +1232,58 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                               failures=failures, label="user_agents", notes=notes)
         rotation = None if failures.get("user_agents") else _is_nat_traffic(ua_rows) is False
 
+    # Phase 1b: what blocked this IP, by attack category, and how much it was allowed. The bot rungs
+    # below leave out the blocks set aside here, so this runs first.
+    blocks_cwl = (f'filter httpRequest.clientIp = "{safe_ip}" and action = "BLOCK" | {_LAST_GROUP_CWL}'
+                  ' | stats count(*) as n, count_distinct(httpRequest.uri) as uris by terminatingRuleType, terminatingRuleId,'
+                  ' rgid, sub_rule | limit 100')
+    blocks_athena = (f"SELECT terminatingruletype as \"terminatingRuleType\", terminatingruleid as \"terminatingRuleId\","
+                     f" {_LAST_GROUP_ATHENA}.rulegroupid as rgid, {_LAST_GROUP_ATHENA}.terminatingrule.ruleid as sub_rule,"
+                     f" count(*) as n, count(DISTINCT httprequest.uri) as uris FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+                     f" AND httprequest.clientip = '{safe_ip}' AND action = 'BLOCK' GROUP BY 1, 2, 3, 4 LIMIT {{LIMIT}}")
+    allowed_cwl = f'filter httpRequest.clientIp = "{safe_ip}" and action = "ALLOW" | stats count(*) as n'
+    allowed_athena = (f"SELECT count(*) as n FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}}"
+                      f" {{PARTITION_FILTER}} AND httprequest.clientip = '{safe_ip}' AND action = 'ALLOW'")
+    from tools.waf_query import run_concurrently
+    first, reasons = run_concurrently({
+        "attack_categories": lambda: _safe_query(blocks_cwl, blocks_athena, start_epoch, end_epoch, limit=100,
+                                                 failures=failures, label="attack_categories", notes=notes),
+        "allowed": lambda: _safe_query(allowed_cwl, allowed_athena, start_epoch, end_epoch, limit=1,
+                                       failures=failures, label="allowed", notes=notes)})
+    failures.update(reasons)
+    attack, allowed = None, None
+    if not (failures.get("attack_categories") or notes.get("attack_categories")):
+        block_rows = first.get("attack_categories") or []
+        custom, custom_error = {}, ""
+        if any(r.get("terminatingRuleType") == "REGULAR" and r.get("terminatingRuleId") != "Default_Action"
+               for r in block_rows):
+            # Read only when a block came from a rule of the WebACL's own: a managed sub-rule's name is
+            # enough for an AWS group. The same read `investigate_injection` makes.
+            try:
+                from tools.aws_session import get_client
+                from tools.session_state import get_scope, get_webacl_name, resolve_region
+                from tools.waf_injection import custom_rule_categories
+                scope = get_scope() or "CLOUDFRONT"
+                waf = get_client("wafv2", region_name=resolve_region(scope))
+                acl = next(a for a in waf.list_web_acls(Scope=scope).get("WebACLs", [])
+                           if a["Name"].lower() == get_webacl_name().lower())
+                custom = custom_rule_categories(waf.get_web_acl(
+                    Name=acl["Name"], Scope=scope, Id=acl["Id"])["WebACL"].get("Rules", []))
+            except Exception as e:                    # noqa: BLE001
+                custom, custom_error = None, f"{type(e).__name__}: {e}"
+        attack = _block_classes(block_rows, custom, custom_error)
+    elif notes.get("attack_categories"):
+        failures["attack_categories"] = "more rule and sub-rule combinations blocked it than one query returns"
+    if not failures.get("allowed"):
+        rows = first.get("allowed") or []
+        allowed = int(float(rows[0].get("n") or 0)) if rows else 0
+    try:
+        bot_parse, bot_filter, bot_athena = _without_attack_blocks(attack["excluded"] if attack else set())
+    except ValueError as e:
+        attack, bot_parse, bot_filter, bot_athena = None, "", "", ""
+        failures["attack_categories"] = str(e)
+    set_aside = (sum(attack["categories"].values()) + sum(b for b, _ in attack["unknown"].values())) if attack else 0
+
     # Phase 2: Full analysis (not NAT)
     cross_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
@@ -1163,7 +1316,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # 300 images a minute beside 2 API paths did too.
     dyn_rate_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
-        f"{CWL_EXCLUDE_STATIC}"
+        f"{CWL_EXCLUDE_STATIC}{bot_parse}{bot_filter}"
         ' | stats count(*) as req_per_min by bin(1m)'
         ' | stats max(req_per_min) as peak_rpm'
     )
@@ -1172,7 +1325,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
         f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f"  AND httprequest.clientip = '{safe_ip}'"
-        f"{ATHENA_EXCLUDE_STATIC}"
+        f"{ATHENA_EXCLUDE_STATIC}{bot_athena}"
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
@@ -1181,7 +1334,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # lowers it, and a client pulling 250 static files a minute read as mixed.
     static_rate_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
-        f"{CWL_ONLY_STATIC}"
+        f"{CWL_ONLY_STATIC}{bot_parse}{bot_filter}"
         ' | stats count(*) as req_per_min by bin(1m)'
         ' | stats max(req_per_min) as peak_rpm'
     )
@@ -1190,20 +1343,20 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         f"  SELECT date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as minute, count(*) as cnt"
         f"  FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f"  AND httprequest.clientip = '{safe_ip}'"
-        f"{ATHENA_ONLY_STATIC}"
+        f"{ATHENA_ONLY_STATIC}{bot_athena}"
         f"  GROUP BY date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i')"
         f")"
     )
     # Every distinct URI, static ones included, which is what tells bulk fetching from one file pulled
     # over and over once the traffic is static.
     all_uris_cwl = (
-        f'filter httpRequest.clientIp = "{safe_ip}"'
+        f'filter httpRequest.clientIp = "{safe_ip}"{bot_parse}{bot_filter}'
         ' | stats count_distinct(httpRequest.uri) as unique_uris_all'
     )
     all_uris_athena = (
         f"SELECT count(DISTINCT httprequest.uri) as unique_uris_all"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
-        f" AND httprequest.clientip = '{safe_ip}'"
+        f" AND httprequest.clientip = '{safe_ip}'{bot_athena}"
     )
 
     ja4_cwl = (
@@ -1219,14 +1372,14 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
 
     uri_cwl = (
         f'filter httpRequest.clientIp = "{safe_ip}"'
-        f"{CWL_EXCLUDE_STATIC}"
+        f"{CWL_EXCLUDE_STATIC}{bot_parse}{bot_filter}"
         ' | stats count_distinct(httpRequest.uri) as unique_uris, count(*) as total_non_static'
     )
     uri_athena = (
         f"SELECT count(DISTINCT httprequest.uri) as unique_uris, count(*) as total_non_static"
         f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
         f" AND httprequest.clientip = '{safe_ip}'"
-        f"{ATHENA_EXCLUDE_STATIC}"
+        f"{ATHENA_EXCLUDE_STATIC}{bot_athena}"
     )
 
     # Query strings this IP sent — the content that triggers QUERYARGUMENTS rules
@@ -1305,6 +1458,26 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         lines.append(_empty_reason(failures, "actions", "  (no requests in this window)"))
     lines.append("")
 
+    # What blocked it, by attack category: the attack-source rung's input
+    lines.append("**Blocks by attack category**:")
+    if attack is None:
+        lines.append(_empty_reason(failures, "attack_categories"))
+    else:
+        cats = attack["categories"]
+        def paths(k, rules="rules"):
+            n, rows = attack["paths"].get(k, (0, 0))
+            where = f"{n} path{'s' if n != 1 else ''}"
+            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} {rules} on {where})"
+        lines.append("  " + (", ".join(f"{c} {b:,}{paths(c)}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
+                             or ("none: it was not blocked" if not attack["blocked"] else
+                                 "none: its blocks came from rules that do not inspect what a request asks for or carries")))
+        for rule, (b, why) in attack["unknown"].items():
+            lines.append(f"  category unknown: {rule}, {b:,} blocks{paths(rule, 'sub-rules')}: {why}")
+    lines.append("**Allowed requests**:" + (f" {allowed:,}" if allowed is not None else ""))
+    if allowed is None:
+        lines.append(_empty_reason(failures, "allowed"))
+    lines.append("")
+
     # Request rate
     if rate:
         r = rate[0]
@@ -1333,6 +1506,9 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         unique = u.get("unique_uris", "0")
         total_ns = u.get("total_non_static", "0")
         lines.append(f"**URI diversity** (non-static): {unique} unique URIs out of {total_ns} requests")
+        if set_aside:
+            lines.append(f"  (this and the rates below leave out the {set_aside:,} blocks listed by attack "
+                         f"category above, so a scanner's probes do not read as a crawler's pages)")
     else:
         lines.append("**URI diversity** (non-static):")
         lines.append(_empty_reason(failures, "uri_diversity", "  (no non-static requests)"))
@@ -1404,7 +1580,50 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     unknown = {"user_agents": rotation is None,
                "request_rate": peak_val is None, "request_rate_dynamic": dyn_peak is None,
                "request_rate_static": static_peak is None,
-               "uri_diversity": uri_val is None or non_static is None}
+               "uri_diversity": uri_val is None or non_static is None,
+               "attack_categories": attack is None, "allowed": allowed is None}
+    # The bot rungs read requests without the blocks set aside above, so their share is of the same set.
+    kept = total - set_aside
+
+    def _attack_counts():
+        cats = attack["categories"]
+        return cats, sum(cats.values())
+
+    def _is_attack_source(cats, content, unknown_rules=0, unknown_blocks=0):
+        n = len(cats) + unknown_rules
+        spread = max([attack["paths"].get(k, (0, 0))[0] for k in [*cats, *(attack["unknown"] if unknown_rules else ())]] or [0])
+        return n >= ATTACK_CATEGORIES_ALONE or (n >= ATTACK_CATEGORIES_WITH_MAJORITY and content + unknown_blocks > allowed
+                                                and spread >= ATTACK_PATHS_WITH_MAJORITY)
+
+    def _attack_source():
+        cats, content = _attack_counts()
+        named = ", ".join(f"{c} {b:,}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
+        allowed_call = (f"what reached the origin is what it was allowed, so list that: aggregate_logs(group_by='uri', "
+                        f"filter_by='{{\"ip\": \"{ip}\", \"action\": \"ALLOW\"}}').")
+        if len(cats) >= ATTACK_CATEGORIES_ALONE:
+            return (f"**HIGH CONFIDENCE: Attack source or scanner.** Blocked for {len(cats)} attack categories "
+                    f"({named}), {content:,} blocked requests against {allowed:,} allowed. The blocks already "
+                    f"stopped what they matched; {allowed_call}")
+        spread = max(attack["paths"].get(c, (0, 0))[0] for c in cats)
+        # Two categories is the floor whatever the paths, so it is not called certain.
+        floor = f", and {spread} paths is its floor too" if spread == ATTACK_PATHS_WITH_MAJORITY else ""
+        return (f"**LIKELY: Attack source or scanner.** Blocked for {len(cats)} attack categories ({named}), "
+                f"{content:,} blocked requests against {allowed:,} allowed, one rule's blocks on {spread} paths. "
+                f"{len(cats)} attack categories is the floor for this verdict{floor}. An application of the user's "
+                f"own whose requests trip two categories looks the same. Ask the user whether the blocked "
+                f"requests are their own application's; if so, run the false-positive check. Otherwise "
+                f"{allowed_call}")
+
+    def _attack_source_unread():
+        cats, content = _attack_counts()
+        if not attack["unknown"] or _is_attack_source(cats, content):
+            return False
+        return _is_attack_source(cats, content, len(attack["unknown"]), sum(b for b, _ in attack["unknown"].values()))
+
+    def _unread_text():
+        why = "; ".join(f"{rule}, {b:,} blocks: {reason}" for rule, (b, reason) in attack["unknown"].items())
+        return (f"**CANNOT DETERMINE** — whether this is an attack source turns on blocks whose attack category "
+                f"cannot be read ({why}). Ask the user what those rules detect.")
 
     def _static_client():
         """The LIKELY line for a fast client whose requests are nearly all static. The rate is
@@ -1418,7 +1637,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                  f"aimed at a file, a client stuck in a retry loop, or a monitoring probe. These signals "
                  f"cannot tell which." if n <= 2 else
                  f" It is spread over {n} distinct URIs.")
-        return (f"**LIKELY: High-rate static-asset client** ({total - non_static:,} of {total:,} requests "
+        return (f"**LIKELY: High-rate static-asset client** ({kept - non_static:,} of {kept:,} requests "
                 f"static, peak {static_peak:g} static req/min).{shape} "
                 f"Before deciding, look at its top URIs (run_logs_query(query_type='ip_uri_breakdown', "
                 f"ip='{ip}')), its User-Agent above, and its Referer (aggregate_logs(group_by='referer', "
@@ -1428,6 +1647,11 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
     # skipped: the rung might have fired, so every rung after it would be answering the wrong
     # question. Each rung names what it reads.
     rungs = [
+        # First, because the rungs after it describe bots, and a scanner probing many paths at speed fits
+        # them too. Counted by attack category, not by rule: rate limits, reputation lists and Bot Control
+        # say nothing about what a request carried, and one managed group holds several categories.
+        (("attack_categories", "allowed"), lambda: _is_attack_source(*_attack_counts()), _attack_source),
+        (("attack_categories", "allowed"), _attack_source_unread, _unread_text),
         # Five or more UAs differing only by version, one JA4, at machine pace: an office on one
         # browser build shares the first two, so pace is what is left to tell them apart.
         (("user_agents", "request_rate"), lambda: rotation and ja4_count == 1 and peak_val > 200,
@@ -1440,7 +1664,7 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         # The static peak, not the overall one: an API burst in a mostly static window made the overall
         # peak minute, and the static share alone is over the whole window.
         (("request_rate_static", "uri_diversity"),
-         lambda: static_peak > 200 and non_static < 0.1 * total, None),
+         lambda: static_peak > 200 and non_static < 0.1 * kept, None),
         # The scraper rung above set the non-static peak against 200, so that is the rate this is under.
         (("uri_diversity",), lambda: uri_val > 50,
          lambda: f"**LIKELY: Probable crawler/scraper.** High URI diversity at a peak of {dyn_peak:g} "

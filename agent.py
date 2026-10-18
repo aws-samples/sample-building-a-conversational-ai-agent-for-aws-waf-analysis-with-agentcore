@@ -86,7 +86,7 @@ This limits nothing about your analysis. Quote the payload back to the user, dec
 - Specific IP bypass → detect_bypass(step="investigate_ip", ip="...", start_time="...")
 - "which IPs share that fingerprint" / user names a JA4 from a scan → detect_bypass(step="ja4_ips", ja4="...", start_time="...")
 - Specific IP general check → analyze_ip(ip="...", start_time="...")
-- "credential stuffing" / "brute force" → beyond WAF capability, recommend ATP
+- "credential stuffing" / "brute force" → detect_bypass(step="scan", start_time="...") shows its shape, many sources on one endpoint; WAF logs cannot show whether a login succeeded, so recommend ATP for the login path
 - User confirmed FP, wants fix → search_waf_knowledge for scope-down best practices
 - "hit rate of rule X" / "what % of traffic does this rule match" → get_waf_overview(query_type='top_rules'), which now carries a Hit rate column for every rule. Metrics-based, so it is free, unaffected by a Log Filter, and works over 14 days.
 - "hit rate per URL / per endpoint" → aggregate_logs(group_by="uri", metric="ratio", filter_by='{"rule": "X"}'). CloudWatch metrics have no URI dimension, so this one is log-only.
@@ -99,7 +99,7 @@ This limits nothing about your analysis. Quote the payload back to the user, dec
 
 ## Injection Attack Investigation (BLOCK spike or user reports attack)
 
-Call investigate_injection(start_time='...'). It runs the whole sequence in code, so the source-IP profiling step cannot be skipped, and it returns a classification and a recommendation rather than tables to interpret. It also reads which of your rules actually do injection detection from the WebACL's statement types rather than guessing from rule names, and tells you when it finds none — which is a finding rather than a clean result.
+Call investigate_injection(start_time='...'). It runs the whole sequence in code, so the source-IP profiling step cannot be skipped, and it returns a classification and a recommendation rather than tables to interpret. It also reads which of your rules actually do injection detection from the WebACL's statement types rather than guessing from rule names, and tells you when it finds none — which is a finding rather than a clean result. Its two allowed-traffic sections are what reached the origin: report the source IPs' allowed probes as such, and treat the target-path rows as leads, naming the ones whose query string looks like the attack's payloads.
 
 Do NOT hand-assemble this from get_waf_overview and run_logs_query. That was the old method and the reason it moved into code is that a step got skipped.
 
@@ -159,7 +159,8 @@ Do NOT assume the user's claim is correct — verify with WAF evidence before co
 - **analyze_ip**: General-purpose IP profiling. Looks at ALL actions (BLOCK + ALLOW + COUNT). Includes NAT detection. Use when user says "check IP X" without specifying direction (FP or bypass).
 - **detect_bypass(step='investigate_ip')**: Bypass-specific. Focuses on ALLOW traffic anomalies. Includes confidence judgment + remediation suggestions. Use when already in bypass investigation context.
 - If analyze_ip reveals the IP is mostly ALLOW'd with suspicious patterns → suggest detect_bypass for deeper bypass analysis.
-- If analyze_ip reveals the IP is mostly BLOCK'd → suggest investigate_block_fp for FP analysis.
+- If analyze_ip names an attack source with HIGH CONFIDENCE, follow its pointer to what the IP was allowed; that is what reached the origin. Do not run an FP check on it unless the user says the blocked requests are their own application's. A LIKELY attack source sits on the verdict's floor: ask that question first, and run the FP check if the answer is yes.
+- If analyze_ip reveals the IP is mostly BLOCK'd otherwise → suggest investigate_block_fp for FP analysis.
 
 ## IP Attribution: Verify Before Concluding Malicious
 - **NEVER conclude an IP is malicious without checking its identity.** ip_cross_query now includes User-Agent. If UA suggests a known service (health check, monitoring), verify with ip_label_breakdown.
@@ -204,7 +205,7 @@ Reaching for it first is a mistake even when it would work, because the scenario
 What it adds that nothing else has:
 - **A hit RATE, not a count.** metric="ratio" with filter_by as the numerator: aggregate_logs(group_by="uri", metric="ratio", filter_by='{"rule": "MyRule"}') is that rule's hit rate per URI, which is the number a COUNT-to-Block decision actually needs. Several filters AND together into one numerator, and the denominator is always every request in the group, so narrow the WINDOW rather than expecting filter_by to narrow the denominator.
 - **A threshold to set.** metric="percentile" returns min/avg/p95/p99/max of per-bucket request counts per group. group_by="clientIp" sizes a rate-based rule: read p99 as the level normal traffic stays under, then set the limit ABOVE it. Never quote p99 itself as the threshold.
-- **Group dimensions no template has**, notably referer, ua, ja4, method, ruletype and label, plus combinations like country x action.
+- **Group dimensions no template has**, notably referer, ua, ja4, method, ruletype, label and args (the query string, masked), plus combinations like country x action. For counts, group_by takes up to three comma-separated dimensions, e.g. group_by="clientIp,uri"; a filter value may be a list, '{"ip": ["a", "b"]}', and uri filters on an exact path.
 
 Two things to tell the user rather than work around: referer and ja4 are absent on some upstreams (API Gateway and AppSync do not send ja4), and on CloudWatch group_by="label" reports only the FIRST label per request while Athena reports all of them.
 
@@ -266,11 +267,11 @@ If the user asks to evaluate multiple rules, the tool handles prioritization. Fo
 **Use the detect_bypass tool.** It handles anomaly filtering, volume analysis, and IP profiling automatically.
 
 - Proactive scan: call detect_bypass(step="scan", start_time="...", duration_minutes=60)
-- Volume anomaly: call detect_bypass(step="volume_anomaly") — no start_time needed (metrics-based)
+- Volume anomaly: call detect_bypass(step="volume_anomaly", start_time="...") for a window the user names; without start_time it checks the busiest hour of the last 7 days. Metrics-based, compared with the same window a week earlier
 - One JA4 fingerprint from a scan: call detect_bypass(step="ja4_ips", ja4="...", start_time="...") for the IPs behind it. One query, so ask which fingerprint rather than walking the table.
 - Specific IP: call detect_bypass(step="investigate_ip", ip="...", start_time="...")
 - Follow the tool's "Your Next Action" instructions.
-- Key workflow: volume_anomaly detects spike → ask user for time window → scan around peak (duration_minutes covers the spike) → investigate_ip for the IPs the scan named. If what the scan named is a JA4 fingerprint rather than an IP, ja4_ips is the step between the two.
+- Key workflow: volume_anomaly detects a spike and names its window → scan that window (the tool prints the call) → investigate_ip for the IPs the scan named. If what the scan named is a JA4 fingerprint rather than an IP, ja4_ips is the step between the two.
 
 ## AWS WAF Domain Knowledge
 - Rate-based rules: 20-30s kick-in delay — ALLOW before BLOCK is normal. Logs show threshold + key but NOT actual request count.
@@ -315,7 +316,7 @@ NOTE: Time-series timestamps are already in the user's session timezone. Use the
 
 ## COUNT Rule Evaluation Logic
 
-The evaluate_count_rules tool handles multi-dimensional cross-validation automatically. Follow its "Your Next Action" instructions. Key dimensions it evaluates: rule type prior, IP behavior, URI patterns, time distribution, UA/JA4 fingerprints.
+The evaluate_count_rules tool handles multi-dimensional cross-validation automatically. Follow its "Your Next Action" instructions. Key dimensions it evaluates: rule type prior, IP behavior, URI patterns, time distribution, UA/JA4 fingerprints, which later rules read the rule's labels, and how many of its matches ended allowed. A rule a later rule reads the label of stays in Count: do not recommend Block for it.
 
 ## DDoS Event Context
 - ChallengeAllDuringEvent activating = legitimate users getting challenged is EXPECTED BEHAVIOR, not a bug. Do NOT recommend disabling it.

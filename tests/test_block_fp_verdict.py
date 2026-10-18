@@ -16,7 +16,7 @@ from tools import waf_block_fp as F
 BASE = dict(rule_id="SomeRule", rule_type="REGULAR", sub_rule="", allow_count=500, block_count=10,
             total=510, avg_rpm="?", rules_triggered=1, uri_results=[], match_detail=[],
             match_detail_note="", text_transforms=[], insp_label=None, insp_samples=None,
-            insp_masked=False)
+            insp_masked=False, clients={"n": 1, "basis": "ip"})
 
 
 def _verdict(**over):

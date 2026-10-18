@@ -132,6 +132,10 @@ def get_webacl_name() -> str | None:
     return _state.get("webacl_name")
 
 
+def get_webacl_arn() -> str | None:
+    return _state.get("webacl_arn")
+
+
 def resolve_region(scope: str) -> str | None:
     """Resolve the correct AWS region for a given scope.
 

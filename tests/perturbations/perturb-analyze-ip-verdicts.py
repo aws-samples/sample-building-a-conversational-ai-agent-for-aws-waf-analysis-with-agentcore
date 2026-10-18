@@ -81,7 +81,7 @@ CASES = [
      [f"{T}::test_many_api_paths_at_a_low_api_rate_are_not_a_high_confidence_scraper"]),
 
     ("the static-client rung never firing",
-     [(L, "lambda: static_peak > 200 and non_static < 0.1 * total, None", "lambda: False, None")],
+     [(L, "lambda: static_peak > 200 and non_static < 0.1 * kept, None", "lambda: False, None")],
      [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering",
       f"{T}::test_mostly_static_with_a_few_api_calls_is_judged_on_the_api_part"]),
 
@@ -90,8 +90,8 @@ CASES = [
      [f"{T}::test_an_ip_pulling_only_static_files_is_a_static_client_not_hammering"]),
 
     ("the non-static rate counting static requests again",
-     [(L, """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_EXCLUDE_STATIC}"\n""",
-       """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n""")],
+     [(L, """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_EXCLUDE_STATIC}{bot_parse}{bot_filter}"\n""",
+       """    dyn_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{bot_parse}{bot_filter}"\n""")],
      [f"{T}::test_the_rate_the_rungs_compare_reads_the_same_requests_as_the_uri_count"]),
 
     ("a missing field read as zero again",
@@ -109,8 +109,8 @@ CASES = [
      [f"{T}::test_the_crawler_rung_names_the_non_static_rate_it_compared"]),
 
     ("the distinct-URI count back among the static rung's inputs",
-     [(L, '"uri_diversity": uri_val is None or non_static is None}',
-       '"uri_diversity": uri_val is None or non_static is None, "all_uris": all_uri_val is None}'),
+     [(L, '"uri_diversity": uri_val is None or non_static is None,\n',
+       '"uri_diversity": uri_val is None or non_static is None, "all_uris": all_uri_val is None,\n'),
       (L, '(("request_rate_static", "uri_diversity"),\n         lambda: static_peak',
        '(("request_rate_static", "uri_diversity", "all_uris"),\n         lambda: static_peak')],
      [f"{T}::test_a_failed_distinct_uri_count_does_not_stop_the_ladder"]),
@@ -131,8 +131,8 @@ CASES = [
      [f"{T}::test_a_static_client_whose_api_burst_was_in_another_minute_is_still_named"]),
 
     ("the static peak counting every request",
-     [(L, """    static_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_ONLY_STATIC}"\n""",
-       """    static_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n""")],
+     [(L, """    static_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{CWL_ONLY_STATIC}{bot_parse}{bot_filter}"\n""",
+       """    static_rate_cwl = (\n        f'filter httpRequest.clientIp = "{safe_ip}"'\n        f"{bot_parse}{bot_filter}"\n""")],
      [f"{T}::test_the_static_peak_reads_only_static_requests"]),
 
     ("an input that answered without a number called unanswered",

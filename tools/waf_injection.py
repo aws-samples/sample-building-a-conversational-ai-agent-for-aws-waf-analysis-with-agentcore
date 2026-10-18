@@ -104,6 +104,46 @@ def _is_injection_sub_rule(name: str) -> bool:
     return not (name.startswith(("GenericLFI_", "LFI_")) and name.endswith("_URIPATH"))
 
 
+# The attack categories `analyze_ip` counts an IP's blocks in. A family names the kind of payload a
+# sub-rule finds, and families finding the same kind share a category, so an IP blocked by
+# `SQLi_QUERYARGUMENTS` and `SQLiExtendedPatterns_BODY` has sent one kind of attack, not two.
+_CATEGORY_OF_FAMILY = {
+    "SQLi": "SQL injection", "CrossSiteScripting_": "cross-site scripting",
+    "GenericRFI_": "remote file inclusion", "GenericLFI_": "local file inclusion", "LFI_": "local file inclusion",
+    "Log4JRCE": "Log4j", "JavaDeserializationRCE_": "Java deserialization",
+    "ReactJSRCE_": "React server code execution", "UNIXShellCommandsVariables_": "command injection",
+    "WindowsShellCommands_": "command injection", "PowerShellCommands_": "command injection",
+    "PHPHighRiskMethodsVariables_": "PHP code injection", "EC2MetaDataSSRF_": "server-side request forgery",
+}
+_CATEGORY_OF_STATEMENT = {"SqliMatchStatement": "SQL injection", "XssMatchStatement": "cross-site scripting"}
+# Asking for a file or path by name: what `_is_injection_sub_rule` keeps out of the injection set, plus
+# the Core rule set's restricted file extensions in the path. Measured 2026-10-13 on the CloudWatch test
+# WebACL, a probe of sensitive paths was blocked by LFI_URIPATH 17 times, RestrictedExtensions_URIPATH
+# 12, ExploitablePaths_URIPATH 10 and GenericLFI_URIPATH 2, all asking for a file by name.
+_PATH_PROBE_RULES = frozenset({"ExploitablePaths_URIPATH", "RestrictedExtensions_URIPATH"})
+
+
+def attack_category(sub_rule: str) -> str | None:
+    """The attack category of an AWS managed sub-rule that inspects what a request asks for or carries,
+    or None for one that does not: rate, reputation, geography, bots, size, missing headers. Only for
+    AWS managed groups, whose names say what they inspect; a customer's rule named `SQLi_x` says nothing."""
+    if sub_rule in _PATH_PROBE_RULES or (sub_rule.startswith(("GenericLFI_", "LFI_")) and sub_rule.endswith("_URIPATH")):
+        return "path probing"
+    if not _is_injection_sub_rule(sub_rule):
+        return None
+    return _CATEGORY_OF_FAMILY[next(f for f in _INJECTION_FAMILIES if sub_rule.startswith(f))]
+
+
+def custom_rule_categories(rules: list) -> dict:
+    """`{rule name: category or None}` for the WebACL's own rules, read off their statements. Several
+    injection statements in one rule are one category, since a block does not say which one matched."""
+    out = {}
+    for rule in rules:
+        found = sorted(_CATEGORY_OF_STATEMENT[t] for t in _injection_statements(rule.get("Statement", {})))
+        out[rule.get("Name", "")] = " or ".join(found) if found else None
+    return out
+
+
 def _sub_rule_groups(rules: list) -> dict:
     """Each injection sub-rule named by `_injection_rules`, mapped to its managed group's name, which
     is the `ManagedRuleGroup` dimension its blocks are counted under."""
@@ -135,8 +175,8 @@ CONFIDENCE = (
 )
 
 
-def _has_injection_statement(stmt: dict) -> bool:
-    """Whether a rule's statement tree contains injection detection.
+def _injection_statements(stmt: dict) -> set:
+    """The injection statement types in a rule's statement tree, empty when there are none.
 
     Recursive because the statement can be nested under `AndStatement`, `OrStatement` or a
     rate-based rule's scope-down, and a top-level-only check would miss a rule that pairs SQLi
@@ -152,16 +192,20 @@ def _has_injection_statement(stmt: dict) -> bool:
     `And[Not(uri /upload), SqliMatchStatement]` still returns True, because the injection statement
     is a SIBLING of the `Not` rather than inside it. So this is strictly better, not a trade."""
     if not isinstance(stmt, dict):
-        return False
-    if any(key in stmt for key in _INJECTION_STATEMENTS):
-        return True
+        return set()
+    found = {key for key in _INJECTION_STATEMENTS if key in stmt}
     for key in ("AndStatement", "OrStatement"):
         if key in stmt:
-            if any(_has_injection_statement(sub) for sub in stmt[key].get("Statements", [])):
-                return True
+            for sub in stmt[key].get("Statements", []):
+                found |= _injection_statements(sub)
     if "RateBasedStatement" in stmt:
-        return _has_injection_statement(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))
-    return False
+        found |= _injection_statements(stmt["RateBasedStatement"].get("ScopeDownStatement", {}))
+    return found
+
+
+def _has_injection_statement(stmt: dict) -> bool:
+    """Whether a rule's statement tree contains injection detection; see `_injection_statements`."""
+    return bool(_injection_statements(stmt))
 
 
 def _injection_rules(rules: list) -> tuple[list, list]:
@@ -487,6 +531,11 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
                   "Skipped: no source IP was found, so there is nothing to profile. That also "
                   "means the classification below has no IP evidence behind it.", ""]
 
+    # Step 5b and 5c. What a selection by matches cannot see: a source's requests that no rule matched,
+    # which reached the origin, and allowed requests on the paths the attack targeted.
+    lines += _allowed_sections(aggregate_logs._tool_func, ips, _extract_column(paths, "httpRequest.uri"),
+                               start_time, duration)
+
     # Step 6. The matrix, in code.
     classification, recommendation = _classify(ips, ja4s)
     if unread_steps:
@@ -502,6 +551,47 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
               f"Next: call record_finding(title='Injection activity on {focus}', "
               f"severity='medium', detail='...') to keep this in the report."]
     return "\n".join(lines)
+
+
+_SOURCES_ALLOWED, _TARGETS = 5, 5
+
+
+def _allowed_sections(agg, ips: list, target_paths: list, start_time: str, duration: int) -> list:
+    """What a selection by matches cannot see, in two aggregate_logs calls: everything the top source
+    IPs were allowed, from as far before the window as the cap leaves, since reconnaissance comes
+    first and a probe no rule matches shows only there; and allowed requests with a query string on
+    the attack's target paths, from any IP, since a payload that passed every rule has no match. Both
+    are leads, so each says why it is empty, the Log Filter and the log-path cross-check included,
+    the way any aggregate does."""
+    from datetime import datetime, timezone
+    from tools.waf_aggregate import _FILTERS
+    from tools.waf_logs import _parse_start_time, naive_time_tz
+    start = _parse_start_time(start_time)
+    if start is None:
+        return []
+    sources = [ip for ip in ips if not _FILTERS["ip"].check(ip)[1]][:_SOURCES_ALLOWED]
+    paths = [p for p in target_paths[:_TARGETS] if not _FILTERS["uri"].check(p)[1]]
+    skipped = len(target_paths[:_TARGETS]) - len(paths)
+    out = []
+    if sources:
+        lookback = max(MAX_MINUTES - duration, 0)
+        earlier = datetime.fromtimestamp(start - lookback * 60, timezone.utc).astimezone(naive_time_tz())
+        out += [f"### What the source IPs were allowed (the top {len(sources)}, from "
+                f"{lookback // 60}h{lookback % 60:02d} before the window to its end)",
+                "These reached the origin. A probe no rule matches (a config file, an admin path) appears "
+                "only here, never in the blocked traffic above.",
+                agg(start_time=earlier.strftime("%Y-%m-%dT%H:%M"), duration_minutes=lookback + duration,
+                    group_by="clientIp,uri", filter_by=json.dumps({"ip": sources, "action": "ALLOW"})), ""]
+    if paths:
+        out += ["### Allowed requests with a query string on the attack's target paths (possible bypass leads)",
+                "Ordinary use of these paths appears here too: a lead is a query string shaped like the "
+                "attack's payloads, not any row.",
+                agg(start_time=start_time, duration_minutes=duration, group_by="clientIp,uri,args",
+                    filter_by=json.dumps({"uri": paths, "action": "ALLOW"}))]
+        if skipped:
+            out.append(f"({skipped} target path(s) not queried: they hold characters a path filter refuses)")
+        out.append("")
+    return out
 
 
 def _extract_pairs(table: str, column: str) -> list:

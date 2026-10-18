@@ -42,13 +42,13 @@ CASES = [
      [f"{T}::test_aggregate_count_filter_finds_nested_counts"]),
 
     ("_build ignoring by_value, so every value takes the template",
-     [(G, "        athena, cwl = spec.by_value.get(value, (spec.athena, spec.cwl))",
-       "        athena, cwl = spec.athena, spec.cwl")],
+     [(G, "        pairs = [spec.by_value.get(v, (spec.athena, spec.cwl)) for v in values]",
+       "        pairs = [(spec.athena, spec.cwl) for v in values]")],
      [f"{T}::test_aggregate_count_filter_finds_nested_counts"]),
 
     ("BLOCK routed through the counted predicate too, which the control exists for",
-     [(G, "        athena, cwl = spec.by_value.get(value, (spec.athena, spec.cwl))",
-       "        athena, cwl = spec.by_value.get('COUNT', (spec.athena, spec.cwl)) if key == 'action' else (spec.athena, spec.cwl)")],
+     [(G, "        pairs = [spec.by_value.get(v, (spec.athena, spec.cwl)) for v in values]",
+       "        pairs = [spec.by_value.get('COUNT', (spec.athena, spec.cwl)) if key == 'action' else (spec.athena, spec.cwl) for v in values]")],
      [f"{T}::test_aggregate_terminating_actions_still_filter_on_the_top_level"]),
 
     ("an unanchored COUNT predicate, reachable only through by_value",

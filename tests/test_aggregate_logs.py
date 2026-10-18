@@ -45,6 +45,7 @@ VALID = {
     "ja4": "t13d1516h2_8daaf6152771_b186095e22b6",
     "label": "awswaf:managed:token:absent",
     "host": "example.com",
+    "uri": "/search",
 }
 
 
@@ -166,8 +167,13 @@ def test_a_filter_dimension_is_named_where_filter_by_is_documented(key):
     The docstring IS the schema the model reads, so a dimension missing from it can only be
     reached by guessing. The cost of the gap is invisible, because the feature works perfectly for
     anyone who knows it is there."""
-    assert key in _arg_block("filter_by"), \
-        f"filter dimension '{key}' is not named where filter_by is documented"
+    # The "Keys:" list itself, by name: `uri` is also a word elsewhere in the paragraph ("hit rate per
+    # URI"), so membership in the paragraph proved nothing for it.
+    import re
+    listed = re.search(r"Keys:(.*?)\.", _arg_block("filter_by"), re.S)
+    assert listed, "no Keys: list in the filter_by paragraph"
+    names = {re.sub(r"\(.*?\)", "", n).strip() for n in listed.group(1).split(",")}
+    assert key in names, f"filter dimension '{key}' is not in the filter_by Keys list: {sorted(names)}"
 
 
 @pytest.mark.parametrize("group_by", sorted(AG._GROUP_BY))

@@ -826,8 +826,9 @@ _COLUMN_SPEC = {
                "label queries on bot, managed-rule and anti-DDoS labels"),
     "nonterminatingmatchingrules": (OPTIONAL, "array_struct", ("ruleid",),
                                     "the query that finds COUNT-mode rule hits, which is how COUNT evaluation works"),
-    "rulegrouplist": (OPTIONAL, "array_struct", ("nonterminatingmatchingrules",),
-                      "the queries that attribute a hit to a managed rule group, including COUNT-mode hits on its nested rules"),
+    "rulegrouplist": (OPTIONAL, "array_struct", ("rulegroupid", "terminatingrule", "nonterminatingmatchingrules"),
+                      "the queries that attribute a hit to a managed rule group, including COUNT-mode hits on its "
+                      "nested rules, and analyze_ip's attack categories"),
     "ja4fingerprint": (OPTIONAL, "string", (),
                        "JA4 client-fingerprint aggregation in the bypass scan"),
     "challengeresponse": (OPTIONAL, "struct", ("failurereason",),

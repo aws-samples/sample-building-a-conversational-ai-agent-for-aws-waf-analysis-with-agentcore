@@ -34,6 +34,14 @@ def _format_match_details(details: list) -> str:
 
 
 
+# A likely false positive has many more allowed requests than blocks. The targeted check reads this
+# ratio as evidence; the scan uses a looser one because it only picks IPs for the targeted check.
+FP_ALLOW_RATIO = 10
+SCAN_ALLOW_RATIO = 5
+# Clients (User-Agent and JA4) one IP is grouped into. More than this and no single client's history
+# can be read, which the verdict says rather than guessing.
+_CLIENTS = 100
+
 CONFIDENCE_RULES = """\
 ## Confidence Rules
 - HIGH: frequency >200/min, zero ALLOW, scanner UA, attack paths → state directly
@@ -166,8 +174,8 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
     # variables.
     jobs: dict[str, object] = {}
 
-    def later(label: str, cwl: str, athena: str):
-        jobs[label] = lambda: _run_query(cwl, athena, start_epoch, end_epoch)
+    def later(label: str, cwl: str, athena: str, limit: int = 25):
+        jobs[label] = lambda: _run_query(cwl, athena, start_epoch, end_epoch, limit=limit)
 
     # 1. Find what blocked this IP
     block_cwl = (
@@ -240,6 +248,33 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         f" GROUP BY httprequest.uri, httprequest.httpmethod ORDER BY hits DESC LIMIT {{LIMIT}}"
     )
     later("uri", uri_cwl, uri_athena)
+
+    # 7. The clients behind the address, by User-Agent and JA4: their allowed and blocked requests,
+    # their pace, and the rules that stopped them. Behind an office NAT the IP's own pace and ratio mix
+    # every user's traffic: pace rises past the human threshold and other users' ALLOWs set the ratio,
+    # which can make an attacker in that office read as a likely false positive. Grouped, never
+    # filtered on the UA, which is text the client chose.
+    where = (f" FROM {{TABLE}} WHERE \"timestamp\" BETWEEN {{START_MS}} AND {{END_MS}} {{PARTITION_FILTER}}"
+             f" AND httprequest.clientip = '{ip}'")
+    later("clients",
+          f"filter httpRequest.clientIp = '{ip}' | {_UA_CWL}"
+          " | stats sum(if(action = 'ALLOW', 1, 0)) as allow, sum(if(action = 'BLOCK', 1, 0)) as block"
+          f" by ua, ja4Fingerprint | limit {_CLIENTS}",
+          f"SELECT {_UA_ATHENA} as ua, ja4fingerprint as \"ja4Fingerprint\", count_if(action = 'ALLOW') as allow,"
+          f" count_if(action = 'BLOCK') as block{where} GROUP BY 1, 2 LIMIT {{LIMIT}}", _CLIENTS)
+    later("client_pace",
+          f"filter httpRequest.clientIp = '{ip}' | {_UA_CWL}"
+          " | stats count(*) as c by ua, ja4Fingerprint, bin(1m)"
+          f" | stats max(c) as peak_rpm by ua, ja4Fingerprint | limit {_CLIENTS}",
+          f"SELECT ua, \"ja4Fingerprint\", max(c) as peak_rpm FROM (SELECT {_UA_ATHENA} as ua, ja4fingerprint as"
+          f" \"ja4Fingerprint\", date_format(from_unixtime(\"timestamp\"/1000), '%Y-%m-%d %H:%i') as m, count(*) as c"
+          f"{where} GROUP BY 1, 2, 3) GROUP BY 1, 2 LIMIT {{LIMIT}}", _CLIENTS)
+    later("client_rules",
+          f"filter httpRequest.clientIp = '{ip}' and action != 'ALLOW' | {_UA_CWL}"
+          f" | stats count(*) as hits by ua, ja4Fingerprint, terminatingRuleId | limit {_CLIENTS * 10}",
+          f"SELECT {_UA_ATHENA} as ua, ja4fingerprint as \"ja4Fingerprint\", terminatingruleid as"
+          f" \"terminatingRuleId\", count(*) as hits{where} AND action != 'ALLOW' GROUP BY 1, 2, 3 LIMIT {{LIMIT}}",
+          _CLIENTS * 10)
 
     # ROADMAP 4.6. Five of the six queries above are independent: only the sub-rule lookup
     # needs another's output, because whether it runs at all depends on the primary rule's
@@ -316,6 +351,7 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
     avg_rpm = freq_results[0].get("avg_rpm", "?") if freq_results else "?"
 
     rules_triggered = len(multi_results)
+    clients = _clients(results["clients"], results["client_pace"], results["client_rules"])
 
     # 7. Match detail (see _gather_match_detail for the why/how)
     match_detail, match_detail_note = _gather_match_detail(ip, start_epoch, end_epoch)
@@ -344,7 +380,7 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
     return {
         "shared_paths": shared_paths,
         "rule_id": rule_id, "rule_type": rule_type, "sub_rule": sub_rule,
-        "allow_count": allow_count, "block_count": block_count, "total": total,
+        "allow_count": allow_count, "block_count": block_count, "total": total, "clients": clients,
         "peak_rpm": peak_rpm, "avg_rpm": avg_rpm, "rules_triggered": rules_triggered,
         "uri_results": uri_results,
         "match_detail": match_detail, "match_detail_note": match_detail_note,
@@ -358,6 +394,51 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
 _LAST_SUB_RULE_CWL = ('parse @message /.*\\{"ruleGroupId":"[^"]+","terminatingRule":\\{"ruleId":"(?<sub_rule>[^"]+)"/')
 _LAST_SUB_RULE_ATHENA = "element_at(filter(rulegrouplist, rg -> rg.terminatingrule IS NOT NULL), -1).terminatingrule.ruleid"
 _SHARED_PATHS = 1000
+_UA_CWL = 'parse @message /(?i)\\{"name":"user-agent","value":"(?<ua>.*?)"\\}/'
+_UA_ATHENA = "element_at(filter(httprequest.headers, h -> lower(h.name) = 'user-agent'), 1).value"
+
+
+def _clients(counts: list, paces: list, rules: list) -> dict:
+    """Who sent this IP's requests, and which one to judge. `{"n", "basis", ...}`:
+
+    - `basis="ip"`: one client, or several User-Agents that differ only in version numbers, which
+      `_is_nat_traffic` reads as one client rotating its UA. The IP's own numbers are the client's.
+    - `basis="client"`: several clients and only one of them blocked. `allow`, `block`, `peak`,
+      `rules`, `ua` and `ja4` are that client's own.
+    - `basis="several"`: blocks from more than one client, more clients than one query lists, or the
+      blocked client's User-Agent under another JA4 too, so no one client's history is the blocked
+      user's. `blocked` counts the blocked clients."""
+    from tools.waf_logs import _is_nat_traffic
+    key = lambda r: (r.get("ua") or "", r.get("ja4Fingerprint") or "")
+    table = {key(r): {"allow": int(float(r.get("allow") or 0)), "block": int(float(r.get("block") or 0)),
+                      "peak": None, "rules": 0} for r in counts}
+    for r in paces:
+        if key(r) in table:
+            table[key(r)]["peak"] = r.get("peak_rpm")
+    for r in rules:
+        if key(r) in table:
+            table[key(r)]["rules"] += 1
+    blocked = [k for k, c in table.items() if c["block"]]
+    if len(table) <= 1:
+        return {"n": len(table), "basis": "ip"}
+    if len(table) >= _CLIENTS:
+        return {"n": len(table), "basis": "several", "blocked": len(blocked), "why": "more clients than one query lists"}
+    if _is_nat_traffic([{"ua": ua} for ua in dict.fromkeys(ua for ua, _ in table)]) is False:
+        return {"n": len(table), "basis": "ip", "rotation": True}
+    if len(blocked) != 1:
+        return {"n": len(table), "basis": "several", "blocked": len(blocked),
+                "why": f"{len(blocked)} of them were blocked" if blocked else
+                       "none of them carries the blocks the IP took, so the two reads disagree"}
+    (ua, ja4), = blocked
+    # One browser can present more than one TLS fingerprint, so the same User-Agent under another JA4 may
+    # be the blocked user's own allowed requests. Judged without them, the ratio leans toward "not a false
+    # positive", against the user. Not measured: the test WebACLs hold 4 JA4s in 17 days.
+    others = sum(1 for u, j in table if u == ua and j != ja4)
+    if others:
+        return {"n": len(table), "basis": "several", "blocked": 1,
+                "why": f"the blocked client's User-Agent also came with {others} other TLS fingerprint"
+                       f"{'s' if others != 1 else ''}, which may be the same browser"}
+    return {"n": len(table), "basis": "client", "ua": ua, "ja4": ja4, **table[(ua, ja4)]}
 
 
 def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, end_epoch: int) -> tuple:
@@ -470,6 +551,23 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     insp_label, insp_samples, insp_masked = d["insp_label"], d["insp_samples"], d["insp_masked"]
 
     display_rule = f"{sub_rule} (inside {rule_id})" if sub_rule else rule_id
+    # Behind a shared address the IP's numbers mix every client's, so the blocked client's own stand in.
+    clients = d["clients"]
+    shared_lines = []
+    if clients["basis"] == "client":
+        shared_lines = [f"**Shared address**: {clients['n']} clients (User-Agent and JA4) sent requests from this "
+                        f"IP and one of them was blocked. The signals below are that client's own, not the IP's "
+                        f"({allow_count} allowed, {block_count} blocked, peak {peak_rpm}/min, {rules_triggered} rules).",
+                        f"  Blocked client: JA4 {clients['ja4'] or '(none)'}, User-Agent {clients['ua'][:120] or '(none)'}", ""]
+        allow_count, block_count = clients["allow"], clients["block"]
+        peak_rpm, rules_triggered = clients["peak"] if clients["peak"] is not None else "?", clients["rules"]
+        avg_rpm = "not split per client"
+    elif clients["basis"] == "several":
+        shared_lines = [f"**Shared address**: {clients['n']} clients (User-Agent and JA4) sent requests from this IP "
+                        f"and {clients['why']}. The signals below are the IP's, which mix them.", ""]
+    elif clients.get("rotation"):
+        shared_lines = [f"**One client rotating its User-Agent**: {clients['n']} User-Agent and JA4 combinations "
+                        f"that differ only in version numbers, so the signals below are the IP's as one client's.", ""]
     allow_ratio = f"{allow_count}:{block_count}" if block_count > 0 else f"{allow_count}:0"
 
     lines = [
@@ -479,6 +577,7 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
         f"**Rule type**: {rule_type}",
         f"**Time window**: {start_epoch} - {end_epoch} (epoch)",
         "",
+        *shared_lines,
         "### Quantifiable Signals",
         "",
         f"| Signal | Value | Interpretation |",
@@ -488,7 +587,7 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     # Allow Ratio interpretation
     if allow_count == 0 and block_count > 0:
         ratio_interp = "⚠️ Zero ALLOW — could be attacker OR user blocked on first visit"
-    elif allow_count > 0 and allow_count / max(block_count, 1) > 10:
+    elif allow_count > 0 and allow_count / max(block_count, 1) > FP_ALLOW_RATIO:
         ratio_interp = "🟡 High ratio — suggests legitimate user occasionally triggering rule"
     else:
         ratio_interp = "Neutral"
@@ -592,7 +691,11 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     except (ValueError, TypeError):
         peak_val = None
 
-    if peak_val is None:
+    if clients["basis"] == "several":
+        lines.append(f"**CANNOT DETERMINE** — {clients['n']} clients share this address and {clients['why']}, "
+                     f"so the IP's allowed history and pace are not the blocked user's.")
+        lines.append("→ Ask the user which device or application was blocked; its User-Agent picks the client.")
+    elif peak_val is None:
         lines.append("**CANNOT DETERMINE** — the request frequency is unknown "
                      f"(the query returned {peak_rpm!r}), and both directional verdicts turn on it.")
         lines.append("→ Re-run with a window that contains this IP's blocked requests, or ask the user "
@@ -600,7 +703,7 @@ def _render_investigation(ip: str, start_epoch: int, end_epoch: int, d: dict) ->
     elif allow_count == 0 and peak_val > 200 and rules_triggered >= 3:
         lines.append("**HIGH CONFIDENCE: Not a false positive.**")
         lines.append("Evidence: zero ALLOW, machine-speed frequency, multi-rule scanning pattern.")
-    elif allow_count > 0 and allow_count / max(block_count, 1) > 10 and peak_val < 10 and rules_triggered == 1:
+    elif allow_count > 0 and allow_count / max(block_count, 1) > FP_ALLOW_RATIO and peak_val < 10 and rules_triggered == 1:
         lines.append("**WAF-side likely FP candidate** (needs business confirmation).")
         lines.append(f"Evidence: high Allow Ratio ({allow_ratio}), human-speed frequency, single rule trigger.")
         lines.append("→ This is NOT a confirmed false positive. Ask user to confirm the blocked URIs are legitimate business paths.")
@@ -693,7 +796,7 @@ def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
         if allow_hits == 0:
             continue
         ratio = allow_hits / max(block_hits, 1)
-        if ratio > 5:
+        if ratio > SCAN_ALLOW_RATIO:
             candidates.append({
                 "ip": ip,
                 "allow": allow_hits,
@@ -704,7 +807,7 @@ def _step_scan(start_epoch: int, end_epoch: int, rule_name: str) -> str:
     if not candidates:
         return (
             "## Proactive FP Scan — No Candidates Found\n\n"
-            "Checked low-volume blocked IPs but none had a high Allow Ratio (>5:1).\n"
+            f"Checked low-volume blocked IPs but none had a high Allow Ratio (>{SCAN_ALLOW_RATIO}:1).\n"
             "This suggests blocked traffic is predominantly from dedicated attackers.\n\n"
             "⚠️  This does NOT guarantee no false positives exist — only that none match "
             "the statistical profile of a legitimate user (high ALLOW, low BLOCK).\n\n" +
