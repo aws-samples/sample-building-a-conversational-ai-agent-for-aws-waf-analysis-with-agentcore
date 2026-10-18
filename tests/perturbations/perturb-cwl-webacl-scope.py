@@ -41,8 +41,8 @@ CASES = [
      [f"{T}::test_the_report_scopes_the_same_way",
       f"{T}::test_each_scoped_site_reaches_the_shared_builder"], True),
 
-    # A filter that reads like a fix and matches the wrong records. `test2` is a substring of
-    # `test2-staging`, and without the slashes the name matches anywhere in the ARN.
+    # A filter that reads like a fix and matches the wrong records. `old-webacl` is a substring of
+    # `old-webacl-staging`, and without the slashes the name matches anywhere in the ARN.
     ("the slashes dropped, so the name matches as a substring instead of a path segment",
      [(Q, """    return f"filter webaclId like '/webacl/{webacl_name}/' | {query.strip()}\"""",
        """    return f"filter webaclId like '{webacl_name}' | {query.strip()}\"""")],

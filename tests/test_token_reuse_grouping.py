@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT-0
 """`token_reuse_ips` has to group by WAF's session id, not by any part of the Cookie header.
 
-**Measured on a live replay, 2026-09-16.** One WAF session, `awswaf:managed:token:id:75d4ae85-...`,
+**Measured on a live replay, 2026-09-16.** One WAF session, one `awswaf:managed:token:id:<id>` label,
 spanned 18 IPs and 253 requests. Grouped by `token:id` it is one row, `ip_count=18` — the signal this
 detection exists for. Grouped by the whole Cookie header it fragmented into many rows (the load balancer's
 `AWSALBTG`/`AWSALBTGCORS` stickiness cookies differ per backend and rotate); grouped by the extracted
@@ -29,11 +29,11 @@ from tools.waf_logs import TEMPLATES
 
 SPEC = TEMPLATES["token_reuse_ips"]
 
-SESSION = "75d4ae85-8399-439a-952d-af817bdb4d4b"          # the token:id — one session
+SESSION = "aaaaaaaa-1111-4222-8333-444444444444"          # the token:id — one session
 OTHER_SESSION = "11112222-3333-4444-5555-666677778888"
 # Two acquisitions of the SAME session: same token:id, different <uuid>:<iv>:<ciphertext> cookie values.
-TOKEN_V1 = "843a54a6-403b-47c9-8cca-60c2bd1ab667:AQoAaaa:ZZZ97+TZw=="
-TOKEN_V2 = "843a54a6-403b-47c9-8cca-60c2bd1ab667:AQoAbbb:XXXwO+V/g=="
+TOKEN_V1 = "cccccccc-1111-4222-8333-444444444444:AQoAaaa:ZZZ97+TZw=="
+TOKEN_V2 = "cccccccc-1111-4222-8333-444444444444:AQoAbbb:XXXwO+V/g=="
 
 
 def _msg(client_ip, token_id, cookie_token=None, alb="AWSALBTG=x9; AWSALBTGCORS=y9"):
@@ -70,11 +70,11 @@ def _group_ip_counts(records):
 
 # The replay, as records: one session, two token values, five IPs; plus one SDK-header request.
 REPLAY = [
-    ("3.147.28.85", _msg("3.147.28.85", SESSION, TOKEN_V1)),
-    ("44.247.7.81", _msg("44.247.7.81", SESSION, TOKEN_V1)),
-    ("108.131.86.157", _msg("108.131.86.157", SESSION, TOKEN_V2)),   # different token value, same session
-    ("63.187.45.97", _msg("63.187.45.97", SESSION, TOKEN_V2)),
-    ("13.203.94.72", _msg("13.203.94.72", SESSION, cookie_token=None)),  # SDK header path, no cookie token
+    ("198.51.100.21", _msg("198.51.100.21", SESSION, TOKEN_V1)),
+    ("198.51.100.22", _msg("198.51.100.22", SESSION, TOKEN_V1)),
+    ("198.51.100.23", _msg("198.51.100.23", SESSION, TOKEN_V2)),   # different token value, same session
+    ("198.51.100.24", _msg("198.51.100.24", SESSION, TOKEN_V2)),
+    ("198.51.100.25", _msg("198.51.100.25", SESSION, cookie_token=None)),  # SDK header path, no cookie token
 ]
 
 

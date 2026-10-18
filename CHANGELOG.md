@@ -668,10 +668,10 @@ noticed the contradiction, could not confirm it, and reconstructed a guess from 
 
 ### Fixed: two tool calls running at once collapsed into one provenance record, naming the wrong WebACL
 
-One question, the BlockedRequests total for `shield-sample-webacl` and for `response-id-on-page` on
+One question, the BlockedRequests total for `test-webacl-cwl` and for `test-webacl-s3` on
 2026-09-08. The stream shows `TOOL_CALL_START, TOOL_CALL_START, TOOL_CALL_END, TOOL_CALL_END`, so the two
 `get_waf_metrics` calls overlap, and exactly one provenance event arrived: `{"webacl":
-"response-id-on-page", "subject_explicit": true, "queries": 2}`. The chip on the shield call named the other
+"test-webacl-s3", "subject_explicit": true, "queries": 2}`. The chip on the test-webacl-cwl call named the other
 WebACL and the second call got no chip at all. Two `run_logs_query` calls in the same session produced one
 record whose window spanned 855 days. **This is 0.27.0's own misattribution fix undone by concurrency**: the
 record lived in one slot per session, and its WebACL field is last-writer-wins on a shared slot.
@@ -703,11 +703,11 @@ number the other writer already wrote, and paused at the window, it writes its o
 
 ### Fixed: a log query could answer from another WebACL's records and sign the session's name to it
 
-Demonstrated through the tool on the deployment account. With the session on `shield-sample-webacl`, whose
-destination is the log group `aws-waf-logs-group`, `run_logs_query(query_type="top_blocked_ips",
+Demonstrated through the tool on the deployment account. With the session on `test-webacl-cwl`, whose
+destination is the log group `aws-waf-logs-test`, `run_logs_query(query_type="top_blocked_ips",
 start_time="2024-05-10T06:00", duration_minutes=360)` returned a table of six client IPs and a suggestion to
-drill into them. **Every one of those rows belongs to `test2`**, a WebACL that used to log to the same
-group, and the `SOURCE:` line on that answer read `shield-sample-webacl`.
+drill into them. **Every one of those rows belongs to `old-webacl`**, a WebACL that used to log to the same
+group, and the `SOURCE:` line on that answer read `test-webacl-cwl`.
 
 - **No CloudWatch Logs query in this project filtered by WebACL**, and every Athena query already could:
   the Athena side detects a shared S3 location and adds a `webaclid` filter, and the CWL side had no
@@ -850,10 +850,10 @@ Six tools take their own `webacl_name` and use it as the metric dimension. Only 
 that name to session state, and the provenance record read session state, so the other five labelled their
 answers with whatever WebACL had been loaded last.
 
-- **Measured on a live account with the context on `response-id-on-page`**:
-  `get_waf_metrics(webacl_name="shield-sample-webacl", metric_name="BlockedRequests")` answered `Total: 6`
-  under a heading naming `shield-sample-webacl`, and the `SOURCE:` line on that same answer read
-  `response-id-on-page via CloudWatch metrics ... call get_waf_config(webacl_name='...') and run this
+- **Measured on a live account with the context on `test-webacl-s3`**:
+  `get_waf_metrics(webacl_name="test-webacl-cwl", metric_name="BlockedRequests")` answered `Total: 6`
+  under a heading naming `test-webacl-cwl`, and the `SOURCE:` line on that same answer read
+  `test-webacl-s3 via CloudWatch metrics ... call get_waf_config(webacl_name='...') and run this
   again`. One WebACL's number labelled with another's name, and an instruction to discard a correct answer.
 - `get_waf_metrics`, `get_waf_overview`, `patrol_scan`, `generate_weekly_report` and
   `review_waf_rules_deep` now declare the subject they report on. A test requires any tool taking a
@@ -997,8 +997,8 @@ CloudWatch metrics are the one witness no partition layout, engine difference, l
 timeout can reach. Three tools whose question has a metric of the same subject now ask it before reporting
 an absence.
 
-- **Verified live on the 2026-09-08 window.** `response-id-on-page` SQLi returns 122 and the warning
-  fires; `shield-sample-webacl` SQLi returns 0 and it stays silent while that same WebACL's rate-limit
+- **Verified live on the 2026-09-08 window.** `test-webacl-s3` SQLi returns 122 and the warning
+  fires; `test-webacl-cwl` SQLi returns 0 and it stays silent while that same WebACL's rate-limit
   rule returns 566,070. That is why the comparison is per rule rather than at the WebACL: a check that is
   always on is not a check.
 - **`check_challenge_compatibility` is the exception that falsifies "per rule, never at the WebACL" as a
@@ -1008,7 +1008,7 @@ an absence.
   from a config read.** A `MetricStat` for a name that does not exist returns a series present,
   `StatusCode: Complete`, empty `Values` and empty `Messages`. It caught a real case rather than a
   hypothetical typo: `rate-limit` exists on one WebACL while the equivalent on the other is
-  `rate-limit-blanket`.
+  `rate-limit-all`.
 - **A membership check against the WebACL's rule list was dropped, because it refused a real rule.**
   `TGT_TokenAbsent` publishes `CountedRequests` 33,932 for 2026-09-08 while appearing in no
   `Rules[].Name` and in no `RuleActionOverrides`: a managed rule group publishes metrics for its internal
@@ -1346,7 +1346,7 @@ had hit.
   reads whatever `get_waf_config` was last called with, so a question about WebACL A is answered from
   WebACL B's logs whenever the context holds B. It happened: a question about a WebACL logging to
   CloudWatch Logs was answered through Athena from one logging to Firehose. The runtime log records
-  `dest=arn:aws:firehose:…:deliverystream/aws-waf-logs-kinesis-s3`.
+  `dest=arn:aws:firehose:…:deliverystream/aws-waf-logs-stream-test`.
 - **The answer was "0 results" followed by three candidate causes, and the real one was not among
   them**: wrong action filter, wrong time window, no matching traffic. Every result now carries a
   `SOURCE:` line naming the WebACL it answered from and the engine that implies, plus what to do if

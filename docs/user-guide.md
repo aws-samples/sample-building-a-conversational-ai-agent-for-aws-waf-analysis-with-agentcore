@@ -16,7 +16,7 @@ The agent has access to your AWS WAF configuration, CloudWatch Metrics, CloudWat
 | Vague (slow, noisy) | Specific (fast, accurate) |
 |---|---|
 | "Check my AWS WAF" | "Check my-webacl for bypass traffic on May 9 afternoon" |
-| "Any attacks?" | "IP 54.254.254.234 hit my site hard yesterday around 6am UTC" |
+| "Any attacks?" | "IP 203.0.113.10 hit my site hard yesterday around 6am UTC" |
 | "Generate a report" | "Generate weekly summary for my-production-webacl" |
 
 ## Capabilities
@@ -39,7 +39,7 @@ Identify who is attacking, how, and whether AWS WAF stopped it.
 **Good prompts:**
 - "Analyze the DDoS attack on May 9 around 06:00 UTC"
 - "Who is behind the blocked traffic spike at 2pm today?"
-- "IP 3.249.182.182 looks suspicious — deep dive"
+- "IP 203.0.113.12 looks suspicious — deep dive"
 
 **What the agent does:** Checks metrics for anomaly windows → identifies top attackers → cross-validates with labels, JA4 fingerprints, URI patterns.
 
@@ -59,9 +59,9 @@ Determine if a COUNT rule is catching real attacks or causing false positives.
 Full behavioral profile of a specific IP address.
 
 **Good prompts:**
-- "Analyze IP 54.254.254.234 on May 9"
-- "Is 47.128.14.206 a bot or a real user?"
-- "Check if 13.219.181.182 is behind a NAT"
+- "Analyze IP 203.0.113.10 on May 9"
+- "Is 203.0.113.11 a bot or a real user?"
+- "Check if 203.0.113.13 is behind a NAT"
 
 **What the agent does:** Checks UA/JA4 diversity (NAT detection) → request frequency → URI breakdown → AWS WAF labels → cross-query with all rules → top query strings (redacted).
 

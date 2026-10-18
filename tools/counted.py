@@ -4,11 +4,11 @@
 
 **A counted request never carries `action = 'COUNT'`.** The top-level `action` is the
 terminating action, so it is ALLOW, BLOCK, CHALLENGE or CAPTCHA: measured 2026-10-15 on
-`response-id-on-page`, a full day held ALLOW 45196 and BLOCK 132 and nothing else. The
+`test-webacl-s3`, a full day held ALLOW 45196 and BLOCK 132 and nothing else. The
 Count lives in a rule entry, and for a managed rule group it is NESTED. The same day had
 **0** requests with a COUNT in the top-level `nonterminatingmatchingrules` and **1792** in
 `rulegrouplist[].nonterminatingmatchingrules`, which is where a `RuleActionOverrides` Count
-lands. On CloudWatch, `shield-sample-webacl` over 24 hours: 2 records matched
+lands. On CloudWatch, `test-webacl-cwl` over 24 hours: 2 records matched
 `nonTerminatingMatchingRules.0.action = 'COUNT'` and 515 matched `"action":"COUNT"`
 anywhere, 513 of them only nested.
 
@@ -29,12 +29,12 @@ exercised by construction only.
 
 **A whole rule group set to `OverrideAction: Count` is covered, by the first branch, measured
 2026-10-15.** `AWSManagedRulesAdminProtectionRuleSet` was added to both test WebACLs as rule
-`ptest-admin-group-count` with the group overridden to Count, and five `/admin` requests sent. Both
+`test-admin-group-count` with the group overridden to Count, and five `/admin` requests sent. Both
 engines logged the same shape: top-level `action` ALLOW, a top-level non-terminating entry
-`{"ruleId":"ptest-admin-group-count","action":"COUNT"}` named for the WebACL rule, and inside
+`{"ruleId":"test-admin-group-count","action":"COUNT"}` named for the WebACL rule, and inside
 `ruleGroupList` a `terminatingRule` of `AdminProtection_URIPATH` with its native action, BLOCK, and
 no COUNT anywhere in the group's own entry. This predicate matched all five on Athena, and
-`CountedRequests` for `Rule=ptest-admin-group-count` read 5. An earlier version of this note said
+`CountedRequests` for `Rule=test-admin-group-count` read 5. An earlier version of this note said
 the shape was unmeasured and probably not covered; it was both measurable and covered.
 """
 

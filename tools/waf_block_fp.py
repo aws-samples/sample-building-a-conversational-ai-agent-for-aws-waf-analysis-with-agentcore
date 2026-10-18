@@ -286,7 +286,7 @@ def _investigate_gather(ip: str, start_epoch: int, end_epoch: int) -> dict | Non
         # whole-group Count still logs the sub-rule that matched as its `terminatingRule`, with the
         # native BLOCK, and evaluation goes on, so a record holds one per group that matched and the
         # group that ended evaluation is the last. Measured 2026-10-02 to 10-16 on
-        # `shield-sample-webacl`: last = terminating group in 109 of 109, while the first entry named
+        # `test-webacl-cwl`: last = terminating group in 109 of 109, while the first entry named
         # another group's sub-rule in 6 of 17 LinuxRuleSet blocks. Every BLOCK from the IP was read
         # too, so a second group blocking it could supply the busiest sub-rule.
         safe_rule = rule_id.replace("'", "''")
@@ -366,7 +366,7 @@ def _shared_path_blocks(ip: str, rule_id: str, sub_rule: str, start_epoch: int, 
     Never raises, because it annotates a verdict reached without it.
 
     An exception for a false positive's path lets through everything else the rule blocks there.
-    Measured on `response-id-on-page`, 2026-09-08: the false-positive user took 2 SQLi blocks on
+    Measured on `test-webacl-s3`, 2026-09-08: the false-positive user took 2 SQLi blocks on
     `/search` at 03:58, and 10 scanners took 60 more there at 04:03-04:04, so a window around the
     user's blocks alone would not have seen them. A managed group is narrowed to the sub-rule, since
     its other sub-rules are not what the exception is for. The IP's own count is in the same query, so

@@ -21,7 +21,7 @@ Reproduced against the account 2026-09-15, matching what ROADMAP 7.7 recorded a 
     2026-09-08 04:00-06:00 UTC   metric 566,070  control 566,070  silent
 
 **The firing cell is reachable here too, and the first draft of this file said it was not.** 2025-08-15
-18:00 UTC +6h on `shield-sample-webacl`: the metric reports 476 blocked and 150 allowed, and the control
+18:00 UTC +6h on `test-webacl-cwl`: the metric reports 476 blocked and 150 allowed, and the control
 query returns 0 rows. The WebACL was serving and its logs were not landing in that destination, which is
 what a destination change leaves behind. Driven through the real witnesses, the check fires with those
 numbers and no stubs.
@@ -171,26 +171,26 @@ def test_the_two_witnesses_must_be_about_the_same_webacl():
     in Y's destination and the control is zero by construction.
 
     Measured, so the guard has a reachable failure behind it rather than a hypothesis. 2026-09-08, full
-    day: `response-id-on-page`'s `BlockedRequests` on `Rule=ALL` is 132, and a control query scoped to
-    `response-id-on-page` inside `shield-sample-webacl`'s log group returns 0 rows. Without this guard the
+    day: `test-webacl-s3`'s `BlockedRequests` on `Rule=ALL` is 132, and a control query scoped to
+    `test-webacl-s3` inside `test-webacl-cwl`'s log group returns 0 rows. Without this guard the
     one cell that speaks fires on that pair and prints a false statement about the log path.
 
     **The zero is not a query that gave up**, which is the alternative reading worth ruling out. That
     control scanned 1,291,364 records to return it, and counting the same day by `webaclId` gives 645,682
     rows with none at all, the CloudFront access logs sharing the group, plus 645,682 for
-    `shield-sample-webacl`. `response-id-on-page` has no rows in that destination on that day, so the
+    `test-webacl-cwl`. `test-webacl-s3` has no rows in that destination on that day, so the
     control is zero because the records are elsewhere rather than because the query failed.
 
     Refused rather than resolved: running the control for X needs X's own logging configuration, which is
     another API call and a destination this layer cannot query against. The consequence is that a tool
     passing its own name and never writing session state, which is what `patrol_scan` and
     `generate_weekly_report` do, gets silence from this check."""
-    S.set_webacl_context("shield-sample-webacl", "arn:x", "CLOUDFRONT", "us-east-1",
-                         log_destination="arn:aws:logs:r:1:log-group:aws-waf-logs-group")
-    count, why = M.control_rows("response-id-on-page", "BLOCK", *WINDOW)
+    S.set_webacl_context("test-webacl-cwl", "arn:x", "CLOUDFRONT", "us-east-1",
+                         log_destination="arn:aws:logs:r:1:log-group:aws-waf-logs-test")
+    count, why = M.control_rows("test-webacl-s3", "BLOCK", *WINDOW)
     assert count is None, "a control about a different WebACL must not be reported as a count"
-    assert "response-id-on-page" in why and "shield-sample-webacl" in why, why
-    assert M.log_path_warning("response-id-on-page", "BLOCK", *WINDOW, narrow_rows=0) == ""
+    assert "test-webacl-s3" in why and "test-webacl-cwl" in why, why
+    assert M.log_path_warning("test-webacl-s3", "BLOCK", *WINDOW, narrow_rows=0) == ""
 
 
 def test_a_matching_webacl_is_not_refused(monkeypatch):

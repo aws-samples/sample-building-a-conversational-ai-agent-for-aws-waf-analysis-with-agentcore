@@ -3,7 +3,7 @@
 """Allowed traffic from a cloud provider's addresses is a bypass signal, as data-center traffic is.
 
 The scan and the investigation keyed the signal on `known_bot_data_center` only. Measured on
-`response-id-on-page`, 2026-09-08 03:19-03:29: a 12-host scraper fleet sent 90 allowed requests
+`test-webacl-s3`, 2026-09-08 03:19-03:29: a 12-host scraper fleet sent 90 allowed requests
 each, 1,080 in all, every one labelled `signal:cloud_service_provider:aws`, none
 `known_bot_data_center`, and none with a `bot:` label. So neither section saw it.
 """
@@ -93,7 +93,7 @@ def test_an_unclassified_ip_on_a_cloud_provider_is_a_likely_undetected_bot(monke
 
 @pytest.mark.parametrize("allowed,uris,peak", [("60", "25", "8"), ("1500", "40", "30")], ids=["one-person", "office"])
 def test_the_control_people_browsing_from_a_cloud_address_are_undetermined(monkeypatch, allowed, uris, peak):
-    """An Amazon office egress on `shield-sample-webacl` carries `cloud_service_provider:aws` and real
+    """An Amazon office egress on `test-webacl-cwl` carries `cloud_service_provider:aws` and real
     browsers. A browsing session passes 50 requests easily, which is why the bar is URIs."""
     verdict = _verdict(monkeypatch, FLEET, frequency=[dict(ROW, peak_rpm=peak)],
                        frequency_dynamic=[dict(ROW, peak_rpm=peak)], actions=[dict(ROW, hits=allowed)],

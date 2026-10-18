@@ -4,7 +4,7 @@
 
 Its default action is Count. Measured 2026-10-15 two ways: `describe-managed-rule-group` for
 `AWSManagedRulesBotControlRuleSet` Version_6.1 returns `TGT_TokenAbsent Count`, and on
-`response-id-on-page`, whose overrides name only `SignalNonBrowserUserAgent` and
+`test-webacl-s3`, whose overrides name only `SignalNonBrowserUserAgent` and
 `CategoryHttpLibrary`, it was logged as COUNT 2137 times in 14 days. So "never override it to Count"
 forbids a no-op, and the deep review rated that no-op Critical. The harmful direction is Block:
 without the SDK or a token-issuing rule in front, it matches every request that has no token.

@@ -406,7 +406,7 @@ def investigate_injection(start_time: str, duration_minutes: int = 60,
             # byte-identical to the attack not having happened. Metrics are the one witness immune
             # to the log side's failure modes, so before the claim goes out, ask them.
             #
-            # **Per rule, never at the WebACL.** In that same window `shield-sample-webacl`'s
+            # **Per rule, never at the WebACL.** In that same window `test-webacl-cwl`'s
             # rate-limit rule blocked 566,070 requests while its SQLi series was empty, so a
             # WebACL-level comparison would fire here and be wrong. A check that is always on is
             # not a check.

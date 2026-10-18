@@ -9,7 +9,7 @@ swallowed it. Measured on the deployed memory resource on 2026-09-12: `list_memo
 in DynamoDB. The deployed agent had `MEMORY_ID` set and reported nothing wrong.
 
 **The patterns below were read off the live service, not out of a document.** No AWS page states them.
-`aws bedrock-agentcore list-events --actor-id 'chencch@amazon.com'` returns a `ValidationException`
+`aws bedrock-agentcore list-events --actor-id '<an email address>'` returns a `ValidationException`
 quoting the pattern, and the sanitised form is accepted. That is also why the positive control in the
 first test matters: a sanitiser that did nothing would satisfy an assertion that only checks its
 output against the pattern if the pattern check were wrong, so the raw email is asserted to FAIL the
@@ -36,7 +36,7 @@ MAX_LENGTH = 255
 # character, so deleting that call left every assertion here green. A local-part may legally begin with
 # a dot in a quoted form, and the degenerate `@a.b` covers an empty local-part.
 REAL_IDS = [
-    "chencch@amazon.com",
+    "user@example.com",
     "first.last+tag@example.co.uk",
     "8f4c1d2e-3b7a-4f91-9c2d-1e5a7b3c9d40",
     "UPPER.Case@Example.COM",
@@ -69,7 +69,7 @@ def test_at_least_one_real_input_is_actually_rejected_raw():
     against a sanitiser that returns its argument."""
     rejected = [raw for raw in REAL_IDS if raw and not ACTOR_ID.match(raw)]
     assert rejected, "no input in REAL_IDS is rejected raw, so nothing here tests the sanitiser"
-    assert "chencch@amazon.com" in rejected, "the id the deployed agent actually used is now legal?"
+    assert "user@example.com" in rejected, "an email, the kind of id the deployed agent used, is now legal?"
 
 
 def test_ids_that_differ_only_in_a_substituted_character_do_not_collide():
@@ -128,7 +128,7 @@ def test_the_call_site_derives_every_identifier_from_the_sanitised_value(monkeyp
     monkeypatch.setattr(agent, "_agent_user_id", "")
     monkeypatch.setattr(agent, "Agent", lambda **kwargs: kwargs)
 
-    raw = "chencch@amazon.com"
+    raw = "user@example.com"
     built = agent.get_agent(session_id="s-1", user_id=raw)
     assert built["session_manager"] == "manager", (
         "memory setup did not complete, so nothing below was reached")

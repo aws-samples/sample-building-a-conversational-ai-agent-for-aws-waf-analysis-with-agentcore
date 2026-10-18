@@ -19,7 +19,7 @@ from tools.static_assets import ATHENA_EXCLUDE_STATIC, ATHENA_ONLY_STATIC, CWL_E
 # `@message not like 'bot:verified'` also dropped any request carrying that text in its URI or
 # User-Agent: measured 2026-10-15, three probe requests with no such label but the words in the
 # path and UA were excluded from every section, and kept once the test read `lbls`. Evidence for the
-# `not ispresent(lbls)` branch: 46,040 of 46,040 WAF records on `aws-waf-logs-group` carried a labels
+# `not ispresent(lbls)` branch: 46,040 of 46,040 WAF records on `aws-waf-logs-test` carried a labels
 # key (the Anti-DDoS AMR labels every request), so a record without one is unmeasured here. It keeps
 # such a record rather than dropping it, which is right whichever way an unlabelled record is shaped.
 from tools.waf_aggregate import _LABELS_ARRAY
@@ -98,7 +98,7 @@ def _cwl_count_rules(ip: str, start: int, end: int, failures: dict, notes: dict)
     records held 1,040 entries, and other filters on unnested fields answered differently on identical
     runs. A first-match parse alone was the version before this, and since `ruleGroupList` comes before
     the top-level `nonTerminatingMatchingRules` in the record, it always took a nested entry: over 24
-    hours on `shield-sample-webacl` a WebACL-level Count rule read 0 for 5 requests.
+    hours on `test-webacl-cwl` a WebACL-level Count rule read 0 for 5 requests.
 
     The names are the first and the last Count entry of each record plus every Count rule the WebACL
     configures. Missed is only a rule in the middle of three or more, that the configuration does not
@@ -587,7 +587,7 @@ def _step_scan(start_epoch: int, end_epoch: int) -> str:
     )
 
     # Data-center and cloud-provider IPs not caught by Bot Control. The provider signal is the one a
-    # fleet on rented instances carries: measured 2026-09-08 on `response-id-on-page`, 12 scraper
+    # fleet on rented instances carries: measured 2026-09-08 on `test-webacl-s3`, 12 scraper
     # hosts sent 1,080 allowed requests, all labelled `signal:cloud_service_provider:aws` and none
     # `known_bot_data_center`.
     datacenter_cwl = (
@@ -1079,7 +1079,7 @@ def _step_investigate_ip(ip: str, start_epoch: int, end_epoch: int) -> str:
     ja4_data = _safe_query(ja4_cwl, ja4_athena, start_epoch, end_epoch, limit=3, failures=failures, label="ja4", notes=notes)
 
     # 8. COUNT rules triggered, one hit per request. A managed sub-rule's Count is nested in
-    # `ruleGroupList`, and it is the common one: measured 2026-10-16 on `response-id-on-page`,
+    # `ruleGroupList`, and it is the common one: measured 2026-10-16 on `test-webacl-s3`,
     # 2026-10-01 to 10-16, 5 top-level COUNT entries against 2,142 nested. Athena reads both levels
     # and counts each rule once per request, since a group deployed twice logs its sub-rules twice.
     count_rules_athena = (

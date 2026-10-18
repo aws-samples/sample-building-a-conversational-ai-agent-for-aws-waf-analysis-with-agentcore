@@ -3,7 +3,7 @@
 """Which managed sub-rules are injection detectors, decided per sub-rule rather than per group.
 
 `investigate_injection` took CommonRuleSet and KnownBadInputs whole, so every block by either group
-was an injection match. Measured on `shield-sample-webacl` over 14 days to 2026-10-16:
+was an injection match. Measured on `test-webacl-cwl` over 14 days to 2026-10-16:
 CommonRuleSet blocked 12 times with `RestrictedExtensions_URIPATH` and 2 with `GenericLFI_URIPATH`,
 and with no SQLi in a window the tool focused that as "the busiest injection detector".
 LinuxRuleSet, UnixRuleSet, WindowsRuleSet and PHPRuleSet were not read at all.
@@ -88,7 +88,7 @@ NAMES = json.loads((pathlib.Path(__file__).parent / "fixtures" / "managed_rule_n
 @pytest.mark.parametrize("group", I._INJECTION_GROUPS)
 def test_every_injection_name_any_version_has_used_is_listed(group):
     """A group's sub-rules differ by version, and a pinned or newly released version is what a WebACL
-    runs. `shield-sample-webacl` pins SQLiRuleSet Version_2.3, whose `SQLiExtendedPatterns_BODY`,
+    runs. `test-webacl-cwl` pins SQLiRuleSet Version_2.3, whose `SQLiExtendedPatterns_BODY`,
     `_URIPATH` and `_HEADER` are not in the default Version_1.3, and its logs carry Version_2.5 too.
     The fixture is every name in every version AWS listed for the group on 2026-10-16."""
     assert set(I._MANAGED_SUB_RULES[group]) == {n for n in NAMES[group] if I._is_injection_sub_rule(n)}
@@ -237,7 +237,7 @@ def test_a_sub_rule_whose_own_action_is_count_is_in_count_mode():
 
 def test_a_count_mode_focus_says_its_blocks_were_another_rules(monkeypatch):
     """A Count rule blocks nothing, so its blocked count is requests a later rule blocked. Over 14 days
-    on `shield-sample-webacl`, `TGT_TokenAbsent` had 2,251 matches and 34 of them blocked."""
+    on `test-webacl-cwl`, `TGT_TokenAbsent` had 2,251 matches and 34 of them blocked."""
     out, _, _ = _investigate(monkeypatch, [_group("shadow", SQLI, override_action="Count")],
                              {"SQLi_QUERYARGUMENTS": (10, 3)})
     assert "10 matches, 3 blocked by other rules" in out, out

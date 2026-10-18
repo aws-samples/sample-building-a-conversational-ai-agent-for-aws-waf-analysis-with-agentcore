@@ -171,7 +171,7 @@ def test_managed_groups_are_matched_by_name_and_only_the_injection_ones(group, e
     ("EC2MetaDataSSRF_BODY", True), ("Host_localhost_HEADER", False),
 ])
 def test_only_an_injection_sub_rule_in_count_is_a_detector(sub_rule, expected):
-    """Every Count override in CommonRuleSet was promoted. Live, `shield-sample-webacl` returned
+    """Every Count override in CommonRuleSet was promoted. Live, `test-webacl-cwl` returned
     SizeRestrictions_BODY as an injection detector, which a window of large uploads would make the
     focus rule and present as the Count-mode injection rule to switch to Block. `Log4JRCE` with no
     suffix is the name in KnownBadInputs Version_1.2 to 1.8 and 1.12 to 1.14. File inclusion on the

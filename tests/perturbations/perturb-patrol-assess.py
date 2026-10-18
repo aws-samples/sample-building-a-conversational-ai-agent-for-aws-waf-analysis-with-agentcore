@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT-0
 """Break each property `test_patrol_assess.py` claims and require it to notice.
 
-The literal-name case restores the shipped line exactly; the parameter case drops only the
+The literal-name case restores the shipped line's shape, with the test account's name; the parameter case drops only the
 wiring, which a test of the default argument alone would not see.
 """
 
@@ -17,9 +17,8 @@ P = "tools/waf_patrol.py"
 CASES = [
     ("the developer's WebACL name back in the skip set",
      [(P, '    skip_rules = {"ALL", webacl_name}  # WebACL-level aggregates',
-       '    skip_rules = {"ALL", "shield-sample-webacl"}  # WebACL-level aggregates')],
-     [f"{T}::test_the_webacl_row_is_skipped_for_the_webacl_being_scanned",
-      f"{T}::test_no_literal_webacl_name_is_wired_into_the_tools"], True),
+       '    skip_rules = {"ALL", "test-webacl-cwl"}  # WebACL-level aggregates')],
+     [f"{T}::test_the_webacl_row_is_skipped_for_the_webacl_being_scanned"], True),
 
     ("the skip set ignoring the scanned WebACL",
      [(P, '    skip_rules = {"ALL", webacl_name}  # WebACL-level aggregates',

@@ -5,7 +5,7 @@
 A rule group in whole-group Count still logs the sub-rule that matched as its `terminatingRule`,
 with the native BLOCK, and evaluation goes on to the next group. So a record holds one
 `terminatingRule` per group that matched, in evaluation order, and the group that ended evaluation
-is the last. Measured 2026-10-02 to 10-16 on `shield-sample-webacl`, across the 2026-10-13 probe
+is the last. Measured 2026-10-02 to 10-16 on `test-webacl-cwl`, across the 2026-10-13 probe
 test that ran every group in Count: in 109 of 109 managed-group blocks the last entry was the
 terminating group, and in 6 of the 17 LinuxRuleSet blocks the first entry was another group's
 (`ExploitablePaths_URIPATH` 4, `RestrictedExtensions_URIPATH` 2) where `LFI_URIPATH` blocked.

@@ -3,7 +3,7 @@
 """No CloudWatch query matches text against the raw record unanchored.
 
 `host_top_ips` filtered `@message like '{host}'`, so the host name turning up anywhere counted.
-Measured 2026-10-15 on `aws-waf-logs-group`, 24 hours, host `cf-httpecho.a.letsmakeit.link`: the
+Measured 2026-10-15 over 24 hours of `aws-waf-logs-test`, for the test distribution's host: the
 top row was 45,841 hits with no client IP at all, CloudFront access-log records sharing the log
 group, which the Host-header parse excludes. `label_top_ips` had the same shape for `{label}`.
 The rule is the one `test_aggregate_logs` holds the aggregate filters to: a raw-record literal must
@@ -20,7 +20,7 @@ be raised by the label text in a URI; and `token_reuse_ips` parsed its session i
 **A quote alone is not an anchor.** The first version of this sweep accepted any literal carrying
 a `"`, so `'"awswaf:managed:aws:anti-ddos:event-detected'` passed: every JSON string value opens
 with a quote, and a header `X-A: awswaf:managed:aws:anti-ddos:event-detected` logs as
-`"value":"awswaf...`, which that literal matches. Measured 2026-10-16 on `aws-waf-logs-group` over
+`"value":"awswaf...`, which that literal matches. Measured 2026-10-16 on `aws-waf-logs-test` over
 a day, a literal opening with a quote, `'"Mozilla'`, matched 518 of 46,159 WAF records. The anchor
 is a JSON key with its colon, `"name":`, because the client's quotes around a key it writes arrive
 escaped.

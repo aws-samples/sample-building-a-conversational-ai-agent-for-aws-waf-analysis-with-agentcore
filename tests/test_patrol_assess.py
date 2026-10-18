@@ -3,18 +3,14 @@
 """Patrol's per-rule assessment: the WebACL's own row is skipped on any account, and the baseline
 text names the baseline it uses.
 
-`_assess_rules_v2` skipped `{"ALL", "shield-sample-webacl"}`, the developer's WebACL, so on every
+`_assess_rules_v2` skipped `"ALL"` and the developer's own WebACL by name, so on every
 other account the WebACL-level row was assessed as if it were a rule. The table builder further
 down already skipped `{"ALL", webacl_name}`. And the Chinese text said "昨日无基线" (no baseline
 yesterday) for a baseline that is the same window seven days earlier.
 """
 
-import ast
-import pathlib
-
 from tools import waf_patrol as P
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
 BUSY = {"blocked": [900], "counted": [], "challenge": [], "captcha": []}
 
 
@@ -23,21 +19,6 @@ def test_the_webacl_row_is_skipped_for_the_webacl_being_scanned():
     rules = {i["rule"] for i in items}
     assert "SomeRule" in rules, f"the control: a real rule with no baseline is still assessed: {items}"
     assert "my-acl" not in rules, items
-
-
-def test_no_literal_webacl_name_is_wired_into_the_tools():
-    """Any account-specific name in executable code is this defect again. Docstrings are excluded
-    (several cite measurements taken on that WebACL); comments never reach the AST."""
-    hits = []
-    for path in sorted((ROOT / "tools").glob("*.py")):
-        tree = ast.parse(path.read_text())
-        docs = {id(n.body[0].value) for n in ast.walk(tree)
-                if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                and n.body and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
-        hits += [(path.name, n.lineno) for n in ast.walk(tree)
-                 if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs
-                 and n.value in ("shield-sample-webacl", "response-id-on-page")]
-    assert not hits, hits
 
 
 def test_the_no_baseline_text_names_the_week_earlier_window():
@@ -141,7 +122,7 @@ CSP = "awswaf:managed:aws:bot-control:signal:cloud_service_provider"
 def test_every_provider_under_the_namespace_is_counted_whatever_its_name():
     """The list was aws, gcp, azure and oracle, so alibaba, digital_ocean, ibm, akamai and cloudflare,
     in Bot Control since Version_2.0 or 3.2, never raised an item. Measured 2026-10-17 on
-    `shield-sample-webacl`, one day: aws 37,948 AllowedRequests and 1 BlockedRequests."""
+    `test-webacl-cwl`, one day: aws 37,948 AllowedRequests and 1 BlockedRequests."""
     results = [_label_result(CSP, "aws", "AllowedRequests", 37948), _label_result(CSP, "aws", "BlockedRequests", 1),
                _label_result(CSP, "newcdn", "AllowedRequests", 2000), _label_result(CSP, "newcdn", "CountedRequests", 2000),
                _label_result(CSP, "newcdn", "AllowRuleMatch", 5000),

@@ -37,11 +37,11 @@ def scope_cwl_query(query: str, webacl_name: str | None) -> str:
     """`query` with a filter that keeps only one WebACL's records, for CloudWatch Logs Insights.
 
     **Demonstrated on the deployment account 2026-09-15, through the tool rather than a probe.** Session
-    context on `shield-sample-webacl`, whose destination is the log group `aws-waf-logs-group`;
+    context on `test-webacl-cwl`, whose destination is the log group `aws-waf-logs-test`;
     `run_logs_query(query_type="top_blocked_ips", start_time="2024-05-10T06:00", duration_minutes=360)`
     returned a table of six client IPs and a suggestion to drill into them. Every one of those rows
-    belongs to `test2`, a different WebACL that used to log to the same group, and the `SOURCE:` line on
-    that answer read `shield-sample-webacl`. The provenance channel cannot see this: the record's subject
+    belongs to `old-webacl`, a different WebACL that used to log to the same group, and the `SOURCE:` line on
+    that answer read `test-webacl-cwl`. The provenance channel cannot see this: the record's subject
     comes from session state and the rows come from the log group, with nothing binding them.
 
     Every link in that chain is measured. Several WebACLs sharing one destination is supported and
@@ -53,13 +53,13 @@ def scope_cwl_query(query: str, webacl_name: str | None) -> str:
     **Recent windows are clean, and that is measured rather than assumed**, because tonight's
     log-versus-metric cross-check rests on it. Every stream that is not this WebACL's ends on or before
     2025-10-14. Counting by `webaclId` across 2026-05-01 to 2026-09-01, exhaustively rather than by
-    sample: 14,893,856 records, of which 7,446,843 are `shield-sample-webacl`, 7,447,003 are CloudFront
+    sample: 14,893,856 records, of which 7,446,843 are `test-webacl-cwl`, 7,447,003 are CloudFront
     access logs sharing the group and carrying no `webaclId` at all, and zero belong to another WebACL.
 
     **The substring form, mirroring the Athena side.** `webaclId` is the full ARN in WAFv2, so
     `'/webacl/name/'` matches the name as the segment after `webacl/` exactly as
-    `webaclid LIKE '%/webacl/name/%'` does. Verified on real records: `filter webaclId like '/test2/'`
-    returns 7 in that window and `'/shield-sample-webacl/'` returns nothing. `/name/` alone was the
+    `webaclid LIKE '%/webacl/name/%'` does. Verified on real records: `filter webaclId like '/old-webacl/'`
+    returns 7 in that window and `'/test-webacl-cwl/'` returns nothing. `/name/` alone was the
     first form, and a WebACL named `webacl` matched every WebACL's records with it. A regex form works
     too and needs escaping this one does not.
 

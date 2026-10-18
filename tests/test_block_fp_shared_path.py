@@ -4,8 +4,8 @@
 blocks on the same paths.
 
 The investigation handed a confirmed false positive to scope-down design with no look at what else
-the rule matched there. Measured on `response-id-on-page`, 2026-09-08: the false-positive user
-3.112.151.5 took 2 SQLi blocks on `/search` at 03:58, and 10 scanners took 60 more on `/search` at
+the rule matched there. Measured on `test-webacl-s3`, 2026-09-08: the false-positive user
+took 2 SQLi blocks on `/search` at 03:58, and 10 scanners took 60 more on `/search` at
 04:03-04:04. An exception for `/search` lets those 60 through with the user's 2.
 """
 
@@ -13,7 +13,7 @@ import pytest
 
 from tools import waf_block_fp as F
 
-FP = "3.112.151.5"
+FP = "198.51.100.30"
 SQLI = "AWS-AWSManagedRulesSQLiRuleSet"
 BASE = dict(rule_id=SQLI, rule_type="MANAGED_RULE_GROUP", sub_rule="SQLi_QUERYARGUMENTS", allow_count=500,
             block_count=2, total=502, peak_rpm="1", avg_rpm="1", rules_triggered=1,

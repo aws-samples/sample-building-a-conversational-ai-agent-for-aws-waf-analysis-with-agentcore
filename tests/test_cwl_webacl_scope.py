@@ -3,14 +3,14 @@
 """A CloudWatch Logs query answered from another WebACL's records, and signed with the session's.
 
 **Demonstrated through the tool on the deployment account, 2026-09-15.** Session context on
-`shield-sample-webacl`, whose destination is the log group `aws-waf-logs-group`:
+`test-webacl-cwl`, whose destination is the log group `aws-waf-logs-test`:
 
     run_logs_query(query_type="top_blocked_ips", start_time="2024-05-10T06:00", duration_minutes=360)
     → | httpRequest.clientIp | cnt |  ... six rows ...  and "Next: use analyze_ip"
-    → SOURCE: shield-sample-webacl via CloudWatch Logs Insights.
+    → SOURCE: test-webacl-cwl via CloudWatch Logs Insights.
 
-Every one of those rows belongs to `test2`, a WebACL that used to log to that group. Counted the same
-window directly: 7 BLOCK records, all `test2`, none `shield-sample-webacl`. **The provenance channel
+Every one of those rows belongs to `old-webacl`, a WebACL that used to log to that group. Counted the same
+window directly: 7 BLOCK records, all `old-webacl`, none `test-webacl-cwl`. **The provenance channel
 cannot see this**, because the record's subject comes from session state and the rows come from the log
 group, and nothing bound them together.
 
@@ -21,7 +21,7 @@ window's span rather than its age, so a 2024 `start_time` is a legal call.
 
 **Recent windows are clean, measured exhaustively rather than sampled**, which matters because the
 log-versus-metric cross-check behind ROADMAP 7.12 rests on it. Across 2026-05-01 to 2026-09-01:
-14,893,856 records, 7,446,843 `shield-sample-webacl`, 7,447,003 CloudFront access logs sharing the group
+14,893,856 records, 7,446,843 `test-webacl-cwl`, 7,447,003 CloudFront access logs sharing the group
 with no `webaclId` at all, and zero from another WebACL. Every stream that is not this WebACL's ends on or
 before 2025-10-14.
 
@@ -62,11 +62,11 @@ def test_the_filter_names_the_webacl_as_a_path_segment():
     """The same shape as the Athena side's `webaclid LIKE '%/webacl/name/%'`, because `webaclId` is the
     full ARN in WAFv2 and the name is the path segment after `webacl/`.
 
-    Verified against real records: `filter webaclId like '/test2/'` returned 7 in the window above and
-    `'/shield-sample-webacl/'` returned nothing. The substring form is used rather than the regex form
+    Verified against real records: `filter webaclId like '/old-webacl/'` returned 7 in the window above and
+    `'/test-webacl-cwl/'` returned nothing. The substring form is used rather than the regex form
     `like /\\/name\\//`, which also works and needs escaping this one does not."""
-    scoped = Q.scope_cwl_query("filter x | stats count(*) as c", "shield-sample-webacl")
-    assert scoped == "filter webaclId like '/webacl/shield-sample-webacl/' | filter x | stats count(*) as c"
+    scoped = Q.scope_cwl_query("filter x | stats count(*) as c", "test-webacl-cwl")
+    assert scoped == "filter webaclId like '/webacl/test-webacl-cwl/' | filter x | stats count(*) as c"
 
 
 def test_a_missing_or_malformed_name_refuses_instead_of_querying_unscoped():
@@ -87,7 +87,7 @@ def test_a_log_query_is_scoped_to_the_session_webacl(monkeypatch):
     """The path the ten log tools take. `query_logs` reads the destination out of session state, so the
     WebACL whose destination it is is the one to scope to."""
     monkeypatch.setattr(Q, "get_log_destination", lambda: "arn:aws:logs:r:1:log-group:lg")
-    monkeypatch.setattr(Q, "get_webacl_name", lambda: "shield-sample-webacl")
+    monkeypatch.setattr(Q, "get_webacl_name", lambda: "test-webacl-cwl")
     monkeypatch.setattr(Q, "get_user_timezone", lambda: 0.0)
     monkeypatch.setattr(Q, "get_logs_region", lambda: "us-east-1")
     fake = FakeCwl()
@@ -96,7 +96,7 @@ def test_a_log_query_is_scoped_to_the_session_webacl(monkeypatch):
     Q.query_logs("filter action = 'BLOCK' | stats count(*) as cnt | limit 5", "SELECT 1", 0, 60, 5)
     # Driven down to the client rather than to `_run_cwl`, because the executor is where the scoping
     # now happens and a stub for it would capture the query before the prefix exists.
-    assert fake.queries[0].startswith("filter webaclId like '/webacl/shield-sample-webacl/' | "), fake.queries[0]
+    assert fake.queries[0].startswith("filter webaclId like '/webacl/test-webacl-cwl/' | "), fake.queries[0]
     assert "| limit 6" in fake.queries[0], (
         "the limit+1 rewrite has to survive the prefix; truncation detection depends on it")
 

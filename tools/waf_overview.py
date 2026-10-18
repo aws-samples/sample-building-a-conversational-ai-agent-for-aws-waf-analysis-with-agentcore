@@ -163,7 +163,7 @@ def _whole_points(start, end, period: int, oldest):
 
     **The first point is StartTime rounded down to the resolution CloudWatch still keeps**, a
     minute for 15 days, five minutes to 63 and an hour after, and points follow every `period` for
-    as long as they start before EndTime. Measured 2026-10-16 on `response-id-on-page`, StartTime
+    as long as they start before EndTime. Measured 2026-10-16 on `test-webacl-s3`, StartTime
     hh:07:17: points began at 01:07 at 2 and 10 days old with periods of 900, 3600 and 14400, at
     01:05 at 37 days with 900, 3600 and 14400, and at 01:00 at 70 and 97 days with 3600 and 14400.
     So a window that is not whole points from there reads more than it names, and the window sent

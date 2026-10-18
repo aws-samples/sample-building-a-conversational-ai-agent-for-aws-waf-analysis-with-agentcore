@@ -120,7 +120,7 @@ def test_the_zone_is_named_once_rather_than_on_both_halves():
 def test_the_filename_names_the_last_day_the_report_covers():
     """**The title was fixed in 0.26.0 and the filename was not**, because each derived the last day for
     itself. Measured against the deployed endpoint 2026-09-15: a report covering 2026-09-08 to 09-14 was
-    written to `waf-weekly-summary-shield-sample-webacl-20260915.html`.
+    written to `waf-weekly-summary-test-webacl-cwl-20260915.html`.
 
     Driven at UTC, where the old code was wrong, and at UTC+8, where `end`'s exclusive boundary lands on
     the same local day as the last instant so the old code happened to be right. One offset alone cannot

@@ -19,7 +19,7 @@ the other three already have.
 
 from tools.report import _antiddos_skip
 
-GROUP = "aws-waf-logs-group"
+GROUP = "aws-waf-logs-test"
 
 
 def test_no_event_says_so_rather_than_disappearing():
