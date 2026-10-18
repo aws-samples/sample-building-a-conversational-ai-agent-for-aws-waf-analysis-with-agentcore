@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.36.0 (2026-10-18)
 
 ### Fixed: the volume check compared week totals, so an hour-long flood read as normal
 
