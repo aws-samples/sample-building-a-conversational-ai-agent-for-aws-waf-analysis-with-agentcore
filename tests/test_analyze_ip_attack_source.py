@@ -137,8 +137,25 @@ def test_two_categories_on_the_floor_are_likely_not_certain(monkeypatch):
     """The scanners sat exactly on the floor, 2 categories and 2 paths, in one sample from one script."""
     verdict, *_ = _run(monkeypatch, [SQLI, PROBE], allowed=3)
     assert "**LIKELY: Attack source or scanner.**" in verdict and "HIGH CONFIDENCE" not in verdict, verdict
-    assert "one rule's blocks on 2 paths" in verdict and "(2 categories, 2 paths), measured once" in verdict, verdict
+    assert "one rule's blocks on 2 paths" in verdict, verdict
+    assert "2 attack categories is the floor for this verdict, and 2 paths is its floor too." in verdict, verdict
     assert "Ask the user whether the blocked requests are their own application's" in verdict, verdict
+
+
+def test_two_categories_on_many_paths_do_not_say_the_paths_are_on_the_floor(monkeypatch):
+    """LIKELY holds for any two categories; the sentence was written for the scanners' 2 paths and said
+    "the floor ... 2 paths" of 40."""
+    wide = managed("AWSManagedRulesSQLiRuleSet", "SQLi_QUERYARGUMENTS", 300, uris=40)
+    verdict, *_ = _run(monkeypatch, [wide, PROBE], allowed=3)
+    assert "**LIKELY: Attack source or scanner.**" in verdict and "one rule's blocks on 40 paths" in verdict, verdict
+    assert "2 attack categories is the floor for this verdict." in verdict and "floor too" not in verdict, verdict
+
+
+def test_an_unknown_rule_names_its_sub_rules(monkeypatch):
+    a = {**managed("x", "SQLi_BODY", 20, uris=3), "rgid": "Fortinet#WebExploits", "terminatingRuleId": "fortinet"}
+    b = {**a, "sub_rule": "XSS_BODY", "uris": "1"}
+    _, out, *_ = _run(monkeypatch, [SQLI, a, b], allowed=3)
+    assert "category unknown: fortinet, 40 blocks (the widest of its 2 sub-rules on 3 paths)" in out, out
 
 
 def test_three_categories_are_high_confidence(monkeypatch):

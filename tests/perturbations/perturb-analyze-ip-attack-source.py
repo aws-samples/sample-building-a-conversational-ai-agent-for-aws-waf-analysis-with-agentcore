@@ -85,7 +85,7 @@ CASES = [
            "                             or (\"none: its blocks came from rules that do not inspect what a request asks for or carries\" if not attack[\"blocked\"] else")],
      [f"{T}::test_not_blocked_and_blocked_by_other_rules_read_differently"], True),
     ("a category of several rules shown as if its paths were the category's",
-     [(L, '            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} rules on {where})"\n',
+     [(L, '            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} {rules} on {where})"\n',
        '            return "" if not rows else f" on {where}"\n')],
      [f"{T}::test_a_category_of_several_sub_rules_names_its_widest_and_counts_only_that"], True),
     ("two categories on the floor called certain",
@@ -97,6 +97,14 @@ CASES = [
      [(L, "        if len(cats) >= ATTACK_CATEGORIES_ALONE:\n            return (f\"**HIGH CONFIDENCE: Attack source",
        "        if False:\n            return (f\"**HIGH CONFIDENCE: Attack source")],
      [f"{T}::test_three_categories_are_high_confidence"], True),
+    ("the paths called on the floor whatever their number",
+     [(L, '        floor = f", and {spread} paths is its floor too" if spread == ATTACK_PATHS_WITH_MAJORITY else ""\n',
+       '        floor = f", and {spread} paths is its floor too"\n')],
+     [f"{T}::test_two_categories_on_many_paths_do_not_say_the_paths_are_on_the_floor"], True),
+
+    ("an unknown rule's sub-rules called rules",
+     [(L, "{paths(rule, 'sub-rules')}", "{paths(rule)}")],
+     [f"{T}::test_an_unknown_rule_names_its_sub_rules"], True),
 ]
 
 sys.exit(sweep(CASES))

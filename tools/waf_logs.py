@@ -1464,15 +1464,15 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
         lines.append(_empty_reason(failures, "attack_categories"))
     else:
         cats = attack["categories"]
-        def paths(k):
+        def paths(k, rules="rules"):
             n, rows = attack["paths"].get(k, (0, 0))
             where = f"{n} path{'s' if n != 1 else ''}"
-            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} rules on {where})"
+            return "" if not rows else f" on {where}" if rows == 1 else f" (the widest of its {rows} {rules} on {where})"
         lines.append("  " + (", ".join(f"{c} {b:,}{paths(c)}" for c, b in sorted(cats.items(), key=lambda kv: -kv[1]))
                              or ("none: it was not blocked" if not attack["blocked"] else
                                  "none: its blocks came from rules that do not inspect what a request asks for or carries")))
         for rule, (b, why) in attack["unknown"].items():
-            lines.append(f"  category unknown: {rule}, {b:,} blocks{paths(rule)}: {why}")
+            lines.append(f"  category unknown: {rule}, {b:,} blocks{paths(rule, 'sub-rules')}: {why}")
     lines.append("**Allowed requests**:" + (f" {allowed:,}" if allowed is not None else ""))
     if allowed is None:
         lines.append(_empty_reason(failures, "allowed"))
@@ -1605,12 +1605,13 @@ def analyze_ip(ip: str, start_time: str, duration_minutes: int = 180) -> str:
                     f"({named}), {content:,} blocked requests against {allowed:,} allowed. The blocks already "
                     f"stopped what they matched; {allowed_call}")
         spread = max(attack["paths"].get(c, (0, 0))[0] for c in cats)
-        # The floor, measured once: one script's scanners sat exactly on it, so it is not called certain.
+        # Two categories is the floor whatever the paths, so it is not called certain.
+        floor = f", and {spread} paths is its floor too" if spread == ATTACK_PATHS_WITH_MAJORITY else ""
         return (f"**LIKELY: Attack source or scanner.** Blocked for {len(cats)} attack categories ({named}), "
                 f"{content:,} blocked requests against {allowed:,} allowed, one rule's blocks on {spread} paths. "
-                f"That is the floor for this verdict ({ATTACK_CATEGORIES_WITH_MAJORITY} categories, "
-                f"{ATTACK_PATHS_WITH_MAJORITY} paths), measured once, on test traffic. Ask the user whether the "
-                f"blocked requests are their own application's; if so, run the false-positive check. Otherwise "
+                f"{len(cats)} attack categories is the floor for this verdict{floor}. An application of the user's "
+                f"own whose requests trip two categories looks the same. Ask the user whether the blocked "
+                f"requests are their own application's; if so, run the false-positive check. Otherwise "
                 f"{allowed_call}")
 
     def _attack_source_unread():

@@ -8,11 +8,13 @@
 An anomaly that lasts an hour barely moves a week: on a test WebACL, a rate-limited flood on 2026-10-16
 read as 1.1x, "within normal range". The step now compares one window, the `start_time` given or else
 the busiest hour of ALLOW traffic in the last seven days, with the same window a week earlier and with
-the six hours either side. The same flood reads 20.9x. A busiest hour picked out of seven days sits
-above its own hour a week earlier by selection alone, so when the hour was picked, the busiest hour of the
-week before decides, and the table shows it and sets mitigated traffic against it too. A rise in mitigated traffic from none counts as a rise; the first run of the new
-code called 562,445 mitigated requests against none "did NOT rise". The bypass scan's own week-on-week
-note now reads whole metric points and stops at the last one, as this step does.
+the six hours either side. A busiest hour picked out of seven days sits above its own hour a week
+earlier by selection alone, so when the hour was picked, the busiest hour of the week before decides;
+the table shows it and sets mitigated traffic against it too. The same flood reads 20.9x the same hour
+a week earlier and 17.2x the busiest hour of the week before. A rise in mitigated traffic from none
+counts as a rise; the first run of the new code called 562,445 mitigated requests against none "did
+NOT rise". The bypass scan's own week-on-week note now reads whole metric points and stops at the last
+one, as this step does.
 
 ### Fixed: analyze_ip called scanners scrapers
 
@@ -29,7 +31,7 @@ limits, reputation lists, Bot Control and size checks are not categories, so a f
 reads as hammering. Blocks whose category cannot be read (a third-party or customer rule
 group, a rule no longer in the WebACL) stop the verdict when they could change it. The bot verdicts no
 longer count blocks set aside as attacks. On the 2026-09-08 test traffic, each of 10 scanners (SQL
-injection 12 on 2 paths, path probing 1, against 3 allowed) is now an attack source and the
+injection 12 on 2 paths, path probing 1, against 3 allowed) is now a likely attack source and the
 false-positive user (SQL injection 2 on 1 path, against 35 allowed) is not.
 
 ### Fixed: a false-positive check behind a shared address read every user's traffic as one
