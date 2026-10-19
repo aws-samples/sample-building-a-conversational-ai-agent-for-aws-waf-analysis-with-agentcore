@@ -34,6 +34,8 @@ AWS DevOps Agent 自己就能调查 AWS WAF：WebACL 配置、指标、日志它
 
 **DevOps Agent。** 数据拿得对，读数据弱一些。它容易把话说得比 WAF 日志能证明的更满：可能的误报说成已经定了，可能是爬虫说成肯定是。有时会读错流量本身，比如到底是几台主机发的。偶尔还会主动提出替你改 WebACL。另外，要用 Athena 查 S3 里的 WAF 日志，得给它配一个开了托管查询结果的 workgroup，因为它的会话策略去掉了 `s3:PutObject`。
 
+**用 DevOps Agent skill 行不行？** 我们试过。我们把 WAF Analyst 的方法提炼成了一个 DevOps Agent skill。效果要看题目：有几批题上，它让 DevOps Agent 的结论更谨慎；另几批题上，看不出差别。我们还测过有人提交给社区仓库的一个 WAF skill，在我们跑过的题目上，它没有让 DevOps Agent 有可测出的改善。我们自己的 skill 没有发布。
+
 **WAF Analyst。** 计数和匹配交给专用工具（`analyze_ip`、`lookup_ja4`、`detect_bypass`、`check_challenge_compatibility`、`get_waf_overview`）用代码算，模型只管判断。同样的问题，它更常得出证据撑得住的结论。合作方的集成请求看着像 SSRF 和 SQL 注入，它认得出不是攻击。别人给的解释和日志对不上时，它会提出质疑。撞库分散在几台主机上、逐个 IP 限速拦不住，它能说清为什么，并把这几台主机当成同一次攻击。它能解释限速规则生效之前放过去的那批请求，误报还需要业务确认时也会直说。也有一些问题两者答得差不多，个别问题上 DevOps Agent 答得更好。
 
 它的局限：只支持 CloudFront scope 的 WebACL；要在你的账号里作为独立 agent 用 AgentCore 部署。时间范围太长时，它会请你缩小窗口，不会整段扫完，所以查一个 IP 几周来的行为，要再追问一轮。
@@ -55,8 +57,8 @@ AWS DevOps Agent 自己就能调查 AWS WAF：WebACL 配置、指标、日志它
 
 | 报告类型 | 受众 | 内容 |
 |---------|------|------|
-| 安全巡检报告 | 运维工程师 | 7 天全量扫描、异常检测、15 分钟粒度图表、攻击源 Top 5 |
-| 周报摘要 | 管理层 | 拦截量、趋势对比、Bot 分类、国家分布、投资回报可视化 |
+| 安全巡检报告 | 运维工程师 | 7 天全量扫描、异常检测、15 分钟粒度图表、主要攻击源 |
+| 周报摘要 | 管理层 | 拦截量、趋势对比、Bot 分类、国家分布、防护价值 |
 
 ### 3. 领域知识
 
@@ -67,11 +69,11 @@ AWS DevOps Agent 自己就能调查 AWS WAF：WebACL 配置、指标、日志它
 - Challenge/CAPTCHA 的适用场景和限制
 - Rate-based 规则的延迟特性
 - Dynamic Label Interpolation
-- 知识库检索（12 篇专题文档）
+- 知识库检索（WAF 专题文档）
 
 ### 4. 日志分析能力
 
-20+ 预置查询模板，覆盖：
+预置查询模板，覆盖：
 
 | 类别 | 查询能力 |
 |------|---------|

@@ -34,6 +34,8 @@ The marks say whether a service does something at all. How well DevOps Agent and
 
 **DevOps Agent.** It fetches the right data. It is weaker at reading it. It tends to state conclusions more firmly than WAF logs allow, calling a likely false positive settled or a likely scraper certain. It sometimes misreads the traffic itself, such as how many hosts sent it. Now and then it offers to change the WebACL itself. To query WAF logs in S3 with Athena, it needs a workgroup with managed query results, because its session policy drops `s3:PutObject`.
 
+**What about a DevOps Agent skill?** We tried that route. We distilled WAF Analyst's methods into a DevOps Agent skill. Its effect depended on the question set: on some sets it made DevOps Agent's conclusions more careful, and on others we could not measure a difference. We also tested a WAF skill proposed to the community repository, and it did not measurably improve DevOps Agent on the questions we ran. We did not publish ours.
+
 **WAF Analyst.** Purpose-built tools (`analyze_ip`, `lookup_ja4`, `detect_bypass`, `check_challenge_compatibility`, `get_waf_overview`) do the counting and matching in code, and the model does the judging. On the same questions it reached the supported conclusion more often. It recognized a partner integration whose requests looked like SSRF and SQL injection. It questioned an explanation the logs contradicted. It explained why credential stuffing spread over several hosts slipped past per-IP limits, and treated those hosts as one campaign. It explained the requests a rate-based rule let through before it acted, and said when a false positive still needs the business to confirm it. On other questions the two did about as well, and on some DevOps Agent did better.
 
 Its limits: it supports CloudFront-scope WebACLs only, and it runs as its own agent with AgentCore in your account. Over a long time range it asks you to narrow the window instead of scanning all of it, so a question about one IP across weeks needs a follow-up turn.
@@ -67,11 +69,11 @@ Built-in AWS WAF expertise, not reliant on generic LLM knowledge:
 - Challenge/CAPTCHA applicability and limitations
 - Rate-based rule delay characteristics
 - Dynamic Label Interpolation
-- Knowledge base retrieval (12 specialized documents)
+- Knowledge base retrieval (specialized WAF documents)
 
 ### 4. Log Analysis
 
-20+ pre-built query templates covering:
+Pre-built query templates covering:
 
 | Category | Capabilities |
 |----------|-------------|
