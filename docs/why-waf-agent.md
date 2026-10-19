@@ -1,32 +1,20 @@
 # Why WAF Analyst?
 
-As of October 2026 there are three ways to put an AI agent on AWS WAF logs, and they sit at different depths. AWS DevOps Agent on its own can reach the data but has no WAF method. The open-source `aws-waf-log-investigation` skill teaches that method to DevOps Agent and covers the investigation cases. WAF Analyst goes deepest, with purpose-built tools and direct data access, and also covers the reporting cases the skill does not. The three-way comparison, measured against the same held-out questions, is in [Native vs skill vs WAF Analyst](#native-vs-skill-vs-waf-analyst) below.
+AWS DevOps Agent can already investigate AWS WAF on its own: it reads the WebACL, the metrics and the logs, and its queries are usually correct. WAF Analyst is built for AWS WAF alone. When we put both on the same WAF questions, WAF Analyst reached the conclusion the evidence supports more often. The difference was in how each read and weighed the evidence, not in access to the data; see [DevOps Agent and WAF Analyst](#devops-agent-and-waf-analyst) below.
 
 ## Gap Analysis
 
-The DevOps Agent column is split: `native` is the agent with no skill, `+Skill` is the agent loaded with the skill. The marks grade quality, not just whether it runs:
+The marks say whether a service does something at all. How well DevOps Agent and WAF Analyst investigate is covered in [DevOps Agent and WAF Analyst](#devops-agent-and-waf-analyst).
 
+- **✓** supported
 - **❌** not supported
-- **△** pulls the data but the conclusion is unreliable (data without method)
-- **✓** reliable method and conclusion
-- **◎** deepest: purpose-built tools and validated methods, stays inside the evidence
 
-| Customer Need | Security Agent | DevOps (native) | DevOps +Skill | Security IR | WAF Analyst |
-|--------------|:---:|:---:|:---:|:---:|:---:|
-| Determine if COUNT rule is causing false positives | ❌ | △ | ✓ | ❌ | ◎ |
-| Confirm whether traffic is a real attack | ❌ | △ | ✓ | ❌ | ◎ |
-| COUNT → BLOCK promotion decision support | ❌ | ❌ | ✓ | ❌ | ◎ |
-| Attack source investigation (IP behavior) | ❌ | △ | ✓ | ❌ | ◎ |
-| Distinguish bot vs legitimate user (post-hoc) | ❌ | ❌ | △ | ❌ | ◎ |
-| False positive investigation ("my customer got blocked") | ❌ | △ | ✓ | ❌ | ◎ |
-| Bypass/evasion detection | ❌ | ❌ | ✓ | ❌ | ◎ |
-| DDoS event investigation | ❌ | △ | ✓ | ❌ | ◎ |
-| REGIONAL WebACL (ALB, API Gateway) investigation | ❌ | △ | ✓ | ❌ | ❌ |
-| Weekly security patrol report | ❌ | ❌ | ❌ | ❌ | ◎ |
-| weekly summary for management | ❌ | ❌ | ❌ | ❌ | ◎ |
-| WAF best practices knowledge base | ❌ | ❌ | ❌ | ❌ | ◎ |
-
-The investigation rows read left to right as the whole point of this comparison: `native` has the data but draws the wrong conclusion (△), the skill adds the method so the conclusion is now reliable (✓), and WAF Analyst goes deeper still with purpose-built tools (◎). Where ✓ and ◎ differ in practice: on the same questions, WAF Analyst reads JA4 fingerprints across IPs, catches one token replayed from many IPs, checks challenge compatibility, and separates a custom rate rule from Anti-DDoS AMR event detection, which the skill can prompt a generic agent toward but not perform as deeply. The two places the skill wins are its own columns: REGIONAL WebACLs (WAF Analyst is CloudFront-only), and running inside an existing DevOps Agent with no separate deployment.
+| Customer Need | Security Agent | DevOps Agent | WAF Analyst |
+|--------------|:---:|:---:|:---:|
+| WAF log investigation: false positives, attack confirmation, bypass, COUNT → BLOCK, DDoS, IP profiling | ❌ | ✓ | ✓ |
+| REGIONAL WebACL (ALB, API Gateway) investigation | ❌ | ✓ | ❌ |
+| Weekly security patrol report | ❌ | ❌ | ✓ |
+| Weekly summary for management | ❌ | ❌ | ✓ |
 
 ## How Other Services Differ
 
@@ -39,27 +27,20 @@ The investigation rows read left to right as the whole point of this comparison:
 ### AWS DevOps Agent
 
 - **Focus**: Production incident response — deployment failures, infrastructure issues, operational metrics
-- **Native**: Reads WebACL config, CloudWatch metrics and WAF logs, and its queries are usually correct. What it lacks is WAF method: it files a blocked legitimate user under the attack, misses allowed bypass traffic, and reads a COUNT-to-BLOCK call off the attack window alone.
-- **With the skill**: the `aws-waf-log-investigation` skill supplies that method, and the agent then handles the investigation cases. See [Native vs skill vs WAF Analyst](#native-vs-skill-vs-waf-analyst).
-- **Still missing even with the skill**: scheduled patrol and weekly reports, and the depth of WAF Analyst's purpose-built tools.
+- **WAF work**: Reads WebACL configuration, CloudWatch metrics and WAF logs, and carries a WAF investigation through on its own. How well it reads the evidence is covered in [DevOps Agent and WAF Analyst](#devops-agent-and-waf-analyst).
+- **Not covered**: scheduled patrol and weekly reports.
 
-### AWS Security Incident Response
+## DevOps Agent and WAF Analyst
 
-- **Focus**: IAM compromise, EC2 instance compromise, data exfiltration events
-- **Does NOT**: Investigate WAF-layer events, analyze HTTP request patterns, or evaluate rule effectiveness
-- **Gap**: Operates at the infrastructure/identity layer, not the application/WAF layer
+**DevOps Agent.** It fetches the right data. It is weaker at reading it. It tends to state conclusions more firmly than WAF logs allow, calling a likely false positive settled or a likely scraper certain. It sometimes misreads the traffic itself, such as how many hosts sent it. Now and then it offers to change the WebACL itself. To query WAF logs in S3 with Athena, it needs a workgroup with managed query results, because its session policy drops `s3:PutObject`.
 
-## Native vs skill vs WAF Analyst
+**What about a DevOps Agent skill?** We tried that route. We distilled WAF Analyst's methods into a DevOps Agent skill. Its effect depended on the question set: on some sets it made DevOps Agent's conclusions more careful, and on others we could not measure a difference. We also tested a WAF skill proposed to the community repository, and it did not measurably improve DevOps Agent on the questions we ran. We did not publish ours.
 
-Measured on the same held-out WAF questions (false positives, injection, bypass, COUNT-to-BLOCK, DDoS, token replay, IP profiling), across CloudFront and REGIONAL (ALB) WebACLs.
+**WAF Analyst.** Purpose-built tools (`analyze_ip`, `lookup_ja4`, `detect_bypass`, `check_challenge_compatibility`, `get_waf_overview`) do the counting and matching in code, and the model does the judging. On the same questions it reached the supported conclusion more often. It recognized a partner integration whose requests looked like SSRF and SQL injection. It questioned an explanation the logs contradicted. It explained why credential stuffing spread over several hosts slipped past per-IP limits, and treated those hosts as one campaign. It explained the requests a rate-based rule let through before it acted, and said when a false positive still needs the business to confirm it. On other questions the two did about as well, and on some DevOps Agent did better.
 
-**DevOps Agent, native.** It fetches the right data and its queries are usually correct, but without WAF method it draws the wrong conclusion: it files a blocked legitimate user under the attack, misses bypass traffic that WAF allowed, and bases a COUNT-to-BLOCK call on the attack window alone. There is also an IAM trap: DevOps Agent's session policy drops `s3:PutObject`, so Athena queries over WAF logs in S3 fail unless the agent is given a workgroup with managed query results.
+Its limits: it supports CloudFront-scope WebACLs only, and it runs as its own agent with AgentCore in your account. Over a long time range it asks you to narrow the window instead of scanning all of it, so a question about one IP across weeks needs a follow-up turn.
 
-**DevOps Agent + the skill.** The skill carries the method onto the generic agent: which question to ask, how to read the answer, and where WAF evidence stops. It covers false positives, injection and bypass, COUNT-to-BLOCK, DDoS and IP profiling, on both Athena and CloudWatch Logs, and on both CloudFront and REGIONAL WebACLs. The customer runs it inside a DevOps Agent they already have, with no extra deployment, and it works in CDN/WAF accounts that have no AgentCore access. It does not produce the scheduled patrol or weekly reports.
-
-**WAF Analyst.** Purpose-built tools (`analyze_ip`, `lookup_ja4`, `detect_bypass`, `check_challenge_compatibility`, `get_waf_overview`), direct data access and validated methods make it the deepest of the three where it runs. It reads JA4 fingerprints across IPs, detects one token replayed across many IPs, checks challenge compatibility, and separates a custom rate rule from Anti-DDoS AMR event detection. It also stays inside the evidence, saying when a log cannot prove intent instead of guessing. Its limits are about where it runs and how it is deployed, not about analysis quality: it supports CloudFront-scope WebACLs only, not REGIONAL, and it has to be deployed as its own agent in an account with AgentCore access.
-
-**Choosing.** For the deepest analysis on a CloudFront WebACL, and for the patrol and weekly reports, use WAF Analyst. For WAF investigation inside an existing DevOps Agent, or on a REGIONAL WebACL, or in an account without AgentCore access, use the skill. The native agent alone is not enough for WAF work.
+**Choosing.** If you already run DevOps Agent, it can take an ad-hoc WAF question; check its conclusions against what the logs actually prove, because that is where it overreaches. When the call matters, such as whether allowed traffic is an attack or whether a blocked customer is a false positive, use WAF Analyst. For a REGIONAL WebACL, use DevOps Agent; WAF Analyst does not support it.
 
 ## Core Capabilities
 
@@ -88,11 +69,11 @@ Built-in AWS WAF expertise, not reliant on generic LLM knowledge:
 - Challenge/CAPTCHA applicability and limitations
 - Rate-based rule delay characteristics
 - Dynamic Label Interpolation
-- Knowledge base retrieval (12 specialized documents)
+- Knowledge base retrieval (specialized WAF documents)
 
 ### 4. Log Analysis
 
-20+ pre-built query templates covering:
+Pre-built query templates covering:
 
 | Category | Capabilities |
 |----------|-------------|
