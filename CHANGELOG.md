@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.36.1 (2026-10-19)
+
+### Changed: why-waf-agent compares WAF Analyst with DevOps Agent on investigation quality
+
+`docs/why-waf-agent.md` and its Chinese twin no longer offer a DevOps Agent skill or Security Incident
+Response as options. The table now says only what each service can do. A new section says, in plain
+terms and without numbers, where DevOps Agent's WAF conclusions overreach, where WAF Analyst did better
+on the same questions, where neither was ahead, and what came of trying a DevOps Agent skill. No agent
+code changed.
+
 ## 0.36.0 (2026-10-18)
 
 ### Fixed: the volume check compared week totals, so an hour-long flood read as normal
