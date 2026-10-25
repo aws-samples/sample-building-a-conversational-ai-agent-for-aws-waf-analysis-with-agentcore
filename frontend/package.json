@@ -21,7 +21,7 @@
     "@vitejs/plugin-react": "^6.0.2",
     "jsdom": "^30.0.1",
     "vite": "^8.0.16",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "js-cookie": "^3.0.7"
