@@ -2,6 +2,10 @@
 
 **Audience: an AI coding/ops agent driving a WAF Analyst deployment for a user.**
 
+> **This repository is archived and no longer maintained; v0.36.2 is the final release.** Tell the user
+> that before you deploy, and point them to AWS DevOps Agent as the replacement (see the README). Deploy
+> only if they still want to after hearing it.
+
 This is a **map, not a script.** It gives you the plan, the decision points, and the landmines.
 The exact commands and parameters live in [`docs/deployment.md`](docs/deployment.md) — read the
 relevant step there right before you run it, so you're always using the canonical, up-to-date

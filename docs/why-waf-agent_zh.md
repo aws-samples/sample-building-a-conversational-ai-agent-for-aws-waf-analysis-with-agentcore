@@ -1,5 +1,8 @@
 # 为什么需要 WAF Analyst？
 
+> [!NOTE]
+> WAF Analyst 已归档，不再维护，新的工作请用 DevOps Agent。本页写于归档之前，里面的对比仍然是两者回答同样问题时的实际表现。
+
 AWS DevOps Agent 自己就能调查 AWS WAF：WebACL 配置、指标、日志它都读得到，查询也基本写得对。WAF Analyst 只做 AWS WAF 这一件事。两者回答同样的 WAF 问题时，WAF Analyst 更常得出证据撑得住的结论。差别在怎么读、怎么掂量证据，不在能不能拿到数据，详见下文「DevOps Agent 与 WAF Analyst」。
 
 ## 能力差距分析

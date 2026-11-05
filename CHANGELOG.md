@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.36.2 (2026-11-05)
+
+### Changed: the project is archived
+
+This is the final release. Both READMEs and AGENTS.md now say the repository is no longer maintained
+and point to AWS DevOps Agent instead. The roadmap says its items will not be done, and the
+why-waf-agent page says it was written before the archive.
+
+### Security: dependency updates close the open Dependabot alerts
+
+strands-agents goes from 1.41.0 to 1.48.0, certifi to 2026.10.19, opentelemetry-api to 1.45.1 with its
+companion packages, vite to 8.3.5, vitest to 5.1.0, dompurify to 3.4.17 and undici to 8.12.3. That
+covers all 19 open alerts, two of them critical (dompurify, certifi). strands-agents 1.45 renamed
+`BedrockModel._format_request` to `format_request`, so two tests call the new name. No agent code
+changed.
+
 ## 0.36.1 (2026-10-19)
 
 ### Changed: why-waf-agent compares WAF Analyst with DevOps Agent on investigation quality

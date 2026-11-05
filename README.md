@@ -4,13 +4,18 @@ English | [中文](README_zh.md)
 
 An AI-powered AWS WAF analysis agent that investigates security incidents, detects bypasses, and generates weekly summarys for management. Built on [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python).
 
+> [!CAUTION]
+> **This repository is archived and no longer maintained.** 0.36.2 is the final release. Dependencies won't be updated again, and new issues and pull requests can't be opened.
+>
+> For WAF log analysis, use [AWS DevOps Agent](https://aws.amazon.com/devops-agent/). If your WAF logs are in S3, [this post](https://aws.amazon.com/cn/blogs/china/leveraging-amazon-athena-managed-query-results-aws-devops-agent/) (in Chinese) shows how to let it query them through Athena managed query results. [Why WAF Analyst?](docs/why-waf-agent.md) records where the two differed on the same WAF questions.
+
 > [!WARNING]
 > **Use Claude Sonnet 5. Do not choose GPT models on Amazon Bedrock for this agent unless you have tested your exact workflow.**
 >
 > WAF Analyst analyzes security logs, blocked requests, SQLi/XSS rule matches, bypass candidates, and bot/DDoS indicators. With GPT-family models on Bedrock, this defensive WAF analysis can be silently blocked by upstream cyber-safety checks and appear as if the agent stopped responding. The recommended model is Claude Sonnet 5.
 
 > [!IMPORTANT]
-> **Check three things before you deploy. Each one makes the agent unusable or quietly wrong, and each is on the [roadmap](docs/roadmap.md).**
+> **Check three things before you deploy. Each one makes the agent unusable or quietly wrong, and none will be fixed now that the project is archived.**
 >
 > 1. **Your WebACL is on CloudFront.** A REGIONAL WebACL (ALB, API Gateway, AppSync) is not supported: the agent declines it at selection and explains why, rather than analysing it and returning a report whose label-, attack-, bot-, country- and anti-DDoS-derived sections silently read as zero. If your WAF only protects regional resources, this tool cannot analyse it.
 > 2. **Your WAF logs land in the same AWS account you deploy into.** Cross-account log delivery is not supported in either placement: from the WAF account the bucket is unreadable without grants nothing here creates, and from the log account there is no WebACL to select and the CloudWatch metrics are in the other account.

@@ -39,7 +39,7 @@ def test_the_bound_is_the_model_s_own_ceiling(monkeypatch):
                                "of 128000. Try again with a maximum tokens value that is lower than 128000.")
     monkeypatch.setattr(agent, "_model", None)
     monkeypatch.setattr(agent, "_bedrock_runtime", lambda: Bedrock(), raising=False)
-    cfg = agent._get_model()._format_request([{"role": "user", "content": [{"text": "hi"}]}])
+    cfg = agent._get_model().format_request([{"role": "user", "content": [{"text": "hi"}]}])
     assert cfg["inferenceConfig"] == {"maxTokens": 128000}, cfg["inferenceConfig"]
 
 

@@ -2,6 +2,9 @@
 
 English | [中文](roadmap_zh.md)
 
+> [!NOTE]
+> The repository is archived, so none of the items below will be done. They stay here as a record of what was planned.
+
 What we plan to support or fix from here. For what the agent already does, and where it stops, see
 [Capabilities](capabilities.md) and [Known Limitations](limitations.md).
 
