@@ -50,12 +50,12 @@ def bedrock(monkeypatch):
 def _inference_config() -> dict:
     """The `inferenceConfig` the SDK would put on the wire.
 
-    Read through `BedrockModel._format_request`, which is private, because it is the layer that decides:
+    Read through `BedrockModel.format_request`, because it is the layer that decides:
     `get_config()` echoes the constructor's keywords, and a parameter dropped between there and the
     request would satisfy an assertion on it while the request still carried one. If a future SDK renames
     the method this fails with `AttributeError`, which is loud rather than quiet.
     """
-    return agent._get_model()._format_request(MESSAGES)["inferenceConfig"]
+    return agent._get_model().format_request(MESSAGES)["inferenceConfig"]
 
 
 def test_no_sampling_parameter_reaches_the_request():

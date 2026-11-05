@@ -4,13 +4,18 @@
 
 基于 [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) + [Strands Agents SDK](https://github.com/strands-agents/sdk-python) 构建的智能 AWS WAF 分析工具，能自动调查安全事件、检测绕过攻击、生成周度业务报告。
 
+> [!CAUTION]
+> **本仓库已归档，不再维护。** 0.36.2 是最后一个版本，之后依赖不再更新，也不能再提 issue 和 PR。
+>
+> 分析 WAF 日志请改用 [AWS DevOps Agent](https://aws.amazon.com/cn/devops-agent/)。日志存在 S3 的话，可以照[这篇博客](https://aws.amazon.com/cn/blogs/china/leveraging-amazon-athena-managed-query-results-aws-devops-agent/)的做法，用 Athena managed query results 让它查询。两者回答同样的 WAF 问题时有什么差别，见[为什么需要 WAF Analyst](docs/why-waf-agent_zh.md)。
+
 > [!WARNING]
 > **请使用 Claude Sonnet 5。除非你已经完整测试过自己的工作流，否则强烈不建议在 Amazon Bedrock 上为本 Agent 选择 GPT 模型。**
 >
 > WAF Analyst 会分析安全日志、拦截请求、SQLi/XSS 规则命中、绕过候选、Bot/DDoS 指标。使用 Bedrock 上的 GPT 系列模型时，这类防御性的 WAF 分析很容易被上游 cyber-safety 检查静默拦截，表现为 Agent 突然没有反应，用户界面里也可能看不到明确错误。推荐使用 Claude Sonnet 5。
 
 > [!IMPORTANT]
-> **部署之前先确认三件事。每一件都会让 agent 不可用，或者悄悄给出错的结果，而且三件都在[路线图](docs/roadmap_zh.md)上。**
+> **部署之前先确认三件事。每一件都会让 agent 不可用，或者悄悄给出错的结果。项目已归档，这三件都不会再修。**
 >
 > 1. **你的 WebACL 在 CloudFront 上。**REGIONAL WebACL（ALB、API Gateway、AppSync）不支持：agent 一选它就拒绝、并说明原因，不会去分析它，更不会返回一份标签、攻击、Bot、国家、Anti-DDoS 段落悄悄读成 0 的报告。如果你的 WAF 只保护 regional 资源，这个工具分析不了。
 > 2. **WAF 日志落在你部署的同一个 AWS 账号里。**跨账号投递两种摆法都不支持：从 WAF 账号看，桶缺了这里不会替你建的授权所以读不到；从日志账号看，那边没有 WebACL 可选，CloudWatch 指标也在另一个账号。

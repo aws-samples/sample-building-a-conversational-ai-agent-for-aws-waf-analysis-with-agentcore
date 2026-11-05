@@ -1,5 +1,8 @@
 # Why WAF Analyst?
 
+> [!NOTE]
+> WAF Analyst is archived and no longer maintained, so for new work use DevOps Agent. This page was written before the archive, and its comparison still describes what each did on the same questions.
+
 AWS DevOps Agent can already investigate AWS WAF on its own: it reads the WebACL, the metrics and the logs, and its queries are usually correct. WAF Analyst is built for AWS WAF alone. When we put both on the same WAF questions, WAF Analyst reached the conclusion the evidence supports more often. The difference was in how each read and weighed the evidence, not in access to the data; see [DevOps Agent and WAF Analyst](#devops-agent-and-waf-analyst) below.
 
 ## Gap Analysis
